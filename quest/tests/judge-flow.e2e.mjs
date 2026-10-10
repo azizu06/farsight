@@ -305,9 +305,14 @@ async function main() {
       await waitFor("report never loaded", async () => !/Loading/.test(await dialog.locator(".mission-content").textContent()), 6000);
       const summary = await dialog.locator(".mission-content p").first().textContent();
       if (!(await dialog.locator(".mission-simulated").count())) throw new Error("report lacks the SIMULATED label");
+      // Always-on control sampler: min range, e-stop count and the release from the drive step.
+      const evidence = (await dialog.locator(".mission-summary li").allTextContents()).join(" | ");
+      if (!/Min range \d+ cm at \+\d+:\d\d/.test(evidence)) throw new Error(`report lacks min range: ${evidence}`);
+      if (!/E-stops \d+/.test(evidence)) throw new Error(`report lacks an e-stop line: ${evidence}`);
+      if (!/deadman_released ×\d+/.test(evidence)) throw new Error(`report lacks the drive-step release: ${evidence}`);
       await dialog.getByRole("button", { name: "Close mission report" }).click();
       await page.locator("#close-settings").click();
-      return summary;
+      return `${summary} · ${evidence}`;
     });
 
     await step("scan", async () => {

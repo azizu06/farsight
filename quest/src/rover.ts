@@ -12,6 +12,7 @@ import { DRILL_TRAINS, DrillHud, endLines } from "./drill-hud.js";
 import { DetectionCache, PACKET_FRESH_MS } from "./detection-match.js";
 import { defaultMount, loadSettings, pageStorage, saveSettings } from "./viewer-settings.js";
 import { PanSmoother } from "./pan-smoothing.js";
+import { encounterLine, summaryLines, timelineLines } from "./mission-report.js";
 
 type Box = { id?: number; cls: string; conf: number; x: number; y: number; w: number; h: number; kpts?: number[][]; down?: boolean };
 type Detections = { frame: number | string; boxes: Box[]; fps?: number; source?: string; simulated?: boolean };
@@ -903,6 +904,12 @@ export class RoverExperience {
       summary.textContent = `${report.mission_id ?? "Mission"} · ${Number(report.duration_s) || 0}s · ${encounters.length} observed tracks · ${Number(report.saved_snapshots) || 0} saved snapshots · ${report.persisted ? "Saved on rover" : "In-memory evidence only"}`;
       const source = document.createElement("p"); source.textContent = `Sources: ${sources.length ? sources.join(", ") : this.frameSource}. Tracks are encounters, not verified distinct people.`;
       content.replaceChildren(summary, source);
+      const evidenceLines = summaryLines(report);
+      if (evidenceLines.length) {
+        const telemetry = document.createElement("ul"); telemetry.className = "mission-summary";
+        for (const line of evidenceLines) { const item = document.createElement("li"); item.textContent = line; telemetry.append(item); }
+        content.append(telemetry);
+      }
       if (sources.includes("SIMULATED") || this.status?.simulated) {
         const label = document.createElement("p"); label.className = "mission-simulated"; label.textContent = "SIMULATED: these observations do not prove a physical rescue."; content.append(label);
       }
@@ -915,7 +922,7 @@ export class RoverExperience {
       const list = document.createElement("ul"); list.className = "mission-tracks";
       for (const entry of encounters.slice(-20).reverse()) {
         const item = document.createElement("li");
-        item.textContent = `${String(entry.cls ?? "object")} · track ${entry.id ?? "?"} · ${Math.round((Number(entry.conf) || 0) * 100)}% · ${entry.source ?? "unknown source"}`;
+        item.textContent = encounterLine(entry, report.started_at);
         const sbar = sbarLines(entry.sbar);
         if (sbar.length) {
           const note = document.createElement("p"); note.className = "mission-sbar";
@@ -926,6 +933,13 @@ export class RoverExperience {
       }
       if (!encounters.length) { const empty = document.createElement("p"); empty.textContent = "No detection encounters recorded."; content.append(empty); }
       else content.append(list);
+      const flagged = timelineLines(report);
+      if (flagged.length) {
+        const heading = document.createElement("h3"); heading.textContent = "Timeline";
+        const timeline = document.createElement("ol"); timeline.className = "mission-timeline";
+        for (const line of flagged) { const item = document.createElement("li"); item.textContent = line; timeline.append(item); }
+        content.append(heading, timeline);
+      }
       const evidence = document.createElement("div"); evidence.className = "mission-images";
       for (const event of events.filter((entry: { snapshot_url?: string }) => typeof entry.snapshot_url === "string" && /^\/mission\/snapshots\/detection-[A-Za-z0-9._-]+\.jpg$/.test(entry.snapshot_url)).slice(-6)) {
         const image = document.createElement("img"); image.src = event.snapshot_url; image.loading = "lazy";
