@@ -261,11 +261,12 @@ type StoredChunk = (ChunkMesh, [f32; 16]);
 
 /// Column-major 4x4 point transform: out[r] = m[r]x + m[r+4]y + m[r+8]z + m[r+12].
 fn xform_point(m: &[f32; 16], p: [f32; 3]) -> [f32; 3] {
+    let [x, y, z] = p.map(f64::from);
     [
-        m[0] * p[0] + m[4] * p[1] + m[8] * p[2] + m[12],
-        m[1] * p[0] + m[5] * p[1] + m[9] * p[2] + m[13],
-        m[2] * p[0] + m[6] * p[1] + m[10] * p[2] + m[14],
-    ]
+        f64::from(m[0]) * x + f64::from(m[4]) * y + f64::from(m[8]) * z + f64::from(m[12]),
+        f64::from(m[1]) * x + f64::from(m[5]) * y + f64::from(m[9]) * z + f64::from(m[13]),
+        f64::from(m[2]) * x + f64::from(m[6]) * y + f64::from(m[10]) * z + f64::from(m[14]),
+    ].map(|v| v as f32)
 }
 
 pub struct AnchorGeometry {
@@ -345,12 +346,12 @@ impl AnchorGeometry {
     }
 
     /// Apply with ownership of the mesh payload (avoids cloning chunk data).
-    pub fn apply_owned(&mut self, mut u: Update) -> bool {
-        // ARKit anchor vertices are local. Transform each replacement once,
-        // before any session/sequence/cache mutation, into sensor-world metres.
-        if let Some(mesh) = &mut u.mesh {
+    pub fn apply_owned(&mut self, u: Update) -> bool {
+        // Validate world output before state mutation, but retain anchor-local
+        // vertices; encode() applies the stored transform exactly once.
+        if let Some(mesh) = &u.mesh {
             let m = u.transform;
-            for point in &mut mesh.positions {
+            for point in &mesh.positions {
                 let [x, y, z] = point.map(f64::from);
                 let world = [
                     f64::from(m[0]) * x + f64::from(m[4]) * y + f64::from(m[8]) * z + f64::from(m[12]),
@@ -361,7 +362,6 @@ impl AnchorGeometry {
                     self.pub_lane.dropped_malformed += 1;
                     return false;
                 }
-                *point = world;
             }
         }
         if u.session != self.session || u.epoch != self.epoch {
