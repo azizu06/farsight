@@ -83,3 +83,22 @@ test("autonomyLabel describes server autonomy state", () => {
   assert.equal(autonomyLabel({ mode: "teleop", autonomy_state: "stick_override" }), "Stick override: teleop");
   assert.equal(autonomyLabel({ mode: "seek", autonomy_state: "estop", target_id: 2 }), "Autonomy stopped: e-stop");
 });
+
+test("an accepted go-to goal survives a stop/release but not a stick, cancel or another mode", () => {
+  const intent = new AutonomyIntent();
+  intent.goto();
+  assert.deepEqual(intent.fields(true), { mode: "goto" });
+  assert.deepEqual(intent.fields(false), { mode: "teleop" }, "a release never carries autonomy");
+  intent.release();
+  assert.equal(intent.mode, "goto", "view change or deadman stop keeps the server-owned goal armed");
+  assert.equal(intent.stick(0, 0.3), true);
+  assert.equal(intent.mode, "teleop");
+  intent.goto(); intent.toggleExplore();
+  assert.deepEqual(intent.fields(true), { mode: "explore" });
+  intent.release();
+  assert.equal(intent.mode, "teleop", "release still disarms Explore");
+  intent.select(2); intent.release();
+  assert.equal(intent.mode, "teleop", "release still disarms Seek");
+  intent.goto(); intent.clear();
+  assert.equal(intent.mode, "teleop");
+});

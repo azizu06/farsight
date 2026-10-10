@@ -14,6 +14,8 @@ import { DetectionCache, PACKET_FRESH_MS } from "./detection-match.js";
 import { defaultMount, loadSettings, pageStorage, saveSettings } from "./viewer-settings.js";
 import { PanSmoother } from "./pan-smoothing.js";
 import { encounterLine, summaryLines, timelineLines } from "./mission-report.js";
+import { floorHit, goalBody, navActive, navLabel, parseNav, postNav } from "./nav-view.js";
+import { NavOverlay, type Nav } from "./nav-overlay";
 
 type Box = { id?: number; cls: string; conf: number; x: number; y: number; w: number; h: number; kpts?: number[][]; down?: boolean };
 type Detections = { frame: number | string; boxes: Box[]; fps?: number; source?: string; simulated?: boolean };
@@ -22,6 +24,7 @@ type ControlStatus = {
   rover: boolean; simulated?: boolean; estop?: boolean; range_cm?: number | null;
   requires_release?: boolean; reason?: string | null; link_ms?: number | null;
   mode?: string; autonomy_state?: string; target_id?: number | null;
+  nav?: unknown;
 };
 
 /** Same-origin only: Quest talks through USB/ADB to the operator relay. */
@@ -73,6 +76,14 @@ export class RoverExperience {
   private drawnBoxes: Box[] = [];
   private raycaster = new THREE.Raycaster();
   private exploreDown = false;
+  private navOverlay = new NavOverlay();
+  private nav: Nav | null = null;
+  private navMessage = "";
+  private navMessageAt = -Infinity;
+  private navBusy = false;
+  private goalDown = false;
+  private cancelDown = false;
+  private navStatus: HTMLElement;
   private lastSendAt = 0;
   private input = { held: false, v: 0, w: 0, pan: 0 };
   private keys = new Set<string>();
@@ -141,7 +152,9 @@ export class RoverExperience {
       <p id="rover-details">Motion disabled until camera and control are fresh.</p>
       <button id="rover-hold" class="hold-button">Hold to enable · WASD to drive</button>
       <button id="rover-explore" aria-pressed="false">Explore (E)</button>
-      <p class="rover-help">Quest: hold right trigger + left stick. A: seek pointed person (else camera/map). B: explore. X: center pan. Y: scan. Left grip: start rescue drill.<span id="rover-voice-help" hidden> Hold left trigger: ask by voice (enable in Settings first).</span><br>Desktop: hold Space + WASD in camera view; click a person to seek; E explores. Stick/WASD takes back control.</p>`;
+      <button id="rover-nav-cancel">Cancel nav (C)</button>
+      <p id="rover-nav" class="rover-nav" role="status" hidden></p>
+      <p class="rover-help">Quest: hold right trigger + left stick. A: seek pointed person (else camera/map). B: explore. X: center pan. Y: scan. Left grip: start rescue drill. Map view: point at the floor, right grip sets a go-to goal; right stick click cancels nav.<span id="rover-voice-help" hidden> Hold left trigger: ask by voice (enable in Settings first).</span><br>Desktop: hold Space + WASD in camera view; click a person to seek; E explores; double-click the map floor for go-to, C cancels. Stick/WASD takes back control.</p>`;
     document.querySelector("main")!.append(panel);
     this.sourceBanner = document.createElement("div");
     this.sourceBanner.className = "source-banner"; this.sourceBanner.setAttribute("role", "status");
@@ -149,10 +162,15 @@ export class RoverExperience {
     document.querySelector("main")!.append(this.sourceBanner);
     this.message = panel.querySelector("#rover-message")!;
     this.details = panel.querySelector("#rover-details")!;
+    this.navStatus = panel.querySelector("#rover-nav")!;
     this.holdButton = panel.querySelector("#rover-hold")!;
     panel.querySelector<HTMLButtonElement>("#live-rover")!.onclick = () => this.setView("camera");
     panel.querySelector<HTMLButtonElement>("#rover-map")!.onclick = () => { this.stop("Map view: release deadman"); this.setView("3d"); };
-    panel.querySelector<HTMLButtonElement>("#rover-stop")!.onclick = () => this.stop("Stopped: release deadman");
+    panel.querySelector<HTMLButtonElement>("#rover-stop")!.onclick = () => {
+      this.stop("Stopped: release deadman");
+      if (this.autonomy.mode === "goto" || navActive(this.nav)) void this.cancelNav("Stopped: navigation cancelled");
+    };
+    panel.querySelector<HTMLButtonElement>("#rover-nav-cancel")!.onclick = () => void this.cancelNav();
     panel.querySelector<HTMLButtonElement>("#rover-explore")!.onclick = () => this.toggleExplore();
     panel.querySelector<HTMLButtonElement>("#rover-scan")!.onclick = () => void this.startScan();
     this.holdButton.onpointerdown = event => {
@@ -165,6 +183,7 @@ export class RoverExperience {
     window.addEventListener("keyup", this.keyUp);
     window.addEventListener("blur", this.blur);
     window.addEventListener("click", this.click);
+    this.renderer.domElement.addEventListener("dblclick", this.mapGoal);
     document.addEventListener("visibilitychange", this.visibility);
     document.addEventListener("keydown", this.escapeStop);
 
@@ -240,6 +259,7 @@ export class RoverExperience {
 
   private keyDown = (event: KeyboardEvent) => {
     if (/INPUT|TEXTAREA|SELECT/.test((event.target as HTMLElement)?.tagName ?? "") || event.metaKey || event.ctrlKey || event.altKey || document.querySelector("dialog[open]")) return;
+    if (event.code === "KeyC" && !event.repeat && !this.renderer.xr.isPresenting) { event.preventDefault(); void this.cancelNav(); return; }
     if (this.getView() !== "camera" || this.renderer.xr.isPresenting) return;
     const key = event.code;
     if (event.repeat && !this.keys.has(key)) return;
@@ -253,6 +273,17 @@ export class RoverExperience {
     if (this.getView() !== "camera" || this.renderer.xr.isPresenting || !(event.target instanceof HTMLCanvasElement)) return;
     const point = containPoint(event.clientX, event.clientY, this.canvas.getBoundingClientRect(), this.canvas.width, this.canvas.height);
     if (point) this.selectAt(point);
+  };
+  /** Desktop go-to: double-click the floor in the 3D or 2D map. */
+  private mapGoal = (event: MouseEvent) => {
+    if (this.renderer.xr.isPresenting || this.getView() === "camera") return;
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    this.raycaster.setFromCamera(new THREE.Vector2(((event.clientX - rect.left) / rect.width) * 2 - 1,
+      -((event.clientY - rect.top) / rect.height) * 2 + 1), this.camera);
+    const point = this.mapFloorPoint();
+    if (point) void this.setGoal(point);
+    else this.noteNav("Go-to: double-click on the floor");
   };
   private keyUp = (event: KeyboardEvent) => { this.keys.delete(event.code); };
   private blur = () => { this.keys.clear(); this.pointerHeld = false; this.stop("Window inactive: release deadman"); };
@@ -299,7 +330,8 @@ export class RoverExperience {
   private escapeStop = (event: KeyboardEvent) => { if (event.key === "Escape") this.stop("Stopped: release deadman"); };
 
   stop(reason: string) {
-    this.autonomy.clear();
+    // An accepted go-to goal stays armed (see AutonomyIntent.release); motion still needs a fresh deadman press.
+    this.autonomy.release();
     this.scanArmed = false;
     this.scanning = false;
     this.scanCompleting = false;
@@ -317,6 +349,7 @@ export class RoverExperience {
         const next = JSON.parse(event.data) as ControlStatus;
         if (this.gate.acceptStatus(next, performance.now())) {
           this.status = next;
+          this.nav = parseNav(next.nav);
           // The next held heartbeat after end_scan reports release_required before most status ticks; pollScan decides complete vs aborted.
           if (this.scanning && next.requires_release && (next.reason === "scan_finished" || next.reason === "release_required")) this.scanCompleting = true;
           if (typeof next.seq === "number" && this.sent.has(next.seq)) this.ackMs = performance.now() - this.sent.get(next.seq)!;
@@ -327,7 +360,7 @@ export class RoverExperience {
     socket.onerror = () => socket.close();
     socket.onclose = () => {
       this.gate.invalidate("Control disconnected: release deadman");
-      this.status = null;
+      this.status = null; this.nav = null;
       if (!this.stopped) this.timers.push(window.setTimeout(() => this.connectControl(), 1000));
     };
   }
@@ -430,6 +463,7 @@ export class RoverExperience {
         else this.gate.invalidate("XR tracking unavailable: release trigger");
         this.lastXRAt = -Infinity;
         this.latchButtons();
+        this.navOverlay.setReticle(null);
         // Keep the camera and stop reason visible when only a controller is lost.
         this.cockpit.visible = !!pose;
         this.cameraScreen.visible = this.xrLive;
@@ -446,6 +480,18 @@ export class RoverExperience {
       const center = !!left?.gamepad?.buttons[4]?.pressed;
       const drill = !!left?.gamepad?.buttons[1]?.pressed;
       const talk = !!left?.gamepad?.buttons[0]?.pressed;
+      // Free on the right controller: grip (squeeze) sets a go-to goal, thumbstick click cancels nav.
+      const goal = !!right?.gamepad?.buttons[1]?.pressed;
+      const cancel = !!right?.gamepad?.buttons[3]?.pressed;
+      const aim = this.xrLive ? null : this.aimFloor(frame, reference, right);
+      this.navOverlay.setReticle(aim);
+      if (goal && !this.goalDown) {
+        if (this.xrLive) this.noteNav("Go-to: press A for the map, point at the floor, then right grip");
+        else if (aim) void this.setGoal(aim);
+        else this.noteNav("Go-to: point the right controller at the floor");
+      }
+      if (cancel && !this.cancelDown) void this.cancelNav();
+      this.goalDown = goal; this.cancelDown = cancel;
       if (talk && !this.talkDown) this.talkPressed();
       else if (!talk && this.talkDown) this.voice?.pushEnd();
       this.talkDown = talk;
@@ -480,7 +526,14 @@ export class RoverExperience {
         pan: 0,
       };
     }
-    if (this.autonomy.stick(this.input.v, this.input.w)) this.dirty = true;
+    const wasGoto = this.autonomy.mode === "goto";
+    if (this.autonomy.stick(this.input.v, this.input.w)) {
+      this.dirty = true;
+      if (wasGoto) void this.cancelNav("Stick override: go-to cancelled");
+    }
+    if (!xr) this.navOverlay.setReticle(null);
+    this.navOverlay.update(this.nav, now);
+    this.navOverlay.group.visible = !(xr && this.xrLive);
     if (this.input.v || this.input.w) this.scanArmed = false;
     this.cockpit.visible = xr;
     this.cameraScreen.visible = this.xrLive;
@@ -500,6 +553,25 @@ export class RoverExperience {
   }
   /** Controller ray (or head gaze) onto the camera panel, in canvas-normalized coordinates. */
   private panelPoint(frame: XRFrame | undefined, reference: XRReferenceSpace | null, right: XRInputSource | undefined) {
+    this.aimRay(frame, reference, right);
+    this.cockpit.updateMatrixWorld(true);
+    return rayPanelPoint(this.raycaster.intersectObject(this.cameraScreen, false)[0]?.uv ?? null);
+  }
+  /** Controller ray (or head gaze) onto the map floor, in map {x, z}. */
+  private aimFloor(frame: XRFrame | undefined, reference: XRReferenceSpace | null, right: XRInputSource | undefined) {
+    this.aimRay(frame, reference, right);
+    return this.mapFloorPoint();
+  }
+  /** Where the raycaster's ray meets the nav layer's floor (y = 0 in map coordinates). */
+  private mapFloorPoint() {
+    const layer = this.navOverlay.group;
+    layer.updateWorldMatrix(true, false);
+    const inverse = layer.matrixWorld.clone().invert();
+    const origin = this.raycaster.ray.origin.clone().applyMatrix4(inverse);
+    const direction = this.raycaster.ray.direction.clone().transformDirection(inverse);
+    return floorHit(origin, direction);
+  }
+  private aimRay(frame: XRFrame | undefined, reference: XRReferenceSpace | null, right: XRInputSource | undefined) {
     let ray: XRPose | null = null;
     try { if (frame && reference && right) ray = frame.getPose(right.targetRaySpace, reference) ?? null; } catch { /* Fall back to gaze. */ }
     if (ray) {
@@ -510,8 +582,6 @@ export class RoverExperience {
       this.raycaster.ray.origin.copy(this.position);
       this.raycaster.ray.direction.set(0, 0, -1).applyQuaternion(this.quat);
     }
-    this.cockpit.updateMatrixWorld(true);
-    return rayPanelPoint(this.raycaster.intersectObject(this.cameraScreen, false)[0]?.uv ?? null);
   }
   private selectAt(point: { x: number; y: number }) {
     const box = pickTarget(this.drawnBoxes, point.x, point.y);
@@ -521,6 +591,33 @@ export class RoverExperience {
     this.dirty = true;
     return true;
   }
+  /** POST /nav/goal; only a 202 arms go-to heartbeats. The deadman still gates every motion. */
+  private async setGoal(point: { x: number; z: number }) {
+    if (this.navBusy) return;
+    this.navBusy = true;
+    const body = goalBody(point);
+    this.noteNav(`Sending go-to (${body.x.toFixed(2)}, ${body.z.toFixed(2)})…`);
+    try {
+      const result = await postNav("/nav/goal", body);
+      if (this.stopped) return;
+      if (result.nav) this.nav = result.nav;
+      if (!result.ok) { this.noteNav(`Go-to rejected: ${result.error}`); return; }
+      if (this.scanning || this.scanPending) this.stop("Scan cancelled: go-to selected");
+      this.autonomy.goto();
+      this.noteNav(this.renderer.xr.isPresenting ? "Go-to set: A for live view, then hold the right trigger" : "Go-to set: Live rover, then hold Space");
+    } finally { this.navBusy = false; }
+  }
+  /** Disarm go-to locally first (fail toward teleop), then POST /nav/cancel. */
+  private async cancelNav(reason = "Navigation cancelled") {
+    if (this.autonomy.mode === "goto") this.autonomy.clear();
+    this.dirty = true;
+    const result = await postNav("/nav/cancel");
+    if (this.stopped) return;
+    if (result.nav) this.nav = result.nav;
+    this.noteNav(result.ok ? reason : `${reason} locally; server: ${result.error}`);
+  }
+  private noteNav(message: string) { this.navMessage = message; this.navMessageAt = performance.now(); this.dirty = true; }
+  get navLayer() { return this.navOverlay.group; }
   private toggleExplore() {
     if (this.scanning || this.scanPending) this.stop("Scan cancelled: Explore selected");
     this.autonomy.toggleExplore(); this.dirty = true;
@@ -706,7 +803,7 @@ export class RoverExperience {
   }
   /** Held buttons from a lost or replaced controller act only after an observed release. */
   private latchButtons() {
-    this.toggleDown = this.exploreDown = this.recenterDown = this.scanDown = this.drillDown = this.talkDown = true;
+    this.toggleDown = this.exploreDown = this.recenterDown = this.scanDown = this.drillDown = this.talkDown = this.goalDown = this.cancelDown = true;
   }
   private createCameraTexture() {
     const texture = new THREE.CanvasTexture(this.canvas);
@@ -740,12 +837,18 @@ export class RoverExperience {
       linkMs: this.status?.link_ms, detFps: this.detections?.fps });
     const drill = this.drillLine(now);
     const intent = this.autonomy.mode === "seek" ? `Seek #${this.autonomy.targetId} armed` : this.autonomy.mode === "explore" ? "Explore armed" : "";
-    const autonomy = [intent, autonomyLabel(this.status)].filter(Boolean).join(" → ");
+    const autonomy = [this.autonomy.mode === "goto" ? "Go-to armed" : intent, autonomyLabel(this.status)].filter(Boolean).join(" → ");
+    const navText = [navLabel(this.nav), now - this.navMessageAt < 8000 ? this.navMessage : ""].filter(Boolean).join(" · ");
+    this.navStatus.hidden = !navText;
+    this.navStatus.textContent = navText;
+    this.navStatus.dataset.state = this.nav?.state ?? "none";
+    this.navStatus.dataset.backend = this.nav?.backend ?? "none";
+    this.navStatus.dataset.pathPoints = String(this.navOverlay.path.visible ? this.navOverlay.path.userData.points : 0);
     const panMode = `${this.digitalPan ? "Fixed mount · digital pan" : "Servo mount · pan"} ${Math.round(this.input.pan)}°`;
     const detail = `${link.text} · ${this.frameSource} · ${panMode} · ${this.h264Enabled ? "H.264" : "JPEG"} video ${age} · ${ack} · ${range} · ${detection}${drill ? " · " + drill : ""}${this.h264Enabled && !this.h264.displayedFrame ? " · " + this.h264.state : ""} · ${this.scanMessage}`;
     this.message.textContent = headline;
     this.message.dataset.state = moving ? "moving" : ready ? "unsafe" : "ready";
-    this.details.textContent = `${autonomy ? autonomy + " · " : ""}${detail}${this.status?.estop ? " · FORWARD BLOCKED" : ""}`;
+    this.details.textContent = `${autonomy ? autonomy + " · " : ""}${navText ? navText + " · " : ""}${detail}${this.status?.estop ? " · FORWARD BLOCKED" : ""}`;
     const exploreButton = document.querySelector<HTMLButtonElement>("#rover-explore");
     exploreButton?.setAttribute("aria-pressed", String(this.autonomy.mode === "explore"));
     this.holdButton.classList.toggle("engaged", moving);
@@ -758,7 +861,7 @@ export class RoverExperience {
     this.drillPanel.visible = drawn; this.drillHud.canvas.hidden = !drawn;
     if (drawn) this.drillTexture.needsUpdate = true;
     // Identical HUD text needs no repaint or texture upload.
-    const hudKey = [simulation, ready, headline, age, range, panMode, link.text, link.color, ack, detection, this.status?.estop, drill, autonomy, this.scanMessage, this.h264Enabled].join("|");
+    const hudKey = [simulation, ready, headline, age, range, panMode, link.text, link.color, ack, detection, this.status?.estop, drill, autonomy, navText, this.scanMessage, this.h264Enabled].join("|");
     if (hudKey === this.hudKey) return;
     this.hudKey = hudKey;
     const c = this.hudContext;
@@ -771,10 +874,9 @@ export class RoverExperience {
     c.fillText(link.text, this.hudCanvas.width - 28, 90); c.textAlign = "left";
     c.font = "24px system-ui"; c.fillStyle = "#dce5ee";
     c.fillText(`${ack} · ${detection}${this.status?.estop ? " · FORWARD BLOCKED" : ""}`, 28, 126);
-    if (drill || autonomy) { c.font = "18px system-ui"; c.fillText([autonomy, drill].filter(Boolean).join(" · "), 28, 150); }
-    const hint = "R trigger: deadman · Stick: drive · A: seek/map · B: explore · X: center · Y: scan · L grip: drill" + (this.voice?.voiceAvailable ? " · L trigger: ask" : "");
-    c.font = "22px system-ui";
-    if (c.measureText(hint).width > this.hudCanvas.width - 56) c.font = "18px system-ui";
+    if (drill || autonomy || navText) { c.font = "18px system-ui"; c.fillText([autonomy, navText, drill].filter(Boolean).join(" · ").slice(0, 110), 28, 150); }
+    const hint = "R trigger: deadman · Stick: drive · A: seek/map · B: explore · X: center · Y: scan · L grip: drill · R grip: go-to (map) · R stick: cancel nav" + (this.voice?.voiceAvailable ? " · L trigger: ask" : "");
+    for (const size of [22, 18, 16, 14]) { c.font = `${size}px system-ui`; if (c.measureText(hint).width <= this.hudCanvas.width - 56) break; }
     c.fillText(hint, 28, 170);
     c.fillText(this.scanMessage.slice(0, 84), 28, 202);
     this.hudTexture.needsUpdate = true;
@@ -981,7 +1083,8 @@ export class RoverExperience {
     this.timers.forEach(timer => { window.clearInterval(timer); window.clearTimeout(timer); });
     this.socket?.close(); this.detectionsSocket?.close(); this.request?.abort(); this.h264.stop(); this.voice?.dispose();
     window.removeEventListener("keydown", this.keyDown); window.removeEventListener("keyup", this.keyUp);
-    window.removeEventListener("blur", this.blur); window.removeEventListener("click", this.click); document.removeEventListener("visibilitychange", this.visibility);
+    window.removeEventListener("blur", this.blur); window.removeEventListener("click", this.click);
+    this.renderer.domElement.removeEventListener("dblclick", this.mapGoal); this.navOverlay.dispose(); document.removeEventListener("visibilitychange", this.visibility);
     document.removeEventListener("keydown", this.escapeStop);
     this.cameraTexture.dispose(); this.hudTexture.dispose(); this.drillTexture.dispose(); this.drillHud.canvas.remove();
     this.bannerTexture.dispose(); this.stopTexture.dispose(); this.voiceTexture.dispose(); this.sourceBanner.remove();
