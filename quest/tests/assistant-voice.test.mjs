@@ -256,3 +256,20 @@ test("in-VR confirmation acts once on a fresh proposal only", () => {
     assert.deepEqual(f.confirmed, [{ type: "scan" }]);
   } finally { f.cleanup(); }
 });
+
+test("without a rover Whisper the voice controls hide and the left trigger starts nothing", async () => {
+  const f = fixture();
+  try {
+    f.voice.setAvailable(false);
+    assert.equal(f.voice.voiceAvailable, false);
+    for (const id of ["#voice-record", "#voice-cancel", "#voice-vr-enable"]) assert.equal(f.buttons.get(id).hidden, true, id);
+    f.settings.open = false;
+    assert.equal(f.voice.pushStart(), false);
+    assert.equal(f.voice.phase, "idle");   // no VOICE ERROR panel
+    assert.equal(f.starts.length, 0);
+    f.voice.restoreVR();
+    assert.equal(f.permissionCalls(), 0);   // a saved voice=1 never opens the mic either
+    f.voice.setAvailable(true);
+    for (const id of ["#voice-record", "#voice-cancel", "#voice-vr-enable"]) assert.equal(f.buttons.get(id).hidden, false, id);
+  } finally { f.cleanup(); }
+});

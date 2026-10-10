@@ -16,7 +16,7 @@ fn fixture() -> Fixture {
     let now = Arc::new(Mutex::new(10.0f64));
     let n = now.clone();
     let clock: Clock = Arc::new(move || *n.lock().unwrap());
-    let state = ControlState::new(false, 0, 100, None, None, Some(clock)).unwrap();
+    let state = ControlState::new(false, 0, 100, None, None, Some(clock), None, false, true).unwrap();
     state.set_connected(true, None);
     let session = state.begin().unwrap();
     state.update_range(100.0);
@@ -148,9 +148,9 @@ fn pwm_scaling() {
 #[test]
 fn pwm_validation_and_floor() {
     for (floor, ceiling) in [(-1, 100), (100, 100), (101, 100), (0, 256), (0, 0)] {
-        assert!(ControlState::new(false, floor, ceiling, None, None, None).is_err());
+        assert!(ControlState::new(false, floor, ceiling, None, None, None, None, false, true).is_err());
     }
-    let state = ControlState::new(false, 70, 110, None, None, None).unwrap();
+    let state = ControlState::new(false, 70, 110, None, None, None, None, false, true).unwrap();
     let status = state.status(false);
     assert_eq!(status["min_pwm"], 70);
     assert_eq!(status["max_pwm"], 110);
@@ -173,6 +173,8 @@ fn camera_guard() {
         Some(Arc::new(move || *r.lock().unwrap())),
         None,
         Some(Arc::new(move || *n.lock().unwrap())),
+        None,
+        false, true,
     ).unwrap();
     state.set_connected(true, None);
     let session = state.begin().unwrap();
@@ -243,4 +245,111 @@ fn scan_race_teleop_heartbeat_after_scan_mode_still_cancels() {
     // ...then a teleop heartbeat is a real override again.
     f.send(json!({"v": 0.0, "w": 0.0, "permit": permit.clone()}));
     assert!(f.state.scan_command(Some(token), 0.3, 0.0).is_err());
+}
+
+// ---- ControlModeTests (9a3b8b8): velocity + calibrate drive modes ----
+
+fn make_profile() -> farsight_server::drive_profile::DriveProfile {
+    farsight_server::drive_profile::DriveProfile::from_dict(&json!({
+        "version": 1,
+        "max_pwm": 100,
+        "min_pwm": {"left": 24, "right": 30},
+        "linear": {"pwm": [40, 60, 80, 100], "mps": [0.16, 0.29, 0.42, 0.54]},
+        "angular": {"pwm": [40, 100], "radps": [1.4, 4.7]},
+        "half_track_m": 0.115,
+        "trim": {"left": 1.03, "right": 0.97},
+        "camera_yaw_offset_rad": -0.35,
+    })).unwrap()
+}
+
+fn mode_fixture(
+    drive_profile: Option<farsight_server::drive_profile::DriveProfile>,
+    allow_calibration: bool,
+    min_pwm: i64,
+) -> Fixture {
+    let now = Arc::new(Mutex::new(10.0f64));
+    let n = now.clone();
+    let clock: Clock = Arc::new(move || *n.lock().unwrap());
+    let state = ControlState::new(
+        false, min_pwm, 100, None, None, Some(clock), drive_profile, allow_calibration, true,
+    ).unwrap();
+    state.set_connected(true, None);
+    let session = state.begin().unwrap();
+    state.update_range(150.0);
+    let f = Fixture { state, session, seq: std::cell::Cell::new(0), now };
+    f.send(json!({"deadman": false, "v": 0.0, "w": 0.0, "pan": 0}));
+    f
+}
+
+#[test]
+fn drive_default_rejects_new_modes() {
+    let f = mode_fixture(None, false, 0);
+    assert!(!f.send(json!({"mode": "velocity", "v_mps": 0.2, "w_radps": 0.0})));
+    assert_eq!(f.state.inner.lock().unwrap().reason, "unsupported_mode");
+    assert_eq!(f.output(), (0, 0));
+    f.send(json!({"deadman": false}));
+    assert!(!f.send(json!({"mode": "calibrate", "left_pwm": 40, "right_pwm": 40})));
+    assert_eq!(f.state.inner.lock().unwrap().reason, "unsupported_mode");
+    let status = f.state.status(false);
+    assert_eq!(status["drive_profile"], false);
+    assert_eq!(status["calibration_allowed"], false);
+    assert_eq!(status["drive_mode"], "normalized");
+}
+
+#[test]
+fn drive_teleop_pwm_identical_with_profile_loaded() {
+    let f = mode_fixture(Some(make_profile()), false, 0);
+    assert!(f.send(json!({"v": 0.5, "w": 0.0})));
+    assert_eq!(f.output(), (50, 50));
+}
+
+#[test]
+fn drive_velocity_mode_uses_profile() {
+    let profile = make_profile();
+    let expected = profile.wheel_pwm(0.3, 0.4, Some(100));
+    let f = mode_fixture(Some(profile), false, 0);
+    assert!(f.send(json!({"mode": "velocity", "v_mps": 0.3, "w_radps": 0.4})));
+    let (left, right, pan) = f.state.output();
+    assert_eq!((left, right), expected);
+    assert_eq!(pan, 90);
+    assert_eq!(f.state.status(false)["drive_mode"], "velocity");
+}
+
+#[test]
+fn drive_velocity_keeps_every_safety_gate() {
+    let f = mode_fixture(Some(make_profile()), false, 0);
+    assert!(f.send(json!({"mode": "velocity", "v_mps": 0.3, "w_radps": 0.0})));
+    f.state.update_range(10.0);
+    assert_eq!(f.output(), (0, 0));
+    assert_eq!(f.state.inner.lock().unwrap().reason, "forward_blocked");
+    f.state.update_range(150.0);
+    *f.now.lock().unwrap() += 0.3; // lease expired
+    assert_eq!(f.output(), (0, 0));
+    assert!(f.state.inner.lock().unwrap().requires_release);
+    f.send(json!({"deadman": false}));
+    // Non-finite / out-of-range velocities rejected like any bad command.
+    assert!(!f.send(json!({"mode": "velocity", "v_mps": f64::NAN, "w_radps": 0.0})));
+    f.send(json!({"deadman": false}));
+    assert!(!f.send(json!({"mode": "velocity", "v_mps": 9.0, "w_radps": 0.0})));
+}
+
+#[test]
+fn drive_velocity_spin_not_blocked_by_missing_range() {
+    let f = mode_fixture(Some(make_profile()), false, 0);
+    f.state.update_range(0.0); // clears range_cm like Python's `state.range_cm = None`
+    assert!(f.send(json!({"mode": "velocity", "v_mps": 0.0, "w_radps": 1.0})));
+    let (left, right, _) = f.state.output();
+    assert!(left < 0);
+    assert!(right > 0);
+}
+
+#[test]
+fn drive_calibrate_raw_pwm_and_bounds() {
+    let f = mode_fixture(None, true, 20);
+    assert!(f.send(json!({"mode": "calibrate", "left_pwm": 33, "right_pwm": 0})));
+    // min_pwm floor does not rewrite raw values.
+    assert_eq!(f.output(), (33, 0));
+    assert_eq!(f.state.status(false)["drive_mode"], "calibrate");
+    assert!(!f.send(json!({"mode": "calibrate", "left_pwm": 101, "right_pwm": 0})));
+    assert_eq!(f.output(), (0, 0));
 }

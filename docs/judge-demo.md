@@ -92,7 +92,7 @@ Do the cold boot in [demo-checklist.md](demo-checklist.md) until `tools.ready` p
 | **Left X** | Centre pan |
 | **Left Y** (with trigger held, sticks centred) | Camera-only 3D scan |
 | **Left grip** | Start the 90 s rescue drill |
-| **Left trigger (hold)** | Ask the local assistant by voice; release to send. Enable in Settings first. Confirms a pending proposal |
+| **Left trigger (hold)** | Only when the voice services are up (`/health` `assistant.whisper`): ask the local assistant by voice; release to send. Enable in Settings first. Without Whisper the voice controls stay hidden and the trigger only confirms a pending proposal |
 | Any stick input during Seek/Explore | Takes over; autonomy stays off until trigger release |
 
 `quest/README.md` and `README.md` match this table; `quest/src/rover.ts` stays authoritative,
@@ -115,7 +115,7 @@ Cue the spotter, not the clock: if Seek is slow, extend that beat and drop 1:05-
 ### Say these limits out loud (one sentence each, no apologies)
 
 - Counts are **person tracks / encounters**, not verified distinct people.
-- Pose "down" is a geometric heuristic on keypoints, not a medical assessment. SBAR text is a model draft, not triage.
+- Pose "down" is a geometric heuristic on keypoints, not a medical assessment. The SBAR note is a template (or a local-model draft when a vision model runs), not triage.
 - Seek arrival is a **software bound** from the front ultrasonic (nearest obstacle, not necessarily the person), not an accuracy claim.
 - Video age on the HUD is receipt-to-display software age, **not** measured camera-to-eye latency.
 - Remote driving needs the cellular/Tailscale link; models run offline, the *link* does not.
@@ -129,7 +129,7 @@ Cue the spotter, not the clock: if Seek is slow, extend that beat and drop 1:05-
 | **Phone LiDAR map** | Pro iPhone capture app to `/phone`; show the 3D map | Needs a LiDAR iPhone paired and routed; an ordinary iPhone gives RGB only |
 | **Rescue drill** | **Left grip**; 90 s timer; faces held in view 1 s count as found; route-home summary | Faces model loaded; real people as victims; reports "observed face tracks" |
 | **Speak** | Settings, phrase picker, Say EN / Say ES | USB speaker verified; otherwise the browser plays it and says so |
-| **Voice ask** | Settings, Ask by voice, approve mic; or Enable in-VR voice, then hold **left trigger** in VR | Mic, permission and in-headset playback checked on the physical Quest (push-to-talk is desktop/synthetic-XR tested only) |
+| **Voice ask** | Settings, Ask by voice, approve mic; or Enable in-VR voice, then hold **left trigger** in VR | Only when the voice services are up (`/health` `assistant.whisper` true; otherwise the controls are hidden). Mic, permission and in-headset playback checked on the physical Quest (push-to-talk is desktop/synthetic-XR tested only) |
 
 ## What not to attempt live
 

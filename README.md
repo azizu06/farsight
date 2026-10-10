@@ -8,8 +8,10 @@ Optional camera-only room snapshot: [scan setup, model contract and local eviden
 
 See, steer, and search through a rover's camera from a Quest 2. The Jetson Orin
 Nano runs perception, motor safety, and mission recording. A MacBook serves the
-Quest app over USB; two USB-tethered phones provide the cellular connection to
-the freely moving rover. Venue Wi-Fi is unnecessary.
+Quest app over USB. The confirmed [phone-owned cellular relay](docs/phone-relay.md)
+connects the two iPhones, with local USB bridges to the computers; implementation
+and hardware qualification are in progress. The earlier computer-side
+Tailscale/USB-tether path remains a fallback. Venue Wi-Fi is not part of the design.
 
 The software includes JPEG/H.264 video, trigger/stick driving, servo or digital
 pan, person/pose/optional face detection, rescue drills, mission reports, and an
@@ -66,7 +68,7 @@ First-time Jetson setup, from the laptop to a green `/health`, is the ordered ru
 ```sh
 python3 -m tools.export_detector --weights yolo11n.pt
 python3 -m tools.export_detector --weights yolo11n-pose.pt
-python3 -m tools.fetch_models                  # Piper English + Spanish voices, face model, whisper (--groups vlm for Qwen2.5-VL)
+python3 -m tools.fetch_models                  # Piper English + Spanish voices, face model, whisper (--groups vlm-qwen3 for the Qwen3-VL-2B assistant model)
 bash tools/push_models.sh USER@JETSON
 ```
 
@@ -92,8 +94,8 @@ HTTPS upstream is supported with certificate verification and `--ca-file`.
 Open `http://localhost:8080` in Quest Browser. Right trigger is the deadman and the
 left stick drives. Right A seeks the person under the controller ray (otherwise it
 toggles camera/map), right B toggles Explore, left X centers pan, left Y scans,
-left grip starts the rescue drill, and the held left trigger asks the local
-assistant by voice. The [Quest controls](quest/README.md#controls) are
+left grip starts the rescue drill, and the left trigger confirms a pending
+assistant proposal (it asks by voice only when the rover has a Whisper model). The [Quest controls](quest/README.md#controls) are
 authoritative. Choose digital look-around for a fixed camera; servo pan requires
 a working camera mount.
 

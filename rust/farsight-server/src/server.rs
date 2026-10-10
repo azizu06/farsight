@@ -91,6 +91,9 @@ pub fn build_state(
     video_bitrate: u32,
     record: bool,
     replay: Option<PathBuf>,
+    drive_profile: Option<crate::drive_profile::DriveProfile>,
+    allow_calibration: bool,
+    proximity_stop: bool,
 ) -> Arc<AppState> {
     if replay.is_some()
         && (serial_port.is_some() || camera_device.is_some() || demo || simulate_rover || record)
@@ -122,16 +125,22 @@ pub fn build_state(
     ));
     let cam = camera.clone();
     let perc = perception.clone();
+    // Physical serial requires verified drive eligibility (camera_drive_ready);
+    // simulated/USB-free setups keep plain freshness (camera.py parity).
+    let drive_key = if serial_port.is_some() { "camera_drive_ready" } else { "camera" };
     let control = Arc::new(
         ControlState::new(
             simulate_rover,
             min_pwm,
             max_pwm,
             Some(Arc::new(move || {
-                cam.status()["camera"].as_bool().unwrap_or(false)
+                cam.status()[drive_key].as_bool().unwrap_or(false)
             })),
             Some(Arc::new(move || perc.snapshot())),
             None,
+            drive_profile,
+            allow_calibration,
+            proximity_stop,
         )
         .expect("PWM bounds"),
     );
@@ -150,6 +159,14 @@ pub fn build_state(
         let m2 = mission.clone();
         *control.on_output.lock().unwrap() =
             Some(Box::new(move |v, w, blocked| m2.drill_motion(v, w, blocked)));
+    }
+    // #79/#81: /mission/drill carries the face-detector status, and the face
+    // pass only costs CPU while a drill is running.
+    {
+        let p = perception.clone();
+        mission.set_face_status(Box::new(move || p.face_status()));
+        let m3 = mission.clone();
+        perception.set_face_wanted(Box::new(move || m3.drill_score.running()));
     }
     let control_on_status: Option<Arc<dyn Fn(&Value) + Send + Sync>> = if record {
         let m3 = mission.clone();
@@ -234,6 +251,24 @@ pub fn start_services(state: &Arc<AppState>) {
     state.video.clone().start();
     state.perception.clone().start();
     state.triage.clone().start();
+    {
+        // sample_mission: read-only control telemetry at <=10 Hz; never
+        // issues permits or commands. Replays sample the ReplayControl
+        // read-only packet, same as Python.
+        let mission = state.mission.clone();
+        let control = state.control.clone();
+        let replay_control = state.replay_control.clone();
+        let camera = state.camera.clone();
+        std::thread::spawn(move || loop {
+            let status = replay_control
+                .as_ref()
+                .map(|rc| rc.status())
+                .unwrap_or_else(|| control.status(false));
+            let cam = camera.status()["camera"].as_bool();
+            mission.observe_control(&status, cam);
+            std::thread::sleep(Duration::from_millis(100));
+        });
+    }
     if let Some(session) = &state.replay {
         let session = session.clone();
         std::thread::spawn(move || loop {
@@ -303,6 +338,8 @@ pub fn start_services(state: &Arc<AppState>) {
                     jpeg: frame.jpeg.clone(),
                     received: captured,
                     frame_id,
+                    capture_verified: false,
+                    capture_binding: None,
                     source: "SIMULATED".into(),
                 }));
                 if captured >= next_fusion
@@ -636,6 +673,31 @@ async fn mission_triage(State(s): State<Arc<AppState>>, Path(key): Path<String>)
         }
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
+}
+
+/// The nav object when no planner is attached (docs/interfaces.md "Optional
+/// navigation status"): `state: "unavailable"`, everything else empty.
+fn nav_unavailable() -> Value {
+    json!({"state": "unavailable", "mode": Value::Null, "goal": Value::Null,
+           "path": [], "frontiers": [], "backend": Value::Null,
+           "message": "No navigation planner (Nav2 bridge not running)"})
+}
+
+/// POST /nav/goal — 409 until a Nav2/fallback planner exists (the contract
+/// refuses rather than silently ignoring a go-to request).
+async fn nav_goal() -> Response {
+    (
+        StatusCode::CONFLICT,
+        Json(json!({"nav": nav_unavailable(), "message": "No navigation planner (Nav2 bridge not running)"})),
+    )
+        .into_response()
+}
+
+/// POST /nav/cancel — nothing armed; returns the nav object.
+async fn nav_cancel() -> Response {
+    Json(json!({"state": "idle", "mode": Value::Null, "goal": Value::Null,
+                "path": [], "frontiers": [], "backend": Value::Null, "message": ""}))
+        .into_response()
 }
 
 async fn speak_options(State(s): State<Arc<AppState>>) -> Json<Value> {
@@ -1024,6 +1086,9 @@ async fn handle_ws_phone(socket: WebSocket, s: Arc<AppState>) {
             .await;
         return;
     }
+    let mut permits_opt: Option<Arc<crate::capture_permits::CapturePermits>> = None;
+    let mut writer_opt: Option<tokio::task::JoinHandle<()>> = None;
+    let mut out_tx_opt: Option<tokio::sync::mpsc::Sender<Message>> = None;
     let result = async {
         let hello_text = match tokio::time::timeout(Duration::from_secs(10), rx.next()).await {
             Ok(Some(Ok(Message::Text(t)))) => t,
@@ -1033,9 +1098,52 @@ async fn handle_ws_phone(socket: WebSocket, s: Arc<AppState>) {
         if !hello.supports_scene_depth {
             return Err("This mapper requires measured scene depth".into());
         }
+        let permits = Arc::new(crate::capture_permits::CapturePermits::new(
+            &hello.session_id,
+            hello.map_epoch,
+            hello.supports_capture_permits,
+        ));
         let identity: phone::Identity = (hello.session_id.clone(), hello.map_epoch);
         s.camera.set_phone_rgb(None);
         s.mapping.start_session(identity.clone(), hello.device.clone());
+        // Outbound traffic goes through one writer task: the permit issuer
+        // ticks at 20 Hz (capture_permits.run parity; issue() returns None
+        // when the client did not opt in), the handler sends closes/acks.
+        let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<Message>(16);
+        let permits_writer = permits.clone();
+        let writer = tokio::spawn(async move {
+            let mut tick =
+                tokio::time::interval(Duration::from_secs_f64(crate::capture_permits::PERIOD));
+            loop {
+                tokio::select! {
+                    _ = tick.tick() => {
+                        if let Some(packet) = permits_writer.issue() {
+                            if tokio::time::timeout(
+                                Duration::from_millis(100),
+                                tx.send(Message::Text(packet.to_string().into())),
+                            )
+                            .await
+                            .map(|r| r.is_err())
+                            .unwrap_or(true)
+                            {
+                                return;
+                            }
+                        }
+                    }
+                    msg = out_rx.recv() => {
+                        match msg {
+                            Some(m) => {
+                                if tx.send(m).await.is_err() { return; }
+                            }
+                            None => return,
+                        }
+                    }
+                }
+            }
+        });
+        out_tx_opt = Some(out_tx);
+        writer_opt = Some(writer);
+        permits_opt = Some(permits);
         // Frame queue of depth 1, processed on a blocking worker thread.
         let (qtx, mut qrx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
         let mapping = s.mapping.clone();
@@ -1081,13 +1189,21 @@ async fn handle_ws_phone(socket: WebSocket, s: Arc<AppState>) {
         Ok(())
     }
     .await;
+    if let Some(permits) = &permits_opt {
+        permits.close();
+    }
     if let Err(reason) = result {
-        let _ = tx
-            .send(Message::Close(Some(axum::extract::ws::CloseFrame {
-                code: 1008,
-                reason: reason.chars().take(100).collect::<String>().into(),
-            })))
-            .await;
+        if let Some(out_tx) = &out_tx_opt {
+            let _ = out_tx
+                .send(Message::Close(Some(axum::extract::ws::CloseFrame {
+                    code: 1008,
+                    reason: reason.chars().take(100).collect::<String>().into(),
+                })))
+                .await;
+        }
+    }
+    if let Some(writer) = writer_opt {
+        writer.abort();
     }
     *s.phone_owner.lock().unwrap() = false;
     s.mapping.disconnect();
@@ -1117,34 +1233,90 @@ async fn handle_ws_phone_rgb(socket: WebSocket, s: Arc<AppState>) {
             .await;
         return;
     }
+    let mut permits_opt: Option<Arc<crate::capture_permits::CapturePermits>> = None;
+    let mut writer_opt: Option<tokio::task::JoinHandle<()>> = None;
+    let mut out_tx_opt: Option<tokio::sync::mpsc::Sender<Message>> = None;
     let result = async {
         let hello_text = match tokio::time::timeout(Duration::from_secs(10), rx.next()).await {
             Ok(Some(Ok(Message::Text(t)))) => t,
             _ => return Err("Expected phone hello".to_string()),
         };
         let hello = Hello::parse(&hello_text)?;
+        let permits = Arc::new(crate::capture_permits::CapturePermits::new(
+            &hello.session_id,
+            hello.map_epoch,
+            hello.supports_capture_permits,
+        ));
         s.camera.set_phone_rgb(None);
+        // One writer task owns tx: the 20 Hz permit issuer ticks alongside
+        // frame receipt (capture_permits.run parity).
+        let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<Message>(16);
+        let permits_writer = permits.clone();
+        let writer = tokio::spawn(async move {
+            let mut tick =
+                tokio::time::interval(Duration::from_secs_f64(crate::capture_permits::PERIOD));
+            loop {
+                tokio::select! {
+                    _ = tick.tick() => {
+                        if let Some(packet) = permits_writer.issue() {
+                            if tokio::time::timeout(
+                                Duration::from_millis(100),
+                                tx.send(Message::Text(packet.to_string().into())),
+                            )
+                            .await
+                            .map(|r| r.is_err())
+                            .unwrap_or(true)
+                            {
+                                return;
+                            }
+                        }
+                    }
+                    msg = out_rx.recv() => {
+                        match msg {
+                            Some(m) => {
+                                if tx.send(m).await.is_err() { return; }
+                            }
+                            None => return,
+                        }
+                    }
+                }
+            }
+        });
+        out_tx_opt = Some(out_tx);
+        writer_opt = Some(writer);
+        permits_opt = Some(permits.clone());
         let mut previous: i64 = -1;
         while let Some(Ok(message)) = rx.next().await {
             if let Message::Binary(packet) = message {
                 let packet = packet.to_vec();
                 let cam = s.camera.clone();
                 let session = hello.session_id.clone();
-                previous = tokio::task::spawn_blocking(move || cam.accept_phone_rgb(&packet, &session, previous))
-                    .await
-                    .map_err(|_| "worker failed".to_string())??;
+                let permits_ref = permits.clone();
+                previous = tokio::task::spawn_blocking(move || {
+                    cam.accept_phone_rgb(&packet, &session, previous, Some(&permits_ref))
+                })
+                .await
+                .map_err(|_| "worker failed".to_string())??;
             }
         }
         Ok(())
     }
     .await;
+    if let Some(permits) = &permits_opt {
+        permits.close();
+    }
     if let Err(reason) = result {
-        let _ = tx
-            .send(Message::Close(Some(axum::extract::ws::CloseFrame {
-                code: 1008,
-                reason: reason.chars().take(100).collect::<String>().into(),
-            })))
-            .await;
+        if let Some(out_tx) = &out_tx_opt {
+            let _ = out_tx
+                .send(Message::Close(Some(axum::extract::ws::CloseFrame {
+                    code: 1008,
+                    reason: reason.chars().take(100).collect::<String>().into(),
+                })))
+                .await;
+        }
+    }
+    if let Some(writer) = writer_opt {
+        writer.abort();
     }
     *s.phone_owner.lock().unwrap() = false;
 }
@@ -1183,7 +1355,9 @@ pub fn router(state: Arc<AppState>, dist: Option<PathBuf>) -> Router {
         .route("/ask", post(ask))
         .route("/speak", get(speak_options))
         .route("/speak", post(speak))
-        .route("/tts/{name}", get(tts));
+        .route("/tts/{name}", get(tts))
+        .route("/nav/goal", post(nav_goal))
+        .route("/nav/cancel", post(nav_cancel));
     let app = if let Some(dist) = dist {
         if dist.is_dir() {
             app.fallback_service(ServeDir::new(dist).append_index_html_on_directories(true))

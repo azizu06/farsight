@@ -1,14 +1,19 @@
 # Interfaces
 
-The contract that lets four people build in parallel. Change it only in a PR that
-every affected owner has seen.
+Coordinate contract changes with affected owners on the agent message board.
+Direct commits to main follow the current team workflow.
 
 ```
 Quest 2 (WebXR, three.js)
    |  http://localhost:8080 via USB ADB reverse (secure origin on the headset)
    v
 MacBook operator relay (tools/operator_relay.py, serves the Quest app, proxies HTTP + WebSocket)
-   |  Tailscale over two USB-tethered phones (HTTP inside the tailnet, or HTTPS if the service has TLS)
+   |  localhost:18443 -> USB-only iproxy
+   v
+Operator iPhone localhost:8081 -> native phone Tailscale over cellular
+   |
+   v
+Rover iPhone Tailscale IP:8081 -> fixed local USB upstream
    v
 Jetson Orin Nano (on the rover)  -- the brain
    camera -> TensorRT YOLO -> detections
@@ -19,11 +24,14 @@ Jetson Orin Nano (on the rover)  -- the brain
 Arduino Uno (ELEGOO V4 board) -> motors, ultrasonic (pan servo optional; the phone camera is fixed, look-around is digital)
 ```
 
-The current rover service runs on the Jetson at port `8443` (HTTP inside
-Tailscale or configured HTTPS). The MacBook serves the Quest app and proxies
+The confirmed phone-owned relay is being implemented and is not yet hardware
+qualified; see [phone relay](phone-relay.md). The rover service runs on the
+Jetson at port `8443`. The MacBook serves the Quest app and proxies
 HTTP/WebSockets on `localhost:8080`; Quest accesses it through USB ADB reverse.
-Two USB-tethered phones supply the cellular tunnel. The private LAN is an
-alternative, not a venue-network dependency. `tools.demo --simulate` launches
+The iPhones own the cellular tunnel; raw rover capture stays on local USB.
+The earlier computer-side Tailscale/USB-tether path remains a fallback, whose
+operator tether has been intermittent. Neither path depends on venue Wi-Fi.
+`tools.demo --simulate` launches
 explicit ray-cast camera/map and virtual rover sources. See
 [transport setup](transport-setup.md) and [native phone capture](../ios/README.md).
 
@@ -62,10 +70,43 @@ null and the primary detector keeps running) and is null otherwise. Replay serve
 omit both. The Quest drill HUD and the settings drill line show "No face model:
 victims cannot be found" when `face_detector` is false; absent means no warning.
 
-Camera age is receiver receipt age adjusted by reported producer encoding time
-and server queue/decode delay. It does not measure pre-callback sensor exposure
-or the phone-to-Jetson transit. Measure physical camera-to-display latency on
-the actual rig; never advertise this metadata as that full measurement.
+Legacy camera age is receiver receipt age adjusted by reported producer encoding
+time and server queue/decode delay. It excludes pre-callback exposure and transit.
+Native verified RGB instead uses the earlier of receiver token issuance and
+adjusted receipt, giving a conservative capture-age bound without synchronizing
+phone and server clocks. Neither value measures camera-to-display latency.
+
+### Native capture freshness
+
+Both phone WebSocket routes accept optional hello `supports_capture_permits:true`.
+The server pipelines an unpaced `capture_permit` every 50 ms:
+`{type:"capture_permit",version:1,session_id,map_epoch,token,valid_for_ms:250}`.
+Tokens belong to one socket/session/epoch, expire after 250 ms on the server
+monotonic clock and are revoked on disconnect. At most eight are retained.
+
+Native RGB converts the actual AVCapture sample timestamp into the Core Media
+host clock and captures an exposure strictly after receiving a current token.
+Its frame header echoes `capture_permit`, `capture_permit_received_t`,
+`capture_clock:"avcapture_sync_to_host"`, `capture_clock_verified:true` and
+`capture_bound:true`; `t_capture` is the converted sensor timestamp. The two
+phone times share a clock; neither is compared to server time. Verification
+requires a live matching token and valid finite, ordered phone timestamps.
+The trusted native producer must enforce exposure ordering and sensor freshness;
+these fields are not authentication or sensor attestation.
+
+Optional health fields `camera_capture_verified` and `camera_drive_ready`
+separate verified physical-driving eligibility from `camera` viewing freshness.
+Optional `camera_capture_diagnostics` contains bounded producer observations:
+`clock`, `t_capture`, `callback_host_t`, `sensor_timestamp_raw_t`,
+`sensor_timestamp_host_t`, `sensor_host_delta_ms`, and `sensor_age_ms` when
+provided as finite numbers. It excludes tokens and device identifiers. These
+observations support on-device qualification; numerical clock alignment alone
+does not prove a documented shared clock or change drive eligibility.
+Physical serial control requires drive eligibility. Legacy/unverified RGB and
+ARKit RGB-D remain viewable and mappable, but do not qualify physical driving.
+ARKit exposure-clock qualification remains a hardware task; measured LiDAR plus
+driving is not yet qualified. UVC and explicit simulation/replay behavior stay
+as previously defined.
 
 ## WebSocket `/ws/detections` (Jetson -> Quest), JSON, every inference
 
@@ -109,6 +150,29 @@ Optional pose fields (YOLO11-pose), present when the detector is a pose model:
 - `video_age_ms` must be finite and at most 500 ms; `video_fresh` must be true.
   The server independently requires a fresh camera. Source loss stops all
   motion. Client decoded/drawn freshness also stops when the display stalls.
+
+### Optional drive-profile modes (`velocity`, `calibrate`)
+
+Both are **off by default**; an unconfigured server answers them with
+`reason: "unsupported_mode"` and teleop/Explore/Seek are untouched. They use the
+same session, ordered `seq`, server permit, held deadman, fresh-video, camera,
+lease and forward-range gates as every other mode. `/control/status` and
+`/ws/control` status gain `drive_profile`, `calibration_allowed` and
+`drive_mode` (`normalized`, `velocity` or `calibrate`).
+
+- `mode: "velocity"` needs `python -m jetson.server --drive-profile FILE`
+  (written by `tools/calibrate_drive.py`). Send `v_mps` (forward, |v| <= 5) and
+  `w_radps` (**counter-clockwise positive, ROS `cmd_vel` sign**, |w| <= 10) in
+  place of `v`/`w`. The profile maps them to left/right PWM (per-side floor, trim,
+  measured curves) and saturates keeping curvature; `--max-pwm` still caps. Only
+  `v_mps > 0` is held by the ultrasonic range stop. This is the entry for the
+  ROS 2 bridge's Nav2 `cmd_vel`.
+- `mode: "calibrate"` needs `--allow-calibration`. Send integer `left_pwm` and
+  `right_pwm` (|x| <= `max_pwm`), applied raw. Used only by the calibration tool;
+  a stationary spin or reverse is not range-stopped, any positive net forward
+  command is. `camera_yaw_offset_rad` in the profile is the angle from the camera
+  forward axis to the rover's travel direction (+ counter-clockwise), for the
+  bridge's `base_link`->`camera_link` yaw. See [drive calibration](drive-calibration.md).
 
 ### Optional Explore / Seek extension
 
@@ -169,58 +233,58 @@ proximity stop is on, the default).
 Camera/link failure stops all motion regardless. `link_ms` is permit age at command arrival; the browser's acknowledged
 sequence RTT is a different measurement. Optional autonomy fields follow below.
 
-### Optional navigation extension: Nav2, go-to-point, `nav` status
+### Optional navigation status and go-to goals (Nav2)
 
-Opt-in: the server only navigates with `--nav2` (`FARSIGHT_NAV2=1`) and the ROS 2
-stack from [navigation.md](navigation.md) running on the Jetson. Without the flag,
-Explore/Seek are exactly the reactive policy above, `nav` is absent from status
-and `/health`, `POST /nav/goal` answers 409 and `POST /nav/cancel` returns an
+Opt-in: the Python server only navigates with `--nav2` (`FARSIGHT_NAV2=1`) and the
+ROS 2 stack from [navigation.md](navigation.md) running on the Jetson. Without the
+flag, Explore/Seek are exactly the reactive policy above, `nav` is absent from
+status and `/health`, `POST /nav/goal` answers 409 and `POST /nav/cancel` returns an
 `idle` nav object with `backend: null` (the Rust server answers the same way).
 
-- **`mode: "goto"`** on `/ws/control`: accepted like `explore`/`seek` (same session,
-  ordered sequence, server-issued permit, held deadman and fresh-video checks; any
-  nonzero `v`/`w` latches stick override). It needs a goal from `POST /nav/goal`.
-  After a 202 the viewer sends held heartbeats with `mode: "goto"`. As with Scan, a
-  zero-stick `teleop` heartbeat whose permit was issued before the goal was set
-  counts as `goto` (the POST and the socket travel separately); a newer `teleop`
-  heartbeat cancels. Release, override, cancel or another mode ends go-to-point.
-- **`POST /nav/goal`** `{"x": m, "z": m}` in voxel-map world coordinates (the same
-  frame as `/map/points.bin`; optional `session_id` + `permit` are checked if sent).
-  Replies **202** with the `nav` object below. **409** `{"nav": <nav object>,
-  "message": reason}` when the Nav2 backend is unavailable, when no live operator
-  permit is held (deadman not held, release required, camera stale), or during a
-  scan. **422** for non-finite values.
-- **`POST /nav/cancel`** stops navigation (back to teleop with zero sticks) and
-  returns the `nav` object.
-- **`GET /nav/status`**: the `nav` object plus a diagnostic `detail` object.
-- **`/ws/nav`** is the ROS bridge's loopback-only socket; other hosts are closed
-  with 1008. The operator relay never needs it.
-
-`control_status` (on `/ws/control` and `GET /control/status`) gains an optional
-`nav` object when `--nav2` is set. Unknown fields must be ignored.
+Servers with the planner add an optional `nav` object to `/control/status` and
+every `/ws/control` status. Coordinates are voxel-map world metres: map `x, z`
+(ROS odom `-y, -x`, see [navigation.md](navigation.md)) on the floor plane.
 
 ```json
-{"nav": {"state": "driving", "mode": "goto", "goal": {"x": 1.2, "z": -3.4},
-         "path": [[0.0, 0.0], [0.4, -1.1], [1.2, -3.4]], "frontiers": [[2.5, -1.0]],
-         "backend": "nav2", "message": "2.9 m to go"}}
+"nav": {"state":"driving","mode":"goto","goal":{"x":2.0,"z":-1.5},
+        "path":[[0,0],[1.1,-0.6],[2.0,-1.5]],"frontiers":[[3.2,0.4]],
+        "backend":"nav2","message":"2.9 m to go"}
 ```
 
 - `state`: `idle` (no goal, deadman not held, or Nav2 ready but idle), `planning`,
-  `driving`, `recovering` (back-up/spin/wait/costmap clearing), `arrived`
-  (latched stopped), `failed` (Nav2 aborted, e.g. no path), `unavailable` (no
-  bridge, or a silent bridge: its commands are ignored and the rover stops).
-- `mode`: `explore`, `seek`, `goto` or `null`.
-- `goal`: `{"x","z"}` metres in voxel-map world coordinates, or `null`.
-- `path`: at most 200 `[x, z]` points (Douglas-Peucker reduced to 3 cm) of the
-  current Nav2 plan in voxel-map world coordinates; empty when not navigating.
-- `frontiers`: at most 50 `[x, z]` exploration frontier targets.
-- `backend`: `nav2` when Nav2 drives the current mode, `fallback` when the
-  reactive policy does (Explore/Seek without a bridge), `null` when nothing can.
-- `message`: short human-readable detail.
-
-Nav2 velocity commands move the rover only through ControlState: a live held
-lease in an autonomy mode, the PWM ceiling, the camera guard and the pan rule
-apply as for every other mode, and a command older than 250 ms stops the motors.
+  `driving`, `recovering` (back-up/spin/wait/costmap clearing), `arrived` (latched
+  stopped), `failed` (Nav2 aborted, e.g. no path) or `unavailable` (no bridge, or a
+  silent bridge whose commands are ignored, so the rover stops).
+- `mode`: `explore`, `seek`, `goto` or `null`. `backend`: `nav2` when Nav2 drives the
+  current mode, `fallback` when the reactive policy does (Explore/Seek without a
+  bridge), `null` when nothing can. `message`: short human-readable detail.
+- `path`: at most 200 `[x, z]` points of the current Nav2 plan (Douglas-Peucker
+  reduced to 3 cm); empty when not navigating. `frontiers`: at most 50 `[x, z]`.
+- `POST /nav/goal` with exactly `{"x": 2.0, "z": -1.5}` (metres, millimetre
+  precision) returns `202` with the nav object, or `409` `{"nav": <nav object>,
+  "message": reason}` when the backend is unavailable, no live operator permit is
+  held (deadman not held, release required, camera stale) or a scan is running;
+  `422` for non-finite values. `POST /nav/cancel` (no body) cancels and returns the
+  nav object. `GET /nav/status` adds a diagnostic `detail` object.
+- `mode: "goto"` heartbeats are accepted like `explore`/`seek`: same session,
+  ordered sequence, server-issued permit, held deadman and fresh-video checks, and
+  any nonzero `v`/`w` latches stick override. Only a `202` arms go-to; held-deadman
+  heartbeats then carry `mode: "goto"` (no `target_id`, `v: 0`, `w: 0`), and releases
+  still carry `mode: "teleop"`. A release or view change needs a new deadman press
+  but keeps the goal armed; the next held `goto` heartbeat resumes it. Stick input,
+  STOP, cancel, a new goal or selecting Explore/Seek disarm it. As with Scan, a
+  zero-stick `teleop` heartbeat whose permit was issued before the goal was set
+  counts as `goto` (the POST and the socket travel separately); a newer held
+  `teleop` heartbeat ends go-to for that press.
+- Viewer (`quest/src/nav-view.js`, `nav-overlay.ts`): an unknown `state` hides the
+  overlay, and a path with any non-finite point is not drawn at all. Stick input,
+  STOP and cancel send `POST /nav/cancel`. Servers that do not accept
+  `mode: "goto"` stop with `unsupported_mode` and return `409` from `/nav/goal`.
+- Nav2 velocity commands move the rover only through ControlState: a live held
+  lease in an autonomy mode, the PWM ceiling, the camera guard and the pan rule
+  apply as for every other mode, and a command older than 250 ms stops the motors.
+- `/ws/nav` is the ROS bridge's loopback-only socket; other hosts are closed with
+  1008. The operator relay never needs it.
 
 ## H264 over WebSocket `/ws/video`
 

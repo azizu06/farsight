@@ -34,6 +34,15 @@ struct Args {
     /// Motor PWM floor to overcome stiction (FARSIGHT_MIN_PWM); 0 disables
     #[arg(long, default_value_t = 0)]
     min_pwm: i64,
+    /// Opt-in measured drive profile (tools.calibrate_drive output); enables mode "velocity" in m/s, rad/s
+    #[arg(long)]
+    drive_profile: Option<PathBuf>,
+    /// Accept raw-PWM mode "calibrate" from a held-deadman controller; for tools.calibrate_drive on a cleared floor only
+    #[arg(long)]
+    allow_calibration: bool,
+    /// Ultrasonic stop: range < 25 cm or stale range blocks forward (default on); 'off' is an explicit opt-in for navigation runs that steer around obstacles
+    #[arg(long, default_value = "on", value_parser = ["on", "off"])]
+    proximity_stop: String,
     /// Bundled CPU person detector
     #[arg(long, default_value = "hog", value_parser = ["hog", "pose", "none"])]
     detector: String,
@@ -133,6 +142,17 @@ async fn main() {
     if args.detector == "pose" && args.detector_model.is_none() {
         panic!("--detector pose requires --detector-model (YOLO11-pose ONNX)");
     }
+    let drive_profile = args
+        .drive_profile
+        .as_ref()
+        .map(|p| {
+            let profile = farsight_server::drive_profile::DriveProfile::load(p)
+                .unwrap_or_else(|e| panic!("{e}"));
+            if profile.meta.get("source").and_then(|v| v.as_str()) == Some("simulated") {
+                eprintln!("warning: drive profile came from a SIMULATED rover; it does not describe real motors");
+            }
+            profile
+        });
     if args.replay.is_some()
         && (args.serial_port.is_some()
             || args.camera.is_some()
@@ -175,6 +195,9 @@ async fn main() {
         args.video_bitrate,
         args.record,
         args.replay,
+        drive_profile,
+        args.allow_calibration,
+        args.proximity_stop == "on",
     );
     server::start_services(&state);
     let dist = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../quest/dist");

@@ -79,6 +79,15 @@ class BuildArgsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             launch.build_args({"FARSIGHT_TRIAGE_INTERVAL": "soon"})
 
+    def test_bulk_profile_accepts_disabled_or_measured_rate_and_rejects_invalid(self):
+        for rate in ("0", "1.4"):
+            args = launch.build_args({"FARSIGHT_BULK_LIMIT_MBPS": rate})
+            index = args.index("--bulk-limit-mbps")
+            self.assertEqual(args[index:index + 2], ["--bulk-limit-mbps", rate])
+        for rate in ("nan", "inf", "-1", "slow"):
+            with self.subTest(rate=rate), self.assertRaises(ValueError):
+                launch.build_args({"FARSIGHT_BULK_LIMIT_MBPS": rate})
+
     def test_blank_values_ignored_and_false_flag_off(self):
         args = launch.build_args({"FARSIGHT_CAMERA": "  ", "FARSIGHT_H264": "0"})
         self.assertNotIn("--camera", args)

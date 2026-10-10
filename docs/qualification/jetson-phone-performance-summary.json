@@ -1,0 +1,298 @@
+{
+  "scope": "Read-only live phone LiDAR; no producer, control connection, physical image capture, service change, or target file write. Process CPU percentages use proc tick deltas; 100 percent means one logical CPU. PIDs are ephemeral process identities only.",
+  "elapsed_s": 59.111463066001306,
+  "samples": 60,
+  "health_errors": 0,
+  "health": {
+    "processing_ms": {
+      "count": 60,
+      "median": 117.35,
+      "p95": 140.8,
+      "min": 98.1,
+      "max": 151.6
+    },
+    "processing_fps": {
+      "count": 60,
+      "median": 8.5,
+      "p95": 9.9,
+      "min": 6.6,
+      "max": 10.2
+    },
+    "detector_inference_ms": {
+      "count": 60,
+      "median": 103.55000000000001,
+      "p95": 130.1,
+      "min": 43.8,
+      "max": 149.0
+    },
+    "detector_fps": {
+      "count": 60,
+      "median": 6.1,
+      "p95": 10.9,
+      "min": 3.4,
+      "max": 18.1
+    },
+    "age_ms": {
+      "count": 60,
+      "median": 118.0,
+      "p95": 141,
+      "min": 98,
+      "max": 152
+    },
+    "camera_age_ms": {
+      "count": 60,
+      "median": 139.0,
+      "p95": 161,
+      "min": 114,
+      "max": 178
+    },
+    "points": {
+      "count": 60,
+      "median": 23607.5,
+      "p95": 24260,
+      "min": 22729,
+      "max": 24331
+    },
+    "triangles": {
+      "count": 60,
+      "median": 143175.0,
+      "p95": 143175,
+      "min": 143175,
+      "max": 143175
+    },
+    "frames": {
+      "count": 60,
+      "median": 1149.0,
+      "p95": 1308,
+      "min": 972,
+      "max": 1326
+    },
+    "dropped": {
+      "count": 60,
+      "median": 24.0,
+      "p95": 24,
+      "min": 24,
+      "max": 24
+    }
+  },
+  "processes": {
+    "ffmpeg": {
+      "cpu_percent": {
+        "count": 59,
+        "median": 8.0,
+        "p95": 9.0,
+        "min": 7.0,
+        "max": 10.0
+      },
+      "rss_bytes": {
+        "count": 60,
+        "median": 48836608.0,
+        "p95": 48836608,
+        "min": 48836608,
+        "max": 48836608
+      },
+      "threads": {
+        "count": 60,
+        "median": 28.0,
+        "p95": 28,
+        "min": 28,
+        "max": 28
+      }
+    },
+    "live_source": {
+      "cpu_percent": {
+        "count": 59,
+        "median": 147.0,
+        "p95": 155.99,
+        "min": 138.0,
+        "max": 163.0
+      },
+      "rss_bytes": {
+        "count": 60,
+        "median": 1182027776.0,
+        "p95": 1182158848,
+        "min": 1181896704,
+        "max": 1182158848
+      },
+      "threads": {
+        "count": 60,
+        "median": 28.0,
+        "p95": 28,
+        "min": 28,
+        "max": 28
+      },
+      "sampled_top_thread_cpu_percent": {
+        "44851": {
+          "count": 59,
+          "median": 30.0,
+          "p95": 32.0,
+          "min": 28.0,
+          "max": 34.0
+        },
+        "51919": {
+          "count": 37,
+          "median": 17.0,
+          "p95": 27.0,
+          "min": 6.0,
+          "max": 30.0
+        },
+        "51320": {
+          "count": 37,
+          "median": 16.0,
+          "p95": 26.0,
+          "min": 3.0,
+          "max": 29.0
+        },
+        "51904": {
+          "count": 35,
+          "median": 15.0,
+          "p95": 24.0,
+          "min": 6.0,
+          "max": 27.0
+        },
+        "44849": {
+          "count": 40,
+          "median": 14.0,
+          "p95": 27.0,
+          "min": 5.0,
+          "max": 51.99
+        },
+        "46060": {
+          "count": 38,
+          "median": 14.0,
+          "p95": 24.0,
+          "min": 5.0,
+          "max": 32.0
+        },
+        "51902": {
+          "count": 41,
+          "median": 14.0,
+          "p95": 28.0,
+          "min": 5.0,
+          "max": 37.0
+        },
+        "51903": {
+          "count": 35,
+          "median": 14.0,
+          "p95": 22.98,
+          "min": 7.0,
+          "max": 28.0
+        },
+        "51279": {
+          "count": 36,
+          "median": 13.5,
+          "p95": 22.0,
+          "min": 5.0,
+          "max": 29.0
+        },
+        "51901": {
+          "count": 31,
+          "median": 13.0,
+          "p95": 21.0,
+          "min": 5.0,
+          "max": 35.0
+        }
+      }
+    }
+  },
+  "tegrastats": {
+    "gpu_busy_percent": {
+      "count": 58,
+      "median": 8.0,
+      "p95": 91.0,
+      "min": 0.0,
+      "max": 97.0,
+      "mean": 19.896551724137932,
+      "samples_ge_80_percent": 5
+    },
+    "ram_used_mb": {
+      "count": 58,
+      "median": 3824.0,
+      "p95": 3834.0,
+      "min": 3817.0,
+      "max": 3838.0
+    },
+    "cpu_temp_c": {
+      "count": 58,
+      "median": 47.343,
+      "p95": 47.593,
+      "min": 46.968,
+      "max": 47.75
+    },
+    "input_power_mw": {
+      "count": 58,
+      "median": 5950.0,
+      "p95": 6190.0,
+      "min": 5680.0,
+      "max": 6389.0
+    },
+    "mean_core_busy_percent": {
+      "count": 58,
+      "median": 40.41666666666667,
+      "p95": 44.5,
+      "min": 36.0,
+      "max": 48.0
+    },
+    "sampled_cpu_frequency_mhz": {
+      "count": 348,
+      "median": 1344.0,
+      "p95": 1344.0,
+      "min": 729.0,
+      "max": 1344.0
+    }
+  },
+  "health_request_ms": {
+    "count": 60,
+    "median": 49.26083050031593,
+    "p95": 80.77317499919445,
+    "min": 6.606877001104294,
+    "max": 97.5002739996853
+  },
+  "counter_deltas": {
+    "frames": {
+      "start": 972,
+      "end": 1326,
+      "delta": 354,
+      "rate_hz": 6.005904109124224
+    },
+    "camera_frame": {
+      "start": 977,
+      "end": 1331,
+      "delta": 354,
+      "rate_hz": 6.005904109124224
+    },
+    "revision": {
+      "start": 1887,
+      "end": 2241,
+      "delta": 354,
+      "rate_hz": 6.005904109124224
+    },
+    "dropped": {
+      "start": 24,
+      "end": 24,
+      "delta": 0,
+      "rate_hz": 0.0
+    },
+    "rejected": {
+      "start": 0,
+      "end": 0,
+      "delta": 0,
+      "rate_hz": 0.0
+    }
+  },
+  "safety_all_samples": {
+    "rover_false": true,
+    "simulated_false": true,
+    "zero_pwm": true,
+    "estop_true": true
+  },
+  "interpretation": [
+    "The main source consumed 147 percent of one logical CPU at median (about 1.47 CPUs), while FFmpeg consumed 8 percent. GPU median was 8 percent with brief 91 percent p95 / 97 percent peak bursts; persistent GPU saturation was not observed. This is observational and does not identify individual stage CPU cost.",
+    "Detector inference_ms times JPEG decode, pose preprocessing/engine/output decode, the deployed unconditional face pass, and executor scheduling; it is not raw TensorRT latency.",
+    "Mapping processing_ms includes depth heatmap, reconstruction, cloud and surface integration. processing_fps is inverse processing wall duration, not counted throughput.",
+    "Camera and processed-frame counter deltas measure achieved arrival/processing throughput; unchanged dropped/rejected counters do not indicate accumulated ingest losses during this window.",
+    "Two-thread face work is present in deployed source; its current contribution is not isolated. New drill-only face gating is not deployed in this measurement.",
+    "Health polling runs at one Hz and itself acquires map status; small observation overhead remains. No cc1plus, nvcc or llama-server process was detected. All assistant backends were disabled in sampled health.",
+    "Phone camera-frame and mapping-frame counters both advanced 6.01 per second with unchanged loss counters. Mapping kept up with the observed input cadence, so this window does not demonstrate that CPU cost reduced phone acquisition rate. Mapping work occupied roughly 117 ms of the observed 166 ms period; stage profiling is needed before claiming a specific limiting stage."
+  ]
+}

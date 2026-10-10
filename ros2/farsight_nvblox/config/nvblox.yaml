@@ -1,0 +1,34 @@
+# nvblox (Isaac ROS 4.6) for ONE ARKit LiDAR depth camera on an Orin Nano 8 GB: static TSDF mapping,
+# 2D ESDF slice for the Nav2 costmap layer, no colour, no mesh unless asked. Docs: docs/nvblox.md.
+# Every key below is checked against `ros2 param list /nvblox_node` by jetson/nvblox-smoke.sh, so a
+# parameter that this nvblox release does not declare fails the go/no-go instead of being ignored.
+/**:
+  ros__parameters:
+    num_cameras: 1
+    use_depth: true
+    use_color: false            # geometry only; saves RAM and GPU time
+    use_lidar: false
+    mapping_type: static_tsdf   # the Nano build has no people/dynamics models
+    esdf_mode: 2d
+    publish_esdf_distance_slice: true
+    voxel_size: 0.05            # metres; 0.08 if RAM or GPU time is tight. The Nav2 costmap resolution follows it.
+
+    global_frame: odom          # gravity-aligned, Z up, Z = 0 on the floor (farsight_nav frames.py)
+    use_tf_transforms: true     # odom -> base_link -> camera_link -> camera_optical from the bridge
+    use_topic_transforms: false
+    map_clearing_frame_id: base_link
+    map_clearing_radius_m: 6.0  # forget anything farther than the room we are driving in
+
+    input_qos: SENSOR_DATA
+    integrate_depth_rate_hz: 15.0   # ARKit depth is ~30 Hz; the default 40 Hz is wasted work
+    update_esdf_rate_hz: 10.0
+    update_mesh_rate_hz: 0.0        # mesh off; nvblox-smoke.sh --mesh-hz turns it on to measure the cost
+
+    static_mapper:
+      # Slice the 2D ESDF between floor noise and the top of the rover. Too low a minimum and the floor
+      # becomes an obstacle; too high a maximum and low tables are invisible. Phone mount is ~0.15 m.
+      esdf_slice_height: 0.15
+      esdf_slice_min_height: 0.06
+      esdf_slice_max_height: 0.25
+      # ARKit LiDAR reaches about 5 m; do not integrate noise beyond it.
+      projective_integrator_max_integration_distance_m: 5.0

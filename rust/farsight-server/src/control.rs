@@ -43,6 +43,24 @@ pub struct ControlInner {
     pub scan_race_permits: std::collections::HashSet<String>,
     pub scan_serial: u64,
     pub scan_w: f64,
+    /// Opt-in drive command: raw-PWM calibration or SI-unit velocity
+    /// heartbeat (jetson/control/state.py `self.drive`).
+    pub drive: Option<DriveCmd>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum DriveCmd {
+    Calibrate(i64, i64),
+    Velocity(f64, f64),
+}
+
+impl DriveCmd {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            DriveCmd::Calibrate(..) => "calibrate",
+            DriveCmd::Velocity(..) => "velocity",
+        }
+    }
 }
 
 pub type OnOutput = Box<dyn Fn(f64, f64, bool) + Send + Sync>;
@@ -51,6 +69,13 @@ pub struct ControlState {
     pub simulated: bool,
     pub max_pwm: i64,
     pub min_pwm: i64,
+    /// Opt-in measured drive profile; enables `mode: "velocity"`.
+    pub drive_profile: Option<crate::drive_profile::DriveProfile>,
+    /// Opt-in raw-PWM `mode: "calibrate"` for tools.calibrate_drive.
+    pub allow_calibration: bool,
+    /// Ultrasonic stop (range < 25 cm or stale) blocks forward; `off` is an
+    /// explicit opt-in for navigation runs that steer around obstacles.
+    pub proximity_stop: bool,
     pub camera_ready: Option<CameraReady>,
     pub detections: Option<Detections>,
     pub clock: Clock,
@@ -78,6 +103,9 @@ impl ControlState {
         camera_ready: Option<CameraReady>,
         detections: Option<Detections>,
         clock: Option<Clock>,
+        drive_profile: Option<crate::drive_profile::DriveProfile>,
+        allow_calibration: bool,
+        proximity_stop: bool,
     ) -> Result<Self, String> {
         if !(0 <= min_pwm && min_pwm < max_pwm && max_pwm <= 255) {
             return Err("PWM bounds must satisfy 0 <= min_pwm < max_pwm <= 255".into());
@@ -86,6 +114,9 @@ impl ControlState {
             simulated,
             max_pwm,
             min_pwm,
+            drive_profile,
+            allow_calibration,
+            proximity_stop,
             camera_ready,
             detections: detections.clone(),
             clock: clock.unwrap_or_else(|| Arc::new(now_monotonic)),
@@ -109,6 +140,7 @@ impl ControlState {
                 scan_race_permits: std::collections::HashSet::new(),
                 scan_serial: 0,
                 scan_w: 0.0,
+                drive: None,
             }),
             on_output: Mutex::new(None),
         })
@@ -126,6 +158,7 @@ impl ControlState {
         s.v = 0.0;
         s.w = 0.0;
         s.deadline = 0.0;
+        s.drive = None;
         s.scan_token = None;
         s.scan_race_permits.clear();
         s.scan_w = 0.0;
@@ -239,11 +272,17 @@ impl ControlState {
         s.range_at = self.now();
     }
 
+    /// The ultrasonic proximity rule; never true when the option is off.
+    fn range_unsafe(&self, s: &ControlInner) -> bool {
+        self.proximity_stop
+            && (s.range_cm.is_none()
+                || self.now() - s.range_at >= RANGE_TTL
+                || s.range_cm.unwrap() < 25.0)
+    }
+
     fn forward_blocked(&self, s: &ControlInner) -> bool {
-        s.range_cm.is_none()
-            || self.now() - s.range_at >= RANGE_TTL
-            || s.range_cm.unwrap() < 25.0
-            || s.pan.abs() > 10
+        // The pan rule protects the ultrasonic/camera mount and stays on.
+        self.range_unsafe(s) || s.pan.abs() > 10
     }
 
     fn camera_is_ready(&self) -> bool {
@@ -319,7 +358,15 @@ impl ControlState {
                 Self::stop_locked(&mut s, "scan_not_active", true);
                 return false;
             }
-        } else if mode != "teleop" && (s.autonomy.is_none() || !(mode == "explore" || mode == "seek")) {
+        } else if mode == "calibrate" && !self.allow_calibration {
+            Self::stop_locked(&mut s, "unsupported_mode", true);
+            return false;
+        } else if mode == "velocity" && self.drive_profile.is_none() {
+            Self::stop_locked(&mut s, "unsupported_mode", true);
+            return false;
+        } else if !(mode == "teleop" || mode == "calibrate" || mode == "velocity")
+            && (s.autonomy.is_none() || !(mode == "explore" || mode == "seek"))
+        {
             Self::stop_locked(&mut s, "unsupported_mode", true);
             return false;
         }
@@ -340,6 +387,9 @@ impl ControlState {
         {
             Self::stop_locked(&mut s, "video_stale", true);
             return false;
+        }
+        if mode == "calibrate" || mode == "velocity" {
+            return self.accept_drive(&mut s, mode, message, seq, now, expires);
         }
         let v = message.get("v").and_then(Self::json_num);
         let w = message.get("w").and_then(Self::json_num);
@@ -398,10 +448,113 @@ impl ControlState {
         s.v = v;
         s.w = w;
         s.pan = pan_i;
+        s.drive = None;
         s.deadline = (now + LEASE).min(expires);
         s.link_ms = Some(round1((LEASE - (expires - now)) * 1000.0));
         s.reason = "active".into();
         true
+    }
+
+    /// Raw-PWM calibration or SI-unit velocity heartbeat; caller holds the
+    /// lock. Same permit/deadman/camera/seq gates as teleop; autonomy is
+    /// cancelled and the pan head is forced forward.
+    fn accept_drive(
+        &self,
+        s: &mut ControlInner,
+        mode: &str,
+        message: &Value,
+        seq: i64,
+        now: f64,
+        expires: f64,
+    ) -> bool {
+        let drive = if mode == "calibrate" {
+            // Python requires real ints, not floats, for raw PWM.
+            let left = message.get("left_pwm").and_then(Self::json_int);
+            let right = message.get("right_pwm").and_then(Self::json_int);
+            match (left, right) {
+                (Some(l), Some(r))
+                    if l.abs() <= self.max_pwm && r.abs() <= self.max_pwm =>
+                {
+                    DriveCmd::Calibrate(l, r)
+                }
+                _ => {
+                    Self::stop_locked(s, "invalid_command", true);
+                    return false;
+                }
+            }
+        } else {
+            let v = message.get("v_mps").and_then(Self::json_num);
+            let w = message.get("w_radps").and_then(Self::json_num);
+            match (v, w) {
+                (Some(v), Some(w)) if v.abs() <= 5.0 && w.abs() <= 10.0 => {
+                    DriveCmd::Velocity(v, w)
+                }
+                _ => {
+                    Self::stop_locked(s, "invalid_command", true);
+                    return false;
+                }
+            }
+        };
+        if s.scan_token.is_some() {
+            Self::stop_locked(s, "scan_override", false);
+            return false;
+        }
+        if let Some(a) = s.autonomy.as_mut() {
+            a.reset();
+        }
+        s.stick_override = false;
+        if s.pan != 0 {
+            s.range_cm = None;
+            s.range_at = f64::NEG_INFINITY;
+        }
+        s.drive = Some(drive);
+        s.seq = seq;
+        s.v = 0.0;
+        s.w = 0.0;
+        s.pan = 0;
+        s.deadline = (now + LEASE).min(expires);
+        s.link_ms = Some(round1((LEASE - (expires - now)) * 1000.0));
+        s.reason = "active".into();
+        true
+    }
+
+    /// Motor output for an active drive command; mirrors _drive_output.
+    fn drive_output(&self, s: &mut ControlInner) -> (i64, i64, i64) {
+        let Some(drive) = s.drive else {
+            return (0, 0, s.pan + 90);
+        };
+        let (mut left, mut right) = if s.connected {
+            match drive {
+                DriveCmd::Calibrate(l, r) => (l, r),
+                DriveCmd::Velocity(v, w) => self
+                    .drive_profile
+                    .as_ref()
+                    .map(|p| p.wheel_pwm(v, w, Some(self.max_pwm)))
+                    .unwrap_or((0, 0)),
+            }
+        } else {
+            (0, 0)
+        };
+        // Translation intent decides the range stop: a spin with slightly
+        // unequal trimmed wheels must not be blocked by its own bias.
+        let translating = match drive {
+            DriveCmd::Velocity(v, _) => v > 0.0,
+            DriveCmd::Calibrate(..) => left + right > 0,
+        };
+        let blocked = translating && (left > 0 || right > 0) && self.forward_blocked(s);
+        if blocked {
+            left = 0;
+            right = 0;
+            s.reason = "forward_blocked".into();
+        }
+        if let Some(hook) = self.on_output.lock().unwrap().as_ref() {
+            hook(
+                (left + right) as f64 / 2.0 / self.max_pwm as f64,
+                (left - right) as f64 / 2.0 / self.max_pwm as f64,
+                blocked,
+            );
+        }
+        (left, right, s.pan + 90)
     }
 
     pub fn output(&self) -> (i64, i64, i64) {
@@ -414,18 +567,19 @@ impl ControlState {
             Self::stop_locked(s, "lease_expired", true);
         }
         let autonomous = s.autonomy.as_ref().map(|a| a.mode != "teleop").unwrap_or(false);
-        if (s.v != 0.0 || s.w != 0.0 || autonomous || s.scan_token.is_some()) && !self.camera_is_ready() {
+        if (s.v != 0.0 || s.w != 0.0 || autonomous || s.drive.is_some() || s.scan_token.is_some())
+            && !self.camera_is_ready()
+        {
             Self::stop_locked(s, "camera_stale", true);
+        }
+        if s.drive.is_some() && s.deadline != 0.0 {
+            return self.drive_output(s);
         }
         let (mut v, mut w) = (s.v, s.w);
         if s.scan_token.is_some() {
             v = 0.0;
             w = s.scan_w;
-            if w != 0.0
-                && (s.range_cm.is_none()
-                    || self.now() - s.range_at >= RANGE_TTL
-                    || s.range_cm.unwrap() < 25.0)
-            {
+            if w != 0.0 && self.range_unsafe(&s) {
                 Self::stop_locked(s, "scan_range_stop", true);
                 v = 0.0;
                 w = 0.0;
@@ -523,6 +677,9 @@ impl ControlState {
             "pan_deg": pan,
             "max_pwm": self.max_pwm,
             "min_pwm": self.min_pwm,
+            "drive_profile": self.drive_profile.is_some(),
+            "calibration_allowed": self.allow_calibration,
+            "drive_mode": s.drive.map(|d| d.kind()).unwrap_or("normalized"),
         })
     }
 

@@ -64,6 +64,7 @@ export class SourceTruth {
       !REAL_CAMERA_SOURCES.has(frameSource) ? "no verified frame displayed" :
       !(videoAgeMs < 500) ? "displayed frame stale" : null;
     if (missing) return { kind: "UNVERIFIED", title: "NOT VERIFIED LIVE", detail: `${missing} · ${camera}` };
-    return { kind: "LIVE", title: "LIVE", detail: camera };
+    const drive = health.camera_drive_ready === false ? "View only · driving camera not qualified · " : "";
+    return { kind: "LIVE", title: "LIVE", detail: drive + camera };
   }
 }

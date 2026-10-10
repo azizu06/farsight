@@ -132,8 +132,15 @@ class LeaseTests(unittest.TestCase):
         self.assertGreater(self.state.output()[0], 0)
         self.send(deadman=False)
         self.assertEqual(self.state.output()[:2], (0, 0))
-        self.assertIsNone(self.nav.goal)  # a release ends go-to-point
         self.assertFalse(self.nav.intent()["active"])
+        released = self.state.status()["nav"]
+        self.assertEqual((released["state"], released["goal"]), ("idle", {"x": 1.0, "z": -2.0}))  # still armed
+        self.assertTrue(self.send(mode="goto"))  # a new press resumes the same goal
+        self.state.output()
+        self.assertTrue(self.nav.intent()["active"])
+        self.assertEqual(self.nav.intent()["goal_id"], intent["goal_id"])
+        self.assertTrue(self.send(mode="goto", v=0.3))  # stick input disarms
+        self.assertIsNone(self.nav.goal)
 
     def test_pre_post_teleop_heartbeat_keeps_goto_but_new_teleop_cancels(self):
         self.bridge(type="status", state="idle", goal_id=None)
@@ -149,6 +156,8 @@ class LeaseTests(unittest.TestCase):
         self.assertTrue(self.send(mode="teleop"))
         self.assertEqual(self.state.status()["mode"], "teleop")
         self.assertIsNone(self.state.status()["nav"]["mode"])
+        self.assertTrue(self.send(mode="explore"))  # another autonomy mode disarms the goal
+        self.assertIsNone(self.state.status()["nav"]["goal"])
 
     def test_stick_override_and_arrival_stop(self):
         self.bridge(type="status", state="idle", goal_id=None)

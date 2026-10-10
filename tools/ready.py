@@ -17,7 +17,7 @@ from .netutil import fetch_json, tls_context
 ROWS = ("camera", "detector", "rover", "video")
 
 
-def evaluate(h, skip=(), require_tensorrt=False):
+def evaluate(h, skip=(), require_tensorrt=False, require_drive_camera=False):
     """Return [(name, ok|wait|fail|skip, detail)] for camera, detector, rover, video (+ assistant when reported).
 
     `skip` names rows to ignore (bring-up without the Uno or H.264); `require_tensorrt` fails a CPU detector.
@@ -27,6 +27,13 @@ def evaluate(h, skip=(), require_tensorrt=False):
         rows.append(("camera", "ok", f"{h.get('camera_source', 'camera')} {h.get('camera_age_ms', '?')} ms old"))
     else:
         rows.append(("camera", "wait", h.get("camera_error") or "no fresh frame yet"))
+    if require_drive_camera:
+        if (h.get("control") or {}).get("simulated") is True or h.get("replay") is True:
+            rows.append(("drive_camera", "fail", "simulation/replay cannot qualify a physical driving camera"))
+        elif h.get("camera") is True and h.get("camera_drive_ready") is True:
+            rows.append(("drive_camera", "ok", "backend reports fresh capture eligible for physical control"))
+        else:
+            rows.append(("drive_camera", "wait", "camera_drive_ready missing/false; viewing alone does not qualify physical control"))
     if h.get("detector") == "none":
         rows.append(("detector", "skip", "disabled"))
     elif h.get("detector_error"):
@@ -86,12 +93,12 @@ def fetch(url, context, timeout=2):
 
 
 def probe(url, timeout=120, interval=0.5, boot_seconds=seconds_since_boot, out=sys.stdout, context=None,
-          skip=(), require_tensorrt=False):
+          skip=(), require_tensorrt=False, require_drive_camera=False):
     started = time.monotonic()
     last = None
     while True:
         try:
-            rows = [("server", "ok", url)] + evaluate(fetch(url, context), skip, require_tensorrt)
+            rows = [("server", "ok", url)] + evaluate(fetch(url, context), skip, require_tensorrt, require_drive_camera)
         except (OSError, ValueError) as exc:
             rows = [("server", "wait", f"{url} unreachable ({type(exc).__name__})")]
         lines = [f"{name:<10}{state.upper():<5}{detail}" for name, state, detail in rows]
@@ -119,13 +126,14 @@ def main():
     parser.add_argument("--insecure", action="store_true", help="Skip certificate verification (local self-signed check)")
     parser.add_argument("--skip", default="", help=f"Comma-separated rows to ignore, from: {', '.join(ROWS)} (camera-only bring-up: rover,video)")
     parser.add_argument("--require-tensorrt", action="store_true", help="Fail while the detector runs on CPU (ONNX/HOG)")
+    parser.add_argument("--require-drive-camera", action="store_true", help="Require backend physical camera eligibility; reject missing gate, simulation and replay")
     args = parser.parse_args()
     skip = tuple(name for name in args.skip.replace(",", " ").split() if name)
     unknown = [name for name in skip if name not in ROWS]
     if unknown:
         parser.error(f"--skip: unknown row {', '.join(unknown)} (choose from {', '.join(ROWS)})")
     sys.exit(probe(args.url, timeout=args.timeout, context=tls_context(args.ca_file, args.insecure),
-                   skip=skip, require_tensorrt=args.require_tensorrt))
+                   skip=skip, require_tensorrt=args.require_tensorrt, require_drive_camera=args.require_drive_camera))
 
 
 if __name__ == "__main__":

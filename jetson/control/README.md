@@ -81,6 +81,15 @@ Run deterministic policy and WebSocket integration tests with:
 python3 -m unittest discover -s jetson/control/tests -v
 ```
 
+## Calibrated velocity mode
+
+Optional and off by default. `--drive-profile FILE` (from `tools/calibrate_drive.py`)
+enables `mode: "velocity"` with `v_mps`/`w_radps`; `--allow-calibration` enables the
+raw-PWM `mode: "calibrate"` used by the tool. See
+[docs/drive-calibration.md](../../docs/drive-calibration.md) and
+[the wire extension](../../docs/interfaces.md#optional-drive-profile-modes-velocity-calibrate).
+`jetson/drive_profile.py` holds the model; tests are `tests/test_drive_profile.py`.
+
 ## Explore / Seek
 
 The policies live in [`jetson/autonomy.py`](../autonomy.py). `ControlState`

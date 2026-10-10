@@ -10,7 +10,7 @@ struct FarsightCaptureApp: App {
 struct CaptureView: View {
     @StateObject private var capture = CaptureController()
     @AppStorage("jetsonEndpoint") private var endpoint = "ws://172.20.10.2:8443"
-    @State private var rgbOnly = false
+    @State private var rgbOnly = true
     @Environment(\.scenePhase) private var phase
 
     var body: some View {
@@ -37,6 +37,7 @@ struct CaptureView: View {
                 .tint(capture.running ? .red : .green)
                 Text(capture.source).font(.caption.bold())
                 Text(capture.status).font(.callout)
+                Text(capture.clockDiagnostic).font(.caption.monospaced()).foregroundStyle(.secondary)
                 if !capture.resolvedEndpoint.isEmpty {
                     Text(capture.resolvedEndpoint).font(.caption.monospaced()).textSelection(.enabled)
                 }

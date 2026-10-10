@@ -4,11 +4,13 @@ This is an original native app. Open `FarsightCapture.xcodeproj` in Xcode, choos
 the **FarsightCapture** scheme, and run it on the rover's iPhone. No earlier
 project's app or implementation is required.
 
-The ordinary iPhone 17 supplies real rear-camera RGB video to `/phone/rgb`.
+The ordinary iPhone 17 supplies real rear-camera RGB video to `/phone/rgb`
+through AVFoundation. RGB-only mode is also the default on a Pro.
 It does **not** supply measured scene depth or create a LiDAR map. On a
-LiDAR-capable Pro model, the app checks ARKit scene-depth support at runtime and
-sends synchronized RGB + Float32 depth + confidence + same-frame camera pose
-to `/phone`. The Pro can also select “Send RGB only”. The UI and backend clearly
+LiDAR-capable Pro model, deselecting “Send RGB only” checks ARKit scene-depth
+support at runtime and sends synchronized RGB + Float32 depth + confidence +
+same-frame camera pose to `/phone`. That mode is explicitly view-only for
+physical driving until its capture clock has a supported qualification path. The UI and backend clearly
 identify the current source. Runtime support, rather than the typed phone model,
 selects the mode.
 
@@ -68,6 +70,8 @@ camera, LiDAR, or USB networking behavior.
    operator relay reaches the same Jetson separately through the configured
    tunnel, then serves the Quest over its USB connection.
 
+Exactly one camera owner runs at a time: stopping/mode change pauses ARKit and
+stops AVCapture before the selected path starts. Mode changes require Stop.
 The app uses landscape-right native image coordinates. Mount the phone in that
 orientation and check the live preview is upright before attaching it to the
 rover. Pixels are resized proportionally, never cropped or independently
@@ -101,24 +105,76 @@ lifted before any floor driving.
 ## Wire format
 
 Every connection starts with a text JSON v1 `hello`, a new UUID `session_id`,
-`map_epoch: 1`, device name, and explicit `supports_scene_depth` boolean.
+`map_epoch: 1`, device name, explicit `supports_scene_depth`, and
+`supports_capture_permits: true`. Both packet modes include `map_epoch: 1`.
 
 RGB packets are `[uint32 LE header bytes][UTF-8 JSON][JPEG]`, with v1
 `type: "rgb_frame"`, `session_id`, increasing `frame_id`, monotonic `t_capture`,
 `t_wall_ms`, and the actual `jpeg_len`. Extra width/height/tracking metadata is
 included. Both modes optionally include `producer_delay_ms`: a local monotonic
-interval from entry into the ARKit frame callback through JPEG/depth/confidence
-buffer construction, sampled immediately before JSON framing. This measures
-encoding work only. It excludes camera/ARKit work before the callback, JSON
-framing afterward, send queue/network time, and server decode/queue time.
+interval from entry into the shared frame-processing helper through
+JPEG/depth/confidence buffer construction, sampled before final JSON framing.
+It includes local gate/encoding work and excludes camera work before the helper,
+sample-clock conversion, final framing, send queue/network time and server
+decode/queue time. Capture-permit provenance is a separate bound.
+
+## Capture permits and sensor timestamps
+
+The RGB path uses Apple's documented clock relationship, rather than guessing
+ARKit's timestamp origin. All AVCapture output sample timestamps use the
+[`synchronizationClock`](https://developer.apple.com/documentation/avfoundation/avcapturesession/synchronizationclock).
+[`CMSyncConvertTime`](https://developer.apple.com/documentation/coremedia/cmsyncconverttime(_:from:to:))
+converts the actual sample presentation timestamp from that clock to
+`CMClockGetHostTimeClock()`. Permit receipt and callback time are sampled with
+`CMClockGetTime` on that same host clock. Neither time is fabricated or shifted
+by an estimated offset.
+
+A permit-capable server sends JSON like:
+
+```json
+{"type":"capture_permit","session_id":"current UUID","map_epoch":1,
+ "token":"opaque server token","valid_for_ms":250}
+```
+
+Wrong-session, wrong-epoch or malformed permits are ignored. Duplicate tokens
+never renew their receipt time. Up to eight live tokens are retained; the gate
+selects the newest token received before the sample exposure. A newer token
+that arrived after that exposure does not hide a valid predecessor. After negotiation, RGB transmission requires
+12 consecutive finite, advancing sensor/host samples with sensor age in
+0..150 ms, actual converted exposure strictly **after** permit receipt, and
+local token age less than its advertised validity (at most 250 ms). The gate
+checks again after encoding/framing; old callbacks and expired encoding work
+are skipped. AVCapture also discards late video callbacks. Stop, interruption
+and a new session clear token and clock evidence.
+
+Bound RGB packets echo `capture_permit` and `capture_permit_received_t`, set
+`capture_clock: "avcapture_sync_to_host"`, `capture_clock_verified: true` and
+`capture_bound: true`. `t_capture` is the actual converted sensor timestamp.
+Diagnostics include `sensor_timestamp_raw_t`, `sensor_timestamp_host_t`,
+`callback_host_t`, `sensor_host_delta_ms` and `sensor_age_ms`. The phone shows
+raw sensor/host samples and their delta for actual-device verification. The
+server must independently recognize the token and its issue/expiry; the phone's
+local check does not renew or extend the server deadline.
+
+Before any server permit arrives, legacy backends can still receive camera
+images, with `capture_bound: false` and a conspicuous **Legacy view only** status.
+That compatibility path is not sufficient for physical drive. The coordinated
+backend must require qualified capture provenance before enabling physical
+motors. A permit-capable RGB session never falls back to unbound sending after
+its first valid permit.
 
 Apple's [ARFrame timestamp contract](https://developer.apple.com/documentation/arkit/arframe/timestamp)
-does not specify a shared clock origin with
-[ProcessInfo.systemUptime](https://developer.apple.com/documentation/foundation/processinfo/systemuptime),
-so the app does not subtract those values or claim `producer_delay_ms` is full
-capture age. The server can account for the reported interval in addition to
-its independently measured receipt/decode/queue timing. Older packets omit
-this optional field and remain valid.
+does not promise this same host-clock origin. ARKit LiDAR packets therefore keep
+the original timestamp, report `capture_clock: "arkit_unverified"`,
+`capture_clock_verified: false`, `capture_bound: false`, and show an explicit
+view-only diagnostic. A numeric AR/host delta is displayed for investigation;
+it is not treated as a clock conversion or a driving qualification. The backend
+can view/fuse those real sensor frames but must keep physical motion disabled.
+
+The unsigned build and deterministic Swift tests prove compilation, permit
+parsing, exposure ordering and bounds; they do not prove phone sensor timing,
+camera orientation, USB delivery or real-device capture performance. Measure
+actual headers on the installed phone before declaring that path qualified.
 
 Pro packets use the calibrated v1 `frame` header and append JPEG,
 little-endian Float32 measured depth, and UInt8 confidence as specified in

@@ -5,12 +5,16 @@ from contextlib import suppress
 import math
 import time
 import json
+import logging
 from pathlib import Path
 
 import cv2
 import numpy as np
 
+from .tensorrt_detector import TensorRTError
 from .tracker import Tracker
+
+log = logging.getLogger(__name__)
 
 
 def yolo_boxes(prediction, original_shape, side=640, confidence=.35, labels=None):
@@ -63,6 +67,8 @@ def yolo_boxes(prediction, original_shape, side=640, confidence=.35, labels=None
 
 
 class PerceptionService:
+    REBUILD_INTERVAL = 5.0  # seconds between GPU engine re-creations after a CUDA fault
+
     def __init__(self, camera, model=None, mode="hog", fps=3, on_detection=None, face_model=None):
         self.camera, self.mode, self.model, self.fps = camera, mode, model, fps
         self.on_detection = on_detection
@@ -74,7 +80,12 @@ class PerceptionService:
         self.face_model = face_model
         self.face = None
         self.face_error = None
+        # The server points this at the rescue drill, so the face pass only costs CPU while a drill runs.
+        self.face_wanted = lambda: True
         self.error = None
+        self._rebuild = None  # callable that builds a fresh TensorRT detector, set by _setup
+        self._rebuilt_at = None
+        self.rebuilds = 0
         self.packet = dict(ts=0, frame=-1, fps=0, boxes=[], detector="disabled", source="WAITING")
         self.tracker = Tracker()
         self.last_inference = None
@@ -93,6 +104,7 @@ class PerceptionService:
                 raise ValueError("pose mode needs --detector-model (YOLO11-pose .onnx, or .engine on the Jetson)")
             from .pose import make_pose_detector
             self.pose = make_pose_detector(self.model)
+            self._rebuild = lambda: make_pose_detector(self.model)
             # CPU pose is ~25 ms/frame; the 3 fps HOG default would waste it. TensorRT matches the COCO engine rate.
             self.fps = max(self.fps, 15 if self.pose.name == "pose-tensorrt" else 10)
             return
@@ -106,6 +118,7 @@ class PerceptionService:
             if Path(self.model).suffix.lower() in (".engine", ".plan"):
                 from .tensorrt_detector import TensorRTDetector
                 self.engine = TensorRTDetector(self.model)
+                self._rebuild = lambda: TensorRTDetector(self.model)
                 self.mode = "tensorrt"
                 self.fps = 15
             else:
@@ -120,9 +133,38 @@ class PerceptionService:
         if image is None:
             raise ValueError("Invalid detector camera image")
         boxes = self._detect_primary(image)
-        if self.face is not None:
+        if self.face is not None and self.face_wanted():
             boxes.extend(self.face.detect(image))
         return boxes
+
+    def _recover_gpu(self, exc):
+        """After a CUDA/TensorRT fault the execution context is unusable; close it and build a fresh one.
+
+        Runs at most every REBUILD_INTERVAL. A failed rebuild leaves the closed detector in place, so
+        the error stays visible in /health and the next interval tries again.
+        """
+        holder = self.engine if self.engine is not None else self.pose
+        if self._rebuild is None or holder is None or not isinstance(exc, TensorRTError):
+            return False
+        now = time.monotonic()
+        if self._rebuilt_at is not None and now - self._rebuilt_at < self.REBUILD_INTERVAL:
+            return False
+        self._rebuilt_at = now
+        with suppress(Exception):
+            holder.close()
+        try:
+            fresh = self._rebuild()
+        except Exception as failure:
+            self.error = f"TensorRT engine rebuild failed: {failure}"
+            log.warning("%s", self.error)
+            return False
+        if self.engine is not None:
+            self.engine = fresh
+        else:
+            self.pose = fresh
+        self.rebuilds += 1
+        log.warning("TensorRT engine re-created after: %s", exc)
+        return True
 
     def _detect_primary(self, image):
         if self.pose is not None:
@@ -188,6 +230,7 @@ class PerceptionService:
                         await asyncio.to_thread(self.on_detection, self.packet, frame)
                 except Exception as exc:
                     self.error = str(exc)
+                    await asyncio.to_thread(self._recover_gpu, exc)
             await asyncio.sleep(max(.01, 1 / self.fps - (time.monotonic() - started)))
 
     def face_status(self):

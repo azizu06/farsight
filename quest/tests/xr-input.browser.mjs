@@ -55,7 +55,8 @@ try {
   await page.route("**/health", (route) =>
     route.fulfill({
       contentType: "application/json",
-      body: JSON.stringify({ replay: false, rover: true, camera: true, camera_source: "SIMULATED", control: { simulated: true } }),
+      // Whisper present: voice controls only appear when the rover can transcribe.
+      body: JSON.stringify({ replay: false, rover: true, camera: true, camera_source: "SIMULATED", control: { simulated: true }, assistant: { whisper: true } }),
     }),
   );
   let asks = 0;
@@ -100,6 +101,8 @@ try {
       () => "camera",
       () => {},
     );
+    // The mocked /health reports Whisper; apply it now instead of racing the async health poll.
+    subject.voice.setAvailable(true);
     const pixel = () => {
       const value = new Uint8Array(4);
       const gl = renderer.getContext();
@@ -630,7 +633,7 @@ try {
   };
   const fixedDrive = await driveMount();
   assert.equal(await mountPage.evaluate(() => window.mountTest.subject.mountSelect.value), "fixed");
-  assert.ok(fixedDrive.drove.length >= 5, `held deadman drove forward: ${fixedDrive.drove.length} commands`);
+  assert.ok(fixedDrive.drove.length >= 5, `held deadman drove forward: ${fixedDrive.drove.length} commands; stops ${fixedDrive.stops}`);
   assert.deepEqual(fixedDrive.pans, [0], "fixed mount sends pan 0 despite 40° head yaw");
   assert.ok(!fixedDrive.stops.some((key) => key.includes("Forward blocked")), `no forward_blocked stop: ${fixedDrive.stops}`);
   // Negative control: the same 40° yaw in servo mode is sent as pan and blocks forward.
@@ -673,6 +676,166 @@ try {
     queryBeatsRover: true, reloadKeepsChoice: true, roverDefault: "fixed when camera_pan is false",
     fixedYaw40: { commands: fixedDrive.drove.length, pans: fixedDrive.pans, forwardBlocked: false },
     servoYaw40: { commands: servoDrive.drove.length, pans: servoDrive.pans, forwardBlocked: true },
+  };
+
+  // Navigation view: mocked `nav` in control status (docs/interfaces.md). The planner, Nav2 and
+  // the rover are absent; this proves drawing, goal JSON and deadman gating in software only.
+  const navContext = await browser.newContext({ viewport: { width: 960, height: 600 } });
+  const navControl = [], goals = [], cancels = [];
+  let navFixture = { state: "driving", mode: "goto", goal: { x: 2, z: 0 }, path: [[0, 0], [1, 0], [2, 0]],
+    frontiers: [[3, 1], [-1, 2]], backend: "nav2", message: "" };
+  await navContext.routeWebSocket("**/ws/**", (socket) => {
+    if (!socket.url().endsWith("/ws/control")) return socket.close();
+    const session = `nav-${Math.random()}`;
+    socket.onMessage((data) => {
+      const message = JSON.parse(String(data));
+      navControl.push(message);
+      socket.send(JSON.stringify({ type: "control_status", session_id: session, permit: `permit-${message.seq}`, permit_ms: 250,
+        seq: message.seq, rover: true, simulated: true, range_cm: 150, estop: false, reason: null, mode: message.mode ?? "teleop", nav: navFixture }));
+    });
+  });
+  await navContext.route("**/camera.jpg", (route) => route.fulfill({ status: 503, body: "" }));
+  await navContext.route("**/health", (route) => route.fulfill({ contentType: "application/json",
+    body: JSON.stringify({ replay: false, rover: true, camera: true, camera_source: "SIMULATED", control: { simulated: true } }) }));
+  await navContext.route("**/nav/goal", (route) => {
+    const body = JSON.parse(route.request().postData());
+    goals.push({ body, contentType: route.request().headers()["content-type"] });
+    navFixture = { ...navFixture, state: "planning", goal: body, path: [] };
+    return route.fulfill({ status: 202, contentType: "application/json", body: JSON.stringify(navFixture) });
+  });
+  await navContext.route("**/nav/cancel", (route) => {
+    cancels.push(route.request().method());
+    navFixture = { ...navFixture, state: "idle", mode: null, goal: null, path: [] };
+    return route.fulfill({ contentType: "application/json", body: JSON.stringify(navFixture) });
+  });
+  const navPage = await navContext.newPage();
+  const navErrors = [];
+  navPage.on("pageerror", (error) => navErrors.push(error.message));
+  await navPage.goto(`${origin}/?view=map`);
+  const navLine = navPage.locator("#rover-nav");
+  await navLine.waitFor({ state: "visible", timeout: 5000 });
+  assert.match(await navLine.textContent(), /^Nav2 · Go-to driving · 2\.0 m path · 2 frontiers/);
+  assert.equal(await navLine.getAttribute("data-path-points"), "3", "desktop map drew the 3-point path");
+  assert.equal(await navLine.getAttribute("data-backend"), "nav2");
+  // Desktop: double-click the floor under the 3D view's centre (camera looks at the origin).
+  const box = await navPage.locator("#scene canvas").boundingBox();
+  await navPage.mouse.dblclick(box.x + box.width / 2, box.y + box.height / 2);
+  await navPage.waitForTimeout(300);
+  assert.equal(goals.length, 1, "double-click posts one goal");
+  assert.deepEqual(Object.keys(goals[0].body), ["x", "z"]);
+  assert.ok(Math.abs(goals[0].body.x) < 0.05 && Math.abs(goals[0].body.z) < 0.05, `centre goal near origin: ${JSON.stringify(goals[0].body)}`);
+  assert.equal(goals[0].contentType, "application/json");
+  assert.match(await navPage.locator("#rover-details").textContent(), /Go-to armed/);
+  await navPage.locator("#rover-nav-cancel").click();
+  await navPage.waitForTimeout(200);
+  await navPage.keyboard.press("KeyC");
+  await navPage.waitForTimeout(200);
+  assert.deepEqual(cancels, ["POST", "POST"], "cancel button and C both POST /nav/cancel");
+  assert.doesNotMatch(await navPage.locator("#rover-details").textContent(), /Go-to armed/);
+  const desktopGoal = goals[0].body;
+
+  navFixture = { state: "driving", mode: "goto", goal: { x: 2, z: 0 }, path: [[0, 0], [1, 0], [2, 0]],
+    frontiers: [[3, 1], [-1, 2]], backend: "nav2", message: "" };
+  goals.length = 0; cancels.length = 0;
+  const vrNav = await navPage.evaluate(async () => {
+    const { RoverExperience } = await import("/src/rover.ts");
+    const THREE = await import("/node_modules/three/build/three.module.js");
+    const renderer = new THREE.WebGLRenderer({ preserveDrawingBuffer: true });
+    renderer.setSize(200, 200);
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(60, 1, 0.01, 100);
+    const subject = new RoverExperience(renderer, scene, camera, () => "camera", () => {});
+    scene.add(subject.navLayer);
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    for (let i = 0; i < 50 && subject.nav?.state !== "driving"; i++) await sleep(20);
+    subject.update(performance.now());
+    // Top-down render: the glowing path runs along x at z = 0 from 0 to 2 m.
+    camera.position.set(1, 3, 0); camera.up.set(0, 0, -1); camera.lookAt(1, 0, 0);
+    renderer.render(scene, camera);
+    const gl = renderer.getContext();
+    const pixel = (x, y) => { const value = new Uint8Array(4); gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, value); return [...value]; };
+    const drawn = { points: subject.navOverlay.path.userData.points, frontiers: subject.navOverlay.frontiers.count,
+      goal: subject.navOverlay.goal.visible, onPath: pixel(100, 100), offPath: pixel(100, 20) };
+    const right = { handedness: "right", gripSpace: {}, targetRaySpace: {}, gamepad: { connected: true, axes: [0, 0, 0, 0],
+      buttons: [0, 1, 2, 3, 4, 5].map(() => ({ pressed: false })) } };
+    const left = { handedness: "left", gripSpace: {}, gamepad: { connected: true, axes: [0, 0, 0, 0], buttons: [{ pressed: false }] } };
+    const session = { visibilityState: "visible", inputSources: [right, left] };
+    renderer.xr.isPresenting = true;
+    renderer.xr.getSession = () => session;
+    renderer.xr.getReferenceSpace = () => ({});
+    renderer.xr.getCamera = () => camera;
+    const head = { orientation: { x: 0, y: 0, z: 0, w: 1 }, position: { x: 0, y: 1.6, z: 0 } };
+    // Right controller at (1, 1.5, 0) aimed 45° down toward -z: the floor hit is (1, -1.5).
+    const aim = { position: { x: 1, y: 1.5, z: 0 }, orientation: { x: -Math.sin(Math.PI / 8), y: 0, z: 0, w: Math.cos(Math.PI / 8) } };
+    let tracked = true;
+    const frame = { getViewerPose: () => ({ transform: head }),
+      getPose: (space) => space === right.targetRaySpace ? { transform: aim } : tracked || space !== right.gripSpace ? {} : null };
+    let frameId = 0;
+    const tick = async (ms, set = () => {}) => {
+      const end = performance.now() + ms;
+      while (performance.now() < end) {
+        set();
+        subject.gate.acceptFrame(String(++frameId), 0, performance.now());
+        subject.lastCanvasDraw = performance.now();
+        subject.update(performance.now(), frame);
+        await sleep(20);
+      }
+    };
+    await tick(100);
+    // Live camera view: the grip only explains how to aim; nothing is posted.
+    await tick(100, () => { right.gamepad.buttons[1].pressed = true; });
+    await tick(60, () => { right.gamepad.buttons[1].pressed = false; });
+    const liveGrip = { mode: subject.autonomy.mode, hint: subject.navMessage, reticle: subject.navOverlay.reticle.visible };
+    subject.xrLive = false; // A toggles to the map view
+    await tick(60);
+    const reticle = subject.navOverlay.reticle.visible ? [subject.navOverlay.reticle.position.x, subject.navOverlay.reticle.position.z] : null;
+    await tick(100, () => { right.gamepad.buttons[1].pressed = true; });
+    await tick(150, () => { right.gamepad.buttons[1].pressed = false; });
+    const armed = { mode: subject.autonomy.mode, mapMotion: subject.gate.decide(true, performance.now(), true, subject.inputValid, subject.lastXRAt) };
+    // Back to the live view: the view-change stop keeps the accepted goal armed; the deadman gates it.
+    subject.xrLive = true; subject.stop("View changed: release trigger");
+    window.navMessages = [];
+    await tick(200, () => { right.gamepad.buttons[0].pressed = false; });
+    await tick(400, () => { right.gamepad.buttons[0].pressed = true; });
+    await tick(200, () => { right.gamepad.buttons[0].pressed = false; });
+    const afterGoal = subject.autonomy.mode;
+    // Grip held through tracking loss never fires on recovery.
+    subject.xrLive = false;
+    tracked = false;
+    await tick(60, () => { right.gamepad.buttons[1].pressed = true; });
+    tracked = true;
+    await tick(100, () => { right.gamepad.buttons[1].pressed = true; });
+    await tick(60, () => { right.gamepad.buttons[1].pressed = false; });
+    subject.xrLive = true;
+    // Right thumbstick click cancels.
+    await tick(80, () => { right.gamepad.buttons[3].pressed = true; });
+    await tick(150, () => { right.gamepad.buttons[3].pressed = false; });
+    const cancelled = subject.autonomy.mode;
+    subject.dispose();
+    return { drawn, liveGrip, reticle, armed, afterGoal, cancelled };
+  });
+  assert.deepEqual([vrNav.drawn.points, vrNav.drawn.frontiers, vrNav.drawn.goal], [3, 2, true]);
+  assert.ok(vrNav.drawn.onPath[1] > 120 && vrNav.drawn.onPath[2] > 120, `glowing path pixel: ${vrNav.drawn.onPath}`);
+  assert.ok(vrNav.drawn.offPath[1] < 40 && vrNav.drawn.offPath[2] < 40, `background off the path: ${vrNav.drawn.offPath}`);
+  assert.deepEqual(vrNav.liveGrip, { mode: "teleop", hint: "Go-to: press A for the map, point at the floor, then right grip", reticle: false });
+  assert.ok(vrNav.reticle && Math.abs(vrNav.reticle[0] - 1) < 1e-3 && Math.abs(vrNav.reticle[1] + 1.5) < 1e-3, `reticle at aim: ${vrNav.reticle}`);
+  assert.equal(goals.length, 1, "one goal for one grip press; a grip held through tracking loss does not post");
+  assert.deepEqual(goals[0].body, { x: 1, z: -1.5 });
+  assert.deepEqual(vrNav.armed, { mode: "goto", mapMotion: false });
+  const held = navControl.filter((message) => message.deadman);
+  const gotoHeld = held.filter((message) => message.mode === "goto");
+  assert.ok(gotoHeld.length >= 5, `held deadman sends go-to heartbeats: ${gotoHeld.length}`);
+  assert.ok(gotoHeld.every((message) => message.v === 0 && message.w === 0 && message.permit && message.video_fresh));
+  assert.ok(navControl.filter((message) => !message.deadman).every((message) => message.mode === "teleop" && message.v === 0 && message.w === 0),
+    "releases never carry go-to");
+  assert.equal(vrNav.afterGoal, "goto");
+  assert.deepEqual(cancels, ["POST"], "right stick click posts /nav/cancel");
+  assert.equal(vrNav.cancelled, "teleop");
+  assert.deepEqual(navErrors, []);
+  await navContext.close();
+  result.navigation = {
+    desktop: { pathPoints: 3, doubleClickGoal: desktopGoal, cancelButtonAndKey: true },
+    vr: { pathPixel: vrNav.drawn.onPath, goal: { x: 1, z: -1.5 }, gotoHeartbeats: gotoHeld.length, latchedGrip: true, stickClickCancel: true },
   };
   const report = {
     passed: true,

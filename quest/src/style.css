@@ -376,13 +376,19 @@ canvas:focus-visible {
 #rover-details { font-size: 11px; line-height: 1.5; color: #a9b9ca; margin: 0 0 10px; }
 .rover-controls .hold-button { width: 100%; touch-action: none; user-select: none; }
 .rover-controls .hold-button.engaged { background: #24573b; border-color: #8dffa9; }
+.rover-nav { margin: 8px 0 0; font-size: 11px; line-height: 1.5; color: #8a96a3; }
+.rover-nav[data-state="planning"] { color: #8fb4ff; }
+.rover-nav[data-state="driving"] { color: #43e8ff; }
+.rover-nav[data-state="recovering"] { color: #ffc14d; }
+.rover-nav[data-state="arrived"] { color: #6dff9c; }
+.rover-nav[data-state="failed"] { color: #ff6b6b; }
 .rover-help { margin: 10px 0 0; font-size: 10px; line-height: 1.6; color: #afbbc8; }
 .navigation-hint { bottom: 255px; }
 .local-assistant { border-top: 1px solid #505050; margin-top: 18px; padding-top: 10px; }
 .local-assistant h2 { font-size: 12px; }
 .local-assistant form { display: flex; gap: 5px; }
 .local-assistant input { min-width: 0; width: 100%; border: 1px solid #555; background: #242424; color: #eee; padding: 8px; border-radius: 3px; }
-.local-assistant p { font-size: 11px; line-height: 1.5; color: #bbc8d4; }
+.local-assistant p { font-size: 11px; line-height: 1.5; color: #bbc8d4; white-space: pre-line; }
 .local-assistant a { color: #a6c9ec; font-size: 11px; }
 @media (max-width: 600px) { .rover-controls { bottom: 10px; left: 10px; width: calc(100vw - 20px); padding: 10px; } }
 .camera-mount-option { display: grid; gap: 7px; margin: 18px 0; color: #becbda; }

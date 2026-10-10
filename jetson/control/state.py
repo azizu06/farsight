@@ -19,7 +19,8 @@ class ControlState:
     RANGE_TTL = 0.350
 
     def __init__(self, simulated=False, max_pwm=100, clock=time.monotonic, camera_ready=None, min_pwm=0,
-                 detections=None, proximity_stop=True, navigator=None):
+                 detections=None, proximity_stop=True, navigator=None, drive_profile=None,
+                 allow_calibration=False):
         if (type(min_pwm) is not int or type(max_pwm) is not int
                 or not 0 <= min_pwm < max_pwm <= 255):
             raise ValueError("PWM bounds must satisfy 0 <= min_pwm < max_pwm <= 255")
@@ -34,12 +35,16 @@ class ControlState:
         # obstacles instead. The pan-angle rule and every lease/link/camera stop
         # stay regardless of this option.
         self.proximity_stop = proximity_stop
-        # Optional navigation stack (jetson.nav_bridge.NavBridge). When it is
+        # Optional navigation stack (jetson.nav.NavService). When it is
         # available, autonomy modes apply its velocity commands; otherwise the
         # reactive jetson.autonomy policy runs as before.
         self.navigator = navigator
         self.autonomy = (Autonomy(proximity_stop=proximity_stop)
                          if detections is not None or navigator is not None else None)
+        # Both default off: without them the wire protocol and PWM mixing are unchanged.
+        self.profile = drive_profile
+        self.allow_calibration = bool(allow_calibration)
+        self.drive = None  # ("calibrate", (left, right)) or ("velocity", (v_mps, w_radps))
         self.stick_override = False
         self.lock = threading.RLock()
         self.session_id = None
@@ -101,6 +106,7 @@ class ControlState:
     def stop(self, reason, require_release=True):
         with self.lock:
             self.v = self.w = 0.0
+            self.drive = None
             self.deadline = 0.0
             self.scan_token = None
             self.scan_w = 0.0
@@ -201,8 +207,15 @@ class ControlState:
                 if self.scan_token is None:
                     self.stop("scan_not_active")
                     return False
-            elif mode != "teleop" and (not self.autonomy or mode not in ("explore", "seek", "goto")
-                                       or (mode == "goto" and self.navigator is None)):
+            elif mode == "calibrate" and not self.allow_calibration:
+                self.stop("unsupported_mode")
+                return False
+            elif mode == "velocity" and self.profile is None:
+                self.stop("unsupported_mode")
+                return False
+            elif mode not in ("teleop", "calibrate", "velocity") and (
+                    not self.autonomy or mode not in ("explore", "seek", "goto")
+                    or (mode == "goto" and self.navigator is None)):
                 self.stop("unsupported_mode")
                 return False
             target_id = message.get("target_id") if mode == "seek" else None
@@ -214,6 +227,8 @@ class ControlState:
                     or not math.isfinite(video_age) or not 0 <= video_age <= 500):
                 self.stop("video_stale")
                 return False
+            if mode in ("calibrate", "velocity"):
+                return self._accept_drive(mode, message, seq, now, expires)
             values = [message.get("v"), message.get("w"), message.get("pan", 0)]
             if any(type(x) not in (int, float) or not math.isfinite(x) for x in values):
                 self.stop("invalid_command")
@@ -238,6 +253,8 @@ class ControlState:
                     mode = "teleop"
                 else:
                     pan = self.pan
+            if self.navigator is not None and (v or w):
+                self.navigator.disarm()  # stick input disarms go-to-point
             if self.autonomy:
                 if mode in ("teleop", "scan"):
                     self.autonomy.reset()
@@ -253,19 +270,79 @@ class ControlState:
                 # obstacle reading, even when the servo returns to the centre.
                 self.range_cm = None
                 self.range_at = -math.inf
+            self.drive = None
             self.seq, self.v, self.w, self.pan = seq, float(v), float(w), round(pan)
             self.deadline = min(now + self.LEASE, expires)
             self.link_ms = round((self.LEASE - (expires - now)) * 1000, 1)
             self.reason = "active"
             return True
 
+    def _accept_drive(self, mode, message, seq, now, expires):
+        """Raw-PWM calibration or SI-unit velocity heartbeat; caller holds the lock.
+
+        Same permit/deadman/camera/seq gates as teleop; autonomy is cancelled and
+        the pan head is forced forward so the ultrasonic stop stays meaningful.
+        """
+        if mode == "calibrate":
+            left, right = message.get("left_pwm"), message.get("right_pwm")
+            if (type(left) is not int or type(right) is not int
+                    or abs(left) > self.max_pwm or abs(right) > self.max_pwm):
+                self.stop("invalid_command")
+                return False
+            drive = ("calibrate", (left, right))
+        else:
+            v, w = message.get("v_mps"), message.get("w_radps")
+            if (any(type(x) not in (int, float) or not math.isfinite(x) for x in (v, w))
+                    or abs(v) > 5 or abs(w) > 10):
+                self.stop("invalid_command")
+                return False
+            drive = ("velocity", (float(v), float(w)))
+        if self.scan_token is not None:
+            self.stop("scan_override", require_release=False)
+            return False
+        if self.autonomy:
+            self.autonomy.reset()
+        self.stick_override = False
+        if self.pan:
+            self.range_cm = None
+            self.range_at = -math.inf
+        self.drive = drive
+        self.seq, self.v, self.w, self.pan = seq, 0.0, 0.0, 0
+        self.deadline = min(now + self.LEASE, expires)
+        self.link_ms = round((self.LEASE - (expires - now)) * 1000, 1)
+        self.reason = "active"
+        return True
+
+    def _drive_output(self):
+        kind, values = self.drive
+        left, right = (0, 0)
+        if self.connected:
+            left, right = (values if kind == "calibrate"
+                           else self.profile.wheel_pwm(*values, max_pwm=self.max_pwm))
+        # Translation intent decides the range stop: a spin with slightly
+        # unequal trimmed wheels must not be blocked by its own bias.
+        translating = values[0] > 0 if kind == "velocity" else left + right > 0
+        blocked = translating and (left > 0 or right > 0) and self.forward_blocked()
+        if blocked:
+            left = right = 0
+            self.reason = "forward_blocked"
+        if self.on_output:
+            try:
+                self.on_output((left + right) / 2 / self.max_pwm, (left - right) / 2 / self.max_pwm, blocked)
+            except Exception:
+                pass  # telemetry must never affect motor output
+        return left, right, self.pan + 90
+
     def output(self):
         with self.lock:
             if self.deadline and self.clock() >= self.deadline:
                 self.stop("lease_expired")
             autonomous = self.autonomy is not None and self.autonomy.mode != "teleop"
-            if (self.v or self.w or autonomous or self.scan_token is not None) and not self.camera_is_ready():
+            if ((self.v or self.w or autonomous or self.drive is not None or self.scan_token is not None)
+                    and not self.camera_is_ready()):
                 self.stop("camera_stale")
+            if self.drive is not None and self.deadline:
+                return self._drive_output()
             v, w = self.v, self.w
             if self.scan_token is not None:
                 v, w = 0.0, self.scan_w
@@ -328,6 +405,9 @@ class ControlState:
                     "requires_release": self.requires_release, "reason": self.reason,
                     "left_pwm": left, "right_pwm": right, "pan_deg": pan,
                     "max_pwm": self.max_pwm, "min_pwm": self.min_pwm,
+                    "drive_profile": self.profile is not None,
+                    "calibration_allowed": self.allow_calibration,
+                    "drive_mode": self.drive[0] if self.drive else "normalized",
                     **({"nav": self.navigator.nav_object(
                         self.autonomy.mode if self.autonomy else None,
                         self.autonomy.phase if self.autonomy else None,

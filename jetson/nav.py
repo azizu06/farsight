@@ -190,9 +190,15 @@ class NavService:
         """Called by ControlState on every output tick with the operator's current intent."""
         mode = mode if mode in NAV_MODES else None
         with self.lock:
-            if mode != "goto" and self.goal is not None:
-                self.goal = None  # go-to-point ends with release, override, cancel or another mode
+            if mode in ("explore", "seek") and self.goal is not None:
+                self.goal = None  # selecting another autonomy mode disarms go-to-point
+            # A release keeps the goal armed; the next held "goto" heartbeat resumes it.
             self.mode, self.target_id, self.active = mode, target_id, bool(active and mode)
+
+    def disarm(self):
+        """Stick input, cancel or STOP: forget the go-to-point goal."""
+        with self.lock:
+            self.goal = None
 
     # -- backend state ----------------------------------------------------------------
 
@@ -231,17 +237,19 @@ class NavService:
             goal = path = None
             frontiers = []
             if backend == "nav2":
-                if mode is None:
+                if mode is None and self.goal is None:
                     state, message = "idle", "Nav2 ready"
                 elif mode == "goto" and self.goal is None:
                     state, message = "idle", "No go-to-point goal; POST /nav/goal"
+                elif mode is None and self.goal is not None:
+                    state, message = "idle", "Go-to-point armed; hold the deadman to resume"
                 elif not active:
                     state, message = "idle", "Hold the deadman to navigate"
                 else:
                     state = self._remote_state()
                     message = str(self.remote.get("message") or "")[:200]
                     path = self._world_points(self.remote.get("path") or [], 200, 0.03)
-                if mode == "goto" and self.goal is not None:
+                if self.goal is not None:
                     goal = dict(x=round(self.goal[0], 3), z=round(self.goal[1], 3))
                 frontiers = self._world_points(self.remote.get("frontiers") or [], 50, 0)
             elif mode in ("explore", "seek"):

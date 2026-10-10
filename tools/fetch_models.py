@@ -2,7 +2,8 @@
 
 python3 -m tools.fetch_models --check                 # what is present / missing, no network
 python3 -m tools.fetch_models                         # piper voices (English + Spanish), face model, whisper base.en
-python3 -m tools.fetch_models --groups vlm            # Qwen2.5-VL-3B Q4 + mmproj (~2.8 GB)
+python3 -m tools.fetch_models --groups vlm-qwen3      # Qwen3-VL-2B Q4_K_M + mmproj (~1.55 GB, default assistant model)
+python3 -m tools.fetch_models --groups vlm            # Qwen2.5-VL-3B Q4 + mmproj (~2.8 GB, older fallback)
 python3 -m tools.fetch_models --dry-run
 
 The YOLO ONNX files cannot be downloaded: export them on a laptop (group `export`, checked but never fetched).
@@ -21,6 +22,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 PIPER = "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0"
 QWEN = "https://huggingface.co/ggml-org/Qwen2.5-VL-3B-Instruct-GGUF/resolve/main"
+QWEN3 = "https://huggingface.co/Qwen/Qwen3-VL-2B-Instruct-GGUF/resolve/main"
 FACE_REV = "6fd293d22b523ec88959f104b8eef5395e3adfbc"
 
 
@@ -48,6 +50,10 @@ GROUPS = {
     "whisper": [Item("ggml-base.en.bin", "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin")],
     "vlm": [Item("Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf", f"{QWEN}/Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf"),
             Item("mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf", f"{QWEN}/mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf")],
+    "vlm-qwen3": [Item("Qwen3VL-2B-Instruct-Q4_K_M.gguf", f"{QWEN3}/Qwen3VL-2B-Instruct-Q4_K_M.gguf",
+                       sha256="089d75c52f4b7ffc56ba998ffc50aae89fcafc755f9e7208aacca281dca6c2ae"),
+                  Item("mmproj-Qwen3VL-2B-Instruct-Q8_0.gguf", f"{QWEN3}/mmproj-Qwen3VL-2B-Instruct-Q8_0.gguf",
+                       sha256="f9a68fabba69c3b81e153367b2c7521030b0fa8bb0de400c9599c8e6725f9c82")],
     "export": [Item("yolo11n-pose.onnx", hint="python3 -m tools.export_detector --weights yolo11n-pose.pt"),
                Item("yolo11n.onnx", hint="python3 -m tools.export_detector --weights yolo11n.pt")],
 }

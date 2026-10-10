@@ -5,10 +5,12 @@ pub mod ask_intent;
 pub mod assistant;
 pub mod autonomy;
 pub mod camera;
+pub mod capture_permits;
 pub mod control;
 pub mod demo;
 pub mod drill;
 pub mod depth;
+pub mod drive_profile;
 #[cfg(feature = "detector")]
 pub mod detector;
 pub mod geometry;

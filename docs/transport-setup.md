@@ -1,5 +1,11 @@
 # Operator transport and hardware rehearsal
 
+The confirmed [phone-owned relay](phone-relay.md) is being implemented: both
+iPhones own the cellular tunnel, and the Mac's upstream is a local USB port
+forward. The computer-side Tailscale steps below describe the fallback path,
+whose operator USB tether has been intermittent. Keep using the established
+path until the native phone bridge passes actual hardware checks.
+
 The operator relay serves the built Quest app from the MacBook on
 `127.0.0.1:8080`. All rover HTTP and WebSocket routes travel through that origin.
 The Quest reaches the MacBook using ADB reverse over USB. The MacBook reaches
@@ -67,7 +73,7 @@ Only one control socket can own the rover. Close the Quest/browser page before
 running the qualifier, then reopen it afterward. A second controller is rejected
 rather than taking control away from the current operator.
 
-## First hardware connection
+## Fallback hardware connection: USB tethering
 
 1. Keep the rover wheels raised. Connect the Uno to the Jetson by USB and the
    camera locally. Start the documented rover service with real serial selected;
@@ -80,6 +86,21 @@ rather than taking control away from the current operator.
    Personal Hotspot. In macOS Network settings, confirm the phone USB service is
    connected. Disable Wi-Fi on the MacBook and Jetson. Confirm internet traffic
    works through the phone USB links.
+   Unplug the **MacBook-to-Jetson commissioning cable** for this test: Tailscale
+   can select that direct USB path even when the Mac's default route is the
+   relay phone. Keep camera phone → Jetson, relay phone → MacBook and Quest →
+   MacBook connected. On the operator Mac, record the read-only route check:
+
+   ```sh
+   python -m tools.qualify_route --output /tmp/farsight-route.json
+   ```
+
+   It checks the iPhone USB default route, Wi-Fi being off and absence of an
+   active rover USB IPv4 path. A failure or missing evidence must be resolved
+   before claiming cellular qualification. This only verifies Mac routing
+   conditions; separately check the Jetson's phone route, real link performance,
+   headset rendering and motor stop behavior. It changes no network settings
+   and does not open a control connection, so the viewer can stay open.
 4. Run `tailscale status` on both computers and `tailscale ping JETSON_PEER` on
    the MacBook. Record direct versus relayed connectivity. Restrict access to the
    rover through the tailnet policy. The software does not configure that policy.

@@ -111,7 +111,7 @@ async function step(name, run, { retries = 0 } = {}) {
   results.push({ step: name, result: "FAIL", ms: Date.now() - started, detail: attempts.join(" | then: ") });
 }
 
-async function openViewer(browser, origin, { injectPerson = () => false, counters = {} } = {}) {
+async function openViewer(browser, origin, { injectPerson = () => false, injectNav = () => null, counters = {} } = {}) {
   const page = await browser.newPage({ viewport: { width: 960, height: 600 } });
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
@@ -131,6 +131,16 @@ async function openViewer(browser, origin, { injectPerson = () => false, counter
         packet.boxes = [...(packet.boxes ?? []), { id: SYNTHETIC_ID, cls: "person", conf: 0.9, x: 0.4, y: 0.25, w: 0.2, h: 0.55, synthetic: true }];
         ws.send(JSON.stringify(packet));
       } catch { ws.send(message); }
+    });
+  });
+  // The simulator has no planner yet; when asked, add a fixture `nav` object (docs/interfaces.md) to
+  // its real control status so the path overlay and go-to controls can be exercised end to end.
+  await page.routeWebSocket("**/ws/control", (ws) => {
+    const server = ws.connectToServer();
+    server.onMessage((message) => {
+      const nav = injectNav();
+      if (!nav) return ws.send(message);
+      try { ws.send(JSON.stringify({ ...JSON.parse(String(message)), nav })); } catch { ws.send(message); }
     });
   });
   await page.goto(origin);
@@ -173,10 +183,10 @@ async function main() {
     args: ["--no-sandbox", "--disable-dev-shm-usage", "--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader"],
   });
   try {
-    let inject = false;
+    let inject = false, nav = null;
     const counters = {};
     const status = () => json(`${simOrigin}/control/status`);
-    const { page, errors } = await openViewer(browser, simOrigin, { injectPerson: () => inject, counters });
+    const { page, errors } = await openViewer(browser, simOrigin, { injectPerson: () => inject, injectNav: () => nav, counters });
     hudPage = page;
 
     await step("page loads", async () => {
@@ -286,6 +296,8 @@ async function main() {
       const text = await waitFor("no assistant answer", async () => { const t = await answer.textContent(); return t && t !== "Asking rover…" && !t.startsWith("Uses observed") && t; }, 15000);
       if (text.startsWith("Assistant unavailable")) throw new Error(text);
       if (!/simulated/i.test(text)) throw new Error(`answer does not say simulated: ${text.slice(0, 120)}`);
+      if (!/Offline observation summary · \d+ ms · on rover, no internet/.test(text)) throw new Error(`answer lacks source/timing/offline label: ${text.slice(-120)}`);
+      if (await page.locator("#voice-record").isVisible()) throw new Error("voice controls visible although the rover has no Whisper");
       return `"${text.slice(0, 90)}…"`;
     });
 
@@ -338,6 +350,41 @@ async function main() {
       if (!done.simulated) throw new Error("scan result not flagged simulated");
       return `${done.views?.length} views, ${done.points} points, ${(done.scan_ms / 1000).toFixed(1)} s, simulated=${done.simulated}, backend ${done.backend}`;
     }, { retries: 1 });
+
+    await step("nav path overlay + go-to goal (mocked nav status)", async () => {
+      const goals = [], cancels = [];
+      await page.route("**/nav/goal", (route) => {
+        goals.push({ body: JSON.parse(route.request().postData()), type: route.request().headers()["content-type"] });
+        return route.fulfill({ status: 202, contentType: "application/json", body: JSON.stringify({ ...nav, state: "planning", goal: goals.at(-1).body, path: [] }) });
+      });
+      await page.route("**/nav/cancel", (route) => { cancels.push(route.request().method()); return route.fulfill({ contentType: "application/json", body: JSON.stringify({ state: "idle", backend: "nav2" }) }); });
+      nav = { state: "driving", mode: "goto", goal: { x: 1.5, z: -1 }, path: [[0, 0], [0.8, -0.4], [1.5, -1]], frontiers: [[2, 2]], backend: "nav2", message: "" };
+      try {
+        await page.locator("#rover-map").click();
+        const line = await waitFor("nav status never shown", async () => {
+          const text = await page.locator("#rover-nav").textContent();
+          return /^Nav2 · Go-to driving · \d+\.\d m path · 1 frontier/.test(text) && text;
+        }, 4000);
+        const points = await page.locator("#rover-nav").getAttribute("data-path-points");
+        if (points !== "3") throw new Error(`path overlay drew ${points} points, expected 3`);
+        const box = await page.locator("#scene canvas").boundingBox();
+        await page.mouse.dblclick(box.x + box.width / 2, box.y + box.height / 2);
+        await waitFor("double-click never posted a goal", () => goals.length === 1, 3000);
+        const { body, type } = goals[0];
+        if (type !== "application/json" || Object.keys(body).join() !== "x,z" || !Object.values(body).every(Number.isFinite))
+          throw new Error(`goal request ${type} ${JSON.stringify(body)}`);
+        await waitFor("HUD never showed Go-to armed", async () => /Go-to armed/.test(await roverDetails(page)), 2000);
+        const server = await status();
+        if (server.mode === "goto" || server.left_pwm || server.right_pwm) throw new Error(`goal moved the rover without the deadman: ${JSON.stringify(server)}`);
+        await page.locator("#rover-nav-cancel").click();
+        await waitFor("cancel never posted", () => cancels.length === 1, 3000);
+        await waitFor("Go-to stayed armed after cancel", async () => !/Go-to armed/.test(await roverDetails(page)), 2000);
+        return `"${line}" · 3-point path drawn · double-click → POST /nav/goal ${JSON.stringify(body)} · no motion without deadman · cancel → POST /nav/cancel (planner mocked; sim has no nav)`;
+      } finally {
+        nav = null;
+        await page.unroute("**/nav/goal"); await page.unroute("**/nav/cancel");
+      }
+    });
 
     if (errors.length) results.push({ step: "no page errors (simulator)", result: "FAIL", ms: 0, detail: errors.join("; ") });
     await page.close();

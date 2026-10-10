@@ -39,6 +39,18 @@ class DryRunTests(unittest.TestCase):
         self.assertIn("-m tools.qualify_link --url http://127.0.0.1:8080", lines[4])
         self.assertIn("-m tools.rehearse_demo record --url http://192.168.55.1:8443 --relay http://127.0.0.1:8080", lines[6])
 
+    def test_ready_step_requires_tensorrt_unless_cpu_allowed(self):
+        _, text = run_main(*ARGS, "--out", "/tmp/unused", "--dry-run")
+        self.assertIn("--require-tensorrt", text.splitlines()[1])
+        _, text = run_main(*ARGS, "--out", "/tmp/unused", "--dry-run", "--allow-cpu-detector")
+        self.assertNotIn("--require-tensorrt", text.splitlines()[1])
+
+    def test_physical_capture_gate_is_explicitly_forwarded(self):
+        _, text = run_main(*ARGS, "--out", "/tmp/unused", "--dry-run", "--require-drive-camera")
+        self.assertIn("--require-drive-camera", text.splitlines()[1])
+        _, text = run_main(*ARGS, "--out", "/tmp/unused", "--dry-run")
+        self.assertNotIn("--require-drive-camera", text.splitlines()[1])
+
     def test_default_path_never_drives_or_holds_a_permit(self):
         _, text = run_main(*ARGS, "--out", "/tmp/unused", "--dry-run")
         self.assertNotIn("--hold-permit", text)
