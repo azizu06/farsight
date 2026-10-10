@@ -14,9 +14,12 @@ const compiled = ts.transpileModule(source, { compilerOptions: {
   module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022,
 } });
 const module = { exports: {} };
+// Minimal texture double: resize must allocate fresh storage, not mutate old storage.
+class CanvasTexture { constructor(image) { this.image = image; this.needsUpdate = false; } dispose() { this.disposed = true; } }
+const three = { CanvasTexture, SRGBColorSpace: "srgb" };
 vm.runInNewContext(compiled.outputText, {
   exports: module.exports,
-  require: name => name === "./camera-view.js" ? cameraView : {},
+  require: name => name === "./camera-view.js" ? cameraView : name === "three" ? three : {},
 });
 
 function fixture() {
@@ -33,7 +36,7 @@ function fixture() {
     h264: { video: { readyState: 2, videoWidth: 640, videoHeight: 480 }, displayedFrame: null },
     input: { pan: 0 }, digitalPan: false, drawnPan: 0,
     frameId: "7", frameSource: "PHONE RGB", gate, dirty: true, lastCanvasDraw: 0,
-    cameraTexture: { needsUpdate: false }, cameraScreen: { scale: { y: 1 } },
+    cameraTexture: new CanvasTexture(null), cameraMaterial: { map: null, needsUpdate: false }, cameraScreen: { scale: { y: 1 } },
     drawnBoxes: [box], autonomy: { targetId: null },
     detectionFrames: new Map([["PHONE RGB:8", { packet: { boxes: [box] }, at: 0 }]]),
   });
@@ -56,12 +59,17 @@ test("unverified H264 presentation retains validated pixels, boxes and pending r
 
 test("the next verified H264 frame paints matching boxes and completes the pending repaint", () => {
   const { view, paints, strokes } = fixture();
+  const original = view.cameraTexture;
   view.drawCamera(100);
   view.h264.displayedFrame = { id: "PHONE RGB:8", frame: 8, source: "PHONE RGB", age: 150 };
   view.drawCamera(120);
   assert.equal(paints.length, 1);
   assert.equal(strokes.length, 1);
   assert.equal(view.canvas.width, 640);
+  assert.equal(original.disposed, true, "resized canvas releases the old fixed-size GPU texture");
+  assert.notEqual(view.cameraTexture, original);
+  assert.equal(view.cameraMaterial.map, view.cameraTexture);
+  assert.equal(view.cameraMaterial.needsUpdate, true);
   assert.equal(view.frameId, "8");
   assert.equal(view.drawnBoxes.length, 1);
   assert.equal(view.dirty, false);

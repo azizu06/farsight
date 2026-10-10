@@ -59,6 +59,33 @@ test("stick ignores invalid values and drift, scales bounded travel", () => {
   assert.ok(stick(0.5) > 0 && stick(0.5) < 0.5);
 });
 
+test("XR samples expire at 150 ms even while video and control permits remain fresh", () => {
+  const gate = ready();
+  assert.equal(gate.decide(true, 110, true, true, 100), true);
+  gate.acceptStatus(status, 249);
+  gate.acceptFrame("2", 0, 249);
+  assert.equal(gate.decide(true, 249, true, true, 100), true);
+  assert.equal(gate.decide(true, 250, true, true, 100), false);
+  assert.match(gate.reason, /XR input stale/);
+});
+
+test("missing XR tracking cannot masquerade as a released trigger", () => {
+  const gate = ready();
+  assert.equal(gate.decide(true, 110, true, true, 100), true);
+  assert.equal(gate.decide(false, 120, true, true, -Infinity), false);
+  assert.equal(gate.decide(true, 130, true, true, 130), false);
+  assert.equal(gate.decide(false, 140, true, true, 140), false);
+  assert.equal(gate.decide(true, 150, true, true, 150), true);
+});
+
+test("invalid or future XR sample timestamps cannot authorize motion", () => {
+  for (const sampledAt of [NaN, Infinity, -1, 201]) {
+    const gate = ready();
+    assert.equal(gate.decide(true, 200, true, true, sampledAt), false);
+    assert.equal(gate.needsRelease, true);
+  }
+});
+
 test("explicit stop preserves physical deadman across timer/render ordering", () => {
   const gate = ready();
   const physicalInput = { held: true, v: 0.4, w: 0.2, pan: 10 };
@@ -99,4 +126,10 @@ test("inactive headset or unobserved input cannot invent a deadman release", () 
     gate.decide(false, 140, true, true);
     assert.equal(gate.decide(true, 150, true, true), true);
   }
+});
+
+test("XR input age uses monotonic observation time, not the predicted XR display time", async () => {
+  const { readFileSync } = await import("node:fs");
+  const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+  assert.match(main, /setAnimationLoop\(\(_time, frame\) => \{\s*rover\?\.update\(performance\.now\(\), frame\)/);
 });
