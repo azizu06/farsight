@@ -728,3 +728,26 @@ Pending and published geometry both have vertex/triangle/anchor budgets;
 assembled packets must stay inside Quest decoder limits (600,000 vertices,
 160,000 triangles). Geometry traffic has bounded bulk pacing and never shares
 or delays the control permit lane. Network recovery grants no motion intent.
+
+## Local Mac render transport (opt-in)
+
+`tools.demo` and `tools.operator_relay` accept `--render-upstream` with a
+credential-free loopback HTTP(S) origin. The renderer's reserved port is
+**8090**. Only `/ws/macview` and `/ws/macview-pose` are routed there; without
+configuration these endpoints return 503 and never fall through to Jetson.
+The relay does not launch the renderer. The same Quest USB reverse on **8080**
+can carry both endpoints once the renderer and viewer are installed.
+
+Both lanes forward text/binary messages unchanged. Frame messages are bounded
+to 8 MiB with a 500 ms send deadline; pose messages to 16 KiB with a 100 ms
+deadline. At most four render connections use a separate pool, with no replay,
+automatic reconnection or admission queue. Existing control and geometry
+connections use their own pools. Local Host/Origin checks still apply.
+
+`/relay/health.render` reports `configured`, the two `endpoints`, and
+`transport_only: true`. It does not establish renderer readiness, hardware
+encoding, headset display or stereo. The initial renderer contract uses the
+`video_init` / `video_segment` request-and-fragment pattern with explicit
+`stereo: false`; renderer message semantics and pose validation belong to the
+renderer/viewer owners. Render/pose timestamps do not establish physical
+camera freshness and never enter `/ws/control` through this transport.
