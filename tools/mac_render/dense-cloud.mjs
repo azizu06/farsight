@@ -154,7 +154,10 @@ export class DenseCloudReceiver {
   update(now = this.clock(), enabled = true) {
     this.state.expire(now);
     if (!enabled) { this.request?.abort(); return; }
-    if (!this.stopped && !this.busy && now - this.lastPull >= (this.more ? 0 : 100)) void this.pollOnce();
+    // Older relays may serve only the coarse snapshot; avoid polling their
+    // missing dense endpoint ten times a second while keeping recovery live.
+    const interval = this.error ? 1000 : this.more ? 0 : 100;
+    if (!this.stopped && !this.busy && now - this.lastPull >= interval) void this.pollOnce();
   }
   accept(page) {
     const { metadata: meta, rows, count, identity } = page;
