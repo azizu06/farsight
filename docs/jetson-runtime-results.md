@@ -63,6 +63,23 @@ remained active. This proves real phone ingestion, not sustained rig qualificati
 or physical camera-to-eye latency. The Jetson desktop now displays the raw
 MJPEG camera stream, avoiding a second 3D renderer on the rover GPU.
 
+A subsequent 60-sample read-only run is saved as [summary](qualification/jetson-phone-performance-summary.json)
+and [samples](qualification/jetson-phone-performance-samples.json). Input and
+processed frame counters each advanced 354 frames in 59.1 seconds (6.01 Hz),
+with no new drops or rejections. Mapping took 117 ms median / 141 ms p95;
+aggregate detector work took 104 / 130 ms. That detector metric includes image
+decode, preprocessing and the deployed unconditional face pass; it is not raw
+TensorRT execution time. Source CPU was 147% median (1.47 logical cores),
+FFmpeg 8%, GPU 8% median with brief high-load bursts, RAM about 3.82/7.49 GB.
+All samples showed rover disabled, estop true and zero PWM. This measures the
+rover capture pipeline, not cellular headset rendering or physical driving.
+
+The Jetson is now owned by Aziz for target deployment and autonomous-driving
+bring-up. Source updates through `acc2996` and the new signed capture app were
+prepared locally, but were not deployed to the board/phone during the handoff.
+The installed legacy ARKit app has proved viewing/mapping, while the new
+capture-clock contract still needs physical qualification before driving.
+
 Target-built FP16 pose raw inference `[1,56,8400]` passed 20 zero-input runs:
 median 15.29 ms, p95 18.83 ms. COCO `[1,84,8400]` passed the same smoke:
 median 11.66 ms, p95 21.44 ms. Pose also detected four people on the public
