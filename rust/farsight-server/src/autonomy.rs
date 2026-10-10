@@ -17,6 +17,9 @@ pub struct Autonomy {
     pub mode: String,
     pub phase: String,
     pub target_id: Option<i64>,
+    /// Ultrasonic is a hard gate when true (default); when false unknown
+    /// range only removes the obstacle cue (jetson/autonomy.py parity).
+    pub proximity_stop: bool,
     last_seen: Option<f64>,
     request: (String, Option<i64>),
     phase_at: f64,
@@ -25,11 +28,16 @@ pub struct Autonomy {
 
 impl Autonomy {
     pub fn new() -> Self {
+        Self::with_proximity(true)
+    }
+
+    pub fn with_proximity(proximity_stop: bool) -> Self {
         Self {
             choose_turn: Box::new(|| if rand::random::<bool>() { 1.0 } else { -1.0 }),
             mode: "teleop".into(),
             phase: "idle".into(),
             target_id: None,
+            proximity_stop,
             last_seen: None,
             request: ("teleop".into(), None),
             phase_at: 0.0,
@@ -52,7 +60,12 @@ impl Autonomy {
             self.request = (mode.into(), target_id);
             self.mode = mode.into();
             self.target_id = target_id;
-            self.phase = if mode == "explore" { "forward" } else { "tracking" }.into();
+            self.phase = match mode {
+                "explore" => "forward",
+                "goto" => "goto",
+                _ => "tracking",
+            }
+            .into();
             self.phase_at = now;
             self.last_seen = Some(now);
         }
@@ -60,15 +73,19 @@ impl Autonomy {
 
     /// snapshot: the perception packet (age_ms, fresh, error, boxes).
     pub fn step(&mut self, now: f64, range_cm: Option<f64>, snapshot: &Value) -> (f64, f64) {
-        if self.phase == "arrived" || self.phase == "target_lost" {
-            return (0.0, 0.0);
+        if self.phase == "arrived" || self.phase == "target_lost" || self.mode == "goto" {
+            return (0.0, 0.0); // go-to-point exists only with the navigation backend
         }
-        let Some(cm) = range_cm.filter(|c| c.is_finite() && *c > 0.0) else {
-            return (0.0, 0.0);
-        };
-        if cm < 25.0 {
-            self.phase = "estop".into();
-            return (0.0, 0.0);
+        let known = range_cm.map(|c| c.is_finite() && c > 0.0).unwrap_or(false);
+        let cm = range_cm.unwrap_or(0.0);
+        if self.proximity_stop {
+            if !known {
+                return (0.0, 0.0);
+            }
+            if cm < 25.0 {
+                self.phase = "estop".into();
+                return (0.0, 0.0);
+            }
         }
         let age = snapshot["age_ms"].as_f64();
         let boxes: Vec<&Value> = if snapshot["fresh"].as_bool().unwrap_or(false)
@@ -95,7 +112,7 @@ impl Autonomy {
                     self.phase = "forward".into();
                     self.phase_at = now;
                 }
-                if cm < 70.0 || now - self.phase_at >= 4.0 {
+                if (known && cm < 70.0) || now - self.phase_at >= 4.0 {
                     self.phase = "turning".into();
                     self.phase_at = now;
                     self.direction = (self.choose_turn)();
@@ -114,11 +131,23 @@ impl Autonomy {
         };
         self.last_seen = Some(now - age.unwrap_or(0.0) / 1000.0);
         self.phase = "tracking".into();
+        let error = target["x"].as_f64().unwrap_or(0.0) + target["w"].as_f64().unwrap_or(0.0) / 2.0 - 0.5;
+        let turn = (error * 1.5).clamp(-0.45, 0.45);
+        if !known {
+            // No range: a box half the frame wide is roughly an arm's length away.
+            if target["w"].as_f64().unwrap_or(0.0) >= 0.5 {
+                self.phase = "arrived".into();
+                return (0.0, 0.0);
+            }
+            return (
+                0.35f64.min((0.5 - target["w"].as_f64().unwrap_or(0.0)) * 0.8),
+                turn,
+            );
+        }
         if cm <= 60.0 {
             self.phase = "arrived".into();
             return (0.0, 0.0);
         }
-        let error = target["x"].as_f64().unwrap_or(0.0) + target["w"].as_f64().unwrap_or(0.0) / 2.0 - 0.5;
-        (0.35f64.min((cm - 60.0) / 200.0), (error * 1.5).clamp(-0.45, 0.45))
+        (0.35f64.min((cm - 60.0) / 200.0), turn)
     }
 }

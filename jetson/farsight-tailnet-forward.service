@@ -1,0 +1,21 @@
+# Opt-in direct operator path. Template: jetson/install_tailnet_forward.sh fills in the service user and repo path.
+# Deliberately independent of farsight.service: restarting the server never drops this unit, and
+# connections made while the server is down fail fast and succeed again once it is back.
+[Unit]
+Description=Farsight tailnet forwarder (Jetson Tailscale address :8081 -> local server :8443)
+# Not network-online.target (it could hold boot for 2 min): the forwarder waits for its Tailscale IPv4 itself.
+After=network.target tailscaled.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=@USER@
+WorkingDirectory=@REPO@
+ExecStart=/usr/bin/python3 -m jetson.tailnet_forward --listen-port 8081 --upstream 127.0.0.1:8443
+Restart=always
+RestartSec=1
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

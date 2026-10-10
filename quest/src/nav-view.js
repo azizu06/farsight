@@ -28,7 +28,27 @@ export function parseNav(raw) {
     frontiers: (Array.isArray(raw.frontiers) ? raw.frontiers.slice(0, MAX_FRONTIERS) : []).map(xz).filter(Boolean),
     backend: raw.backend === "nav2" || raw.backend === "fallback" ? raw.backend : null,
     message: typeof raw.message === "string" ? raw.message.slice(0, 120) : "",
+    ...(Number.isSafeInteger(raw.revision) && raw.revision >= 0 ? { revision: raw.revision } : {}),
   };
+}
+
+/** Revision-lane omitted arrays are unchanged, not empty. Only a prior status
+ * from this controller session may supply them; present malformed arrays clear
+ * through parseNav instead of preserving an old route. Other fields always come
+ * from the newest status, including state/goal/revision.
+ * @param {any} raw
+ * @param {ReturnType<typeof parseNav>|null} previous
+ * @param {boolean} sameSession
+ */
+export function mergeNav(raw, previous = null, sameSession = true) {
+  const next = parseNav(raw);
+  if (!next) return null;
+  const prior = sameSession ? parseNav(previous) : null;
+  if (prior) {
+    if (!Object.hasOwn(raw, "path")) next.path = prior.path;
+    if (!Object.hasOwn(raw, "frontiers")) next.frontiers = prior.frontiers;
+  }
+  return next;
 }
 
 /** The planner is working toward a goal; the drawn path is live. */

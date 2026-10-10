@@ -140,6 +140,30 @@ class StateTests(unittest.TestCase):
         self.state.process(frame)
         self.assertEqual(self.state.frames, 1)
 
+    def test_fusion_bypass_publishes_camera_depth_pose_and_nav_frames_but_builds_no_map(self):
+        state = MapState(fusion_bypass=True)
+        state.start_session(('test', 1), 'Test iPhone')
+        seen = []
+        state.frame_observers.append(seen.append)
+        frame = flat_frame()
+        frame.transform = np.eye(4)
+        frame.transform[0, 3] = 0.5
+        frame.header['transform'] = frame.transform.flatten(order='F').tolist()
+        revision = state.revision
+        state.process(frame)
+        self.assertEqual(seen, [frame])  # Nav2 still gets every accepted RGB-D frame
+        self.assertIsNotNone(state.camera_snapshot()[0])
+        self.assertIsNotNone(state.depth_jpeg)
+        self.assertEqual(state.tracking, 'normal')
+        self.assertEqual(state.pose[0, 3], 0.5)
+        self.assertEqual((len(state.cloud.cells), state.surfaces.count, state.revision), (0, 0, revision))
+        status = state.status()
+        self.assertTrue(status['fusion_bypass'])
+        self.assertEqual((status['points'], status['triangles'], status['keyframes'], status['frames']), (0, 0, 0, 0))
+        self.assertEqual(status['depth_range'], [2.0, 2.0])
+        self.assertEqual(status['reason'], 'Geometry lane external; fusion bypassed')  # same as the Rust server
+        self.assertFalse(self.state.status()['fusion_bypass'])
+
     def test_reconnect_retains_map_new_epoch_clears(self):
         self.state.process(flat_frame())
         count = len(self.state.cloud.cells)
@@ -217,6 +241,26 @@ class APITests(unittest.TestCase):
             self.assertEqual(after['generation'], before + 1)
             self.assertEqual(after['points'], 0)
             self.assertEqual(struct.unpack('<II', client.get('/map/mesh.bin').content), (0, 0))
+
+    def test_phone_with_fusion_bypass_keeps_camera_and_reports_an_empty_map(self):
+        app = create_app(fusion_bypass=True, nav2=True)
+        with TestClient(app) as client:
+            with client.websocket_connect('/phone') as phone:
+                phone.send_json(dict(version=1, type='hello', session_id='test', map_epoch=1,
+                                     device='Test', supports_scene_depth=True))
+                phone.send_bytes(bundle(flat_frame()))
+                deadline = time.monotonic() + 3
+                while app.state.mapping.depth_range is None and time.monotonic() < deadline:
+                    time.sleep(.01)
+                health = client.get('/health').json()
+                self.assertEqual((health['fusion_bypass'], health['points'], health['triangles']), (True, 0, 0))
+                self.assertIsNotNone(app.state.nav.frame)  # Nav2 still gets pose + depth
+                self.assertIsNone(app.state.nav.sensor_fault())
+                self.assertEqual(health['source'], 'IPHONE LIDAR')
+                self.assertEqual(client.get('/camera.jpg').status_code, 200)
+                self.assertEqual(client.get('/depth.jpg').status_code, 200)
+                self.assertEqual(struct.unpack('<II', client.get('/map/mesh.bin').content), (0, 0))
+                self.assertEqual(struct.unpack_from('<I', client.get('/map/points.bin').content)[0], 0)
 
     def test_second_phone_is_rejected(self):
         app = create_app()

@@ -61,9 +61,26 @@ class AutonomyPolicyTests(unittest.TestCase):
         for mode in ("explore", "seek"):
             for cm in (None, float("nan"), 0, 20):
                 with self.subTest(mode=mode, cm=cm):
-                    policy = Autonomy()
+                    policy = Autonomy(proximity_stop=True)
                     policy.select(mode, 7 if mode == "seek" else None, 10)
                     self.assertEqual(policy.step(10, cm, detection(.7)), (0, 0))
+
+    def test_proximity_off_unknown_or_close_range_keeps_exploring_and_seeking(self):
+        empty = dict(fresh=True, error=None, age_ms=0, boxes=[])
+        policy = Autonomy(choose_turn=lambda: 1, proximity_stop=False)
+        policy.select("explore", None, 10)
+        self.assertEqual(policy.step(10, None, empty), (.25, 0))
+        self.assertEqual(policy.step(10.1, 20, empty), (0, .35))  # close range turns, never estop
+        self.assertEqual(policy.phase, "turning")
+        seek = Autonomy(proximity_stop=False)
+        seek.select("seek", 7, 10)
+        v, w = seek.step(10, None, detection(.6))
+        self.assertGreater(v, 0)
+        self.assertGreater(w, 0)
+        wide = detection(.2)
+        wide["boxes"][0]["w"] = .6
+        self.assertEqual(seek.step(10.1, None, wide), (0, 0))
+        self.assertEqual(seek.phase, "arrived")
 
     def test_malformed_person_box_is_not_a_motion_target(self):
         for x, width in ((float("nan"), .2), (.2, -1), (.9, .5), (".4", .2)):
@@ -79,7 +96,7 @@ class AutonomyControlTests(unittest.TestCase):
     def setUp(self):
         self.now = 10
         self.snapshot = detection()
-        self.state = ControlState(simulated=True, max_pwm=80, clock=lambda: self.now,
+        self.state = ControlState(simulated=True, max_pwm=80, clock=lambda: self.now, proximity_stop=True,
                                   detections=lambda: self.snapshot)
         self.state.set_connected(True)
         self.session = self.state.begin()
@@ -109,6 +126,22 @@ class AutonomyControlTests(unittest.TestCase):
         self.send(deadman=False)
         self.send(mode="explore", target_id=None)
         self.assertEqual(self.state.status()["mode"], "seek")  # person found
+
+    def test_autonomy_ceiling_keeps_autonomous_speed_while_teleop_uses_full_range(self):
+        self.state = ControlState(simulated=True, max_pwm=255, min_pwm=70, autonomy_max_pwm=100,
+                                  clock=lambda: self.now, proximity_stop=True, detections=lambda: self.snapshot)
+        self.state.set_connected(True)
+        self.session = self.state.begin()
+        self.send(deadman=False)
+        self.assertTrue(self.send())  # seek at v = 0.3
+        self.assertEqual(self.state.output()[:2], (79, 79))  # 70 + (100 - 70) * 0.3
+        self.send(v=-.5)  # stick override: teleop gets the full ceiling
+        self.assertEqual(self.state.output()[:2], (-162, -162))  # 70 + (255 - 70) * 0.5
+        self.assertEqual(self.state.status()["max_pwm"], 255)
+        for bad in (256, 70, 60, 2.5):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                ControlState(max_pwm=255, min_pwm=70, autonomy_max_pwm=bad)
+        self.assertEqual(ControlState(max_pwm=200).autonomy_max_pwm, 200)  # default: unchanged
 
     def test_lease_expiry_without_commands_stops_and_requires_release(self):
         self.send()

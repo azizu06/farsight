@@ -18,19 +18,22 @@ Rover iPhone Tailscale IP:8081 -> fixed local USB upstream
 Jetson Orin Nano (on the rover)  -- the brain
    camera -> TensorRT YOLO -> detections
    camera -> Depth Anything V2 (stretch) -> point cloud
-   control server: 20 Hz pump, 250 ms lease, ultrasonic e-stop
+   control server: 20 Hz pump, 250 ms lease, ultrasonic e-stop (opt-out)
    |  USB serial 115200
    v
 Arduino Uno (ELEGOO V4 board) -> motors, ultrasonic (pan servo optional; the phone camera is fixed, look-around is digital)
 ```
 
-The confirmed phone-owned relay is being implemented and is not yet hardware
-qualified; see [phone relay](phone-relay.md). The rover service runs on the
+The phone-owned relay is implemented, and an owner has reported a two-phone
+cellular transport run with phone Wi-Fi off and the Mac–Jetson commissioning
+USB disconnected. This is not full Quest, physical-driving, or fault-recovery
+qualification; see [phone relay](phone-relay.md). The rover service runs on the
 Jetson at port `8443`. The MacBook serves the Quest app and proxies
 HTTP/WebSockets on `localhost:8080`; Quest accesses it through USB ADB reverse.
 The iPhones own the cellular tunnel; raw rover capture stays on local USB.
 The earlier computer-side Tailscale/USB-tether path remains a fallback, whose
-operator tether has been intermittent. Neither path depends on venue Wi-Fi.
+operator tether has been intermittent. Venue Wi-Fi is not in the production
+route.
 `tools.demo --simulate` launches
 explicit ray-cast camera/map and virtual rover sources. See
 [transport setup](transport-setup.md) and [native phone capture](../ios/README.md).
@@ -138,7 +141,10 @@ Optional pose fields (YOLO11-pose), present when the detector is a pose model:
 ```
 
 - `v` forward speed and `w` turn rate, both -1..1. `pan` camera yaw in degrees, -80..80, 0 = forward.
-- `mode`: `"teleop"`, `"seek"` (also sends `"target_id"`), `"explore"` or `"scan"`; the last two are specified below.
+  With `--pan-mount none` (`FARSIGHT_PAN_MOUNT=none`, a rover with no pan servo; the headset
+  pans digitally) the server still validates `pan` but then ignores it: it never blocks forward
+  drive, the Uno never gets `P`, and `pan_deg` stays 90. Default `servo` is unchanged.
+- `mode`: `"teleop"`, `"seek"` (also sends `"target_id"`), `"explore"`, `"scan"`, or `"goto"` (with `--nav2`); the last three are specified below.
 - No valid message for 250 ms, or `deadman: false` -> motors zero. Always.
 - One socket owns control. A new connection starts stopped. First send an
   ordered release `{"session_id":"...","seq":0,"deadman":false}`; then a new
@@ -207,14 +213,20 @@ Autonomy never renews a permit or lease itself. Example held-deadman heartbeat:
   latched against further autonomous heartbeats until a deadman release or an
   explicit `teleop` message. Release/repress or select teleop then reselect
   autonomy to retry an arrived/lost target.
-- Autonomy centres pan at zero. Missing/stale front range stops all autonomous
-  motion. Range below 25 cm also stops autonomous turns; normal teleop reverse
-  and turn escape remain available. The PWM ceiling and camera guard still apply.
+- Autonomy centres pan at zero. The PWM ceiling and camera guard still apply.
+- The proximity stop is **on by default**: missing/stale front range stops all
+  autonomous motion, range below 25 cm also stops autonomous turns, and forward
+  translation is blocked; reverse and turn escape remain available. Turning it off
+  is an explicit opt-in (server `--proximity-stop off` / `FARSIGHT_PROXIMITY_STOP=0`)
+  for runs where navigation steers around obstacles; the rover as built has no
+  ultrasonic, so its Uno never blocks on range and `R` always replies `-1`. Then range never stops motion, and the reactive policy
+  keeps its 70 cm turn cue and estimates Seek arrival from the box width when there
+  is no range.
 
 Status replies add optional `autonomy_state` and `target_id` fields; `mode`
 reports the active mode, including automatic Explore-to-Seek handover. States
 are `idle`, `forward`, `turning`, `tracking`, `target_missing`, `target_lost`,
-`arrived`, `estop`, and `stick_override`. `estop` and `requires_release` retain
+`arrived`, `estop`, `stick_override`, and `goto` (see the navigation extension). `estop` and `requires_release` retain
 their existing safety meanings. Public status never grants a usable permit.
 
 Jetson replies on the same socket, 40 Hz (20 Hz before 2026-10-10; mission
@@ -227,39 +239,95 @@ replay still samples control at 20 Hz):
  "left_pwm":40,"right_pwm":20,"pan_deg":90,"max_pwm":100,"min_pwm":0}
 ```
 
-`estop` also covers unknown/stale range and an ultrasonic pan outside ±10°.
-Those conditions block forward translation; camera/link failure stops all
-motion. `link_ms` is permit age at command arrival; the browser's acknowledged
+`estop` reports a blocked forward translation: unknown/stale range, range below
+25 cm and a servo pan outside ±10° (the range conditions only while the
+proximity stop is on, the default; the pan condition only with `--pan-mount servo`, the default).
+Camera/link failure stops all motion regardless. `link_ms` is permit age at command arrival; the browser's acknowledged
 sequence RTT is a different measurement. Optional autonomy fields follow below.
 
-### Optional navigation status and go-to goals
+### Optional navigation status and go-to goals (Nav2)
 
-Servers with the ROS 2 / Nav2 planner (or its fallback) add an optional `nav`
-object to `/control/status` and every `/ws/control` status. Coordinates are
-voxel-map world metres: map `x, z` (ROS `x, y`) on the floor plane.
+Opt-in: the Python server only navigates with `--nav2` (`FARSIGHT_NAV2=1`) and the
+ROS 2 stack from [navigation.md](navigation.md) running on the Jetson. Without the
+flag, Explore/Seek are exactly the reactive policy above, `nav` is absent from
+status and `/health`, `POST /nav/goal` answers 409 and `POST /nav/cancel` returns an
+`idle` nav object with `backend: null` (the Rust server answers the same way).
+
+Servers with the planner add an optional `nav` object to `/control/status` and
+every `/ws/control` status. Coordinates are voxel-map world metres: map `x, z`
+(ROS odom `-y, -x`, see [navigation.md](navigation.md)) on the floor plane.
 
 ```json
 "nav": {"state":"driving","mode":"goto","goal":{"x":2.0,"z":-1.5},
         "path":[[0,0],[1.1,-0.6],[2.0,-1.5]],"frontiers":[[3.2,0.4]],
-        "backend":"nav2","message":""}
+        "backend":"nav2","message":"2.9 m to go"}
 ```
 
-- `state`: `idle`, `planning`, `driving`, `recovering`, `arrived`, `failed` or
-  `unavailable`. `mode`: `explore`, `seek`, `goto` or `null`. `backend`: `nav2`
-  or `fallback`. `path` has at most 200 points, `frontiers` at most 50.
-- `POST /nav/goal` with exactly `{"x": 2.0, "z": -1.5}` (metres, millimetre
-  precision) returns `202` with the nav object, or `409` with a nav object or
-  `{"message"}` explaining the refusal. `POST /nav/cancel` (no body) cancels and
-  returns the nav object.
-- Viewer (`quest/src/nav-view.js`, `nav-overlay.ts`): an unknown `state` hides
-  the overlay, and a path with any non-finite point is not drawn at all. Only a
-  `202` arms go-to; held-deadman heartbeats then carry `mode: "goto"` (no
-  `target_id`, `v: 0`, `w: 0`), and releases still carry `mode: "teleop"`. All
-  permit, sequence, deadman and fresh-video rules above still apply; a release or
-  view change needs a new deadman press but keeps the goal armed. Stick input,
-  STOP and cancel disarm it and send `POST /nav/cancel`. Servers that do not
-  accept `mode: "goto"` stop with `unsupported_mode`; return `409` from
-  `/nav/goal` until they do.
+- `state`: `idle` (no goal, deadman not held, or Nav2 ready but idle), `planning`,
+  `driving`, `recovering` (back-up/spin/wait/costmap clearing), `arrived` (latched
+  stopped), `failed` (Nav2 aborted, e.g. no path) or `unavailable` (no bridge, a
+  silent bridge whose commands are ignored, or missing navigation sensors; the
+  rover stops).
+- Navigation sensors: Nav2 only drives with a normal-tracking ARKit pose at most
+  0.5 s old and LiDAR depth at most 1 s old, both from the current phone session
+  and map epoch. A fresh RGB camera alone never qualifies. Losing either while
+  driving stops the rover even with a live lease and fresh Nav2 command, with
+  control `reason` `nav_pose_lost`, `nav_tracking_limited`, `nav_depth_lost` or
+  `nav_sensor_reset` and `requires_release`; it resumes only after the sensors
+  recover and the operator presses again. A new phone session or map epoch also
+  disarms the goal (Nav2's goal and costmaps are reset).
+- `mode`: `explore`, `seek`, `goto` or `null`. `backend`: `nav2` when Nav2 drives the
+  current mode, `null` when nothing can (the Python server no longer sends
+  `fallback`: with `--nav2`, Explore/Seek hold still while Nav2 is unavailable).
+  `message`: short human-readable detail.
+- `path`: at most 200 `[x, z]` points of the current Nav2 plan (Douglas-Peucker
+  reduced to 3 cm); empty when not navigating. `frontiers`: at most 50 `[x, z]`
+  frontier goal points (widest first) that Explore chooses from. `goal`: the
+  go-to point, or in a Nav2 Seek the standoff point 0.8 m short of the person
+  (it moves with them); `null` in Explore.
+- `revision`: integer, bumped whenever `path` or `frontiers` change (additive; the Rust server
+  does not send it yet). **Nav lane (opt-in, for cellular):** a `/ws/control` client (direct or
+  bonded) that adds `"nav_lane": "revision"` to its command messages (any heartbeat or release;
+  latched for that socket, or for the bonded session) then gets `nav.path` and `nav.frontiers` only
+  in statuses where `revision` changed, at most every 0.5 s (changes are coalesced to the newest),
+  plus a refresh every 2 s and in the first status after opting in or after a bonded path attaches.
+  Every other status omits both keys: absent means unchanged, so keep the last arrays (an empty
+  array clears them). All other status and lease fields are unchanged and still arrive at 40 Hz.
+  Clients that never opt in keep full arrays in every status. `GET /control/status` and
+  `GET /nav/status` always carry the full arrays and `revision`.
+- `POST /nav/goal` with `{"x": 2.0, "z": -1.5}` (metres, millimetre
+  precision; optional `session_id` from the `/ws/control` status binds it to that
+  controller) returns `202` with the nav object, or `409` `{"nav": <nav object>,
+  "message": reason}` when the backend is unavailable, navigation sensors are
+  missing, no controller is connected (or `session_id` names another one), a scan
+  is running, or the deadman is held but the permit or camera is not valid;
+  `422` for non-finite values. Posted while the deadman is not held (released,
+  lease expired, release required), the goal is **staged**: `202` with `mode: null`,
+  `state: "idle"` and the `goal`. Nothing moves until a new deadman press, after
+  an ordered release when `requires_release` is set, passes the usual heartbeat
+  gates (permit, drive-ready camera) and carries `mode: "goto"`. `POST /nav/cancel`
+  (no body) cancels and returns the nav object. `GET /nav/status` adds a diagnostic
+  `detail` object.
+- `mode: "goto"` heartbeats are accepted like `explore`/`seek`: same session,
+  ordered sequence, server-issued permit, held deadman and fresh-video checks, and
+  any nonzero `v`/`w` latches stick override. A `202` only arms the goal: it never
+  changes the drive mode, so the rover moves only once the operator's own held
+  heartbeats carry `mode: "goto"` (no `target_id`, `v: 0`, `w: 0`); releases still
+  carry `mode: "teleop"`, and a zero-stick `teleop` heartbeat in flight during the
+  POST simply leaves the goal armed. A release or view change needs a new deadman
+  press but keeps the goal armed; the next held `goto` heartbeat resumes it, using
+  only Nav2 commands computed after that press. Stick input, STOP, cancel, a new
+  goal, selecting Explore/Seek, the controller socket closing (or a new one taking
+  over) and a serial disconnect disarm it.
+- Viewer (`quest/src/nav-view.js`, `nav-overlay.ts`): an unknown `state` hides the
+  overlay, and a path with any non-finite point is not drawn at all. Stick input,
+  STOP and cancel send `POST /nav/cancel`. Servers that do not accept
+  `mode: "goto"` stop with `unsupported_mode` and return `409` from `/nav/goal`.
+- Nav2 velocity commands move the rover only through ControlState: a live held
+  lease in an autonomy mode, the PWM ceiling, the camera guard and the pan rule
+  apply as for every other mode, and a command older than 250 ms stops the motors.
+- `/ws/nav` is the ROS bridge's loopback-only socket; other hosts are closed with
+  1008. The operator relay never needs it.
 
 ## H264 over WebSocket `/ws/video`
 
@@ -374,6 +442,15 @@ Each `encounters[]` entry also gains `key` and `sbar` (the same object or `null`
 `--mission-dir`, notes append to `triage.jsonl` and `report.json` is rewritten on every note.
 `/health` gains `triage: {"enabled", "pending", "generated", "last_ms", "min_interval_s"}`.
 
+## `/health.fusion_bypass` and `/ws/map` status (Jetson -> Quest)
+
+Optional `fusion_bypass: bool`, default `false`, in both the Python and Rust servers. With
+`--fusion-bypass` (`FARSIGHT_FUSION_BYPASS=1`) the Jetson builds no 3D map. `points`,
+`triangles`, `keyframes` and `frames` (fused frames) stay `0`, `revision` does not advance and
+the map packets are empty. `reason` is `"Geometry lane external; fusion bypassed"`. The camera,
+the depth view, `depth_range`, the pose and Nav2 sensing are unaffected, and `source` still
+names the sensor (`IPHONE LIDAR`).
+
 ## `/health.camera_pan` (Jetson -> Quest), default camera mount
 
 Optional `camera_pan: bool` is `true` only when the server runs with `--scan-pan` (a physical
@@ -453,6 +530,17 @@ supported coding stay identity. Responses always carry `Vary: Accept-Encoding`. 
 encodes once per map version (generation, revision, mesh revision) and reuses it across clients.
 Decoded bytes are identical to the uncompressed body; no other route is compressed.
 
+### Visual map wire cap (additive)
+
+`/map/points.bin`, `/map/mesh.bin`, `/map/export.ply` and the legacy `/ws/map` binary push are
+bounded for display: `FARSIGHT_MAP_POINTS_CAP` (`--map-points-cap`, default 30000) and
+`FARSIGHT_MAP_TRIANGLES_CAP` (`--map-triangles-cap`, default 40000); `0` disables. Python and
+Rust decimate identically at encode time: points keep records `i*N/cap`; the mesh keeps
+triangles `i*T/cap`, then sends only their vertices in first-use order with remapped indices.
+Binary layouts are unchanged; the PLY follows the capped points. Map status (`/health`,
+`/ws/map`) gains `capped: true` while either cap is decimating; `points` and `triangles` still
+count the full map. Fusion, Nav2 depth/occupancy and scan results keep full resolution.
+
 ### Cellular map subscription (additive)
 
 `/ws/map?points=http` opts into status-only delivery. Each status acknowledges
@@ -485,3 +573,143 @@ latches are unchanged.
 | `OK` / `ERR <msg>` | Ack |
 
 Uno watchdog: no `M` for 300 ms -> motors stop on its own.
+
+## Opt-in bonded upstream control (experimental v1)
+
+Server flag `--bonded-control` adds `/ws/control/bonded`; default `/ws/control`
+and its single-owner/replay behavior remain unchanged. This endpoint is for
+trusted operator-relay upstreams, not a second Quest controller. At most two
+paths attach to one logical owner. Prototype software tests are not permission
+to activate physical driving or a claim of cellular continuity qualification.
+
+The first frame, within 3 seconds, is a JSON attachment request:
+
+```json
+{"type":"attach","version":1}
+```
+
+A second path joins the live owner with its private credential:
+
+```json
+{"type":"attach","version":1,"secret":"64 hexadecimal characters"}
+```
+
+The private reply has `type:"attached"`, `version:1`, `session_id`, `secret`
+(a random 256-bit hex credential) and `path_id`. The relay consumes this reply;
+it must never forward it to Quest, put the credential in a URL, log it or save
+it in qualification artifacts. Public session IDs are not attachment secrets.
+A wrong secret or third path is rejected without revoking the existing owner.
+A retired secret cannot create a new owner. New ownership still requires release.
+
+After attachment, the original control command schema applies. The relay
+constructs each fresh command once and sends identical copies on live paths;
+it does not retry or queue motion for recovery. The receiver uses a bounded
+256-entry canonical-payload history. Known identical copies and obsolete copies,
+including an old release arriving after a newer press, do not call the control
+state again or renew its lease. A conflicting known sequence stops with
+`conflicting_duplicate` and requires a fresh release. Expired copied motion is
+discarded; the existing output/permit expiry still stops motion at its deadline.
+Malformed inputs retain existing fault behavior. Deduplication applies only to
+this authenticated opt-in transport, not the legacy control socket.
+
+One logical 40 Hz publisher issues each status and permit once, then copies the
+same status to attached paths. Status adds a safe integer `status_seq` that
+strictly increases; the relay forwards each ordinal once and rejects older
+copies without treating them as fresh. Each path has a single-slot status queue
+and a 100 ms send deadline. A congested path is detached independently. Losing
+one attachment preserves the owner; losing the last immediately ends it and
+revokes the credential. Camera, displayed view, serial, proximity, lease and
+release guards remain authoritative throughout. Evidence recording remains
+once per logical stream at 20 Hz and contains no attachment credential.
+
+The relay flag `--bonded-upstream` and operator phone pinned dual-listener mode
+are opt-in. Mac USB forwarding uses `tools.phone_usb --dual-route` (18443/18444
+to phone8081/8082). Redundant view delivery uses complete bounded JPEG responses,
+with original age headers and Quest decode/display checks. Health adds
+`relay_transport.profile: "bonded-jpeg"`; Quest restricts that profile to JPEG
+without overwriting its saved video preference. The initial relay does not
+automatically reattach a lost path; the surviving attached path remains active. H.264 streams cannot be spliced across
+routes and are not included in this continuity claim. The full two-path software
+fault harness and actual phone/Quest/wheels-up rehearsal remain required.
+
+### RGB-D receiver binding propagation
+
+`/phone` now checks frame provenance against that socket's live capture-permit
+issuer before publishing camera data. Supported bindings carry both the
+conservative server-issued origin and issuer identity in the same immutable
+camera snapshot; producer encoding delay can only make its age older. Closing
+the issuer immediately revokes camera drive eligibility even if JPEG viewing
+remains fresh. Reconnection/reset clears retained binding evidence.
+
+The ARKit RGB-D endpoint currently has **no supported verified capture clock**.
+It rejects attempts to claim the RGB-only `avcapture_sync_to_host` contract on
+that endpoint. `arkit_unverified` remains view-only. Binding propagation prepares
+the receiver for a supported producer contract; it does not qualify the current
+ARKit clock or fabricate camera/pose timestamps. The AVFoundation `/phone/rgb`
+clock and capture-permit rules are unchanged.
+
+Opt-in `--lidar-drive` (`FARSIGHT_LIDAR_DRIVE=1`, default off) makes
+`camera_drive_ready` true for an `IPHONE LIDAR` frame received under 500 ms ago
+while that `/phone` session is connected with ARKit tracking `normal`. It does
+not mark the frame `camera_capture_verified`, and no wire field changes. The
+lease, deadman, release, camera-stale and disconnect stops are unchanged.
+
+
+## Phone-built mesh lane (v1)
+
+The rover iPhone constructs ARKit mesh anchors. The Mac assembles their latest
+replacements and serves Quest map snapshots locally. Jetson retains camera,
+fresh measured depth and pose for inference/control/Nav2; `--fusion-bypass`
+skips its visual map reconstruction. ARKit mesh updates are reconstruction,
+not a replacement for live navigation depth.
+
+The dedicated phone geometry port is **8083**, separate from control/video
+8081 and bonded fallback 8082. Native operator-phone USB forwarding uses Mac
+**18445 → operator phone 8083 → rover phone tailnet 8083**. Direct tailnet
+consumers may pull the rover phone endpoint. The stream path is
+`/geometry/stream`; one WebSocket binary message is one complete record.
+The standalone Mac assembler binds loopback **8484** by default. These port
+reservations describe the implemented software pipeline; they do not prove an
+installed phone is serving it yet. Existing demo routes remain available.
+
+The fixed **124-byte** header matches `rust/farsight-geometry` and
+`ios/FarsightCapture/GeometryWire.swift`. All numeric values are little-endian:
+
+| Offset | Field |
+|---|---|
+| 0 | u8 version, 1 |
+| 1 | u8 operation: replace 0, remove 1, reset 2, snapshot-end 3 |
+| 2 | u16 coding: 0 raw, 1 zlib-framed DEFLATE, 2 standard Brotli; other values are rejected |
+| 4 | u64 wire sequence |
+| 12 | u64 capture map epoch |
+| 20 | 16 raw UUID bytes: capture session |
+| 36 | 16 raw UUID bytes: anchor (zero for reset/snapshot-end) |
+| 52 | 16 f32 values: column-major anchor-to-ARSession-world transform |
+| 116 | u32 vertex count |
+| 120 | u32 scalar index count (three per triangle) |
+
+Payload is `vertex_count * 12` bytes of local f32 XYZ, then `index_count * 4`
+bytes of u32 indices; v1 has neutral vertex colors. Coordinates are metres,
+ARKit X right/Y up/negative Z forward, in the same sensor world as the existing
+camera transform. No headset origin is implicitly substituted. Phone encoding
+uses public native `COMPRESSION_BROTLI` (fixed level 2, iOS 15+).
+Apple `COMPRESSION_ZLIB` is raw DEFLATE and **does not** match the zlib-framed
+flag; use an explicitly compatible encoder if selecting that flag.
+
+Records are at most 256 KiB including the header, with at most 65,536 vertices
+and 65,536 scalar indices. Replace requires a nonempty triangle mesh, finite
+coordinates/transform and indices in range; other operations carry no payload.
+Decode output must be bounded to the declared size before allocation/read,
+and trailing/missing bytes fail the whole record. Producer oversize rejects
+are counted rather than presented as complete geometry.
+
+The producer coalesces dirty state by anchor before assigning wire sequence.
+Sequence increases across geometry transport reconnects within the same
+capture session/epoch. A reconnect sends reset, a complete bounded snapshot
+of retained anchors, then snapshot-end before live deltas. Consumers stage
+that snapshot atomically, reject stale sequence values and discard incomplete
+staging on disconnect. A new capture session/epoch clears prior coordinates.
+Pending and published geometry both have vertex/triangle/anchor budgets;
+assembled packets must stay inside Quest decoder limits (600,000 vertices,
+160,000 triangles). Geometry traffic has bounded bulk pacing and never shares
+or delays the control permit lane. Network recovery grants no motion intent.

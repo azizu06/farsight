@@ -550,6 +550,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "farsight-forward"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "socket2",
+]
+
+[[package]]
+name = "farsight-geometry"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "brotli",
+ "bytes",
+ "clap",
+ "flate2",
+ "futures-util",
+ "indexmap",
+ "mimalloc",
+ "reqwest",
+ "rustc-hash",
+ "rustls",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite 0.26.2",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "zstd",
+]
+
+[[package]]
 name = "farsight-relay"
 version = "0.1.0"
 dependencies = [
@@ -586,6 +618,7 @@ dependencies = [
  "clap",
  "flate2",
  "futures-util",
+ "hyper",
  "image",
  "indexmap",
  "mimalloc",
@@ -594,19 +627,24 @@ dependencies = [
  "rand 0.9.5",
  "regex",
  "reqwest",
+ "rustc-hash",
  "rustls",
  "serde",
  "serde_json",
  "serialport",
+ "sha2",
+ "subtle",
  "tempfile",
  "tokio",
- "tokio-tungstenite 0.26.2",
+ "tokio-tungstenite 0.29.0",
  "tower-http",
+ "tower-service",
  "tracing",
  "tracing-subscriber",
  "url",
  "uuid",
  "which",
+ "zstd",
 ]
 
 [[package]]
@@ -1088,6 +1126,8 @@ checksum = "cc4e190f5d26ca7051642629da2c52fc03bde85a03197c99408dcd291734c855"
 dependencies = [
  "equivalent",
  "hashbrown",
+ "serde",
+ "serde_core",
 ]
 
 [[package]]
@@ -2048,6 +2088,17 @@ name = "sha1"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a978451301f4db1d02937a4ab3ccce137717b81826e79b7d49ffe3244a13c3b8"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.2.17",
+ "digest",
+]
+
+[[package]]
+name = "sha2"
+version = "0.10.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283"
 dependencies = [
  "cfg-if",
  "cpufeatures 0.2.17",
@@ -3031,6 +3082,34 @@ name = "zmij"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
+
+[[package]]
+name = "zstd"
+version = "0.13.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e91ee311a569c327171651566e07972200e76fcfe2242a4fa446149a3881c08a"
+dependencies = [
+ "zstd-safe",
+]
+
+[[package]]
+name = "zstd-safe"
+version = "7.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "64d80649ab6db9d9f6f9c80a40becd948eda4714a0a5ac8c4d157a32231c7882"
+dependencies = [
+ "zstd-sys",
+]
+
+[[package]]
+name = "zstd-sys"
+version = "2.1.1+zstd.1.5.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aeec9eaf2dffbbd09201e23bd0ffcbaa33bb8e9266a10734fd7ed90a85eca078"
+dependencies = [
+ "cc",
+ "pkg-config",
+]
 
 [[package]]
 name = "zune-core"

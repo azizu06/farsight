@@ -11,24 +11,52 @@ import threading
 import time
 import uuid
 
-from jetson.autonomy import Autonomy
+from jetson.autonomy import Autonomy, valid_person
 
 
 class ControlState:
     LEASE = 0.250
     RANGE_TTL = 0.350
+    PAN_MOUNTS = ("servo", "none")
 
     def __init__(self, simulated=False, max_pwm=100, clock=time.monotonic, camera_ready=None, min_pwm=0,
-                 detections=None, drive_profile=None, allow_calibration=False):
+                 detections=None, proximity_stop=True, navigator=None, drive_profile=None,
+                 allow_calibration=False, pan_mount="servo", autonomy_max_pwm=None):
         if (type(min_pwm) is not int or type(max_pwm) is not int
                 or not 0 <= min_pwm < max_pwm <= 255):
             raise ValueError("PWM bounds must satisfy 0 <= min_pwm < max_pwm <= 255")
+        autonomy_max_pwm = max_pwm if autonomy_max_pwm is None else autonomy_max_pwm
+        if type(autonomy_max_pwm) is not int or not min_pwm < autonomy_max_pwm <= max_pwm:
+            raise ValueError("autonomy_max_pwm must satisfy min_pwm < autonomy_max_pwm <= max_pwm")
         self.clock, self.simulated, self.max_pwm = clock, simulated, max_pwm
         self.min_pwm = min_pwm
+        # Ceiling for motion the operator does not steer directly (explore, seek,
+        # goto, Nav2, scan sweeps), so a fast teleop max_pwm does not also speed
+        # up autonomy. Defaults to max_pwm (unchanged behaviour).
+        self.autonomy_max_pwm = autonomy_max_pwm
         self.camera_ready = camera_ready
         # Optional, bounded in-memory snapshot reader; never inference or I/O.
         self.detections = detections
-        self.autonomy = Autonomy() if detections is not None else None
+        # Ultrasonic proximity stop (range < 25 cm or stale range blocks forward
+        # translation). On by default; turning it off is an explicit opt-in
+        # (server --proximity-stop off) for runs where navigation avoids
+        # obstacles instead. The pan-angle rule and every lease/link/camera stop
+        # stay regardless of this option.
+        self.proximity_stop = proximity_stop
+        # "servo": a physical pan head follows the commanded pan, and forward
+        # drive is blocked while it is off-centre. "none": no pan hardware; the
+        # headset pans digitally, so a valid commanded pan is accepted but never
+        # moves anything or blocks forward drive (pan stays 0, the Uno gets no P).
+        if pan_mount not in self.PAN_MOUNTS:
+            raise ValueError(f"pan_mount must be one of {self.PAN_MOUNTS}")
+        self.pan_mount = pan_mount
+        # Optional navigation stack (jetson.nav.NavService). When configured it is
+        # the only navigation: autonomy modes apply its velocity commands and hold
+        # still while it is unavailable. Without it the reactive jetson.autonomy
+        # policy runs as before.
+        self.navigator = navigator
+        self.autonomy = (Autonomy(proximity_stop=proximity_stop)
+                         if detections is not None or navigator is not None else None)
         # Both default off: without them the wire protocol and PWM mixing are unchanged.
         self.profile = drive_profile
         self.allow_calibration = bool(allow_calibration)
@@ -52,6 +80,9 @@ class ControlState:
         # Permits already issued when the scan began: a zero-stick teleop
         # heartbeat carrying one was sent before POST /scan and may race it.
         self.scan_race_permits = frozenset()
+        # Same race for POST /nav/goal: permits issued before the goal was set may
+        # still carry a zero-stick teleop heartbeat sent before the client switched
+        # to mode "goto".
         # Optional on_output(v, w, forward_blocked) observer of the command actually applied.
         self.on_output = None
 
@@ -77,7 +108,7 @@ class ControlState:
                 raise ValueError("Scan cancelled: operator lease, override, or safety stop")
             if not math.isfinite(w) or not -.35 <= w <= .35 or not -80 <= pan <= 80:
                 raise ValueError("Scan command outside bounded sweep")
-            self.scan_w, self.pan = w, round(pan)
+            self.scan_w, self.pan = w, round(pan) if self.pan_mount == "servo" else 0
             self.output()
             if token is not self.scan_token:
                 raise ValueError("Scan cancelled: camera or range unavailable")
@@ -106,6 +137,8 @@ class ControlState:
         with self.lock:
             if value != self.connected:
                 self.stop("release_required" if value else (reason or "serial_disconnected"))
+                if self.navigator is not None:
+                    self.navigator.disarm()  # a serial fault needs a fresh goal, not a silent resume
                 self.permits.clear()
                 self.range_cm = None
                 self.range_at = -math.inf
@@ -121,6 +154,8 @@ class ControlState:
             self.seq = -1
             self.permits.clear()
             self.stop("release_required")
+            if self.navigator is not None:
+                self.navigator.disarm()
             return self.session_id
 
     def end(self, session_id):
@@ -129,15 +164,23 @@ class ControlState:
                 self.stop("controller_disconnected")
                 self.session_id = None
                 self.permits.clear()
+                if self.navigator is not None:
+                    self.navigator.disarm()  # a go-to goal belongs to the controller that set it
 
     def update_range(self, cm):
         with self.lock:
             self.range_cm = cm if math.isfinite(cm) and 0 < cm <= 500 else None
             self.range_at = self.clock()
 
+    def range_unsafe(self):
+        """The ultrasonic proximity rule; never true when the option is off."""
+        return self.proximity_stop and (self.range_cm is None or self.clock() - self.range_at >= self.RANGE_TTL
+                                        or self.range_cm < 25)
+
     def forward_blocked(self):
-        return (self.range_cm is None or self.clock() - self.range_at >= self.RANGE_TTL
-                or self.range_cm < 25 or abs(self.pan) > 10)
+        # The pan rule protects a servo pan mount and stays on with one; without
+        # one, pan is always 0 here.
+        return self.range_unsafe() or abs(self.pan) > 10
 
     def camera_is_ready(self):
         if self.camera_ready is None:
@@ -193,7 +236,8 @@ class ControlState:
                 self.stop("unsupported_mode")
                 return False
             elif mode not in ("teleop", "calibrate", "velocity") and (
-                    not self.autonomy or mode not in ("explore", "seek")):
+                    not self.autonomy or mode not in ("explore", "seek", "goto")
+                    or (mode == "goto" and self.navigator is None)):
                 self.stop("unsupported_mode")
                 return False
             target_id = message.get("target_id") if mode == "seek" else None
@@ -226,6 +270,8 @@ class ControlState:
                     mode = "teleop"
                 else:
                     pan = self.pan
+            if self.navigator is not None and (v or w):
+                self.navigator.disarm()  # stick input disarms go-to-point
             if self.autonomy:
                 if mode in ("teleop", "scan"):
                     self.autonomy.reset()
@@ -236,6 +282,8 @@ class ControlState:
                 else:
                     self.autonomy.select(mode, target_id, now)
                     pan = 0  # autonomy needs a forward-facing ultrasonic/camera
+            if self.pan_mount == "none":
+                pan = 0  # validated above; the headset pans digitally
             if round(pan) != self.pan:
                 # A reading from a previous servo direction is not a forward
                 # obstacle reading, even when the servo returns to the centre.
@@ -284,12 +332,13 @@ class ControlState:
         self.reason = "active"
         return True
 
-    def _drive_output(self):
-        kind, values = self.drive
+    def _drive_output(self, kind=None, values=None, max_pwm=None):
+        if kind is None:
+            kind, values = self.drive
         left, right = (0, 0)
         if self.connected:
             left, right = (values if kind == "calibrate"
-                           else self.profile.wheel_pwm(*values, max_pwm=self.max_pwm))
+                           else self.profile.wheel_pwm(*values, max_pwm=max_pwm or self.max_pwm))
         # Translation intent decides the range stop: a spin with slightly
         # unequal trimmed wheels must not be blocked by its own bias.
         translating = values[0] > 0 if kind == "velocity" else left + right > 0
@@ -317,14 +366,47 @@ class ControlState:
             v, w = self.v, self.w
             if self.scan_token is not None:
                 v, w = 0.0, self.scan_w
-                if w and (self.range_cm is None or self.clock() - self.range_at >= self.RANGE_TTL
-                          or self.range_cm < 25):
+                if w and self.range_unsafe():
                     self.stop("scan_range_stop")
                     v = w = 0.0
-            if self.autonomy and self.autonomy.mode != "teleop" and self.deadline:
+            engaged = bool(self.autonomy and self.autonomy.mode != "teleop" and self.deadline)
+            if self.navigator is not None and self.autonomy:
+                self.navigator.sync(self.autonomy.mode, self.autonomy.target_id, engaged)
+            backed = engaged and self.navigator is not None and self.navigator.handles(self.autonomy.mode)
+            if backed and self.autonomy.mode in ("explore", "seek"):
+                snapshot = self.detections() if self.detections else {}
+                usable = snapshot.get("fresh") and not snapshot.get("error")
+                person = next((box for box in (snapshot.get("boxes", []) if usable else [])
+                               if valid_person(box)), None)
+                if self.autonomy.mode == "explore" and person is not None:
+                    # Like the reactive policy: Explore hands over to Seek on the first person seen.
+                    self.autonomy.mode, self.autonomy.target_id = "seek", person["id"]
+                    self.navigator.sync("seek", person["id"], True)
+                if self.autonomy.mode == "seek":
+                    self.navigator.update_seek(snapshot)
+            fault = self.navigator.sensor_fault() if backed else None
+            if fault:
+                # No fresh normal-tracking pose or measured depth of the current sensor session:
+                # stop now, even with a live lease and fresh cmd_vel, and require a new press.
+                self.stop(fault)
+                v = w = 0.0
+            elif engaged and self.navigator is not None and self.navigator.handles(self.autonomy.mode):
+                # Nav2 drives this mode; a missing or stale velocity command stops.
+                if self.profile is not None:  # calibrated: Nav2 m/s, rad/s straight to wheel PWM
+                    command = self.navigator.command(si=True) or (0.0, 0.0)
+                    top_v = self.profile.max_linear_mps(self.autonomy_max_pwm)
+                    top_w = self.profile.max_angular_radps(self.autonomy_max_pwm)
+                    return self._drive_output("velocity", (max(-top_v, min(top_v, command[0])),
+                                                           max(-top_w, min(top_w, command[1]))),
+                                              max_pwm=self.autonomy_max_pwm)
+                command = self.navigator.command()
+                v, w = command if command is not None else (0.0, 0.0)
+            elif engaged and self.navigator is not None:
+                v = w = 0.0  # Nav2 down: hold, never drive the reactive policy blind
+            elif engaged:
                 cm = self.range_cm if self.clock() - self.range_at < self.RANGE_TTL else None
                 try:
-                    v, w = self.autonomy.step(self.clock(), cm, self.detections())
+                    v, w = self.autonomy.step(self.clock(), cm, self.detections() if self.detections else {})
                 except Exception:
                     self.stop("autonomy_unavailable")
                     v = w = 0
@@ -341,10 +423,12 @@ class ControlState:
                     self.on_output(v / scale, w / scale, blocked)
                 except Exception:
                     pass  # telemetry must never affect motor output
+            top = self.autonomy_max_pwm if engaged or self.scan_token is not None else self.max_pwm
+
             def pwm(value):
                 if value == 0:
                     return 0
-                magnitude = round(self.min_pwm + (self.max_pwm - self.min_pwm) * abs(value / scale))
+                magnitude = round(self.min_pwm + (top - self.min_pwm) * abs(value / scale))
                 return magnitude if value > 0 else -magnitude
             return pwm(left), pwm(right), self.pan + 90
 
@@ -372,4 +456,8 @@ class ControlState:
                     "max_pwm": self.max_pwm, "min_pwm": self.min_pwm,
                     "drive_profile": self.profile is not None,
                     "calibration_allowed": self.allow_calibration,
-                    "drive_mode": self.drive[0] if self.drive else "normalized"}
+                    "drive_mode": self.drive[0] if self.drive else "normalized",
+                    **({"nav": self.navigator.nav_object(
+                        self.autonomy.mode if self.autonomy else None,
+                        bool(self.autonomy and self.autonomy.mode != "teleop" and self.deadline))}
+                       if self.navigator is not None else {})}

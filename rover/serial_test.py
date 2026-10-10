@@ -4,7 +4,7 @@
 Protocol (rover/farsight_uno/farsight_uno.ino, 115200 baud, newline terminated):
   M <l> <r>  -> OK     signed PWM -255..255, renews the 300 ms motor watchdog
   P <deg>    -> OK     pan servo 10..170
-  R          -> R <cm> (-1 = no valid echo)
+  R          -> R -1   (no range sensor is mounted; kept for protocol compatibility)
   anything else, or out-of-range values -> ERR command (and motors stop)
   line longer than 47 bytes             -> ERR line (rest of the line is dropped)
 
@@ -165,8 +165,7 @@ class FakeUno:
     partial-line timeout) is evaluated lazily against time.monotonic().
     """
 
-    def __init__(self, range_cm: int = 100):
-        self.range_cm = range_cm
+    def __init__(self):
         self.pan = 90
         self._left = self._right = 0
         self._lease = False
@@ -216,12 +215,7 @@ class FakeUno:
             if v and all(-255 <= x <= 255 for x in v):
                 self._last_motor = time.monotonic()
                 self._lease = True
-                forward_blocked = self.range_cm < 25 or abs(self.pan - 90) > 10
-                left, right = v
-                if left + right > 0 and forward_blocked:
-                    t = (left + right + 1) // 2
-                    left, right = left - t, right - t
-                self._left, self._right = left, right
+                self._left, self._right = v
                 return self._reply("OK")
         elif text.startswith("P"):
             v = self._ints(text[1:], 1)
@@ -229,7 +223,7 @@ class FakeUno:
                 self.pan = v[0]
                 return self._reply("OK")
         elif text.rstrip(" \r") == "R":
-            return self._reply(f"R {self.range_cm}")
+            return self._reply("R -1")
         self._stop()
         self._reply("ERR command")
 
@@ -314,7 +308,7 @@ def main(argv=None) -> int:
     with serial.Serial(args.port, args.baud, timeout=0.05) as port:
         time.sleep(BOOT_DELAY_S)
         if args.allow_motion:
-            print("Motion enabled: wheels must be off the ground. Forward sensor must read clear.")
+            print("Motion enabled: wheels must be off the ground.")
         return run(port, args.allow_motion, operator_observer, args.tolerance_ms)
 
 

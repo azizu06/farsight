@@ -1,5 +1,6 @@
 import unittest
 import shlex
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -203,6 +204,9 @@ class RenderTests(unittest.TestCase):
             self.assertEqual(file_line.partition("=")[2], envfile)
             working = next(line for line in text.splitlines() if line.startswith("WorkingDirectory="))
             self.assertEqual(working.partition("=")[2], repo)
+            # Boot must not wait on network-online.target (networkd-wait-online held it for 2 min).
+            self.assertFalse([line for line in text.splitlines()
+                              if line.startswith(("After=", "Wants=", "Requires=")) and "network-online" in line])
             defaults = {}
             for line in text.splitlines():
                 if line.startswith("Environment="):
@@ -213,6 +217,8 @@ class RenderTests(unittest.TestCase):
             argv = [defaults.get(item[2:-1], item) if item.startswith("${") and item.endswith("}") else item for item in argv]
             if unit == "farsight-llm.service":
                 self.assertEqual(argv[argv.index("--image-max-tokens") + 1], "256")
+                self.assertEqual(argv[argv.index("--cache-ram") + 1], "0")  # the 8 GiB default exhausts the board
+                self.assertIn("MemoryMax=4608M", text)
                 self.assertEqual(argv[argv.index("-m") + 1], selection["FARSIGHT_LLM_MODEL"])
                 self.assertEqual(argv[argv.index("--mmproj") + 1], selection["FARSIGHT_LLM_MMPROJ"])
             elif unit == "farsight-whisper.service":
@@ -224,6 +230,18 @@ class RenderTests(unittest.TestCase):
             path.write_text(rendered)
             actual = launch.read_env_file(path)
         self.assertEqual(actual["FARSIGHT_LLM_MODEL"], selection["FARSIGHT_LLM_MODEL"])
+
+    def test_nav_unit_waits_for_a_live_pose_before_launching_nav2(self):
+        # Nav2's lifecycle bringup aborts without base_link TF for ~60 s; a boot before the phone connects
+        # would strand it until a manual restart.
+        text = EXAMPLE.with_name("farsight-nav.service").read_text()
+        pre = next(line for line in text.splitlines() if line.startswith("ExecStartPre="))
+        argv = shlex.split(pre.partition("=")[2])
+        self.assertEqual(argv[:2], ["/bin/bash", "-c"])
+        self.assertIn("/nav/status", argv[2])
+        self.assertIn("pose_source.:.arkit", argv[2])
+        subprocess.run(["bash", "-n", "-c", argv[2]], check=True)
+        self.assertIn("TimeoutStartSec=infinity", text.splitlines())
 
     def test_rendered_example_passes_launch_validation(self):
         env = render(present=(f"{MODELS}/yolo11n-pose.engine",), assistant=True, whisper=True)

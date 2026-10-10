@@ -59,10 +59,20 @@ monotonic time before each write. HTTP/inference work cannot extend its lease.
 The server supplies a camera freshness callback (capture age at most 500 ms);
 its failure stops **all** motion even if a client claims it sees fresh video.
 Camera recovery still requires a new deadman release before motion resumes.
-Uncertain or stale (>350 ms) range data and a pan head outside ±10 degrees
-block forward translation; turns and reverse remain usable. Motion defaults
+Uncertain or stale (>350 ms) range data, range below 25 cm and a pan head
+outside ±10 degrees block forward translation; turns and reverse remain usable.
+The range part is the proximity stop, on by default; `proximity_stop=False`
+(server `--proximity-stop off`) is an explicit opt-in for navigation runs that
+steer around obstacles. The pan rule applies with `pan_mount="servo"`, the
+default. `pan_mount="none"` (server `--pan-mount none`) is for a rover with no
+pan servo: a valid commanded pan is accepted but kept at 0, so it never blocks
+forward translation and the Uno never gets `P`. Motion defaults
 to maximum PWM 100 for a small demo area. This does not replace hardware tests
 or a person ready to power off the rover.
+
+An optional `autonomy_max_pwm` (server `--autonomy-max-pwm`, `FARSIGHT_AUTONOMY_MAX_PWM`)
+caps explore, seek, go-to, Nav2 and scan motion below `max_pwm`, so a fast teleop
+ceiling does not also speed up autonomy; it defaults to `max_pwm`.
 
 An optional `min_pwm` motor floor defaults to zero. After mixing and normalizing
 the left/right wheel commands, each nonzero wheel maps to

@@ -2,10 +2,14 @@
 
 The Python mapping server accepts `--bulk-limit-mbps N` and
 `create_app(bulk_limit_mbps=N)`. The default is **0 (disabled)**. One shared
-`app.state.bulk` budget covers point/mesh/PLY HTTP bodies, camera JPEG/MJPEG,
-depth JPEG, mission snapshots, TTS bytes, and atomic H.264/legacy map WebSocket
-payloads. Health, control/permits, detection/status JSON and incoming phone
-frames do not use the budget. Static Quest assets are outside this limiter.
+`app.state.bulk` budget covers point/mesh/PLY HTTP bodies, mission snapshots,
+TTS bytes and legacy map WebSocket payloads. Live video (camera JPEG, MJPEG,
+depth JPEG and atomic H.264 `/ws/video` payloads) uses a separate
+`app.state.live` pacer, `--video-limit-mbps` / `FARSIGHT_VIDEO_LIMIT_MBPS`,
+default **0 (unpaced)**: sharing one budget made each 40 KB camera JPEG wait
+behind map snapshots and pushed headset video age past the 500 ms motion stop.
+Health, control/permits, detection/status JSON and incoming phone frames use
+neither budget. Static Quest assets are outside both limiters.
 Python ownership is coordinated on board #24; Rust remains Devin's area.
 
 An opt-in example for a previously measured link:

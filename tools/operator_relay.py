@@ -15,10 +15,12 @@ import aiohttp
 from aiohttp import web
 from yarl import URL
 
+from .control_closures import ControlClosures
+
 DIST = Path(__file__).resolve().parents[1] / "quest" / "dist"
 HOP_HEADERS = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
                "te", "trailer", "transfer-encoding", "upgrade", "host", "content-length"}
-PROXY_PREFIXES = ("/ws/", "/map/", "/tts/", "/video/", "/mission/", "/phone/")
+PROXY_PREFIXES = ("/ws/", "/map/", "/tts/", "/video/", "/mission/", "/phone/", "/nav/")
 # Binary map downloads keep the client's Accept-Encoding so br/gzip crosses the cellular leg.
 # Everything else asks upstream for identity because the relay decodes and rewrites JSON.
 ENCODED_PATHS = {"/map/points.bin", "/map/mesh.bin", "/map/export.ply"}
@@ -64,8 +66,14 @@ def forward_headers(headers):
             if key.lower() not in HOP_HEADERS | extra}
 
 
-def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5):
+def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5, bonded_upstream=None, geometry_upstream=None):
     origin = upstream_origin(upstream)
+    second = upstream_origin(bonded_upstream) if bonded_upstream is not None else None
+    if second == origin:
+        raise ValueError("Bonded upstreams must be distinct routes to the same Jetson")
+    if geometry_upstream is not None:
+        from .geometry_relay import geometry_origin
+        geometry_upstream = geometry_origin(geometry_upstream)
     dist = Path(dist).resolve()
     tls = ssl.create_default_context(cafile=ca_file)
 
@@ -86,6 +94,7 @@ def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5):
 
     app = web.Application(client_max_size=8 * 1024 * 1024, middlewares=[local_only])
     app["origin"] = origin
+    control_closures = ControlClosures()
 
     async def sessions(app):
         timeout = aiohttp.ClientTimeout(total=None, connect=5, sock_read=10)
@@ -94,20 +103,42 @@ def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5):
             connector=aiohttp.TCPConnector(limit=16, ssl=tls))
         app["control"] = aiohttp.ClientSession(timeout=timeout,
             connector=aiohttp.TCPConnector(limit=4, ssl=tls))
-        yield
-        await app["http"].close()
-        await app["control"].close()
+        if second is not None:
+            from .bonded_relay import BondedRelay
+            app["bonded"] = BondedRelay((origin, second), app["control"], app["http"])
+        if geometry_upstream is not None:
+            from .geometry_relay import GeometryRelay
+            app["geometry"] = GeometryRelay(
+                lambda: app["bonded"].preferred_origin() if second is not None else origin,
+                geometry_upstream)
+            await app["geometry"].start()
+        try:
+            yield
+        finally:
+            if geometry_upstream is not None:
+                await app["geometry"].close()
+            if second is not None:
+                await app["bonded"].close()
+            await app["http"].close()
+            await app["control"].close()
 
     app.cleanup_ctx.append(sessions)
 
     async def relay_health(request):
-        return web.json_response({"relay": True, "upstream": str(origin),
-                                  "quest_built": (dist / "index.html").is_file()},
+        packet = {"relay": True, "upstream": str(origin),
+                  "quest_built": (dist / "index.html").is_file(),
+                  "control_closures": control_closures.status(enabled=second is None)}
+        if second is not None:
+            packet["transport"] = app["bonded"].status()
+        if geometry_upstream is not None:
+            packet["geometry"] = app["geometry"].status()["geometry"]
+        return web.json_response(packet,
                                  headers={"Cache-Control": "no-store"})
 
     async def websocket(request, target):
         control = request.path == "/ws/control"
         session = app["control"] if control else app["http"]
+        diagnostic = control_closures.begin() if control else None
         # Do not accept the Quest socket until the upstream socket exists.
         try:
             remote = await session.ws_connect(target, heartbeat=10,
@@ -115,14 +146,37 @@ def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5):
                 autoclose=True, compress=0,
                 timeout=aiohttp.ClientWSTimeout(ws_close=0.25))
         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            if diagnostic is not None:
+                diagnostic.end("upstream", "connect_failure", exception=exc, operation="connect")
             raise web.HTTPBadGateway(text=f"Rover unavailable: {type(exc).__name__}")
+        except BaseException as exc:
+            if diagnostic is not None:
+                diagnostic.end("upstream", "connect_failure", exception=exc, operation="connect")
+            raise
         local = web.WebSocketResponse(heartbeat=10, timeout=0.25,
             max_msg_size=16384 if control else 8 * 1024 * 1024, compress=False)
         try:
-            await local.prepare(request)
+            try:
+                await local.prepare(request)
+            except BaseException as exc:
+                if diagnostic is not None:
+                    diagnostic.end("quest", "prepare_failure", local.close_code, remote.close_code, exc, operation="prepare")
+                raise
+            if diagnostic is not None:
+                diagnostic.opened()
             deadline = min(send_timeout, 0.1) if control else send_timeout
 
-            async def pipe(source, destination, client_to_rover=False):
+            async def send(operation, client_to_rover):
+                try:
+                    await asyncio.wait_for(operation, deadline)
+                except BaseException as exc:
+                    if diagnostic is not None:
+                        diagnostic.end("upstream" if client_to_rover else "quest",
+                                       "send_timeout" if isinstance(exc, asyncio.TimeoutError) else "error",
+                                       local.close_code, remote.close_code, exc, operation="send")
+                    raise
+
+            async def pipe_body(source, destination, client_to_rover=False):
                 async for message in source:
                     if message.type == aiohttp.WSMsgType.TEXT:
                         data = message.data
@@ -141,21 +195,41 @@ def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5):
                                             or not 0 <= age <= 500):
                                         command.update(deadman=False, v=0, w=0)
                                         data = json.dumps(command)
-                            except (ValueError, TypeError):
+                            except (ValueError, TypeError) as exc:
+                                if diagnostic is not None:
+                                    diagnostic.end("quest", "invalid_control", local.close_code, remote.close_code, exc)
                                 await local.close(code=1008, message=b"Invalid control JSON")
                                 return
                         if not client_to_rover:
                             # Assistant/telemetry messages may contain absolute audio URLs.
                             with suppress(ValueError, TypeError):
-                                data = json.dumps(rewrite_json(json.loads(data), origin))
-                        await asyncio.wait_for(destination.send_str(data), deadline)
+                                data = json.dumps(rewrite_json(json.loads(data), target.origin()))
+                        await send(destination.send_str(data), client_to_rover)
                     elif message.type == aiohttp.WSMsgType.BINARY:
                         if control:
+                            if diagnostic is not None:
+                                diagnostic.end("quest" if client_to_rover else "upstream", "invalid_control",
+                                               local.close_code, remote.close_code)
                             await local.close(code=1008, message=b"Control requires JSON")
                             return
-                        await asyncio.wait_for(destination.send_bytes(message.data), deadline)
+                        await send(destination.send_bytes(message.data), client_to_rover)
                     else:
                         return
+
+            async def pipe(source, destination, client_to_rover=False):
+                side = "quest" if client_to_rover else "upstream"
+                try:
+                    await pipe_body(source, destination, client_to_rover)
+                except BaseException as exc:
+                    if diagnostic is not None:
+                        diagnostic.end(side, "send_timeout" if isinstance(exc, asyncio.TimeoutError) else "error",
+                                       local.close_code, remote.close_code, exc)
+                    raise
+                finally:
+                    if diagnostic is not None and not diagnostic.finished:
+                        error = source.exception()
+                        diagnostic.end(side, "error" if error is not None or source.close_code == 1006 else "normal",
+                                       local.close_code, remote.close_code, error)
 
             tasks = [asyncio.create_task(pipe(local, remote, True)),
                      asyncio.create_task(pipe(remote, local))]
@@ -181,7 +255,25 @@ def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5):
 
     async def proxy(request):
         # origin and path are constructed separately; //host cannot change destination.
-        target = origin.with_path(request.rel_url.raw_path, encoded=True).with_query(request.query)
+        route = origin
+        if second is not None:
+            bond = app["bonded"]
+            if request.path == "/ws/control" and request.headers.get("Upgrade", "").lower() == "websocket":
+                return await bond.control(request)
+            if request.path in ("/ws/video", "/stream.mjpg") or request.path.startswith("/video/"):
+                raise web.HTTPNotImplemented(text="Bonded prototype supports complete JPEG frames only")
+            if request.method == "GET" and request.path in ("/camera.jpg", "/health"):
+                reply = await bond.race_get(request.path)
+                headers = forward_headers(reply.headers)
+                headers["Cache-Control"] = "no-store"
+                if request.path == "/health":
+                    packet = rewrite_json(json.loads(reply.body), reply.origin)
+                    packet["relay_transport"] = bond.status()
+                    headers.pop("Content-Encoding", None)
+                    return web.Response(body=json.dumps(packet).encode(), headers=headers)
+                return web.Response(body=reply.body, headers=headers)
+            route = bond.preferred_origin()
+        target = route.with_path(request.rel_url.raw_path, encoded=True).with_query(request.query)
         if request.headers.get("Upgrade", "").lower() == "websocket":
             return await websocket(request, target)
         response = None
@@ -196,8 +288,8 @@ def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5):
                 headers = forward_headers(remote.headers)
                 headers["Cache-Control"] = "no-store"
                 if "Location" in headers:
-                    redirect = origin.join(URL(headers["Location"]))
-                    if redirect.origin() != origin:
+                    redirect = route.join(URL(headers["Location"]))
+                    if redirect.origin() != route:
                         raise web.HTTPBadGateway(text="Upstream redirect would bypass USB")
                     headers["Location"] = str(redirect.relative())
                 if remote.content_type == "application/json":
@@ -209,7 +301,7 @@ def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5):
                         chunks.append(chunk)
                     data = b"".join(chunks)
                     # JSON must be decoded before URL replacement, never string-replaced.
-                    data = json.dumps(rewrite_json(json.loads(data), origin)).encode()
+                    data = json.dumps(rewrite_json(json.loads(data), route)).encode()
                     headers.pop("Content-Encoding", None)
                     return web.Response(body=data, status=remote.status, headers=headers)
                 response = web.StreamResponse(status=remote.status, headers=headers)
@@ -226,6 +318,12 @@ def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5):
             raise web.HTTPBadGateway(text=f"Rover unavailable: {type(exc).__name__}")
 
     async def dispatch(request):
+        if request.path == "/ws/control/bonded":
+            raise web.HTTPForbidden(text="Private upstream attachment endpoint")
+        if geometry_upstream is not None and request.path in (
+                "/ws/map", "/map/status", "/map/mesh.bin", "/map/points.bin",
+                "/map/export.ply", "/geometry/status", "/geometry/mesh.bin", "/map/reset", "/map/pause"):
+            return await app["geometry"].handle(request)
         if is_proxied(request.path):
             return await proxy(request)
         if request.method not in ("GET", "HEAD"):
@@ -247,12 +345,15 @@ def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--upstream", required=True, help="Jetson http(s) origin on Tailscale")
+    parser.add_argument("--bonded-upstream", help="Opt-in second route to the same --bonded-control Jetson; JPEG only")
+    parser.add_argument("--geometry-upstream", help="Opt-in loopback Mac geometry assembler origin, e.g. http://127.0.0.1:8484")
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--dist", type=Path, default=DIST)
     parser.add_argument("--ca-file", help="Trusted CA PEM for a private upstream certificate")
     args = parser.parse_args()
     try:
-        app = create_app(args.upstream, args.dist, args.ca_file)
+        app = create_app(args.upstream, args.dist, args.ca_file, bonded_upstream=args.bonded_upstream,
+                         geometry_upstream=args.geometry_upstream)
     except (ValueError, OSError) as exc:
         parser.error(str(exc))
     web.run_app(app, host="127.0.0.1", port=args.port, access_log=None,

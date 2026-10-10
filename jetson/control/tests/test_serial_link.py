@@ -14,6 +14,8 @@ class FakeUno:
         self.writes = []
         self.failed = False
         self.closed = False
+        self.out_waiting = 0
+        self.short_write = False
 
     @property
     def in_waiting(self):
@@ -35,7 +37,7 @@ class FakeUno:
             self.writes.append((time.monotonic(), data))
             for line in data.splitlines():
                 self.replies.extend(b"R 120\n" if line == b"R" else b"OK\n")
-        return len(data)
+        return len(data) - 1 if self.short_write else len(data)
 
     def reset_input_buffer(self):
         self.replies.clear()
@@ -97,6 +99,53 @@ class SerialTests(unittest.TestCase):
             pump.close()
         self.assertTrue(second.closed)
         self.assertFalse(state.connected)
+
+    def test_opens_non_blocking_writes(self):
+        state, uno, calls = ControlState(), FakeUno(), []
+        pump = SerialPump(state, port="FAKE",
+                          factory=lambda port, baud, **options: calls.append(options) or uno)
+        pump.start()
+        try:
+            self.wait_for(lambda: state.connected)
+            self.assertEqual(calls[0]["write_timeout"], 0)
+        finally:
+            pump.close()
+
+    def assert_fault_disconnects(self, inject):
+        state, uno = ControlState(), FakeUno()
+        pump = SerialPump(state, port="FAKE", factory=lambda port, baud, **options: uno)
+        pump.start()
+        try:
+            self.wait_for(lambda: state.connected)
+            inject(uno)
+            self.wait_for(lambda: not state.connected)
+            self.assertEqual(state.reason, "serial_disconnected")
+        finally:
+            pump.close()
+
+    def test_stalled_output_buffer_disconnects(self):
+        self.assert_fault_disconnects(lambda uno: setattr(uno, "out_waiting", 1000))
+
+    def test_short_write_disconnects(self):
+        self.assert_fault_disconnects(lambda uno: setattr(uno, "short_write", True))
+
+    def test_no_pan_mount_never_sends_p(self):
+        state = ControlState(proximity_stop=False, pan_mount="none")
+        uno = FakeUno()
+        pump = SerialPump(state, port="FAKE", factory=lambda port, baud, **options: uno)
+        pump.start()
+        try:
+            self.wait_for(lambda: state.connected)
+            session = state.begin()
+            state.accept({"session_id": session, "seq": 0, "deadman": False}, session)
+            token = state.status(issue_permit=True)["permit"]
+            self.assertTrue(state.accept({"session_id": session, "permit": token, "seq": 1, "deadman": True,
+                                          "v": 0.5, "w": 0, "pan": 40, "video_fresh": True,
+                                          "video_age_ms": 0}, session))
+            self.wait_for(lambda: any(b"M 50 50\n" in data for _, data in uno.writes))
+            self.assertFalse([data for _, data in uno.writes if b"P " in data])
+        finally:
+            pump.close()
 
     def test_backend_selection_is_explicit(self):
         state = ControlState()

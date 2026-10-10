@@ -10,12 +10,17 @@ struct FarsightCaptureApp: App {
 struct CaptureView: View {
     @StateObject private var capture = CaptureController()
     @StateObject private var bridge = PhoneBridge()
-    @State private var bridgeRole: PhoneBridgeRole = .off
+    @AppStorage("bridgeRole") private var bridgeRole: PhoneBridgeRole = .off
     @AppStorage("bridgeLocalTailIP") private var localTailIP = ""
     @AppStorage("bridgeRoverPeerIP") private var roverPeerIP = ""
+    @AppStorage("bridgeFallbackEnabled") private var fallbackEnabled = false
+    @AppStorage("bridgeDualRoutes") private var dualRoutes = false
+    @AppStorage("bridgeFallbackPeerIP") private var fallbackPeerIP = "100.103.169.40"
     @AppStorage("bridgeJetsonUSBIP") private var jetsonUSBIP = "172.20.10.3"
-    @AppStorage("jetsonEndpoint") private var endpoint = "ws://172.20.10.2:8443"
-    @State private var rgbOnly = true
+    @AppStorage("jetsonEndpoint") private var endpoint = "ws://172.20.10.3:8443"
+    @AppStorage("rgbOnly") private var rgbOnly = false
+    @AppStorage("phoneMeshEnabled") private var phoneMeshEnabled = true
+    @AppStorage("operatorGeometryEnabled") private var operatorGeometryEnabled = true
     @Environment(\.scenePhase) private var phase
 
     var body: some View {
@@ -33,19 +38,37 @@ struct CaptureView: View {
                         Text("Listen on this phone's tailnet IP:8081 → Jetson USB:8443. Capture can run at the same time.")
                             .font(.caption)
                     } else {
-                        bridgeAddress("Rover phone's Tailscale IPv4", text: $roverPeerIP)
-                        Text("Listen only on 127.0.0.1:8081 → rover phone:8081. Mac access requires tested USB/iproxy forwarding.")
+                        bridgeAddress("Primary rover phone's Tailscale IPv4", text: $roverPeerIP)
+                        Toggle("Forward phone 3D over USB", isOn: $operatorGeometryEnabled)
+                            .disabled(bridge.running || bridge.operatorRecoveryWanted)
+                        Toggle("Enable fallback Jetson path", isOn: $fallbackEnabled)
+                            .disabled(bridge.running || bridge.operatorRecoveryWanted || dualRoutes)
+                        Toggle("Pinned dual routes for host broker", isOn: $dualRoutes)
+                            .disabled(bridge.running || bridge.operatorRecoveryWanted)
+                        if fallbackEnabled || dualRoutes { bridgeAddress("Fallback Jetson Tailscale IPv4", text: $fallbackPeerIP) }
+                        Text(dualRoutes ? "USB phone ports: 8081 pinned primary, 8082 pinned fallback. Host broker selects logical control. No phone racing or replay." : "127.0.0.1:8081 → primary or fallback:8081. Selection happens before bytes are sent. Existing sessions close on failure; they never migrate or replay.")
                             .font(.caption)
                     }
                     Button(bridge.running ? "Stop bridge" : "Start bridge") {
                         if bridge.running { bridge.stop() }
                         else { bridge.start(role: bridgeRole, localTailIP: localTailIP,
-                                            roverPeerIP: roverPeerIP, jetsonUSBIP: jetsonUSBIP) }
+                                            roverPeerIP: roverPeerIP, jetsonUSBIP: jetsonUSBIP,
+                                            fallbackPeerIP: bridgeRole == .operator && (fallbackEnabled || dualRoutes) ? fallbackPeerIP : nil,
+                                            dualRoutes: bridgeRole == .operator && dualRoutes,
+                                            geometry: bridgeRole == .operator && operatorGeometryEnabled) }
                         updateIdleTimer()
                     }.buttonStyle(.borderedProminent).tint(bridge.running ? .red : .green)
                     Text(bridge.status).font(.callout)
                     Text(bridge.counters).font(.caption.monospaced())
-                    Text("PHONE VPN / USB BRIDGE UNQUALIFIED. Keep this app foreground. Backgrounding stops both bridge and capture.")
+                    if bridgeRole == .operator && operatorGeometryEnabled { Text(bridge.geometryStatus).font(.caption.monospaced()) }
+                    if bridgeRole == .operator && dualRoutes {
+                        Text(bridge.primaryRouteStatus).font(.caption.monospaced())
+                        Text(bridge.secondaryRouteStatus).font(.caption.monospaced())
+                    }
+                    if bridge.operatorRecoveryWanted && !bridge.running {
+                        Button("Cancel bridge recovery") { bridge.stop(); updateIdleTimer() }
+                    }
+                    Text("PHONE VPN / USB BRIDGE UNQUALIFIED. Background closes all sessions and capture. Operator listeners recover in foreground. Capture retries network faults while started; background requires Start again. Motion needs a fresh trigger press after a fault.")
                         .font(.caption.bold()).foregroundStyle(.orange)
                 }
                 if bridgeRole != .operator {
@@ -63,6 +86,9 @@ struct CaptureView: View {
                 }
                 if capture.supportsDepth {
                     Toggle("Send RGB only", isOn: $rgbOnly).disabled(capture.running)
+                    if capture.supportsMesh && bridgeRole == .rover {
+                        Toggle("Build 3D on this phone", isOn: $phoneMeshEnabled).disabled(capture.running)
+                    }
                 }
                 Button(capture.running ? "Stop" : "Start capture") {
                     if capture.running { capture.stop() }
@@ -71,7 +97,8 @@ struct CaptureView: View {
                             _ = try PhoneBridgeConfig.make(role: .rover, localTailIP: localTailIP,
                                 roverPeerIP: roverPeerIP, jetsonUSBIP: jetsonUSBIP)
                             let host = jetsonUSBIP.trimmingCharacters(in: .whitespacesAndNewlines)
-                            capture.start(endpoint: "ws://\(host):8443", rgbOnly: rgbOnly)
+                            capture.start(endpoint: "ws://\(host):8443", rgbOnly: rgbOnly,
+                                          meshHost: phoneMeshEnabled && !rgbOnly ? localTailIP : nil)
                         } catch { capture.status = error.localizedDescription }
                     } else { capture.start(endpoint: endpoint, rgbOnly: rgbOnly) }
                     updateIdleTimer()
@@ -80,6 +107,7 @@ struct CaptureView: View {
                 .tint(capture.running ? .red : .green)
                 Text(capture.source).font(.caption.bold())
                 Text(capture.status).font(.callout)
+                Text(capture.geometryStatus).font(.caption.monospaced())
                 Text(capture.clockDiagnostic).font(.caption.monospaced()).foregroundStyle(.secondary)
                 if !capture.resolvedEndpoint.isEmpty {
                     Text(capture.resolvedEndpoint).font(.caption.monospaced()).textSelection(.enabled)
@@ -112,25 +140,34 @@ struct CaptureView: View {
             // backgrounding should stop the user's requested capture.
             if newPhase == .background {
                 if capture.running { capture.stop() }
-                bridge.stop()
+                bridge.suspendForBackground()
+            } else if newPhase == .active {
+                bridge.recoverOperatorOnActive(role: bridgeRole)
             }
             updateIdleTimer()
         }
         .onChange(of: capture.running) { _, _ in updateIdleTimer() }
         .onChange(of: bridge.running) { _, _ in updateIdleTimer() }
         .onChange(of: bridgeRole) { _, role in
-            if role == .operator && capture.running { capture.stop() }
+            bridge.stop()
+            if capture.running { capture.stop() }
             updateIdleTimer()
         }
+        .onChange(of: dualRoutes) { _, enabled in if enabled { fallbackEnabled = false } }
+        .onChange(of: fallbackEnabled) { _, enabled in if enabled { dualRoutes = false } }
         .onDisappear {
             if capture.running { capture.stop() }
-            bridge.stop()
+            bridge.suspendForBackground()
             UIApplication.shared.isIdleTimerDisabled = false
+        }
+        .onAppear {
+            if phase == .active { bridge.recoverOperatorOnActive(role: bridgeRole) }
+            updateIdleTimer()
         }
     }
 
     private func updateIdleTimer() {
-        UIApplication.shared.isIdleTimerDisabled = phase != .background && (capture.running || bridge.running)
+        UIApplication.shared.isIdleTimerDisabled = phase != .background && (capture.running || bridge.running || bridge.operatorRecoveryWanted)
     }
 
     private func bridgeAddress(_ label: String, text: Binding<String>) -> some View {
@@ -138,7 +175,7 @@ struct CaptureView: View {
             Text(label).font(.caption)
             TextField(label, text: text).textInputAutocapitalization(.never)
                 .autocorrectionDisabled().keyboardType(.numbersAndPunctuation)
-                .textFieldStyle(.roundedBorder).disabled(bridge.running || capture.running)
+                .textFieldStyle(.roundedBorder).disabled(bridge.running || bridge.operatorRecoveryWanted || capture.running)
         }
     }
 }

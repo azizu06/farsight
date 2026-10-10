@@ -103,6 +103,7 @@ fn dimensions(spec: Option<&Value>, limit: usize) -> Result<(usize, usize), Stri
 }
 
 /// One decoded RGB-D packet.
+#[derive(Clone)]
 pub struct RgbdFrame {
     pub header: Value,
     /// RGB at depth resolution, row-major (h, w, 3).

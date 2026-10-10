@@ -43,6 +43,15 @@ struct Args {
     /// Ultrasonic stop: range < 25 cm or stale range blocks forward (default on); 'off' is an explicit opt-in for navigation runs that steer around obstacles
     #[arg(long, default_value = "on", value_parser = ["on", "off"])]
     proximity_stop: String,
+    /// servo: a pan servo follows the commanded pan and forward drive is blocked while it is off-centre (default). none: no pan hardware; the headset pans digitally, the Uno never gets P and pan never blocks forward drive
+    #[arg(long)]
+    autonomy_max_pwm: Option<i64>,
+    /// Opt-in: fresh /phone LiDAR frames with normal ARKit tracking may drive
+    /// (FARSIGHT_LIDAR_DRIVE); default off — LiDAR is view-only.
+    #[arg(long)]
+    lidar_drive: bool,
+    #[arg(long, default_value = "servo", value_parser = ["servo", "none"])]
+    pan_mount: String,
     /// Bundled CPU person detector
     #[arg(long, default_value = "hog", value_parser = ["hog", "pose", "none"])]
     detector: String,
@@ -114,10 +123,65 @@ struct Args {
     /// reserved headroom on a constrained link. 0 disables pacing.
     #[arg(long, default_value_t = 0.0)]
     bulk_limit_mbps: f64,
+    /// Separate live-video cap in Mbps (camera/depth JPEG, MJPEG, H.264);
+    /// env FARSIGHT_VIDEO_LIMIT_MBPS. 0 keeps video unpaced and ahead of
+    /// map bulk — sharing one budget pushed headset video age past the
+    /// 500 ms motion stop.
+    #[arg(long, default_value_t = 0.0)]
+    video_limit_mbps: f64,
+    /// Opt-in bonded upstream control: adds /ws/control/bonded for trusted
+    /// operator-relay paths; /ws/control single-owner behaviour unchanged
+    #[arg(long)]
+    bonded_control: bool,
+    /// Closed-loop indoor simulator: a moving ray-cast rover in a test floor
+    /// plan feeding camera/depth/range/detections (SimFeed parity)
+    #[arg(long, value_parser = ["deadend", "doorway", "floorplan", "popup", "seek"])]
+    sim_world: Option<String>,
+    /// Opt in to the ROS 2 Nav2 backend (ros2/farsight_nav bridge on /ws/nav); default off
+    #[arg(long)]
+    nav2: bool,
+    /// Measured forward speed at v=1 (m/s)
+    #[arg(long, default_value_t = 0.45)]
+    nav_speed_mps: f64,
+    /// Measured yaw rate at w=1 (rad/s)
+    #[arg(long, default_value_t = 3.0)]
+    nav_turn_radps: f64,
+    /// Cap on Nav2 forward command, normalized 0..1
+    #[arg(long, default_value_t = 0.7)]
+    nav_max_v: f64,
+    /// Cap on Nav2 turn command, normalized 0..1
+    #[arg(long, default_value_t = 0.8)]
+    nav_max_w: f64,
+    /// Phone optical centre above the floor (m)
+    #[arg(long, default_value_t = 0.15)]
+    nav_camera_height: f64,
+    /// Visual wire cap on exported map points (env FARSIGHT_MAP_POINTS_CAP,
+    /// default 30000). Bounds only the served payload; the internal map
+    /// keeps full resolution. 0 disables.
+    #[arg(long)]
+    map_points_cap: Option<usize>,
+    /// Visual wire cap on exported mesh triangles (env
+    /// FARSIGHT_MAP_TRIANGLES_CAP, default 40000). 0 disables.
+    #[arg(long)]
+    map_triangles_cap: Option<usize>,
+    /// Skip the Jetson voxel/mesh fusion of /phone RGB-D — the mesh is
+    /// built elsewhere (phone ARKit lane). Pose, depth for Nav2, camera
+    /// and inference keep running. Env FARSIGHT_FUSION_BYPASS=1 also
+    /// enables it (#109 contract).
+    #[arg(long)]
+    fusion_bypass: bool,
 }
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+fn env_usize(name: &str, default: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .filter(|v| !v.is_empty())
+        .map(|v| v.parse().unwrap_or_else(|_| panic!("{name} must be a non-negative integer")))
+        .unwrap_or(default)
+}
 
 #[tokio::main]
 async fn main() {
@@ -127,10 +191,20 @@ async fn main() {
     tracing_subscriber::fmt::init();
     let args = Args::parse();
     farsight_server::pacer::init(args.bulk_limit_mbps);
+    // Env fallback mirrors launch.py's FARSIGHT_VIDEO_LIMIT_MBPS float.
+    let video_limit = if args.video_limit_mbps > 0.0 {
+        args.video_limit_mbps
+    } else {
+        std::env::var("FARSIGHT_VIDEO_LIMIT_MBPS")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(0.0)
+    };
+    farsight_server::pacer::init_live(video_limit);
     if args.simulate_rover && args.serial_port.is_some() {
         panic!("--simulate-rover cannot be combined with --serial-port");
     }
-    if args.demo && args.serial_port.is_some() {
+    if (args.demo || args.sim_world.is_some()) && args.serial_port.is_some() {
         panic!("A simulated camera cannot be used to drive physical motors");
     }
     if args.demo && args.camera.is_some() {
@@ -157,10 +231,14 @@ async fn main() {
         && (args.serial_port.is_some()
             || args.camera.is_some()
             || args.demo
+            || args.sim_world.is_some()
             || args.simulate_rover
             || args.record)
     {
         panic!("Replay cannot be combined with serial, live/simulated sources, or recording");
+    }
+    if args.sim_world.is_some() && args.camera.is_some() {
+        panic!("--sim-world cannot be combined with a real --camera or --replay");
     }
     let state = server::build_state(
         args.demo,
@@ -198,6 +276,23 @@ async fn main() {
         drive_profile,
         args.allow_calibration,
         args.proximity_stop == "on",
+        &args.pan_mount,
+        args.autonomy_max_pwm,
+        args.bonded_control,
+        args.nav2,
+        args.nav_speed_mps,
+        args.nav_turn_radps,
+        args.nav_max_v,
+        args.nav_max_w,
+        args.nav_camera_height,
+        args.sim_world,
+        args.lidar_drive,
+        (
+            args.map_points_cap.unwrap_or_else(|| env_usize("FARSIGHT_MAP_POINTS_CAP", 30_000)),
+            args.map_triangles_cap.unwrap_or_else(|| env_usize("FARSIGHT_MAP_TRIANGLES_CAP", 40_000)),
+        ),
+        args.fusion_bypass
+            || matches!(std::env::var("FARSIGHT_FUSION_BYPASS").ok().as_deref(), Some("1") | Some("true") | Some("on")),
     );
     server::start_services(&state);
     let dist = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../quest/dist");
@@ -212,8 +307,57 @@ async fn main() {
             let config = axum_server::tls_rustls::RustlsConfig::from_pem_file(cert, key)
                 .await
                 .expect("TLS config");
-            axum_server::bind_rustls(addr, config)
-                .serve(app.into_make_service())
+            // NoDelayAcceptor sets TCP_NODELAY on the accepted socket before
+            // the TLS handshake (control/service.py parity).
+            let acceptor = axum_server::tls_rustls::RustlsAcceptor::new(config)
+                .acceptor(axum_server::accept::NoDelayAcceptor::new());
+            // axum-server's TLS acceptor is a MakeService<SocketAddr>, not an
+            // axum::serve::Listener, so ConnectInfo is injected per-request.
+            use std::convert::Infallible;
+            use std::future::{ready, Ready};
+            use std::pin::Pin;
+            use std::task::{Context, Poll};
+            use tower_service::Service;
+
+            #[derive(Clone)]
+            struct ConnectMakeService {
+                app: axum::Router,
+            }
+            impl Service<std::net::SocketAddr> for ConnectMakeService {
+                type Response = ConnectService;
+                type Error = Infallible;
+                type Future = Ready<Result<ConnectService, Infallible>>;
+                fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Infallible>> {
+                    Poll::Ready(Ok(()))
+                }
+                fn call(&mut self, addr: std::net::SocketAddr) -> Self::Future {
+                    ready(Ok(ConnectService { app: self.app.clone(), addr }))
+                }
+            }
+            #[derive(Clone)]
+            struct ConnectService {
+                app: axum::Router,
+                addr: std::net::SocketAddr,
+            }
+            impl Service<axum::http::Request<hyper::body::Incoming>> for ConnectService {
+                type Response = axum::response::Response;
+                type Error = Infallible;
+                type Future = Pin<
+                    Box<dyn std::future::Future<Output = Result<axum::response::Response, Infallible>> + Send>,
+                >;
+                fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Infallible>> {
+                    Poll::Ready(Ok(()))
+                }
+                fn call(&mut self, mut req: axum::http::Request<hyper::body::Incoming>) -> Self::Future {
+                    req.extensions_mut().insert(axum::extract::ConnectInfo(
+                        farsight_server::server::PeerAddr(self.addr),
+                    ));
+                    Box::pin(self.app.call(req.map(axum::body::Body::new)))
+                }
+            }
+            axum_server::Server::bind(addr)
+                .acceptor(acceptor)
+                .serve(ConnectMakeService { app })
                 .await
                 .unwrap();
         }

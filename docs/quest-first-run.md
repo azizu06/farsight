@@ -1,17 +1,20 @@
 # Quest 2 first run
 
-From unboxing to driving, with what to check when a step fails. Written before
-any physical Quest 2 run: every step below is a hardware gate, and nothing here
-has been verified on a headset yet. Transport details:
-[transport-setup.md](transport-setup.md) and
-[demo-connectivity.md](demo-connectivity.md). Controls and safety:
-[quest/README.md](../quest/README.md).
+From setup to the first live view, with what to check when a step fails. The
+production Quest-to-Mac link is USB-C with ADB reverse; do not use venue Wi-Fi
+or a phone hotspot for headset app traffic. The complete topology and bring-up
+are in [demo-connectivity.md](demo-connectivity.md) and
+[phone-relay.md](phone-relay.md). Controls and safety are in
+[quest/README.md](../quest/README.md); the older computer-side transport is
+documented only as a fallback in [transport-setup.md](transport-setup.md).
 
-The headset never talks to the Jetson directly. Quest Browser opens
-`http://localhost:8080`, ADB reverse carries that port over USB to the MacBook
-or Windows/WSL operator relay (`tools/demo.py`), and the relay proxies every
-route to the rover. USB must connect to the computer running ADB; a coding
-agent on a different computer cannot access that USB device automatically.
+The headset never talks to the Jetson or a phone hotspot directly. Quest Browser
+opens `http://localhost:8080`; ADB reverse carries that port over USB to the
+MacBook operator relay (`tools/demo.py`). The Mac's `iproxy` USB bridge reaches
+the operator iPhone, and the phone relays reach the rover phone and Jetson.
+Keep the data USB-C cable attached throughout the demo; the app path must work
+with Quest, Mac and Jetson Wi-Fi disabled. USB must connect to the computer
+running ADB; an agent on another computer cannot access that device automatically.
 
 ## 1. Headset setup (once, needs internet)
 
@@ -19,22 +22,21 @@ agent on a different computer cannot access that USB device automatically.
 2. Pair the headset with the Meta Horizon phone app, create or sign in to the
    account, and enable **Developer Mode** for that headset in the app's headset
    settings. This needs membership in a Meta developer team and a verified
-   developer account; complete Meta's account verification while online.
+   developer account; complete account verification while online.
 3. Update Quest OS and Quest Browser while online.
 4. Set up a stationary boundary. A roomscale boundary is unnecessary: the
    operator sits or stands still.
 
 If Developer Mode is missing, check account verification and developer-team
 membership against [Meta's device setup instructions](https://developers.meta.com/horizon/documentation/native/android/mobile-device-setup/).
-Without Developer Mode and USB debugging, this project's ADB transport cannot
-be used.
+Developer Mode and USB debugging are required for this project's ADB transport.
 
 ## 2. USB and ADB
 
 1. Install [Android Platform Tools](https://developer.android.com/tools/releases/platform-tools)
-   on the USB host (`adb version`). Android Studio and Quest Link are unnecessary
-   for this browser app. On Windows/WSL, use the **Windows** `adb.exe`, keeping USB
-   owned by Windows; pass its WSL path using `--adb` below.
+   on the operator Mac (`adb version`). For a Windows/WSL rehearsal, use the
+   **Windows** `adb.exe`, keeping USB owned by Windows; pass its WSL path using
+   `--adb` below. Android Studio and Quest Link are unnecessary for this browser app.
 2. Connect the headset with a **data** USB-C cable. In the headset, accept
    **Allow USB debugging** (tick *Always allow from this computer*).
 3. `adb devices` must list the headset as `device`.
@@ -48,25 +50,36 @@ be used.
 
 ## 3. Start the relay and map the port
 
-Rehearse with the simulator and JPEG first, then use a verified live upstream.
-Run one launcher at a time:
+Rehearse with the simulator first. For the live route, set up both Farsight
+Capture phone bridge roles and the rover phone's local USB network as described
+in [phone-relay.md](phone-relay.md). Then, on the operator Mac:
 
 ```sh
 npm --prefix quest ci && npm --prefix quest run build
 python -m tools.demo --simulate --quest                  # simulated rover, JPEG
-python -m tools.demo --upstream https://JETSON_TAILNET_NAME:8443 --quest
+# To rehearse H.264 separately, add --h264 (requires FFmpeg).
 ```
 
-For a Windows USB host with the app running inside WSL:
+First run the bounded USB health check; it opens no control socket and requests
+no motion:
 
 ```sh
-python -m tools.demo --simulate --quest \
-  --adb /mnt/c/path/to/platform-tools/adb.exe
+python -m tools.phone_usb --check
 ```
 
-The native Windows ADB reverse connection ends at **Windows** `localhost:8080`.
-Check Windows can load the WSL-served app there before testing the headset.
-`--check` checks prerequisites without probing USB or starting servers; actual
+Then keep the USB helper running in Terminal 1:
+
+```sh
+python -m tools.phone_usb
+```
+
+Start the relay in Terminal 2:
+
+```sh
+python -m tools.demo --upstream http://127.0.0.1:18443 --quest
+```
+
+`--check` checks prerequisites without probing USB or starting servers. Actual
 launch checks device authorization and gives each ADB command a 15-second limit.
 
 `--quest` runs `adb reverse tcp:8080 tcp:8080` and prints `adb reverse --list`.
@@ -74,15 +87,8 @@ Reapply it after any USB reconnect, headset sleep or reboot (rerun the launcher
 or run the `adb reverse` command yourself).
 
 If the launcher exits, read its message: a busy port, missing `adb`, missing
-`quest/dist` (add `--build`), or an HTTPS certificate that does not match the
-Jetson name (use `--ca-file`, or an explicit `http://` origin inside Tailscale).
-
-The two-phone relay has been tested on Aziz's Mac, through its local
-`http://127.0.0.1:18443` forwarding port. That port is not automatically present
-on another computer. Before switching a Windows headset session from simulation
-to live, establish and verify a reachable rover upstream on Windows: either
-qualify its phone USB forwarding or a permitted tailnet route. A working Quest
-USB connection alone does not qualify that network path.
+`quest/dist` (add `--build`), or a failed USB phone forward. Do not replace the
+phone-owned route with the venue Wi-Fi or a direct headset-to-Jetson URL.
 
 ## 4. Open the app in Quest Browser
 
@@ -93,7 +99,7 @@ top: **SIMULATED** in rehearsal, **LIVE** only with real rover and camera proof.
 |---|---|
 | Page cannot load | ADB reverse not active: `adb reverse --list`, reapply |
 | Banner stays NOT VERIFIED LIVE | Read its detail line; it names the missing proof (rover, camera source, frame age) |
-| Button reads **WEBXR NEEDS HTTPS** | The page is not a secure context. Use `localhost`, never the operator computer's LAN IP; other hosts need trusted HTTPS |
+| Button reads **WEBXR NEEDS HTTPS** | The page is not a secure context. Use `localhost`, never the MacBook's LAN IP; `http://localhost` is secure, any other host needs trusted HTTPS |
 | Button reads **VR NOT SUPPORTED** | Not Quest Browser, or WebXR disabled; update Quest Browser |
 
 ## 5. Settings before entering VR
@@ -108,21 +114,23 @@ the headset:
 http://localhost:8080/?mount=fixed&h264=0&voice=0&diag=1
 ```
 
-This first-run link selects JPEG, fixed camera mounting and diagnostics, without
-requesting microphone permission. Once those work, enable H.264 for the live
-cellular path. To rehearse H.264 locally, restart the simulator with `--h264`
-(requires FFmpeg) and select `h264=1`. Enable voice only when the rover's voice
-services are available and microphone permission can be checked separately.
+This first-run link selects JPEG, a fixed camera and diagnostics without requesting
+microphone permission. After that works, remove `h264=0` for automatic format
+selection, or set `h264=1` to test H.264 explicitly. Enable voice after checking
+the rover voice services and microphone permission separately.
 
-- **H.264 video** (`h264=0|1`): tick for the cellular demo. If the HUD then reads
-  *H.264 codec unsupported* or never shows *decoded frame verified*, untick it
-  and stay on JPEG; Quest 2 H.264 playback is not yet verified.
+- **H.264 video** (`h264=0|1`): on by default when the rover server runs with
+  `--h264`, and the page falls back to JPEG on its own if no decoded frame is
+  verified within 6 s. If the HUD reads *H.264 codec unsupported* or never shows
+  *decoded frame verified*, set `h264=0` to stay on JPEG; Quest 2 H.264 playback
+  needs qualification on the actual served build.
 - **Camera mounting** (`mount=fixed|servo`): use **fixed** for the phone camera.
   Servo mode sends head yaw as pan, and both the Jetson and the Uno block
   forward driving when pan is more than 10° off center. With nothing chosen,
   the viewer follows the rover: `/health.camera_pan` false (no `--scan-pan`)
-  selects fixed. The HUD's second line names the mount and video format, for
-  example `JPEG video 80 ms · 120 cm · Fixed mount · digital pan 0°`.
+  selects fixed. The current rover phone camera is fixed; head turns do not
+  physically turn that camera. Qualify servo mode only if a working servo is
+  fitted. The HUD names the mount and video format.
 - **Enable in-VR voice** (`voice=1`): press once and accept the microphone
   prompt. Once enabled, later loads ask for the microphone again on their own
   (silently when the permission is remembered). The browser asks only on this
@@ -138,16 +146,20 @@ services are available and microphone permission can be checked separately.
 
 Press **Enter VR**. With the car lifted or otherwise unable to travel:
 
-1. Start with both controllers on and tracked. Losing a controller that was
-   participating stops motion; the stop panel names the cause and the right
-   trigger must be released and pressed again.
+1. Only the right controller is required: it carries the deadman, the drive stick
+   and the primary driving and mode buttons. With it missing or untracked, the
+   stop panel names the cause and the right trigger must be released and pressed again. The left
+   controller is optional (X recenter, Y actions, grip drill, voice trigger); losing
+   it never stops driving.
 2. Hold the right trigger: the HUD headline should become ready/driving once
    camera and control are fresh. Release: it stops.
-3. Hold the trigger and move the left stick: check the wheel direction for
+3. Hold the trigger and move the right stick: check the wheel direction for
    forward, reverse and both turns. Calibrate starting PWM on the real car
    ([rover/README.md](../rover/README.md)).
-4. Turn your head: servo pan follows (or the digital crop moves). Left X
-   recenters.
+4. Turn your head: the screen stays anchored. Servo pan follows only in servo
+   mode; fixed mode retains the whole frame. Left X recenters. Check A switches
+   camera/map, B stops, and holding A (or left Y) opens the actions menu. Point and squeeze right
+   grip to select a highlighted action; the menu must block driving.
 5. If voice is available and enabled, hold the left trigger to ask; release to send.
 6. Take the headset off for a few seconds: motion stops and requires a release
    when you return.
@@ -177,26 +189,35 @@ npm --prefix quest run build && npm --prefix quest run perf
 `PERF_PROFILE=1` prints a CPU profile. Desktop Chrome numbers are a relative
 measure only; they are not Quest numbers.
 
-## 8. Handing the headset to a coding agent on Windows/WSL
+## 8. Windows/WSL rehearsal and agent handoff
 
-The person wearing the headset must complete the account setup, turn on Developer
-Mode, plug a data USB cable into this Windows computer, and approve **Allow USB
-debugging** in the headset. Keep it awake with both controllers available. Tell
-the agent: "Quest is plugged into this PC; Developer Mode is on and USB debugging
-is approved." The agent can then list the device, build and start the existing
-app, configure ADB reverse, collect logs and reload the browser.
+The production USB host is Aziz's Mac. A Quest connected there is not accessible
+from an agent running on another Windows computer. For a separate Windows/WSL
+rehearsal, connect the headset with a data cable to that Windows computer and
+approve **Allow USB debugging** in the headset. Keep it awake and use:
+
+```sh
+python -m tools.demo --simulate --quest \
+  --adb /mnt/c/path/to/platform-tools/adb.exe
+```
+
+The Windows ADB reverse connection ends at **Windows** `localhost:8080`. Check
+Windows can load the WSL-served app at that address before testing the headset.
+The Mac's `http://127.0.0.1:18443` phone forwarding port is not automatically
+present on Windows. A live Windows session needs its own verified USB phone
+forwarding path; a working Quest USB connection alone does not qualify that path.
+Keep the Mac as the production host until a replacement route is qualified.
 
 For browser debugging, open desktop Chrome's `chrome://inspect/#devices` on the
 USB host and inspect the Quest Browser tab; see
 [Meta's browser debugging instructions](https://developers.meta.com/horizon/documentation/web/browser-remote-debugging/).
-An agent can attach browser automation once the actual device's debugging socket
-is discovered and forwarded. Do not assume its socket name or that a desktop XR
-emulator proves the physical headset works.
+An agent can attach browser automation after discovering and forwarding the
+actual device's debugging socket. Do not assume its socket name or that a
+desktop XR emulator proves physical headset behavior.
 
-The human opens the first-run link in **Quest Browser**, presses **Enter VR**, and
-performs the short checks in section 6 while the agent watches logs and status.
-ADB cannot wear the headset, approve its boundary/permission dialogs, or physically
-move its controllers. First use simulation; qualify real camera video next, then
-check motor direction, release stopping and disconnect stopping with an operator
-present and the car lifted. Record these as hardware results, separately from
-desktop/simulated tests.
+The person wearing the headset completes account setup, permission and boundary
+dialogs, then opens the first-run link in Quest Browser and presses **Enter VR**.
+The agent can list the USB device, build/start the app, configure ADB reverse,
+collect logs and reload the browser. The human performs section 6 while the
+agent watches logs and status. Record real controller, camera and disconnect
+checks separately from desktop/simulated tests.

@@ -17,6 +17,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use tower_http::services::ServeDir;
 
+use crate::bonded::BondedControlHub;
 use crate::camera::CameraService;
 use crate::control::{ControlState, SerialPump};
 use crate::mission::Mission;
@@ -58,6 +59,15 @@ pub struct AppState {
     pub replay_control: Option<Arc<ReplayControl>>,
     /// Per-status-emission telemetry sink (control.on_status in Python).
     pub control_on_status: Option<Arc<dyn Fn(&Value) + Send + Sync>>,
+    /// Opt-in bonded upstream hub (--bonded-control); owns /ws/control/bonded
+    /// when enabled. The legacy /ws/control owner path is unchanged.
+    pub bonded: Option<Arc<BondedControlHub>>,
+    /// --nav2 NavService seam; the /nav/* contract still answers without it.
+    pub nav: Option<Arc<crate::nav::NavService>>,
+    /// --sim-world feed; drives camera/depth/range/detections from the sim.
+    pub sim: Option<Arc<crate::sim::SimFeed>>,
+    /// The loaded sim world name for /health (`sim_world` key).
+    pub sim_world: Option<String>,
 }
 
 pub fn build_state(
@@ -94,7 +104,31 @@ pub fn build_state(
     drive_profile: Option<crate::drive_profile::DriveProfile>,
     allow_calibration: bool,
     proximity_stop: bool,
+    pan_mount: &str,
+    autonomy_max_pwm: Option<i64>,
+    bonded: bool,
+    nav2: bool,
+    nav_speed_mps: f64,
+    nav_turn_radps: f64,
+    nav_max_v: f64,
+    nav_max_w: f64,
+    nav_camera_height: f64,
+    sim_world: Option<String>,
+    lidar_drive: bool,
+    visual_caps: (usize, usize),
+    fusion_bypass: bool,
 ) -> Arc<AppState> {
+    // create_app validation order: sim-world, replay, simulated+serial,
+    // nav2+replay, then pan mount.
+    if sim_world.is_some()
+        && (serial_port.is_some() || camera_device.is_some() || replay.is_some())
+    {
+        panic!("--sim-world is simulated; it cannot drive real motors, cameras or replays");
+    }
+    // A sim world is simulated hardware: the demo camera path and the
+    // simulated rover drive it, like create_app's `demo = simulate_rover = True`.
+    let demo = demo || sim_world.is_some();
+    let simulate_rover = simulate_rover || sim_world.is_some();
     if replay.is_some()
         && (serial_port.is_some() || camera_device.is_some() || demo || simulate_rover || record)
     {
@@ -103,8 +137,46 @@ pub fn build_state(
     if (demo || simulate_rover) && serial_port.is_some() {
         panic!("Simulated sources cannot be combined with a physical motor serial port");
     }
-    let mapping = Arc::new(MapState::new(demo));
-    let camera = Arc::new(CameraService::new(mapping.clone(), camera_device.clone()));
+    if nav2 && replay.is_some() {
+        panic!("Replay is read-only; navigation cannot be combined with it");
+    }
+    if scan_pan && pan_mount == "none" {
+        panic!("--scan-pan needs a physical pan servo (--pan-mount servo)");
+    }
+    let mut mapping_state = MapState::new(demo);
+    mapping_state.points_cap = visual_caps.0;
+    mapping_state.triangles_cap = visual_caps.1;
+    mapping_state.fusion_bypass = fusion_bypass;
+    let mapping = Arc::new(mapping_state);
+    let sim = sim_world.as_ref().map(|name| {
+        let world = crate::sim::load(name).unwrap_or_else(|e| panic!("{e}"));
+        Arc::new(crate::sim::SimFeed::new(crate::sim::RoverSim::new(
+            world,
+            Some(nav_speed_mps),
+            Some(nav_turn_radps),
+        )))
+    });
+    let nav = if nav2 {
+        Some(Arc::new(
+            crate::nav::NavService::new(
+                mapping.clone(),
+                nav_speed_mps,
+                nav_turn_radps,
+                nav_max_v,
+                nav_max_w,
+                nav_camera_height,
+                None,
+            )
+            .unwrap_or_else(|e| panic!("{e}")),
+        ))
+    } else {
+        None
+    };
+    let camera = Arc::new(CameraService::new(
+        mapping.clone(),
+        camera_device.clone(),
+        lidar_drive,
+    ));
     let mut video = VideoService::new(camera.clone(), h264);
     video.fps = video_fps;
     video.bitrate = video_bitrate;
@@ -128,6 +200,14 @@ pub fn build_state(
     // Physical serial requires verified drive eligibility (camera_drive_ready);
     // simulated/USB-free setups keep plain freshness (camera.py parity).
     let drive_key = if serial_port.is_some() { "camera_drive_ready" } else { "camera" };
+    // Ground-truth sim detections replace the perception snapshot with
+    // --sim-world (create_app `detections=sim.detections if sim else ...`).
+    let detections: crate::control::Detections = if let Some(feed) = &sim {
+        let feed = feed.clone();
+        Arc::new(move || feed.detections())
+    } else {
+        Arc::new(move || perc.snapshot())
+    };
     let control = Arc::new(
         ControlState::new(
             simulate_rover,
@@ -136,15 +216,40 @@ pub fn build_state(
             Some(Arc::new(move || {
                 cam.status()[drive_key].as_bool().unwrap_or(false)
             })),
-            Some(Arc::new(move || perc.snapshot())),
+            Some(detections),
             None,
             drive_profile,
             allow_calibration,
             proximity_stop,
+            pan_mount,
+            autonomy_max_pwm,
+            nav.clone(),
         )
-        .expect("PWM bounds"),
+        .expect("control config"),
     );
-    let pump = Arc::new(SerialPump::new(control.clone(), serial_port, simulate_rover));
+    // The sim's ultrasonic feeds the range input like a Uno echo.
+    let simulated_range: Option<Arc<dyn Fn() -> Option<i64> + Send + Sync>> =
+        sim.as_ref().map(|feed| {
+            let feed = feed.clone();
+            Arc::new(move || feed.sim.ultrasonic_cm(206.0)) as _
+        });
+    let pump = Arc::new(SerialPump::new(
+        control.clone(),
+        serial_port,
+        simulate_rover,
+        simulated_range,
+    ));
+    if let Some(nav) = &nav {
+        nav.attach(&control);
+        let observer = nav.clone();
+        mapping
+            .frame_observers
+            .lock()
+            .unwrap()
+            .push(Arc::new(move |frame: &crate::phone::RgbdFrame| {
+                observer.offer_frame(frame)
+            }));
+    }
     let replay_control = replay.as_ref().map(|_| Arc::new(ReplayControl::new()));
     let replay_session = match (&replay, &replay_control) {
         (Some(dir), Some(rc)) => Some(Arc::new(
@@ -154,11 +259,17 @@ pub fn build_state(
         _ => None,
     };
     // Live control loops feed the drill scorer; recorded replays have no
-    // live loop (hasattr(control, "state") in Python).
+    // live loop (hasattr(control, "state") in Python). The sim's apply() is
+    // chained after drill_motion like create_app's `applied` observer list.
     if replay_session.is_none() {
         let m2 = mission.clone();
-        *control.on_output.lock().unwrap() =
-            Some(Box::new(move |v, w, blocked| m2.drill_motion(v, w, blocked)));
+        let sim_apply = sim.clone();
+        *control.on_output.lock().unwrap() = Some(Box::new(move |v, w, blocked| {
+            m2.drill_motion(v, w, blocked);
+            if let Some(feed) = &sim_apply {
+                feed.sim.apply(v, w, blocked);
+            }
+        }));
     }
     // #79/#81: /mission/drill carries the face-detector status, and the face
     // pass only costs CPU while a drill is running.
@@ -220,7 +331,7 @@ pub fn build_state(
         mapping,
         camera,
         video,
-        control,
+        control: control.clone(),
         pump,
         perception,
         mission,
@@ -239,7 +350,11 @@ pub fn build_state(
         camera_pan: scan_pan,
         replay: replay_session,
         replay_control,
-        control_on_status,
+        control_on_status: control_on_status.clone(),
+        bonded: bonded.then(|| Arc::new(BondedControlHub::new(control.clone(), control_on_status))),
+        nav,
+        sim,
+        sim_world,
     })
 }
 
@@ -316,7 +431,10 @@ pub fn start_services(state: &Arc<AppState>) {
             }
         });
     }
-    if state.demo {
+    if let Some(feed) = state.sim.clone() {
+        // --sim-world: poses at 30 Hz, frames at 10 Hz (sim/stream.py).
+        crate::sim::spawn_world_stream(state.mapping.clone(), state.camera.clone(), feed);
+    } else if state.demo {
         // #59 parity: 15 Hz synthetic camera with bounded 5 Hz fusion —
         // capture cadence is independent of map work; busy fusion skips
         // candidates so queued geometry never goes stale.
@@ -403,6 +521,16 @@ async fn health(State(s): State<Arc<AppState>>) -> Json<Value> {
     );
     obj.insert("speech".into(), s.phrases.status());
     obj.insert("triage".into(), s.triage.status());
+    if let Some(nav) = &s.nav {
+        // Absent without --nav2, exactly like the Python health payload.
+        obj.insert(
+            "nav".into(),
+            json!({"enabled": true, "available": nav.available()}),
+        );
+    }
+    if let Some(name) = &s.sim_world {
+        obj.insert("sim_world".into(), json!(name));
+    }
     Json(status)
 }
 
@@ -446,8 +574,8 @@ async fn scan_start(State(s): State<Arc<AppState>>, Json(body): Json<Value>) -> 
 /// occupy the link ahead of control frames for the whole write.
 const PACE_CHUNK: usize = 16 * 1024;
 
-fn paced_body(body: Vec<u8>) -> Body {
-    let all = bytes::Bytes::from(body);
+fn paced_body(body: impl Into<bytes::Bytes>) -> Body {
+    let all = body.into();
     let stream = futures_util::stream::unfold((all, 0usize), |(all, off)| async move {
         if off >= all.len() {
             return None;
@@ -460,39 +588,74 @@ fn paced_body(body: Vec<u8>) -> Body {
     Body::from_stream(stream)
 }
 
+/// Same chunked pacing on the live-video lane (#124): video must not queue
+/// behind map bulk — an unpaced (cap 0) live lane returns immediately.
+fn paced_body_live(body: impl Into<bytes::Bytes>) -> Body {
+    let all = body.into();
+    let stream = futures_util::stream::unfold((all, 0usize), |(all, off)| async move {
+        if off >= all.len() {
+            return None;
+        }
+        let end = (off + PACE_CHUNK).min(all.len());
+        crate::pacer::pace_live(end - off).await;
+        let chunk = all.slice(off..end);
+        Some((Ok::<_, std::convert::Infallible>(chunk), (all, end)))
+    });
+    Body::from_stream(stream)
+}
+
 async fn map_points(State(s): State<Arc<AppState>>, headers: HeaderMap) -> Response {
-    let (body, coding) = s.mapping.point_packet(accept_encoding(&headers));
-    packet_response(body, coding, false)
+    map_packet_response(&s, crate::state::PacketKind::Points, &headers, false)
 }
 
 async fn map_mesh(State(s): State<Arc<AppState>>, headers: HeaderMap) -> Response {
-    let (body, coding) = s.mapping.mesh_packet(accept_encoding(&headers));
-    packet_response(body, coding, true)
+    map_packet_response(&s, crate::state::PacketKind::Mesh, &headers, false)
+}
+
+/// Revision-keyed ETag + If-None-Match: `?points=http` subscribers poll these
+/// at their own pace, and an unchanged map must not re-download the full
+/// compressed blob over cellular — a 304 costs ~100 bytes. `no-cache` keeps
+/// the client revalidating (the same freshness `no-store` enforced).
+fn map_packet_response(s: &Arc<AppState>, which: crate::state::PacketKind, headers: &HeaderMap, attachment: bool) -> Response {
+    let (body, coding, tag) = s.mapping.packet(which, accept_encoding(headers));
+    let fresh = headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .split(',')
+        .map(str::trim)
+        .any(|t| t == "*" || t == tag);
+    let mut response = if fresh {
+        StatusCode::NOT_MODIFIED.into_response()
+    } else {
+        let mut r = packet_response(body, coding);
+        if attachment {
+            r.headers_mut().insert(header::CONTENT_DISPOSITION, "attachment; filename=\"farsight-scan.ply\"".parse().unwrap());
+        }
+        r
+    };
+    response.headers_mut().insert(header::ETAG, tag.parse().unwrap());
+    response.headers_mut().insert(header::VARY, "Accept-Encoding".parse().unwrap());
+    response.headers_mut().insert(header::CACHE_CONTROL, "no-cache".parse().unwrap());
+    response
 }
 
 fn accept_encoding(headers: &HeaderMap) -> &str {
     headers.get(header::ACCEPT_ENCODING).and_then(|v| v.to_str().ok()).unwrap_or("")
 }
 
-fn packet_response(body: Vec<u8>, coding: &'static str, no_store: bool) -> Response {
+fn packet_response(body: impl Into<bytes::Bytes>, coding: &'static str) -> Response {
     let mut response = Response::new(paced_body(body));
     response.headers_mut().insert(header::CONTENT_TYPE, "application/octet-stream".parse().unwrap());
     response.headers_mut().insert(header::VARY, "Accept-Encoding".parse().unwrap());
     if !coding.is_empty() {
         response.headers_mut().insert(header::CONTENT_ENCODING, coding.parse().unwrap());
     }
-    if no_store {
-        response.headers_mut().insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
-    }
     response
 }
 
-async fn map_export(State(s): State<Arc<AppState>>) -> Response {
-    let mut response = Response::new(paced_body(s.mapping.ply()));
-    let h = response.headers_mut();
-    h.insert(header::CONTENT_TYPE, "application/octet-stream".parse().unwrap());
-    h.insert(header::CONTENT_DISPOSITION, "attachment; filename=\"farsight-scan.ply\"".parse().unwrap());
-    response
+async fn map_export(State(s): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    map_packet_response(&s, crate::state::PacketKind::Ply, &headers, true)
 }
 
 async fn map_reset(State(s): State<Arc<AppState>>) -> Json<Value> {
@@ -559,7 +722,7 @@ async fn camera_jpg(State(s): State<Arc<AppState>>) -> Response {
             let fid = frame.frame_id;
             let age = frame.age_ms();
             let source = frame.source.clone();
-            let mut resp = Response::new(paced_body(frame.jpeg));
+            let mut resp = Response::new(paced_body_live(frame.jpeg));
             let h = resp.headers_mut();
             h.insert(header::CONTENT_TYPE, "image/jpeg".parse().unwrap());
             h.insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
@@ -576,7 +739,7 @@ async fn depth_jpg(State(s): State<Arc<AppState>>) -> Response {
     let jpeg = s.mapping.inner.lock().unwrap().depth_jpeg.clone();
     match jpeg {
         Some(j) => {
-            let mut resp = Response::new(paced_body(j));
+            let mut resp = Response::new(paced_body_live(j));
             let h = resp.headers_mut();
             h.insert(header::CONTENT_TYPE, "image/jpeg".parse().unwrap());
             h.insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
@@ -602,7 +765,7 @@ async fn stream_mjpg(State(s): State<Arc<AppState>>) -> Response {
                     let mut off = 0usize;
                     while off < all.len() {
                         let end = (off + PACE_CHUNK).min(all.len());
-                        crate::pacer::pace(end - off).await;
+                        crate::pacer::pace_live(end - off).await;
                         yield Ok::<_, std::io::Error>(all.slice(off..end).to_vec());
                         off = end;
                     }
@@ -675,29 +838,186 @@ async fn mission_triage(State(s): State<Arc<AppState>>, Path(key): Path<String>)
     }
 }
 
-/// The nav object when no planner is attached (docs/interfaces.md "Optional
-/// navigation status"): `state: "unavailable"`, everything else empty.
-fn nav_unavailable() -> Value {
-    json!({"state": "unavailable", "mode": Value::Null, "goal": Value::Null,
-           "path": [], "frontiers": [], "backend": Value::Null,
-           "message": "No navigation planner (Nav2 bridge not running)"})
+/// The disabled_router message (jetson/nav.py): the contract answers, but
+/// nothing navigates without --nav2.
+const NAV_DISABLED_MESSAGE: &str =
+    "Navigation disabled: start jetson.server with --nav2 (FARSIGHT_NAV2=1)";
+
+/// GoalRequest field: pydantic's lax float takes numbers, bools and numeric
+/// strings; non-finite values are legal JSON here and fail inside set_goal.
+fn goal_float(body: &Value, key: &str) -> Result<f64, ()> {
+    match body.get(key) {
+        Some(Value::Number(n)) => n.as_f64().ok_or(()),
+        Some(Value::Bool(b)) => Ok(if *b { 1.0 } else { 0.0 }),
+        Some(Value::String(t)) => t.trim().parse::<f64>().map_err(|_| ()),
+        _ => Err(()),
+    }
 }
 
-/// POST /nav/goal — 409 until a Nav2/fallback planner exists (the contract
-/// refuses rather than silently ignoring a go-to request).
-async fn nav_goal() -> Response {
-    (
-        StatusCode::CONFLICT,
-        Json(json!({"nav": nav_unavailable(), "message": "No navigation planner (Nav2 bridge not running)"})),
+/// POST /nav/goal — 202 nav object, 409 refusal with the nav object, 422 for
+/// bad input (the FastAPI GoalRequest contract).
+async fn nav_goal(
+    State(s): State<Arc<AppState>>,
+    body: Result<Json<Value>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let Some(nav) = s.nav.clone() else {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"nav": crate::nav::empty_nav("unavailable", NAV_DISABLED_MESSAGE),
+                        "message": NAV_DISABLED_MESSAGE})),
+        )
+            .into_response();
+    };
+    let body = match body {
+        Ok(Json(b)) if b.is_object() => b,
+        _ => {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(json!({"detail":[{"type":"json_invalid","loc":["body"],
+                            "msg":"JSON decode error","input":{}}]})),
+            )
+                .into_response();
+        }
+    };
+    let mut errors = Vec::new();
+    let x = match body.get("x") {
+        None => {
+            errors.push(json!({"type":"missing","loc":["body","x"],"msg":"Field required","input":body}));
+            None
+        }
+        Some(_) => match goal_float(&body, "x") {
+            Ok(v) => Some(v),
+            Err(()) => {
+                errors.push(json!({"type":"float_parsing","loc":["body","x"],
+                    "msg":"Input should be a valid number, unable to parse value as a number",
+                    "input":body["x"]}));
+                None
+            }
+        },
+    };
+    let z = match body.get("z") {
+        None => {
+            errors.push(json!({"type":"missing","loc":["body","z"],"msg":"Field required","input":body}));
+            None
+        }
+        Some(_) => match goal_float(&body, "z") {
+            Ok(v) => Some(v),
+            Err(()) => {
+                errors.push(json!({"type":"float_parsing","loc":["body","z"],
+                    "msg":"Input should be a valid number, unable to parse value as a number",
+                    "input":body["z"]}));
+                None
+            }
+        },
+    };
+    let session_id = match body.get("session_id") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(t)) => Some(t.clone()),
+        Some(_) => {
+            errors.push(json!({"type":"string_type","loc":["body","session_id"],
+                "msg":"Input should be a valid string","input":body["session_id"]}));
+            None
+        }
+    };
+    let permit = match body.get("permit") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(t)) => Some(t.clone()),
+        Some(_) => {
+            errors.push(json!({"type":"string_type","loc":["body","permit"],
+                "msg":"Input should be a valid string","input":body["permit"]}));
+            None
+        }
+    };
+    if !errors.is_empty() {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({"detail": errors})),
+        )
+            .into_response();
+    }
+    match nav.set_goal(
+        x.unwrap_or(f64::NAN),
+        z.unwrap_or(f64::NAN),
+        session_id.as_deref(),
+        permit.as_deref(),
+    ) {
+        Ok(nav_obj) => (StatusCode::ACCEPTED, Json(nav_obj)).into_response(),
+        Err(crate::nav::GoalError::Refused { nav, message }) => (
+            StatusCode::CONFLICT,
+            Json(json!({"nav": nav, "message": message})),
+        )
+            .into_response(),
+        Err(crate::nav::GoalError::Unprocessable(message)) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({"detail": message})),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /nav/cancel — disarms go-to-point; returns the nav object.
+async fn nav_cancel(State(s): State<Arc<AppState>>) -> Response {
+    match &s.nav {
+        Some(nav) => Json(nav.cancel()).into_response(),
+        None => Json(crate::nav::empty_nav("idle", "")).into_response(),
+    }
+}
+
+/// GET /nav/status — the nav object plus the diagnostic detail object.
+async fn nav_status(State(s): State<Arc<AppState>>) -> Json<Value> {
+    match &s.nav {
+        Some(nav) => {
+            let mut out = nav.status_object();
+            out.as_object_mut()
+                .unwrap()
+                .insert("detail".into(), nav.detail());
+            Json(out)
+        }
+        None => {
+            let mut out = crate::nav::empty_nav("unavailable", NAV_DISABLED_MESSAGE);
+            out.as_object_mut()
+                .unwrap()
+                .insert("detail".into(), json!({"enabled": false}));
+            Json(out)
+        }
+    }
+}
+
+/// GET /ws/nav — loopback bridge socket (NavService.websocket); disabled: the
+/// contract accepts and immediately closes 1008.
+async fn ws_nav(
+    ws: WebSocketUpgrade,
+    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<PeerAddr>,
+    State(s): State<Arc<AppState>>,
+) -> Response {
+    if let Some(nav) = s.nav.clone() {
+        let host = addr.0.ip().to_string();
+        ws.on_upgrade(move |socket| async move {
+            nav.run_ws(socket, host).await;
+        })
+    } else {
+        ws.on_upgrade(move |mut socket| async move {
+            let reason: String = NAV_DISABLED_MESSAGE.chars().take(100).collect();
+            let _ = socket
+                .send(axum::extract::ws::Message::Close(Some(
+                    axum::extract::ws::CloseFrame {
+                        code: 1008,
+                        reason: reason.into(),
+                    },
+                )))
+                .await;
+        })
+    }
+}
+
+/// GET /sim/state — sim-only ground truth (pose, collisions, coverage).
+async fn sim_state(State(s): State<Arc<AppState>>) -> Json<Value> {
+    Json(
+        s.sim
+            .as_ref()
+            .map(|feed| feed.sim.state())
+            .unwrap_or_else(|| json!({})),
     )
-        .into_response()
-}
-
-/// POST /nav/cancel — nothing armed; returns the nav object.
-async fn nav_cancel() -> Response {
-    Json(json!({"state": "idle", "mode": Value::Null, "goal": Value::Null,
-                "path": [], "frontiers": [], "backend": Value::Null, "message": ""}))
-        .into_response()
 }
 
 async fn speak_options(State(s): State<Arc<AppState>>) -> Json<Value> {
@@ -826,6 +1146,9 @@ async fn handle_ws_map(socket: WebSocket, s: Arc<AppState>, http_points: bool) {
     let mapping = s.mapping.clone();
     let sender = tokio::spawn(async move {
         let mut revision: i64 = -1;
+        // Wake on a fresh map revision to push the new packet at fusion
+        // time; the 500 ms tick still drives the periodic status frame.
+        let mut watch = mapping.revision_watch();
         loop {
             let mut status = mapping.status();
             if http_points {
@@ -834,7 +1157,7 @@ async fn handle_ws_map(socket: WebSocket, s: Arc<AppState>, http_points: bool) {
                     return;
                 }
             } else if status["revision"].as_i64().unwrap_or(-1) != revision {
-                let (packet, _) = mapping.point_packet("");
+                let (packet, ..) = mapping.point_packet("");
                 if tx.send(Message::Text(status.to_string().into())).await.is_err() {
                     return;
                 }
@@ -846,7 +1169,10 @@ async fn handle_ws_map(socket: WebSocket, s: Arc<AppState>, http_points: bool) {
             } else if tx.send(Message::Text(status.to_string().into())).await.is_err() {
                 return;
             }
-            tokio::time::sleep(Duration::from_millis(500)).await;
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_millis(500)) => {}
+                r = watch.changed() => { if r.is_err() { return; } }
+            }
         }
     });
     while rx.next().await.is_some() {}
@@ -894,21 +1220,36 @@ async fn handle_ws_control(socket: WebSocket, s: Arc<AppState>) {
     let (mut tx, mut rx) = socket.split();
     let control = s.control.clone();
     let on_status = s.control_on_status.clone();
+    // #110 opt-in nav revision lane, latched per socket (control/service.py).
+    let lane = Arc::new(std::sync::Mutex::new(None::<crate::nav::NavLane>));
+    let send_lane = lane.clone();
     let sender = tokio::spawn(async move {
+        // Mission recording keeps its 20 Hz control sampling
+        // (control/service.py RECORD_INTERVAL), while status publishes at 40 Hz.
+        let mut recorded = f64::NEG_INFINITY;
         loop {
             // A congested status path makes continued control unsafe; a send
             // timeout closes the socket rather than queueing permits.
             let started = now_monotonic();
             let status = control.status(true);
+            let status = send_lane
+                .lock()
+                .unwrap()
+                .as_mut()
+                .map(|l| l.apply(&status, started))
+                .unwrap_or(status);
             match tokio::time::timeout(Duration::from_millis(100), tx.send(Message::Text(status.to_string().into()))).await {
                 Ok(Ok(_)) => {}
                 _ => return,
             }
             if let Some(hook) = &on_status {
-                hook(&status);
+                if started - recorded >= 0.045 {
+                    recorded = started;
+                    hook(&status);
+                }
             }
-            // 20 Hz target accounting for emit cost, per control/service.py.
-            tokio::time::sleep(Duration::from_secs_f64((0.05 - (now_monotonic() - started)).max(0.0))).await;
+            // 40 Hz target accounting for emit cost, per control/service.py.
+            tokio::time::sleep(Duration::from_secs_f64((0.025 - (now_monotonic() - started)).max(0.0))).await;
         }
     });
     while let Some(Ok(message)) = rx.next().await {
@@ -920,6 +1261,12 @@ async fn handle_ws_control(socket: WebSocket, s: Arc<AppState>) {
                 }
                 match serde_json::from_str::<Value>(&text) {
                     Ok(v) => {
+                        if v.get("nav_lane").and_then(Value::as_str) == Some("revision") {
+                            let mut lane = lane.lock().unwrap();
+                            if lane.is_none() {
+                                *lane = Some(crate::nav::NavLane::new());
+                            }
+                        }
                         s.control.accept(&v, &session_id);
                     }
                     Err(_) => s.control.stop("invalid_json", false),
@@ -934,6 +1281,143 @@ async fn handle_ws_control(socket: WebSocket, s: Arc<AppState>) {
     }
     sender.abort();
     s.control.end(&session_id);
+}
+
+/// Opt-in bonded upstream (jetson/control/service.py bonded_websocket):
+/// the first frame, within 3 s, is a v1 JSON attach; a second path joins the
+/// live owner with the private credential. The relay strips attachment data.
+async fn ws_control_bonded(ws: WebSocketUpgrade, State(s): State<Arc<AppState>>) -> Response {
+    ws.on_upgrade(move |socket| handle_ws_control_bonded(socket, s))
+}
+
+async fn handle_ws_control_bonded(socket: WebSocket, s: Arc<AppState>) {
+    let hub = s.bonded.clone().expect("/ws/control/bonded requires --bonded-control");
+    let (tx, rx) = socket.split();
+    run_bonded_session(tx, rx, hub).await
+}
+
+async fn run_bonded_session<TxErr, RxErr, Tx, Rx>(mut tx: Tx, mut rx: Rx, hub: Arc<BondedControlHub>)
+where
+    Tx: futures_util::Sink<Message, Error = TxErr> + Unpin + Send + 'static,
+    Rx: futures_util::Stream<Item = Result<Message, RxErr>> + Unpin + Send + 'static,
+    TxErr: Send + 'static,
+{
+    let close = |code: u16| {
+        Message::Close(Some(axum::extract::ws::CloseFrame { code, reason: "".into() }))
+    };
+    // Attach frame: text JSON within 3 s, {"type":"attach","version":1} with
+    // an optional 64-character path secret for joining the live owner.
+    let attachment = async {
+        let text = match tokio::time::timeout(Duration::from_secs(3), rx.next()).await {
+            Ok(Some(Ok(Message::Text(t)))) => t,
+            _ => return Err(()),
+        };
+        if text.chars().count() > 2048 {
+            return Err(());
+        }
+        let message: Value = serde_json::from_str(&text).map_err(|_| ())?;
+        let valid = message
+            .as_object()
+            .map(|o| {
+                o.get("type").and_then(Value::as_str) == Some("attach")
+                    && o.get("version").and_then(Value::as_i64) == Some(1)
+                    && o.keys().all(|k| matches!(k.as_str(), "type" | "version" | "secret"))
+            })
+            .unwrap_or(false);
+        if !valid {
+            return Err(());
+        }
+        let secret = match message.get("secret") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(s)) if s.len() == 64 => Some(s.clone()),
+            _ => return Err(()),
+        };
+        hub.attach(secret.as_deref()).map_err(|_| ())
+    }
+    .await;
+    let Ok(attachment) = attachment else {
+        // Rejected attachments close without affecting the existing owner.
+        let _ = tx.send(close(1000)).await;
+        return;
+    };
+    let reply = json!({
+        "type": "attached",
+        "version": 1,
+        "session_id": attachment.session_id.clone(),
+        "secret": attachment.secret.clone(),
+        "path_id": attachment.path_id.clone(),
+    });
+    let sent = tokio::time::timeout(
+        Duration::from_millis(100),
+        tx.send(Message::Text(reply.to_string().into())),
+    )
+    .await;
+    if sent.map(|r| r.is_err()).unwrap_or(true) {
+        hub.detach(&attachment.path_id);
+        let _ = tx.send(close(1000)).await;
+        return;
+    }
+    let shared_tx = Arc::new(tokio::sync::Mutex::new(tx));
+    // Publisher drains this path's single-slot status queue; a send past the
+    // 100 ms deadline or the detach sentinel ends the session. Whichever
+    // side finishes first tears the session down (FIRST_COMPLETED parity).
+    let writer = shared_tx.clone();
+    let path_id = attachment.path_id.clone();
+    let publish = tokio::spawn(async move {
+        while let Some(status) = attachment.next_status().await {
+            let mut out = writer.lock().await;
+            let ok = tokio::time::timeout(
+                Duration::from_millis(100),
+                out.send(Message::Text(status.to_string().into())),
+            )
+            .await
+            .map(|r| r.is_ok())
+            .unwrap_or(false);
+            drop(out);
+            if !ok {
+                return;
+            }
+        }
+    });
+    let control = hub.control().clone();
+    let hub_recv = hub.clone();
+    let recv_path = path_id.clone();
+    let receive = async move {
+        while let Some(Ok(message)) = rx.next().await {
+            match message {
+                Message::Text(text) => {
+                    if text.chars().count() > 2048 {
+                        control.stop("oversized_command", true);
+                        return;
+                    }
+                    match serde_json::from_str::<Value>(&text) {
+                        Ok(v) => {
+                            hub_recv.accept(&v, &recv_path);
+                        }
+                        Err(_) => control.stop("invalid_json", true),
+                    }
+                }
+                Message::Binary(_) => {
+                    control.stop("binary_control_rejected", true);
+                    return;
+                }
+                Message::Close(_) => return,
+                _ => {}
+            }
+        }
+    };
+    tokio::pin!(publish);
+    tokio::pin!(receive);
+    tokio::select! {
+        _ = &mut publish => {}
+        _ = &mut receive => {}
+    }
+    publish.abort();
+    hub.detach(&path_id);
+    {
+        let mut out = shared_tx.lock().await;
+        let _ = tokio::time::timeout(Duration::from_millis(250), out.send(close(1000))).await;
+    }
 }
 
 async fn ws_detections(ws: WebSocketUpgrade, State(s): State<Arc<AppState>>) -> Response {
@@ -1035,7 +1519,7 @@ async fn handle_ws_video(socket: WebSocket, s: Arc<AppState>) {
             if tokio::time::timeout(Duration::from_millis(500), out.send(Message::Text(metadata.to_string().into()))).await.is_err() {
                 return;
             }
-            crate::pacer::pace(fragment.payload.len()).await;
+            crate::pacer::pace_live(fragment.payload.len()).await;
             if tokio::time::timeout(Duration::from_millis(500), out.send(Message::Binary(fragment.payload.into()))).await.is_err() {
                 return;
             }
@@ -1067,7 +1551,16 @@ async fn ws_phone(ws: WebSocketUpgrade, State(s): State<Arc<AppState>>) -> Respo
 }
 
 async fn handle_ws_phone(socket: WebSocket, s: Arc<AppState>) {
-    let (mut tx, mut rx) = socket.split();
+    let (tx, rx) = socket.split();
+    run_phone_session(tx, rx, s).await
+}
+
+async fn run_phone_session<TxErr, RxErr, Tx, Rx>(mut tx: Tx, mut rx: Rx, s: Arc<AppState>)
+where
+    Tx: futures_util::Sink<Message, Error = TxErr> + Unpin + Send + 'static,
+    Rx: futures_util::Stream<Item = Result<Message, RxErr>> + Unpin + Send + 'static,
+    TxErr: Send + 'static,
+{
     let reject = {
         let mut owned = s.phone_owner.lock().unwrap();
         if s.demo || *owned {
@@ -1164,25 +1657,31 @@ async fn handle_ws_phone(socket: WebSocket, s: Arc<AppState>) {
             }
         });
         loop {
-            match rx.next().await {
-                Some(Ok(Message::Binary(bytes))) => {
-                    if qtx.try_send(bytes.to_vec()).is_err() {
-                        s.mapping.inner.lock().unwrap().dropped += 1;
+            tokio::select! {
+                msg = rx.next() => match msg {
+                    Some(Ok(Message::Binary(bytes))) => {
+                        if qtx.try_send(bytes.to_vec()).is_err() {
+                            s.mapping.inner.lock().unwrap().dropped += 1;
+                        }
                     }
-                }
-                Some(Ok(Message::Text(text))) => {
-                    let header: Value = match serde_json::from_str(&text) {
-                        Ok(v) => v,
-                        Err(_) => return Err("Expected a pose message or binary RGB-D frame".into()),
-                    };
-                    if header.get("type").and_then(Value::as_str) != Some("pose") {
-                        return Err("Expected a pose message or binary RGB-D frame".into());
+                    Some(Ok(Message::Text(text))) => {
+                        let header: Value = match serde_json::from_str(&text) {
+                            Ok(v) => v,
+                            Err(_) => return Err("Expected a pose message or binary RGB-D frame".into()),
+                        };
+                        if header.get("type").and_then(Value::as_str) != Some("pose") {
+                            return Err("Expected a pose message or binary RGB-D frame".into());
+                        }
+                        let transform = phone::validate_pose(&header, &identity)?;
+                        s.mapping.observe_pose(&header, &transform)?;
                     }
-                    let transform = phone::validate_pose(&header, &identity)?;
-                    s.mapping.observe_pose(&header, &transform)?;
-                }
-                Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
-                _ => {}
+                    Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
+                    _ => {}
+                },
+                // First failure wins (capture_permits.run parity): a dead
+                // writer ends the session even while the receiver stays
+                // open, or the issuer stays bound and owns the camera.
+                _ = writer_opt.as_mut().unwrap() => break,
             }
         }
         worker.abort();
@@ -1214,7 +1713,16 @@ async fn ws_phone_rgb(ws: WebSocketUpgrade, State(s): State<Arc<AppState>>) -> R
 }
 
 async fn handle_ws_phone_rgb(socket: WebSocket, s: Arc<AppState>) {
-    let (mut tx, mut rx) = socket.split();
+    let (tx, rx) = socket.split();
+    run_phone_rgb_session(tx, rx, s).await
+}
+
+async fn run_phone_rgb_session<TxErr, RxErr, Tx, Rx>(mut tx: Tx, mut rx: Rx, s: Arc<AppState>)
+where
+    Tx: futures_util::Sink<Message, Error = TxErr> + Unpin + Send + 'static,
+    Rx: futures_util::Stream<Item = Result<Message, RxErr>> + Unpin + Send + 'static,
+    TxErr: Send + 'static,
+{
     let reject = {
         let mut owned = s.phone_owner.lock().unwrap();
         if s.demo || *owned || s.camera.device.is_some() {
@@ -1286,17 +1794,26 @@ async fn handle_ws_phone_rgb(socket: WebSocket, s: Arc<AppState>) {
         writer_opt = Some(writer);
         permits_opt = Some(permits.clone());
         let mut previous: i64 = -1;
-        while let Some(Ok(message)) = rx.next().await {
-            if let Message::Binary(packet) = message {
-                let packet = packet.to_vec();
-                let cam = s.camera.clone();
-                let session = hello.session_id.clone();
-                let permits_ref = permits.clone();
-                previous = tokio::task::spawn_blocking(move || {
-                    cam.accept_phone_rgb(&packet, &session, previous, Some(&permits_ref))
-                })
-                .await
-                .map_err(|_| "worker failed".to_string())??;
+        loop {
+            tokio::select! {
+                message = rx.next() => match message {
+                    Some(Ok(Message::Binary(packet))) => {
+                        let packet = packet.to_vec();
+                        let cam = s.camera.clone();
+                        let session = hello.session_id.clone();
+                        let permits_ref = permits.clone();
+                        previous = tokio::task::spawn_blocking(move || {
+                            cam.accept_phone_rgb(&packet, &session, previous, Some(&permits_ref))
+                        })
+                        .await
+                        .map_err(|_| "worker failed".to_string())??;
+                    }
+                    Some(Ok(_)) => {}
+                    _ => break,
+                },
+                // Same lifecycle race as handle_ws_phone: writer failure
+                // revokes the issuer instead of stranding the session.
+                _ = writer_opt.as_mut().unwrap() => break,
             }
         }
         Ok(())
@@ -1357,7 +1874,21 @@ pub fn router(state: Arc<AppState>, dist: Option<PathBuf>) -> Router {
         .route("/speak", post(speak))
         .route("/tts/{name}", get(tts))
         .route("/nav/goal", post(nav_goal))
-        .route("/nav/cancel", post(nav_cancel));
+        .route("/nav/cancel", post(nav_cancel))
+        .route("/nav/status", get(nav_status))
+        .route("/ws/nav", get(ws_nav));
+    // Opt-in bonded upstream (experimental v1): only mounted with
+    // --bonded-control; /ws/control keeps its single-owner behaviour.
+    let app = if state.bonded.is_some() {
+        app.route("/ws/control/bonded", get(ws_control_bonded))
+    } else {
+        app
+    };
+    let app = if state.sim.is_some() {
+        app.route("/sim/state", get(sim_state))
+    } else {
+        app
+    };
     let app = if let Some(dist) = dist {
         if dist.is_dir() {
             app.fallback_service(ServeDir::new(dist).append_index_html_on_directories(true))
@@ -1370,8 +1901,618 @@ pub fn router(state: Arc<AppState>, dist: Option<PathBuf>) -> Router {
     app.with_state(state)
 }
 
+/// TcpListener wrapper that sets TCP_NODELAY on every accepted socket
+/// (control/service.py parity for both plain and TLS paths).
+pub struct NodelayListener(pub tokio::net::TcpListener);
+
+impl axum::serve::Listener for NodelayListener {
+    type Io = tokio::net::TcpStream;
+    type Addr = SocketAddr;
+
+    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+        loop {
+            match self.0.accept().await {
+                Ok((io, addr)) => {
+                    let _ = io.set_nodelay(true);
+                    return (io, addr);
+                }
+                Err(_) => tokio::time::sleep(Duration::from_millis(10)).await,
+            }
+        }
+    }
+
+    fn local_addr(&self) -> std::io::Result<Self::Addr> {
+        self.0.local_addr()
+    }
+}
+
+/// Peer address of the accepted socket; any listener yielding SocketAddr
+/// (plain TCP and the axum_server TLS acceptor alike) feeds /ws/nav's
+/// loopback check the way ws.client.host does in Python.
+#[derive(Clone, Debug)]
+pub struct PeerAddr(pub SocketAddr);
+
+impl axum::extract::connect_info::Connected<axum::serve::IncomingStream<'_, NodelayListener>>
+    for PeerAddr
+{
+    fn connect_info(target: axum::serve::IncomingStream<'_, NodelayListener>) -> Self {
+        PeerAddr(*target.remote_addr())
+    }
+}
+
 /// Serve the app over plain HTTP (TLS handled in main via axum-server).
 pub async fn serve_http(app: Router, addr: SocketAddr) -> std::io::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await
+    axum::serve(
+        NodelayListener(listener),
+        app.into_make_service_with_connect_info::<PeerAddr>(),
+    )
+    .await
+}
+
+#[cfg(test)]
+mod phone_lifecycle_tests {
+    //! The failed-send/open-receiver path: when the permit writer dies while
+    //! the client socket stays open, the session must end — revoke the
+    //! issuer and release the camera owner (Python races writer/reader
+    //! FIRST_COMPLETED and closes the issuer on either failure).
+
+    use super::*;
+    use futures_util::stream::{SplitSink, SplitStream};
+    use futures_util::{Sink, Stream};
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+    use tokio::io::DuplexStream;
+    use tokio_tungstenite::tungstenite::protocol::Role;
+    use tokio_tungstenite::tungstenite::Message as TsMsg;
+    use tokio_tungstenite::WebSocketStream;
+
+    fn test_state() -> Arc<AppState> {
+        build_state(
+            false,      // demo
+            None,       // camera_device
+            None,       // serial_port
+            false,      // simulate_rover
+            "off",      // detector
+            None, None, // detector_model, face_model
+            false,      // h264
+            None,       // mission_dir
+            100, 0,     // max_pwm, min_pwm
+            None, None, None, None, None, // assistant/whisper/piper
+            None,       // tts_dir
+            None,       // whisper_url
+            None,       // piper_model_es
+            None,       // speaker_cmd
+            5.0,        // triage_interval
+            None,       // depth_model
+            false, 120.0, None, 90.0, // scan_pan, scan_fov, scan_intrinsics, scan_turn_dps
+            15, 500_000, // video_fps, video_bitrate
+            false, None, // record, replay
+            None,       // drive_profile
+            false,      // allow_calibration
+            false,      // proximity_stop
+            "servo",    // pan_mount
+            None,       // autonomy_max_pwm
+            false,      // bonded
+            false,      // nav2
+            0.45,       // nav_speed_mps
+            3.0,        // nav_turn_radps
+            0.7,        // nav_max_v
+            0.8,        // nav_max_w
+            0.15,       // nav_camera_height
+            None,       // sim_world
+            false,      // lidar_drive
+            (0, 0),     // visual_caps: uncapped in tests
+            false,      // fusion_bypass
+        )
+    }
+
+    fn hello_text(depth: bool) -> String {
+        format!(
+            "{{\"version\":1,\"type\":\"hello\",\"session_id\":\"t-{depth}\",\"map_epoch\":0,\
+             \"supports_scene_depth\":{depth},\"supports_capture_permits\":true}}"
+        )
+    }
+
+    pub(super) fn to_ts(m: Message) -> TsMsg {
+        match m {
+            Message::Text(t) => TsMsg::Text(t.as_str().to_string().into()),
+            Message::Binary(b) => TsMsg::Binary(b),
+            Message::Ping(p) => TsMsg::Ping(p),
+            Message::Pong(p) => TsMsg::Pong(p),
+            Message::Close(cf) => TsMsg::Close(cf.map(|f| {
+                tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                    code: f.code.into(),
+                    reason: f.reason.as_str().to_string().into(),
+                }
+            })),
+        }
+    }
+
+    pub(super) fn from_ts(m: TsMsg) -> Option<Message> {
+        Some(match m {
+            TsMsg::Text(t) => Message::Text(t.as_str().to_string().into()),
+            TsMsg::Binary(b) => Message::Binary(b),
+            TsMsg::Ping(p) => Message::Ping(p),
+            TsMsg::Pong(p) => Message::Pong(p),
+            TsMsg::Close(cf) => Message::Close(cf.map(|f| {
+                axum::extract::ws::CloseFrame {
+                    code: f.code.into(),
+                    reason: f.reason.as_str().to_string().into(),
+                }
+            })),
+            TsMsg::Frame(_) => return None,
+        })
+    }
+
+    pub(super) struct TxA(pub(super) SplitSink<WebSocketStream<DuplexStream>, TsMsg>);
+    impl Sink<Message> for TxA {
+        type Error = tokio_tungstenite::tungstenite::Error;
+        fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Pin::new(&mut self.0).poll_ready(cx)
+        }
+        fn start_send(mut self: Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
+            Pin::new(&mut self.0).start_send(to_ts(item))
+        }
+        fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Pin::new(&mut self.0).poll_flush(cx)
+        }
+        fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Pin::new(&mut self.0).poll_close(cx)
+        }
+    }
+
+    pub(super) struct RxA(pub(super) SplitStream<WebSocketStream<DuplexStream>>);
+    impl Stream for RxA {
+        type Item = Result<Message, tokio_tungstenite::tungstenite::Error>;
+        fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            loop {
+                match Pin::new(&mut self.0).poll_next(cx) {
+                    Poll::Ready(Some(Ok(m))) => match from_ts(m) {
+                        Some(am) => return Poll::Ready(Some(Ok(am))),
+                        None => continue,
+                    },
+                    Poll::Ready(Some(Err(e))) => return Poll::Ready(Some(Err(e))),
+                    Poll::Ready(None) => return Poll::Ready(None),
+                    Poll::Pending => return Poll::Pending,
+                }
+            }
+        }
+    }
+
+    /// A client that completes the hello then never reads again: the first
+    /// permit write saturates the tiny duplex pipe, the writer's send
+    /// budget expires, and the session must end — the old code left the
+    /// receiver open, the issuer bound, and the camera owner held.
+    async fn dead_writer_session(
+        depth: bool,
+        run: fn(TxA, RxA, Arc<AppState>) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
+    ) -> Arc<AppState> {
+        let s = test_state();
+        // 512-byte pipe: the hello fits in one write, but 20 Hz
+        // permit packets saturate it within a few ticks when the
+        // client never drains, reproducing a stalled writer.
+        let (client_io, server_io) = tokio::io::duplex(512);
+        let server_ws = WebSocketStream::from_raw_socket(server_io, Role::Server, None).await;
+        let mut client = WebSocketStream::from_raw_socket(client_io, Role::Client, None).await;
+        use futures_util::SinkExt;
+        client.send(TsMsg::Text(hello_text(depth).into())).await.unwrap();
+        // Never read the client side again; just hold it open.
+        let _hold = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            drop(client);
+        });
+        let (tx, rx) = server_ws.split();
+        let done = tokio::time::timeout(
+            Duration::from_secs(10),
+            run(TxA(tx), RxA(rx), s.clone()),
+        )
+        .await;
+        assert!(
+            done.is_ok(),
+            "a failed writer must end the session while the receiver stays open"
+        );
+        assert!(
+            !*s.phone_owner.lock().unwrap(),
+            "camera owner still held after writer death"
+        );
+        s
+    }
+
+    #[tokio::test]
+    async fn phone_rgb_dead_writer_ends_session_and_frees_owner() {
+        dead_writer_session(false, |tx, rx, s| {
+            Box::pin(run_phone_rgb_session(tx, rx, s))
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn phone_depth_dead_writer_ends_session_and_frees_owner() {
+        dead_writer_session(true, |tx, rx, s| {
+            Box::pin(run_phone_session(tx, rx, s))
+        })
+        .await;
+    }
+}
+
+#[cfg(test)]
+mod bonded_ws_tests {
+    //! Opt-in bonded upstream over real tungstenite WS pairs, mirroring
+    //! phone_lifecycle_tests. Mirrors jetson/control/tests/test_bonded.py +
+    //! test_bonded_transport.py: attach flows, credential rejects without
+    //! owner revocation, canonical dedup, stale copies, conflicting seq,
+    //! per-path congestion detach, and last-detach owner teardown.
+
+    use super::phone_lifecycle_tests::{RxA, TxA};
+    use super::*;
+    use std::time::Instant;
+    use tokio::io::DuplexStream;
+    use tokio_tungstenite::tungstenite::protocol::Role;
+    use tokio_tungstenite::tungstenite::Message as TsMsg;
+    use tokio_tungstenite::WebSocketStream;
+
+    fn bonded_setup() -> (Arc<ControlState>, Arc<BondedControlHub>) {
+        let control = Arc::new(
+            ControlState::new(false, 0, 100, None, None, None, None, false, false, "servo", None, None)
+                .unwrap(),
+        );
+        control.set_connected(true, None);
+        control.update_range(100.0);
+        (
+            control.clone(),
+            Arc::new(BondedControlHub::new(control, None)),
+        )
+    }
+
+    async fn bonded_ws_cap(hub: &Arc<BondedControlHub>, cap: usize) -> WebSocketStream<DuplexStream> {
+        let (client_io, server_io) = tokio::io::duplex(cap);
+        let server = WebSocketStream::from_raw_socket(server_io, Role::Server, None).await;
+        let client = WebSocketStream::from_raw_socket(client_io, Role::Client, None).await;
+        let (tx, rx) = server.split();
+        tokio::spawn(run_bonded_session(TxA(tx), RxA(rx), hub.clone()));
+        client
+    }
+
+    async fn bonded_ws(hub: &Arc<BondedControlHub>) -> WebSocketStream<DuplexStream> {
+        bonded_ws_cap(hub, 128 * 1024).await
+    }
+
+    async fn send_text(client: &mut WebSocketStream<DuplexStream>, text: String) {
+        client.send(TsMsg::Text(text.into())).await.unwrap();
+    }
+
+    /// Next incoming text frame as (parsed JSON, raw text); panics if a
+    /// non-text frame or the stream end arrives first.
+    async fn recv_json(client: &mut WebSocketStream<DuplexStream>) -> (Value, String) {
+        match tokio::time::timeout(Duration::from_secs(5), client.next()).await {
+            Ok(Some(Ok(TsMsg::Text(t)))) => {
+                (serde_json::from_str(&t).unwrap(), t.to_string())
+            }
+            other => panic!("expected a text frame, got {other:?}"),
+        }
+    }
+
+    async fn expect_closed(client: &mut WebSocketStream<DuplexStream>) {
+        let frame = tokio::time::timeout(Duration::from_secs(5), client.next()).await;
+        assert!(
+            matches!(frame, Ok(Some(Ok(TsMsg::Close(_))))),
+            "expected a close frame, got {frame:?}"
+        );
+    }
+
+    async fn attach(client: &mut WebSocketStream<DuplexStream>, secret: Option<&str>) -> Value {
+        let mut req = json!({"type": "attach", "version": 1});
+        if let Some(s) = secret {
+            req["secret"] = json!(s);
+        }
+        send_text(client, req.to_string()).await;
+        let (v, _) = recv_json(client).await;
+        assert_eq!(v["type"], "attached");
+        assert_eq!(v["version"], 1);
+        v
+    }
+
+    /// First status frame matching `pred` (checked on parsed status objects
+    /// only; attached replies are skipped).
+    async fn status_until(
+        client: &mut WebSocketStream<DuplexStream>,
+        pred: impl Fn(&Value) -> bool,
+    ) -> Value {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let (v, _) = recv_json(client).await;
+            if v.get("type").and_then(Value::as_str) != Some("control_status") {
+                continue;
+            }
+            if pred(&v) {
+                return v;
+            }
+            assert!(Instant::now() < deadline, "timed out waiting for status");
+        }
+    }
+
+    /// Control command text; `shuffled` puts the keys in a different order —
+    /// a different on-wire encoding of the same canonical payload.
+    fn command_text(
+        status: &Value,
+        seq: i64,
+        held: bool,
+        v: f64,
+        permit: Option<&str>,
+        shuffled: bool,
+    ) -> String {
+        let session = status["session_id"].as_str().unwrap_or("");
+        let permit = permit
+            .map(str::to_string)
+            .unwrap_or_else(|| status["permit"].as_str().unwrap_or("").to_string());
+        let parts = [
+            format!("\"seq\":{seq}"),
+            format!("\"session_id\":\"{session}\""),
+            format!("\"permit\":\"{permit}\""),
+            format!("\"deadman\":{held}"),
+            format!("\"v\":{v}"),
+            "\"w\":0".to_string(),
+            "\"pan\":0".to_string(),
+            "\"mode\":\"teleop\"".to_string(),
+            "\"video_fresh\":true".to_string(),
+            "\"video_age_ms\":0".to_string(),
+        ];
+        let mut body = parts.to_vec();
+        if shuffled {
+            body.rotate_left(4);
+        }
+        format!("{{{}}}", body.join(","))
+    }
+
+    #[tokio::test]
+    async fn bonded_two_paths_share_one_owner_and_status_hides_credential() {
+        let (control, hub) = bonded_setup();
+        let mut a = bonded_ws(&hub).await;
+        let att_a = attach(&mut a, None).await;
+        assert_eq!(att_a["secret"].as_str().unwrap().len(), 64);
+        assert!(att_a["secret"]
+            .as_str()
+            .unwrap()
+            .chars()
+            .all(|c| c.is_ascii_hexdigit()));
+        let mut b = bonded_ws(&hub).await;
+        let att_b = attach(&mut b, Some(att_a["secret"].as_str().unwrap())).await;
+        assert_eq!(att_a["session_id"], att_b["session_id"]);
+        assert_ne!(att_a["path_id"], att_b["path_id"]);
+        // One logical stream: once b is attached both paths carry the same
+        // status_seq values with identical payloads.
+        let (vb, _) = recv_json(&mut b).await;
+        let mut va = recv_json(&mut a).await.0;
+        while va["status_seq"].as_i64().unwrap() < vb["status_seq"].as_i64().unwrap() {
+            va = recv_json(&mut a).await.0;
+        }
+        assert_eq!(va, vb);
+        assert!(va["status_seq"].as_i64().unwrap() >= 1);
+        assert!(!va.to_string().contains(att_a["secret"].as_str().unwrap()));
+        assert!(va.get("path_id").is_none());
+        assert_eq!(va["session_id"], att_a["session_id"]);
+        assert_eq!(hub.path_count(), 2);
+        assert_eq!(
+            control.inner.lock().unwrap().session_id.as_deref(),
+            Some(att_a["session_id"].as_str().unwrap())
+        );
+        drop((a, b));
+    }
+
+    #[tokio::test]
+    async fn bonded_wrong_secret_rejected_without_revoking_owner() {
+        let (control, hub) = bonded_setup();
+        let mut a = bonded_ws(&hub).await;
+        let att = attach(&mut a, None).await;
+        let mut bad = bonded_ws(&hub).await;
+        send_text(
+            &mut bad,
+            json!({"type": "attach", "version": 1, "secret": "0".repeat(64)}).to_string(),
+        )
+        .await;
+        expect_closed(&mut bad).await;
+        assert_eq!(hub.path_count(), 1);
+        assert_eq!(
+            control.inner.lock().unwrap().session_id.as_deref(),
+            Some(att["session_id"].as_str().unwrap())
+        );
+        let s = status_until(&mut a, |_| true).await;
+        assert_eq!(s["session_id"], att["session_id"]);
+    }
+
+    #[tokio::test]
+    async fn bonded_third_path_rejected_without_revoking_owner() {
+        let (control, hub) = bonded_setup();
+        let mut a = bonded_ws(&hub).await;
+        let att = attach(&mut a, None).await;
+        let mut b = bonded_ws(&hub).await;
+        attach(&mut b, Some(att["secret"].as_str().unwrap())).await;
+        // Even the correct credential is refused once both paths are live.
+        let mut c = bonded_ws(&hub).await;
+        send_text(
+            &mut c,
+            json!({"type": "attach", "version": 1, "secret": att["secret"]}).to_string(),
+        )
+        .await;
+        expect_closed(&mut c).await;
+        assert_eq!(hub.path_count(), 2);
+        assert_eq!(
+            control.inner.lock().unwrap().session_id.as_deref(),
+            Some(att["session_id"].as_str().unwrap())
+        );
+        let s = status_until(&mut a, |_| true).await;
+        assert_eq!(s["session_id"], att["session_id"]);
+    }
+
+    #[tokio::test]
+    async fn bonded_attach_must_be_a_valid_first_frame() {
+        let (control, hub) = bonded_setup();
+        let mut c = bonded_ws(&hub).await;
+        send_text(&mut c, "{\"type\":\"attach\",\"version\":2}".to_string()).await;
+        expect_closed(&mut c).await;
+        assert!(control.inner.lock().unwrap().session_id.is_none());
+        assert_eq!(hub.path_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn bonded_identical_copy_is_deduplicated_without_state_reentry() {
+        let (control, hub) = bonded_setup();
+        let mut a = bonded_ws(&hub).await;
+        let att_a = attach(&mut a, None).await;
+        let mut b = bonded_ws(&hub).await;
+        attach(&mut b, Some(att_a["secret"].as_str().unwrap())).await;
+        let s0 = status_until(&mut b, |s| s["permit"].is_string()).await;
+        send_text(&mut a, command_text(&s0, 0, false, 0.0, None, false)).await;
+        let s = status_until(&mut b, |v| v["seq"] == 0).await;
+        send_text(&mut a, command_text(&s, 1, true, 0.5, None, false)).await;
+        let s1 = status_until(&mut b, |v| v["seq"] == 1).await;
+        assert_eq!(s1["left_pwm"], 50);
+        assert_eq!(s1["right_pwm"], 50);
+        // Identical canonical copy with a different key order on path B:
+        // deduped before control state, so no stale_sequence stop.
+        send_text(&mut b, command_text(&s, 1, true, 0.5, None, true)).await;
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let inner = control.inner.lock().unwrap();
+        assert_eq!(inner.seq, 1);
+        assert_eq!(inner.reason, "active");
+        assert!(!inner.requires_release);
+        drop(inner);
+        let s2 = status_until(&mut b, |v| {
+            v["status_seq"].as_i64() > s1["status_seq"].as_i64()
+        })
+        .await;
+        assert_eq!(s2["reason"], "active");
+        assert_eq!(s2["requires_release"], false);
+        assert_eq!(s2["left_pwm"], 50);
+    }
+
+    #[tokio::test]
+    async fn bonded_stale_release_copy_is_ignored() {
+        let (control, hub) = bonded_setup();
+        let mut a = bonded_ws(&hub).await;
+        let att_a = attach(&mut a, None).await;
+        let mut b = bonded_ws(&hub).await;
+        attach(&mut b, Some(att_a["secret"].as_str().unwrap())).await;
+        let s0 = status_until(&mut b, |s| s["permit"].is_string()).await;
+        let release0 = command_text(&s0, 0, false, 0.0, None, false);
+        send_text(&mut a, release0.clone()).await;
+        let s = status_until(&mut b, |v| v["seq"] == 0).await;
+        send_text(&mut a, command_text(&s, 1, true, 0.5, None, false)).await;
+        status_until(&mut b, |v| v["seq"] == 1).await;
+        // A stale copy of the earlier release arriving on the other path
+        // must not stop the newer hold.
+        send_text(&mut b, release0).await;
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let inner = control.inner.lock().unwrap();
+        assert_eq!(inner.seq, 1);
+        assert_eq!(inner.v, 0.5);
+        assert_eq!(inner.reason, "active");
+        assert!(!inner.requires_release);
+    }
+
+    #[tokio::test]
+    async fn bonded_conflicting_duplicate_stops_and_needs_fresh_release() {
+        let (_control, hub) = bonded_setup();
+        let mut a = bonded_ws(&hub).await;
+        let att_a = attach(&mut a, None).await;
+        let mut b = bonded_ws(&hub).await;
+        attach(&mut b, Some(att_a["secret"].as_str().unwrap())).await;
+        let s0 = status_until(&mut b, |s| s["permit"].is_string()).await;
+        send_text(&mut a, command_text(&s0, 0, false, 0.0, None, false)).await;
+        let s = status_until(&mut b, |v| v["seq"] == 0).await;
+        send_text(&mut a, command_text(&s, 1, true, 0.5, None, false)).await;
+        status_until(&mut b, |v| v["seq"] == 1).await;
+        // Same seq with a different payload: conflicting_duplicate stop.
+        send_text(&mut b, command_text(&s, 1, true, -0.5, None, false)).await;
+        let sc = status_until(&mut b, |v| v["reason"] == "conflicting_duplicate").await;
+        assert_eq!(sc["requires_release"], true);
+        assert_eq!(sc["left_pwm"], 0);
+        // A fresh press while release is required is refused.
+        let s_cur = status_until(&mut b, |v| v["permit"].is_string()).await;
+        send_text(&mut a, command_text(&s_cur, 2, true, 0.5, None, false)).await;
+        status_until(&mut b, |v| v["reason"] == "release_required").await;
+        // A fresh release unlocks and new presses apply again.
+        send_text(&mut a, command_text(&s_cur, 3, false, 0.0, None, false)).await;
+        status_until(&mut b, |v| v["seq"] == 3).await;
+        let s3 = status_until(&mut b, |v| v["requires_release"] == false).await;
+        send_text(&mut a, command_text(&s3, 4, true, 0.5, None, false)).await;
+        let s4 = status_until(&mut b, |v| v["seq"] == 4).await;
+        assert_eq!(s4["left_pwm"], 50);
+        assert_eq!(s4["reason"], "active");
+    }
+
+    #[tokio::test]
+    async fn bonded_stalled_path_is_detached_while_owner_survives() {
+        let (control, hub) = bonded_setup();
+        let mut a = bonded_ws_cap(&hub, 4 * 1024).await;
+        let att_a = attach(&mut a, None).await;
+        // a never reads again: its socket buffer fills, the writer misses the
+        // 100 ms deadline, and only this path is torn down.
+        let mut b = bonded_ws(&hub).await;
+        attach(&mut b, Some(att_a["secret"].as_str().unwrap())).await;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while hub.path_count() == 2 {
+            assert!(Instant::now() < deadline, "stalled path was not detached");
+            let _ = status_until(&mut b, |_| true).await;
+        }
+        assert_eq!(
+            control.inner.lock().unwrap().session_id.as_deref(),
+            Some(att_a["session_id"].as_str().unwrap())
+        );
+        let s = status_until(&mut b, |_| true).await;
+        assert_eq!(s["session_id"], att_a["session_id"]);
+    }
+
+    #[tokio::test]
+    async fn bonded_last_detach_ends_owner_and_retires_credential() {
+        let (control, hub) = bonded_setup();
+        let mut a = bonded_ws(&hub).await;
+        let att_a = attach(&mut a, None).await;
+        let session = att_a["session_id"].as_str().unwrap().to_string();
+        let mut b = bonded_ws(&hub).await;
+        attach(&mut b, Some(att_a["secret"].as_str().unwrap())).await;
+        // Losing one path keeps the owner live.
+        drop(a);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while hub.path_count() != 1 {
+            assert!(Instant::now() < deadline, "first detach never landed");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            control.inner.lock().unwrap().session_id.as_deref(),
+            Some(session.as_str())
+        );
+        let s = status_until(&mut b, |_| true).await;
+        assert_eq!(s["session_id"], session);
+        // Losing the last path ends ownership and retires the credential.
+        drop(b);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            {
+                let inner = control.inner.lock().unwrap();
+                if inner.session_id.is_none() {
+                    assert!(inner.requires_release);
+                    break;
+                }
+            }
+            assert!(Instant::now() < deadline, "last detach never ended owner");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(hub.path_count(), 0);
+        // The retired secret cannot mint a new owner.
+        let mut c = bonded_ws(&hub).await;
+        send_text(
+            &mut c,
+            json!({"type": "attach", "version": 1, "secret": att_a["secret"]}).to_string(),
+        )
+        .await;
+        expect_closed(&mut c).await;
+        // A fresh owner still has to release before driving.
+        let mut d = bonded_ws(&hub).await;
+        let att_d = attach(&mut d, None).await;
+        assert_ne!(att_d["session_id"], session);
+        let s = status_until(&mut d, |_| true).await;
+        assert_eq!(s["requires_release"], true);
+    }
 }

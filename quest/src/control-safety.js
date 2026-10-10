@@ -37,6 +37,9 @@ export class ControlSafety {
     if (this.session !== status.session_id) {
       this.invalidate("New control session: release deadman");
       this.session = status.session_id;
+      this.frameAt = -Infinity;
+      this.frameAge = Infinity;
+      this.frameId = null;
     }
     if (this.status?.rover && !status.rover) this.invalidate("Rover unavailable");
     if (status.requires_release) this.invalidate(status.reason ?? "Release deadman to continue");

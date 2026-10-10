@@ -1,0 +1,29 @@
+# Template: jetson/ros2-install.sh fills @USER@ and @REPO@ and installs it (enable with --enable).
+# ROS 2 Jazzy Nav2 stack plus the farsight_nav bridge to the local jetson.server (docs/navigation.md).
+[Unit]
+Description=Farsight navigation (ROS 2 Jazzy Nav2 + jetson.server bridge)
+After=farsight.service
+Wants=farsight.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=@USER@
+WorkingDirectory=@REPO@
+# Keep DDS discovery on this computer; the bridge reaches jetson.server on loopback only.
+Environment=ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+Environment=RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+Environment=FARSIGHT_NAV_SERVER=http://127.0.0.1:8443
+EnvironmentFile=-/etc/farsight-nav.env
+# Nav2's lifecycle bringup aborts if the bridge has no base_link TF within about 60 s, and
+# the bridge only publishes it from a live phone pose. Wait for one (forever) before launching.
+ExecStartPre=/bin/bash -c 'until curl -sf --max-time 2 "$FARSIGHT_NAV_SERVER/nav/status" | grep -q -e pose_source.:.arkit -e pose_source.:.simulated; do sleep 2; done'
+TimeoutStartSec=infinity
+ExecStart=/bin/bash -c 'source /opt/ros/jazzy/setup.bash && source @REPO@/ros2/install/setup.bash && exec ros2 launch farsight_nav nav.launch.py server:=$FARSIGHT_NAV_SERVER'
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

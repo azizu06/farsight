@@ -77,6 +77,10 @@ if [ "$ASSISTANT" = 1 ]; then
     && [ -s "$LLM_MODEL" ] && [ -s "$LLM_MMPROJ" ] && LLM=1
   [ "$(selected whisper_ready)" = 1 ] && [ -x "$SRC/whisper.cpp/build/bin/whisper-server" ] && [ -s "$WHISPER_MODEL" ] && WHISPER=1
 fi
+for tool in llama.cpp whisper.cpp; do
+  [ ! -d "$SRC/$tool/build/bin" ] || compgen -G "$SRC/$tool/build/bin/libggml-cuda.so*" >/dev/null \
+    || echo "WARN: $SRC/$tool is a CPU-only build (no libggml-cuda); the assistant will run far slower than on the GPU. Rebuild: jetson/setup.sh or docs/assistant-setup.md"
+done
 echo "Vision model: ${LLM_MODEL:-not selected}; projector: ${LLM_MMPROJ:-not selected}"
 echo "Whisper model: ${WHISPER_MODEL:-not selected}"
 
@@ -118,6 +122,13 @@ if [ "$DRY" = 1 ]; then echo "  [dry-run] $REPO/jetson/.venv/bin/python -m jetso
 else (cd "$REPO" && jetson/.venv/bin/python -m jetson.launch --check --env-file "$ENV_FILE") || echo "WARN: fix the lines above in $ENV_FILE, then: sudo systemctl restart farsight"; fi
 
 step "Start"
+# With NetworkManager managing every link, systemd-networkd-wait-online runs to its 2-minute timeout
+# on each boot and holds network-online.target (docker, nvargus, ...). Disable it only when networkd
+# manages nothing.
+if systemctl is-enabled --quiet systemd-networkd-wait-online.service 2>/dev/null \
+    && ! networkctl list --no-legend 2>/dev/null | awk '$5 != "unmanaged" {found = 1} END {exit !found}'; then
+  run sudo systemctl disable systemd-networkd-wait-online.service
+fi
 run sudo systemctl daemon-reload
 [ "$LLM" = 0 ] || run sudo systemctl enable --now farsight-llm.service
 [ "$WHISPER" = 0 ] || run sudo systemctl enable --now farsight-whisper.service

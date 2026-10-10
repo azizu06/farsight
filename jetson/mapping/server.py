@@ -16,7 +16,11 @@ from pydantic import BaseModel, ValidationError
 import uvicorn
 
 from .compress import EncodedCache
+from .wire import DEFAULT_POINTS_CAP, DEFAULT_TRIANGLES_CAP, POINTS_ENV, TRIANGLES_ENV, cap_from_env
 from .demo import stream_demo
+from jetson.sim.stream import SimFeed, stream_world
+from jetson.sim.world import RoverSim
+from jetson.sim.worlds import WORLDS, load as load_world
 from .phone import Hello, decode_frame, validate_pose
 from .state import MapState
 from jetson.camera import CameraService
@@ -31,6 +35,7 @@ from jetson.phrases import PhraseSpeaker, SpeechError
 from jetson.triage import TriageBusy, TriageService
 from jetson.drive_profile import DriveProfile
 from jetson.scan import ScanService
+from jetson.nav import NavService, disabled_router
 from jetson.bulk import BulkPacer, BulkPacketTooLarge
 from jetson.bulk_response import bulk_response, PacedStreamingResponse
 
@@ -43,25 +48,61 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                piper_bin=None, piper_model=None, tts_dir=None, face_model=None, whisper_url=None,
                piper_model_es=None, speaker_cmd="auto", triage_interval=3.0,
                depth_model=None, scan_pan=False, scan_fov=70, scan_intrinsics=None, scan_turn_dps=90,
-               record=False, replay=None, bulk_limit_mbps=0, drive_profile=None, allow_calibration=False):
+               record=False, replay=None, proximity_stop=True, pan_mount="servo", autonomy_max_pwm=None, nav2=False, nav_speed_mps=0.45,
+               nav_turn_radps=3.0, nav_max_v=0.7, nav_max_w=0.8, nav_camera_height=0.15, bulk_limit_mbps=0, drive_profile=None,
+               video_limit_mbps=0,
+               allow_calibration=False, sim_world=None, bonded_control=False, lidar_drive=False,
+               fusion_bypass=False, map_points_cap=None, map_triangles_cap=None):
+    if sim_world is not None:  # closed-loop simulator: a moving ray-cast rover in a test floor plan
+        if serial_port or camera_device is not None or replay is not None:
+            raise ValueError("--sim-world is simulated; it cannot drive real motors, cameras or replays")
+        demo = simulate_rover = True
     if isinstance(drive_profile, (str, Path)):
         drive_profile = DriveProfile.load(drive_profile)
         if drive_profile.meta.get("source") == "simulated":
             logging.getLogger(__name__).warning("Drive profile came from a SIMULATED rover; it does not describe real motors")
     bulk = BulkPacer(bulk_limit_mbps)
+    # Live video keeps its own unpaced lane: a shared cap made every JPEG wait behind
+    # map snapshots, pushing camera age past the 500 ms motion-stop threshold.
+    live = BulkPacer(video_limit_mbps)
     if replay is not None and (serial_port or camera_device is not None or demo or simulate_rover or record):
         raise ValueError("Replay cannot be combined with serial, live/simulated sources, or recording")
     if (demo or simulate_rover) and serial_port:
         raise ValueError("Simulated sources cannot be combined with a physical motor serial port")
-    state = MapState(demo)
-    camera_service = CameraService(state, device=camera_device)
+    if nav2 and replay is not None:
+        raise ValueError("Replay is read-only; navigation cannot be combined with it")
+    if bonded_control and replay is not None:
+        raise ValueError("Replay is read-only; bonded control cannot be combined with it")
+    if scan_pan and pan_mount == "none":
+        raise ValueError("--scan-pan needs a physical pan servo (--pan-mount servo)")
+    state = MapState(demo, fusion_bypass=fusion_bypass)
+    # Visual wire caps; None reads FARSIGHT_MAP_POINTS_CAP / FARSIGHT_MAP_TRIANGLES_CAP.
+    state.points_cap = (cap_from_env(POINTS_ENV, DEFAULT_POINTS_CAP)
+                        if map_points_cap is None else map_points_cap)
+    state.triangles_cap = (cap_from_env(TRIANGLES_ENV, DEFAULT_TRIANGLES_CAP)
+                           if map_triangles_cap is None else map_triangles_cap)
+    if state.points_cap < 0 or state.triangles_cap < 0:
+        raise ValueError("Map wire caps must be >= 0 (0 disables)")
+    sim = (SimFeed(RoverSim(load_world(sim_world), speed_mps=nav_speed_mps, turn_radps=nav_turn_radps))
+           if sim_world is not None else None)
+    camera_service = CameraService(state, device=camera_device, lidar_drive=lidar_drive)
     video_service = VideoService(camera_service, enabled=h264, fps=video_fps, bitrate=video_bitrate)
     mission = Mission(mission_dir, record=record)
+    # Opt-in ROS 2 Nav2 backend (ros2/farsight_nav); without --nav2 autonomy is unchanged.
+    nav = NavService(state, speed_mps=nav_speed_mps, turn_radps=nav_turn_radps, max_v=nav_max_v,
+                     max_w=nav_max_w, camera_height=nav_camera_height) if nav2 else None
     perception = ReplayPerception(camera_service) if replay is not None else PerceptionService(camera_service, model=detector_model, mode=detector, on_detection=mission.detect, face_model=face_model)
     control = ReplayControl() if replay is not None else ControlService(serial_port=serial_port, simulate=simulate_rover, max_pwm=max_pwm, min_pwm=min_pwm,
                              drive_profile=drive_profile, allow_calibration=allow_calibration,
                              camera_ready=lambda: camera_service.status()["camera_drive_ready" if serial_port else "camera"],
-                             detections=perception.snapshot)
+                             detections=sim.detections if sim else perception.snapshot,
+                             simulated_range=sim.sim.ultrasonic_cm if sim else None,
+                             proximity_stop=proximity_stop, pan_mount=pan_mount,
+                             autonomy_max_pwm=autonomy_max_pwm, navigator=nav,
+                             bonded=bonded_control)
+    if nav is not None:
+        nav.attach(control.state)
+        state.frame_observers.append(nav.offer_frame)
     replay_session = ReplaySession(replay, camera_service, perception, control) if replay is not None else None
     if record:
         control.on_status = lambda packet: mission.record("control", packet)
@@ -91,6 +132,15 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
 
     if hasattr(control, "state"):  # recorded replays have no live control loop
         control.state.on_output = mission.drill_motion
+        observers = [mission.drill_motion] + ([sim.sim.apply] if sim else [])
+        if len(observers) > 1:
+            def applied(v, w, blocked):
+                for observer in observers:
+                    try:
+                        observer(v, w, blocked)
+                    except Exception:
+                        pass  # telemetry/odometry must never affect motor output
+            control.state.on_output = applied
     assistant = SceneAssistant(camera_service, perception, control, server_url=assistant_url,
                                whisper_bin=whisper_bin, whisper_model=whisper_model,
                                piper_bin=piper_bin, piper_model=piper_model, output_dir=tts_dir,
@@ -105,7 +155,8 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
 
     @asynccontextmanager
     async def lifespan(app):
-        task = asyncio.create_task(stream_demo(state, camera_service)) if demo else None
+        task = (asyncio.create_task(stream_world(state, camera_service, sim)) if sim else
+                asyncio.create_task(stream_demo(state, camera_service)) if demo else None)
         replay_task = asyncio.create_task(replay_session.run.play(replay_session.publish)) if replay_session else None
         record_task = asyncio.create_task(record_run()) if record else None
         sample_task = asyncio.create_task(sample_mission())
@@ -124,6 +175,8 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                     with suppress(asyncio.CancelledError):
                         await stream_task
             await asyncio.to_thread(mission.finish_recording)
+            if isinstance(control, ControlService):
+                await control.close_bonded()
             await asyncio.to_thread(control.close)
             await assistant.close()
             await phrases.close()
@@ -151,7 +204,10 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
     app.state.phrases = phrases
     app.state.scanner = scanner
     app.state.bulk = bulk
+    app.state.live = live
     app.include_router(control.router)
+    app.state.nav = nav
+    app.include_router(nav.router if nav is not None else disabled_router())
 
     class AskBodyLimit:
         def __init__(self, app):
@@ -186,7 +242,17 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                       assistant=dict(vision_model=bool(assistant_url), whisper=bool(whisper_url or (whisper_bin and whisper_model)),
                                      piper=bool(piper_model)),
                       speech=await asyncio.to_thread(phrases.status), triage=triage.status())
+        if nav is not None:  # absent without --nav2, like the Rust server
+            status["nav"] = dict(enabled=True, available=nav.available())
+        if sim is not None:
+            status["sim_world"] = sim_world
         return status
+
+    if sim is not None:
+        @app.get("/sim/state")
+        async def sim_state():
+            """Ground truth for scenario tests: pose, collisions, clearance, coverage, pop-ups."""
+            return await asyncio.to_thread(sim.sim.state)
 
     class ScanRequest(BaseModel):
         session_id: str
@@ -258,7 +324,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
         frame = await asyncio.to_thread(camera_service.preview)
         if frame is None:
             raise HTTPException(503, "Waiting for a camera frame")
-        return bulk_response(frame.jpeg, bulk, media_type="image/jpeg", headers={"Cache-Control": "no-store",
+        return bulk_response(frame.jpeg, live, media_type="image/jpeg", headers={"Cache-Control": "no-store",
               "X-Frame-Id": str(frame.frame_id), "X-Frame-Age-Ms": str(frame.age_ms),
               "X-Frame-Source": frame.source})
 
@@ -266,7 +332,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
     async def depth():
         if state.depth_jpeg is None:
             raise HTTPException(503, "Waiting for measured depth")
-        return bulk_response(state.depth_jpeg, bulk, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+        return bulk_response(state.depth_jpeg, live, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
     @app.get("/stream.mjpg")
     async def stream():
@@ -280,8 +346,8 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                         yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame.jpeg + b"\r\n"
                         last = (frame.source, frame.frame_id)
                 await asyncio.sleep(0.02)
-        if bulk.enabled:
-            return PacedStreamingResponse(images(), bulk, media_type="multipart/x-mixed-replace; boundary=frame")
+        if live.enabled:
+            return PacedStreamingResponse(images(), live, media_type="multipart/x-mixed-replace; boundary=frame")
         return StreamingResponse(images(), media_type="multipart/x-mixed-replace; boundary=frame")
 
     @app.websocket("/ws/video")
@@ -305,7 +371,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
             frame = camera_service.snapshot()
             await ws.send_json(dict(type="video_init", mime=video_service.mime, source=frame.source if frame else "WAITING"))
             async def send_initialization(payload):
-                if bulk.enabled:
+                if live.enabled:
                     await asyncio.wait_for(ws.send_bytes(payload), .5)
                 else:
                     await ws.send_bytes(payload)
@@ -332,7 +398,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
             # Monitor requests/disconnection while initialization waits for the
             # shared budget, rather than retaining a cancelled client's slot.
             receiver = asyncio.create_task(receive_requests())
-            initialization = asyncio.create_task(bulk.send_packet(video_service.init, send_initialization))
+            initialization = asyncio.create_task(live.send_packet(video_service.init, send_initialization))
             tasks = [receiver, initialization]
             done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
@@ -354,7 +420,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                                         age_ms=max(0, round((time.monotonic() - fragment["received"]) * 1000)))
                         await asyncio.wait_for(ws.send_json(metadata), .5)
                         await asyncio.wait_for(ws.send_bytes(payload), .5)
-                    await bulk.send_packet(fragment["payload"], send_fragment)
+                    await live.send_packet(fragment["payload"], send_fragment)
 
             tasks = [receiver, asyncio.create_task(send_fragments())]
             done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
@@ -542,7 +608,11 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
             if not hello.supports_scene_depth:
                 raise ValueError("This mapper requires measured scene depth")
             identity = hello.session_id, hello.map_epoch
-            permits = CapturePermits(*identity, enabled=hello.supports_capture_permits)
+            # ARKit RGB-D has no supported sensor-to-host clock contract yet.
+            # In particular, claiming the RGB-only AVCapture clock on this
+            # endpoint cannot make an ARKit frame eligible for physical drive.
+            permits = CapturePermits(*identity, enabled=hello.supports_capture_permits,
+                                     supported_clocks=())
             camera_service.phone_rgb = None
             await asyncio.to_thread(state.start_session, identity, hello.device)
 
@@ -552,7 +622,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                     try:
                         frame = await asyncio.to_thread(decode_frame, packet, identity)
                         frame.header["_received_monotonic"] = received_at
-                        await asyncio.to_thread(state.process, frame)
+                        await asyncio.to_thread(state.process, frame, permits=permits)
                     except (ValueError, TypeError, KeyError, ValidationError) as exc:
                         with state.lock:
                             state.rejected += 1
@@ -641,9 +711,20 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
 app = create_app()
 
 
+def on_off(value):
+    text = str(value).strip().lower()
+    if text in ("1", "on", "true", "yes"):
+        return True
+    if text in ("0", "off", "false", "no"):
+        return False
+    raise argparse.ArgumentTypeError("expected on or off")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--demo", action="store_true", help="Ray-cast room; no hardware needed")
+    parser.add_argument("--sim-world", choices=sorted(WORLDS), default=None,
+                        help="Closed-loop simulator: drive a ray-cast rover in a test floor plan (implies --demo)")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8443)
     parser.add_argument("--ssl-certfile")
@@ -651,11 +732,36 @@ def main():
     parser.add_argument("--camera", help="USB camera index or /dev/video path; default is phone RGB-D input")
     parser.add_argument("--serial-port", help="Uno serial path; omitted means physical motors disabled")
     parser.add_argument("--simulate-rover", action="store_true", help="Explicit virtual rover; never opens serial")
+    parser.add_argument("--bonded-control", action="store_true",
+                        help="Opt-in experimental dual-route logical controller; default off")
     parser.add_argument("--max-pwm", type=int, default=100, help="Initial motor PWM ceiling, 1..255")
     parser.add_argument("--min-pwm", type=int, default=0, help="Measured wheel starting PWM floor; default 0 until calibrated")
+    parser.add_argument("--autonomy-max-pwm", type=int, default=None,
+                        help="PWM ceiling for explore, seek, go-to, Nav2 and scan motion (min-pwm < N <= max-pwm); "
+                             "default max-pwm. Keeps autonomy at a calibrated speed when teleop uses a high --max-pwm")
     parser.add_argument("--drive-profile", help="Opt-in measured drive profile (tools.calibrate_drive output); enables mode \"velocity\" in m/s, rad/s")
     parser.add_argument("--allow-calibration", action="store_true",
                         help="Accept raw-PWM mode \"calibrate\" from a held-deadman controller; for tools.calibrate_drive on a cleared floor only")
+    parser.add_argument("--lidar-drive", action="store_true",
+                        help="Let fresh /phone LiDAR frames with normal ARKit tracking count as camera_drive_ready "
+                             "without a verified capture clock; default off (view only)")
+    parser.add_argument("--nav2", action="store_true",
+                        help="Opt in to the ROS 2 Nav2 backend (ros2/farsight_nav bridge on /ws/nav); default off")
+    parser.add_argument("--nav-speed-mps", type=float, default=0.45, help="Measured forward speed at v=1 (m/s)")
+    parser.add_argument("--nav-turn-radps", type=float, default=3.0, help="Measured yaw rate at w=1 (rad/s)")
+    parser.add_argument("--nav-max-v", type=float, default=0.7, help="Cap on Nav2 forward command, normalized 0..1")
+    parser.add_argument("--nav-max-w", type=float, default=0.8, help="Cap on Nav2 turn command, normalized 0..1")
+    parser.add_argument("--nav-camera-height", type=float, default=0.15, help="Phone optical centre above the floor (m)")
+    parser.add_argument("--proximity-stop", type=on_off, default=True, metavar="on|off",
+                        help="Ultrasonic stop: range < 25 cm or stale range blocks forward (default on). "
+                             "'off' is an explicit opt-in for navigation runs that steer around obstacles")
+    parser.add_argument("--fusion-bypass", action="store_true",
+                        help="Skip the Jetson voxel/mesh fusion of /phone RGB-D (the mesh is built elsewhere); "
+                             "pose, depth for Nav2, camera and inference keep running")
+    parser.add_argument("--pan-mount", choices=("servo", "none"), default="servo",
+                        help="servo: a pan servo follows the commanded pan and forward drive is blocked while "
+                             "it is off-centre (default). none: no pan hardware; the headset pans digitally, "
+                             "the Uno never gets P and pan never blocks forward drive")
     parser.add_argument("--detector", choices=("hog", "pose", "none"), default="hog",
                         help="hog: bundled CPU detector; pose: YOLO11-pose (needs --detector-model); none")
     parser.add_argument("--detector-model", help="YOLOv8/11 ONNX or TensorRT engine path; overrides bundled HOG. With --detector pose: YOLO11-pose model")
@@ -669,7 +775,14 @@ def main():
     parser.add_argument("--video-fps", type=int, default=10)
     parser.add_argument("--video-bitrate", type=int, default=500000, help="H264 bit/s; start low for cellular headroom")
     parser.add_argument("--bulk-limit-mbps", type=float, default=0,
-                        help="Optional shared bulk payload Mbps cap; 0 disables, control/permits remain unpaced")
+                        help="Optional shared bulk payload Mbps cap for map/PLY/TTS/snapshots; 0 disables. "
+                             "Live video, control and permits stay unpaced")
+    parser.add_argument("--map-points-cap", type=int, default=None,
+                        help="Visual cap on served/exported map points (env FARSIGHT_MAP_POINTS_CAP, default 30000); 0 disables")
+    parser.add_argument("--map-triangles-cap", type=int, default=None,
+                        help="Visual cap on served mesh triangles (env FARSIGHT_MAP_TRIANGLES_CAP, default 40000); 0 disables")
+    parser.add_argument("--video-limit-mbps", type=float, default=0,
+                        help="Optional separate Mbps cap for live video (camera/depth JPEG, MJPEG, H.264); 0 disables")
     parser.add_argument("--record", action="store_true", help="Record JPEG, detections and control in --mission-dir")
     parser.add_argument("--replay", help="Loop a recorded mission directory; motors always disabled")
     parser.add_argument("--mission-dir", help="Persist detection evidence beneath this directory")
@@ -685,8 +798,11 @@ def main():
     parser.add_argument("--triage-interval", type=float, default=3.0, help="Minimum seconds between SBAR model calls")
     parser.add_argument("--tts-dir", default="/tmp/farsight-tts", help="Bounded locally generated speech replies")
     args = parser.parse_args()
+    if (args.map_points_cap or 0) < 0 or (args.map_triangles_cap or 0) < 0:
+        parser.error("--map-points-cap and --map-triangles-cap must be >= 0 (0 disables)")
     try:
         BulkPacer(args.bulk_limit_mbps)
+        BulkPacer(args.video_limit_mbps)
     except ValueError as exc:
         parser.error(str(exc))
     if args.record and not args.mission_dir:
@@ -695,10 +811,14 @@ def main():
         parser.error("Replay cannot be combined with serial, live/simulated sources, or recording")
     if args.simulate_rover and args.serial_port:
         parser.error("--simulate-rover cannot be combined with --serial-port")
-    if args.demo and args.serial_port:
+    if (args.demo or args.sim_world) and args.serial_port:
         parser.error("A simulated camera cannot be used to drive physical motors")
+    if args.sim_world and (args.camera is not None or args.replay):
+        parser.error("--sim-world cannot be combined with a real --camera or --replay")
     if args.demo and args.camera:
         parser.error("Choose --demo or a real --camera, not both")
+    if args.scan_pan and args.pan_mount == "none":
+        parser.error("--scan-pan needs a physical pan servo (--pan-mount servo)")
     uvicorn.run(create_app(args.demo, camera_device=args.camera, serial_port=args.serial_port,
                 simulate_rover=args.simulate_rover, detector=args.detector, detector_model=args.detector_model,
                 h264=args.h264, mission_dir=args.mission_dir, max_pwm=args.max_pwm, min_pwm=args.min_pwm,
@@ -710,7 +830,15 @@ def main():
                 depth_model=args.depth_model, scan_pan=args.scan_pan, scan_fov=args.scan_fov,
                 scan_intrinsics=args.scan_intrinsics, scan_turn_dps=args.scan_turn_dps,
                 record=args.record, replay=args.replay, bulk_limit_mbps=args.bulk_limit_mbps,
-                drive_profile=args.drive_profile, allow_calibration=args.allow_calibration), host=args.host, port=args.port,
+                video_limit_mbps=args.video_limit_mbps,
+                drive_profile=args.drive_profile, allow_calibration=args.allow_calibration,
+                proximity_stop=args.proximity_stop, pan_mount=args.pan_mount, autonomy_max_pwm=args.autonomy_max_pwm,
+                nav2=args.nav2, nav_speed_mps=args.nav_speed_mps, nav_turn_radps=args.nav_turn_radps,
+                nav_max_v=args.nav_max_v, nav_max_w=args.nav_max_w,
+                nav_camera_height=args.nav_camera_height, sim_world=args.sim_world,
+                bonded_control=args.bonded_control, lidar_drive=args.lidar_drive,
+                fusion_bypass=args.fusion_bypass, map_points_cap=args.map_points_cap,
+                map_triangles_cap=args.map_triangles_cap), host=args.host, port=args.port,
                 ssl_certfile=args.ssl_certfile, ssl_keyfile=args.ssl_keyfile,
                 ws_max_size=8 * 1024 * 1024, access_log=False,
                 timeout_graceful_shutdown=5)

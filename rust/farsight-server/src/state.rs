@@ -1,7 +1,8 @@
 //! Single-session map state. Port of jetson/mapping/state.py.
 
+use bytes::Bytes;
 use std::collections::VecDeque;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use serde_json::{json, Value};
@@ -70,13 +71,33 @@ pub struct Inner {
     pub scan: Option<Value>,
 }
 
+/// Exact Python reason when --fusion-bypass is set (state.py FUSION_BYPASSED).
+const FUSION_BYPASSED: &str = "Geometry lane external; fusion bypassed";
+
 pub struct MapState {
     pub demo: bool,
     pub inner: Mutex<Inner>,
     /// Encoded packet cache keyed on (generation, frames, keyframe count).
-    /// Compressible variants (br/gzip) are cached per map version like
+    /// Compressible variants (zstd/br/gzip) are cached per map version like
     /// jetson/mapping/compress.py — no re-encoding per request.
     packets: Mutex<Option<PacketCache>>,
+    /// Frame consumers (e.g. the nav seam) called with every accepted
+    /// RGB-D frame, outside the map lock (state.frame_observers parity).
+    pub frame_observers: Mutex<Vec<Arc<dyn Fn(&RgbdFrame) + Send + Sync>>>,
+    /// Bumped on every map revision so /ws/map subscribers push the fresh
+    /// packet at fusion time instead of waiting out the 500 ms status tick.
+    revision_tx: tokio::sync::watch::Sender<u64>,
+    /// Visual wire caps (board-agreed defaults 30k points / 40k triangles).
+    /// Bounds only the served/exported payload; the internal map, Nav2
+    /// depth/occupancy and labels keep full resolution. 0 = uncapped.
+    pub points_cap: usize,
+    pub triangles_cap: usize,
+    /// Opt-in Jetson fusion bypass (--fusion-bypass / FARSIGHT_FUSION_BYPASS,
+    /// #109): keep /phone pose +
+    /// depth (Nav2) and the camera feed (inference/control), but skip RGB-D
+    /// point/mesh fusion — geometry arrives via the phone ARKit lane
+    /// assembled on the Mac instead. Status stays honest about map source.
+    pub fusion_bypass: bool,
 }
 
 impl MapState {
@@ -111,7 +132,30 @@ impl MapState {
             pose_history: VecDeque::new(),
             scan: None,
         };
-        Self { demo, inner: Mutex::new(inner), packets: Mutex::new(None) }
+        let (revision_tx, _) = tokio::sync::watch::channel(0u64);
+        Self {
+            demo,
+            inner: Mutex::new(inner),
+            packets: Mutex::new(None),
+            frame_observers: Mutex::new(Vec::new()),
+            revision_tx,
+            points_cap: 0,
+            triangles_cap: 0,
+            fusion_bypass: false,
+        }
+    }
+
+    /// Capped-export flags for the /map/status 'capped' label.
+    pub fn visual_capped(&self) -> (bool, bool) {
+        let s = self.inner.lock().unwrap();
+        (
+            self.points_cap > 0 && s.cloud.cells.len() > self.points_cap,
+            self.triangles_cap > 0 && s.surfaces.count > self.triangles_cap,
+        )
+    }
+
+    pub fn revision_watch(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.revision_tx.subscribe()
     }
 
     pub fn start_session(&self, identity: Identity, device: String) {
@@ -152,7 +196,9 @@ impl MapState {
     }
 
     pub fn clear(&self) {
-        Self::clear_locked(&mut self.inner.lock().unwrap());
+        let mut s = self.inner.lock().unwrap();
+        Self::clear_locked(&mut s);
+        let _ = self.revision_tx.send(s.revision);
     }
 
     /// Replace, never stitch separate rover origins or mix with ARKit geometry.
@@ -163,6 +209,7 @@ impl MapState {
         s.scan = Some(metadata);
         s.paused = true;
         s.reason = Some("Camera-only snapshot retained; estimated metric depth".into());
+        let _ = self.revision_tx.send(s.revision);
     }
 
     pub fn observe_pose(&self, header: &Value, transform: &Mat4) -> Result<(), String> {
@@ -261,10 +308,13 @@ impl MapState {
             )
             .expect("depth JPEG encode");
             s.depth_jpeg = Some(jpeg_buf);
-            may_fuse = !s.paused
+            may_fuse = !self.fusion_bypass
+                && !s.paused
                 && frame.header["tracking"].as_str() == Some("normal")
                 && s.tracking == "normal";
-            s.reason = if s.paused {
+            s.reason = if self.fusion_bypass {
+                Some(FUSION_BYPASSED.into())
+            } else if s.paused {
                 Some("Fusion paused".into())
             } else if !may_fuse {
                 Some("ARKit tracking limited; fusion frozen".into())
@@ -272,6 +322,14 @@ impl MapState {
                 None
             };
         }
+        // Frame consumers run outside the map lock, even when the frame is
+        // too degraded to fuse (mapping/state.py parity).
+        for observer in self.frame_observers.lock().unwrap().iter() {
+            observer(frame);
+        }
+        // #109: bypassed frames keep the pose/depth/camera lanes live but are
+        // not fused and not counted — frames/processing_ms stay frozen at the
+        // last fused values (state.py parity).
         if !may_fuse {
             return Ok(());
         }
@@ -289,6 +347,7 @@ impl MapState {
         s.surfaces.integrate(mesh, &frame.transform);
         s.frames += 1;
         s.revision += 1;
+        let _ = self.revision_tx.send(s.revision);
         let duration = started.elapsed().as_secs_f64();
         s.processing_ms = (duration * 1000.0 * 10.0).round() / 10.0;
         s.fps = (1.0 / duration.max(1e-4) * 10.0).round() / 10.0;
@@ -331,6 +390,9 @@ impl MapState {
             "tracking": if fresh { s.tracking.clone() } else { "stale".into() },
             "points": s.cloud.cells.len(),
             "triangles": s.surfaces.count,
+            "capped": (self.points_cap > 0 && s.cloud.cells.len() > self.points_cap)
+                || (self.triangles_cap > 0 && s.surfaces.count > self.triangles_cap),
+            "fusion_bypass": self.fusion_bypass,
             "keyframes": s.surfaces.keyframes.len(),
             "frames": s.frames,
             "rejected": s.rejected,
@@ -378,54 +440,73 @@ impl MapState {
             let (points, colors) = s.cloud.snapshot();
             let mesh = s.surfaces.encode();
             drop(s);
-            let pts = encode_points(&points, &colors);
-            *cache = Some(PacketCache { key, pts, mesh, pts_gz: None, pts_br: None, mesh_gz: None, mesh_br: None });
+            // Visual wire caps bound only the exported payload; the
+            // internal map keeps full resolution (board-agreed 30k/40k
+            // defaults, deterministic stride decimation, PLY follows the
+            // capped points since it derives from pts.raw).
+            let pts = crate::geometry::decimate_points_bin(
+                &encode_points(&points, &colors), self.points_cap);
+            let mesh = crate::geometry::decimate_mesh_bin(&mesh, self.triangles_cap);
+            // PLY is derived lazily from the cached points.bin records on
+            // first request — running export_ply eagerly every map version
+            // cost ~10-30 ms under this mutex even when nobody downloads it.
+            *cache = Some(PacketCache { key, pts: VariantCache::new(pts), mesh: VariantCache::new(mesh), ply: None });
         }
         cache
     }
 
-    /// Returns (body, content-encoding or "") for one map binary route.
-    /// Mirrors jetson/mapping/compress.py: cached per map version, br > gzip,
-    /// identity below the 1 KiB floor.
-    pub fn packet(&self, which: PacketKind, accept_encoding: &str) -> (Vec<u8>, &'static str) {
+    /// Returns (body, content-encoding or "", etag) for one map binary route.
+    /// Mirrors jetson/mapping/compress.py: cached per map version,
+    /// zstd > br > gzip, identity below the 1 KiB floor. The etag keys the
+    /// map version plus the representation so unchanged polls can 304.
+    pub fn packet(&self, which: PacketKind, accept_encoding: &str) -> (Bytes, &'static str, String) {
         let coding = negotiate_encoding(accept_encoding);
         let mut cache = self.packet_cached();
         let c = cache.as_mut().unwrap();
-        let (raw, gz, br) = match which {
-            PacketKind::Points => (&c.pts, &mut c.pts_gz, &mut c.pts_br),
-            PacketKind::Mesh => (&c.mesh, &mut c.mesh_gz, &mut c.mesh_br),
+        let (v, kind) = match which {
+            PacketKind::Points => (&mut c.pts, "points"),
+            PacketKind::Mesh => (&mut c.mesh, "mesh"),
+            PacketKind::Ply => (
+                c.ply.get_or_insert_with(|| VariantCache::new(ply_from_points(&c.pts.raw))),
+                "ply",
+            ),
         };
-        if coding.is_none() || raw.len() < 1024 {
-            return (raw.clone(), "");
-        }
-        match coding.unwrap() {
-            Coding::Br => {
-                if br.is_none() {
-                    *br = Some(brotli_compress(raw));
-                }
-                (br.clone().unwrap(), "br")
-            }
-            Coding::Gzip => {
-                if gz.is_none() {
-                    *gz = Some(gzip_compress(raw));
-                }
-                (gz.clone().unwrap(), "gzip")
-            }
-        }
+        let (body, enc) = if coding.is_none() || v.raw.len() < 1024 {
+            (v.raw.clone(), "")
+        } else {
+            let cd = coding.unwrap();
+            (v.variant(cd), cd.name())
+        };
+        let tag = format!(
+            "\"{}-{}-{}-{}-{}\"",
+            c.key.0, c.key.1, c.key.2, kind,
+            if enc.is_empty() { "i" } else { enc }
+        );
+        (body, enc, tag)
     }
 
-    pub fn point_packet(&self, accept_encoding: &str) -> (Vec<u8>, &'static str) {
+    pub fn point_packet(&self, accept_encoding: &str) -> (Bytes, &'static str, String) {
         self.packet(PacketKind::Points, accept_encoding)
     }
 
-    pub fn mesh_packet(&self, accept_encoding: &str) -> (Vec<u8>, &'static str) {
+    pub fn mesh_packet(&self, accept_encoding: &str) -> (Bytes, &'static str, String) {
         self.packet(PacketKind::Mesh, accept_encoding)
+    }
+
+    pub fn ply_packet(&self, accept_encoding: &str) -> (Bytes, &'static str, String) {
+        self.packet(PacketKind::Ply, accept_encoding)
     }
 
     pub fn ply(&self) -> Vec<u8> {
         let s = self.inner.lock().unwrap();
         let (points, colors) = s.cloud.snapshot();
         export_ply(&points, &colors)
+    }
+
+    /// Live /phone session with normal ARKit tracking (--lidar-drive opt-in).
+    pub fn lidar_drive_eligible(&self) -> bool {
+        let s = self.inner.lock().unwrap();
+        s.connected && !self.demo && s.tracking == "normal"
     }
 
     pub fn set_paused(&self, paused: bool) {
@@ -453,26 +534,87 @@ pub fn now_monotonic() -> f64 {
 pub enum PacketKind {
     Points,
     Mesh,
+    Ply,
+}
+
+/// Derive a binary PLY export from cached points.bin records. The record
+/// layout (12 B pos + 3 B rgb + 1 B pad) is the PLY vertex (12 + 3) plus
+/// padding, so this is byte-identical to export_ply on the same cloud.
+fn ply_from_points(raw: &[u8]) -> Vec<u8> {
+    let n = raw
+        .get(..4)
+        .map(|b| u32::from_le_bytes(b.try_into().unwrap()) as usize)
+        .unwrap_or(0);
+    let header = format!(
+        "ply\nformat binary_little_endian 1.0\nelement vertex {}\nproperty float x\nproperty float y\nproperty float z\nproperty uchar red\nproperty uchar green\nproperty uchar blue\nend_header\n",
+        n
+    );
+    let mut out = Vec::with_capacity(header.len() + n * 15);
+    out.extend_from_slice(header.as_bytes());
+    for rec in raw[4..].chunks_exact(16).take(n) {
+        out.extend_from_slice(&rec[..15]);
+    }
+    out
+}
+
+/// Raw bytes plus lazily-built compressed variants, reset per map version.
+/// Bytes keeps every serve a refcount bump instead of a multi-MB memcpy.
+struct VariantCache {
+    raw: Bytes,
+    zstd: Option<Bytes>,
+    br: Option<Bytes>,
+    gz: Option<Bytes>,
+}
+
+impl VariantCache {
+    fn new(raw: Vec<u8>) -> Self {
+        Self { raw: raw.into(), zstd: None, br: None, gz: None }
+    }
+
+    fn variant(&mut self, coding: Coding) -> Bytes {
+        let slot = match coding {
+            Coding::Zstd => &mut self.zstd,
+            Coding::Br => &mut self.br,
+            Coding::Gzip => &mut self.gz,
+        };
+        if slot.is_none() {
+            *slot = Some(Bytes::from(match coding {
+                Coding::Zstd => zstd_compress(&self.raw),
+                Coding::Br => brotli_compress(&self.raw),
+                Coding::Gzip => gzip_compress(&self.raw),
+            }));
+        }
+        slot.clone().unwrap()
+    }
 }
 
 struct PacketCache {
     key: (u64, u64, usize),
-    pts: Vec<u8>,
-    mesh: Vec<u8>,
-    pts_gz: Option<Vec<u8>>,
-    pts_br: Option<Vec<u8>>,
-    mesh_gz: Option<Vec<u8>>,
-    mesh_br: Option<Vec<u8>>,
+    pts: VariantCache,
+    mesh: VariantCache,
+    ply: Option<VariantCache>,
 }
 
 #[derive(Clone, Copy)]
 enum Coding {
+    Zstd,
     Br,
     Gzip,
 }
 
-/// br preferred over gzip; any q=0 refusal drops the coding.
+impl Coding {
+    fn name(self) -> &'static str {
+        match self {
+            Coding::Zstd => "zstd",
+            Coding::Br => "br",
+            Coding::Gzip => "gzip",
+        }
+    }
+}
+
+/// zstd preferred over br over gzip; any q=0 refusal drops the coding.
 fn negotiate_encoding(accept: &str) -> Option<Coding> {
+    let mut zstd = false;
     let mut br = false;
     let mut gz = false;
     for part in accept.split(',') {
@@ -480,12 +622,15 @@ fn negotiate_encoding(accept: &str) -> Option<Coding> {
         let name = seg.next().unwrap_or("").trim().to_ascii_lowercase();
         let refused = seg.next().map(|p| p.replace(' ', "").contains("q=0")).unwrap_or(false);
         match name.as_str() {
+            "zstd" if !refused => zstd = true,
             "br" if !refused => br = true,
             "gzip" if !refused => gz = true,
             _ => {}
         }
     }
-    if br {
+    if zstd {
+        Some(Coding::Zstd)
+    } else if br {
         Some(Coding::Br)
     } else if gz {
         Some(Coding::Gzip)
@@ -507,4 +652,85 @@ fn brotli_compress(data: &[u8]) -> Vec<u8> {
     let mut r = brotli::CompressorReader::new(data, 1 << 20, 4, 22);
     let _ = r.read_to_end(&mut out);
     out
+}
+
+/// Level 9: encodes faster than gzip-5 and br-4 while beating both on
+/// points/ply bytes; higher levels cost seconds on the Jetson per version.
+fn zstd_compress(data: &[u8]) -> Vec<u8> {
+    zstd::bulk::compress(data, 9).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Enough well-separated cells to push points.bin past the 1 KiB floor.
+    fn filled_map() -> MapState {
+        let map = MapState::new(true);
+        let points: Vec<[f32; 3]> = (0..300)
+            .map(|i| [(i % 17) as f32, (i / 17) as f32, (i % 5) as f32])
+            .collect();
+        let colors: Vec<[u8; 3]> = (0..300)
+            .map(|i| [(i % 256) as u8, (i % 128) as u8, 42])
+            .collect();
+        map.inner.lock().unwrap().cloud.integrate(&points, &colors);
+        map
+    }
+
+    #[test]
+    fn negotiate_prefers_zstd_then_br_then_gzip() {
+        assert!(matches!(negotiate_encoding("gzip, br, zstd"), Some(Coding::Zstd)));
+        assert!(matches!(negotiate_encoding("zstd"), Some(Coding::Zstd)));
+        assert!(matches!(negotiate_encoding("br, gzip"), Some(Coding::Br)));
+        assert!(matches!(negotiate_encoding("gzip"), Some(Coding::Gzip)));
+        assert!(negotiate_encoding("").is_none());
+        assert!(negotiate_encoding("identity").is_none());
+    }
+
+    #[test]
+    fn negotiate_honors_q0_refusal() {
+        assert!(matches!(negotiate_encoding("zstd;q=0, gzip"), Some(Coding::Gzip)));
+        assert!(matches!(negotiate_encoding("zstd;q=0, br;q=0, gzip;q=0"), None));
+    }
+
+    #[test]
+    fn zstd_variant_served_only_when_advertised() {
+        let map = filled_map();
+        let (_, coding, _) = map.point_packet("br, gzip");
+        assert_eq!(coding, "br", "zstd must not be served to a client that did not advertise it");
+
+        let (body, coding, _) = map.point_packet("gzip, br, zstd");
+        assert_eq!(coding, "zstd");
+        let decoded = zstd::decode_all(&body[..]).unwrap();
+        let (identity, ..) = map.point_packet("");
+        assert_eq!(decoded, identity, "zstd body must decode to the identity payload");
+    }
+
+    #[test]
+    fn zstd_refused_falls_back_to_next_offered() {
+        let map = filled_map();
+        let (_, coding, _) = map.point_packet("zstd;q=0, gzip");
+        assert_eq!(coding, "gzip");
+    }
+
+    #[test]
+    fn zstd_variants_cover_mesh_and_ply() {
+        let map = filled_map();
+        let (mesh_body, coding, _) = map.mesh_packet("zstd");
+        // The demo mesh may sit below the 1 KiB floor; ply is the reliable check.
+        if coding == "zstd" {
+            assert!(!zstd::decode_all(&mesh_body[..]).unwrap().is_empty());
+        }
+        let (ply_body, coding, _) = map.ply_packet("zstd");
+        assert_eq!(coding, "zstd");
+        let (ply_raw, ..) = map.ply_packet("");
+        assert_eq!(zstd::decode_all(&ply_body[..]).unwrap(), ply_raw);
+    }
+
+    #[test]
+    fn small_payloads_stay_identity() {
+        let map = MapState::new(true); // empty cloud -> raw < 1 KiB
+        let (_, coding, _) = map.point_packet("zstd, br, gzip");
+        assert_eq!(coding, "");
+    }
 }

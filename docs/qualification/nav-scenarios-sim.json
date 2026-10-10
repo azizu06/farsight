@@ -1,0 +1,714 @@
+{
+ "source": "bash ros2/docker/run-tests.sh all (ros2/tests/scenarios.py), bridge_executor:=events",
+ "conditions": "ROS 2 Jazzy + Nav2 in Docker Desktop on the operator Mac (Apple silicon, 15 cores, 7.7 GB VM); closed-loop simulator jetson.server --sim-world; a held-deadman /ws/control operator; one scenario at a time on an otherwise idle machine. Simulation only: not the Jetson, not real phone depth.",
+ "cpu_note": "cpu_percent is percent of one core, sampled from /proc in the container",
+ "previous_run": "The previous run (multithreaded rclpy executor, PR #92) measured the bridge at 80-107 % of a core; see git history of this file.",
+ "verdicts": [
+  "PASS bringup: Nav2 active; bridge {'node': 'farsight_bridge', 'nav2': True, 'controller': 'RPP', 'slam': False, 'costmap_source': None}; topics and TF chain present (18 s)",
+  "PASS popup: RPP arrived 0.192 m from goal in 26.4 s, 6.602 m driven, recoveries 0, min clearance 0.237 m, controller 20.0 Hz median; longest standstill after the pop-up 0.41 s (30 s)",
+  "INFO-FAIL popup_mppi: stood still 1.22 s after the pop-up (43 s)",
+  "PASS doorway: RPP arrived 0.19 m from goal in 26.0 s, 6.344 m driven, recoveries 0, min clearance 0.266 m, controller 20.0 Hz median (29 s)",
+  "INFO-PASS doorway_mppi: MPPI arrived 0.188 m from goal in 26.8 s, 6.45 m driven, recoveries 0, min clearance 0.338 m, controller 20.0 Hz median (30 s)",
+  "PASS deadend: RPP arrived 0.194 m from goal in 73.4 s, 11.77 m driven, recoveries 4, min clearance 0.226 m, controller 20.0 Hz median (76 s)",
+  "INFO-PASS deadend_mppi: MPPI arrived 0.183 m from goal in 72.9 s, 14.245 m driven, recoveries 1, min clearance 0.297 m, controller 20.0 Hz median (76 s)",
+  "PASS explore: RPP saw 91% of reachable floor in 25.0 s (levels reached at {'0.5': 12.2, '0.7': 15.8, '0.8': 19.5, '0.9': 25.0} s), 4.3 m driven, 0 collisions, min clearance 0.299 m, end state driving (28 s)",
+  "INFO-PASS explore_mppi: MPPI saw 90% of reachable floor in 33.4 s (levels reached at {'0.5': 14.2, '0.7': 22.8, '0.8': 29.7, '0.9': 33.4} s), 6.003 m driven, 0 collisions, min clearance 0.34 m, end state driving (37 s)",
+  "PASS seek: RPP closed from 5.21 m to a 1.18 m median gap (max 2.04 m) behind a 0.25 m/s walker, standoff 0.8 m, 0 collisions, 5.944 m driven (93 s)",
+  "INFO-PASS seek_mppi: MPPI closed from 5.21 m to a 1.24 m median gap (max 1.9 m) behind a 0.25 m/s walker, standoff 0.8 m, 0 collisions, 6.109 m driven (93 s)"
+ ],
+ "reports": {
+  "popup": {
+   "collisions": 0,
+   "travelled_m": 6.602,
+   "min_clearance_m": 0.237,
+   "recoveries": 0,
+   "controller_hz_median": 20.0,
+   "controller_hz_min": 20.0,
+   "longest_standstill_s": 0.41,
+   "final": [
+    -0.109,
+    -6.342
+   ],
+   "appeared": [
+    {
+     "name": "popup box",
+     "at_moving_s": 5.73,
+     "rover": [
+      -0.0,
+      -1.605
+     ]
+    }
+   ],
+   "coverage": 0.819,
+   "seconds": 26.4,
+   "goal": [
+    0.0,
+    -6.5
+   ],
+   "final_error_m": 0.192,
+   "state": "arrived",
+   "timed_out": false,
+   "to_goal_s": 26.4,
+   "cpu_percent": {
+    "jetson.server": {
+     "mean": 28.6,
+     "max": 39.7
+    },
+    "controller_server": {
+     "mean": 4.8,
+     "max": 9.9
+    },
+    "planner_server": {
+     "mean": 2.0,
+     "max": 9.9
+    },
+    "behavior_server": {
+     "mean": 1.4,
+     "max": 9.9
+    },
+    "bt_navigator": {
+     "mean": 3.9,
+     "max": 9.9
+    },
+    "bridge": {
+     "mean": 5.4,
+     "max": 14.9
+    }
+   },
+   "after_popup": {
+    "collisions": 0,
+    "travelled_m": 6.602,
+    "min_clearance_m": 0.237,
+    "recoveries": 0,
+    "controller_hz_median": 20.0,
+    "controller_hz_min": 20.0,
+    "longest_standstill_s": 0.41,
+    "final": [
+     -0.109,
+     -6.342
+    ],
+    "appeared": [
+     {
+      "name": "popup box",
+      "at_moving_s": 5.73,
+      "rover": [
+       -0.0,
+       -1.605
+      ]
+     }
+    ],
+    "coverage": 0.819,
+    "seconds": 26.4,
+    "goal": [
+     0.0,
+     -6.5
+    ],
+    "final_error_m": 0.192
+   },
+   "controller": "rpp"
+  },
+  "popup_mppi": {
+   "collisions": 0,
+   "travelled_m": 6.841,
+   "min_clearance_m": 0.277,
+   "recoveries": 1,
+   "controller_hz_median": 20.0,
+   "controller_hz_min": 20.0,
+   "longest_standstill_s": 1.22,
+   "final": [
+    -0.095,
+    -6.333
+   ],
+   "appeared": [
+    {
+     "name": "popup box",
+     "at_moving_s": 6.8,
+     "rover": [
+      0.078,
+      -1.604
+     ]
+    }
+   ],
+   "coverage": 0.819,
+   "seconds": 40.0,
+   "goal": [
+    0.0,
+    -6.5
+   ],
+   "final_error_m": 0.192,
+   "state": "arrived",
+   "timed_out": false,
+   "to_goal_s": 40.0,
+   "cpu_percent": {
+    "jetson.server": {
+     "mean": 28.2,
+     "max": 39.1
+    },
+    "controller_server": {
+     "mean": 7.0,
+     "max": 14.8
+    },
+    "planner_server": {
+     "mean": 2.0,
+     "max": 9.9
+    },
+    "behavior_server": {
+     "mean": 1.4,
+     "max": 9.9
+    },
+    "bt_navigator": {
+     "mean": 3.7,
+     "max": 9.9
+    },
+    "bridge": {
+     "mean": 5.4,
+     "max": 14.8
+    }
+   },
+   "after_popup": {
+    "collisions": 0,
+    "travelled_m": 6.841,
+    "min_clearance_m": 0.277,
+    "recoveries": 1,
+    "controller_hz_median": 20.0,
+    "controller_hz_min": 20.0,
+    "longest_standstill_s": 1.22,
+    "final": [
+     -0.095,
+     -6.333
+    ],
+    "appeared": [
+     {
+      "name": "popup box",
+      "at_moving_s": 6.8,
+      "rover": [
+       0.078,
+       -1.604
+      ]
+     }
+    ],
+    "coverage": 0.819,
+    "seconds": 40.0,
+    "goal": [
+     0.0,
+     -6.5
+    ],
+    "final_error_m": 0.192
+   },
+   "controller": "mppi"
+  },
+  "doorway": {
+   "collisions": 0,
+   "travelled_m": 6.344,
+   "min_clearance_m": 0.266,
+   "recoveries": 0,
+   "controller_hz_median": 20.0,
+   "controller_hz_min": 20.0,
+   "longest_standstill_s": 0.41,
+   "final": [
+    -1.088,
+    -5.347
+   ],
+   "appeared": [],
+   "coverage": 0.664,
+   "seconds": 26.0,
+   "goal": [
+    -1.2,
+    -5.5
+   ],
+   "final_error_m": 0.19,
+   "state": "arrived",
+   "timed_out": false,
+   "to_goal_s": 26.0,
+   "cpu_percent": {
+    "jetson.server": {
+     "mean": 32.7,
+     "max": 39.6
+    },
+    "controller_server": {
+     "mean": 5.0,
+     "max": 9.9
+    },
+    "planner_server": {
+     "mean": 2.0,
+     "max": 9.9
+    },
+    "behavior_server": {
+     "mean": 1.3,
+     "max": 5.0
+    },
+    "bt_navigator": {
+     "mean": 3.5,
+     "max": 9.9
+    },
+    "bridge": {
+     "mean": 5.0,
+     "max": 9.9
+    }
+   },
+   "controller": "rpp"
+  },
+  "doorway_mppi": {
+   "collisions": 0,
+   "travelled_m": 6.45,
+   "min_clearance_m": 0.338,
+   "recoveries": 0,
+   "controller_hz_median": 20.0,
+   "controller_hz_min": 20.0,
+   "longest_standstill_s": 0.4,
+   "final": [
+    -1.049,
+    -5.388
+   ],
+   "appeared": [],
+   "coverage": 0.662,
+   "seconds": 26.8,
+   "goal": [
+    -1.2,
+    -5.5
+   ],
+   "final_error_m": 0.188,
+   "state": "arrived",
+   "timed_out": false,
+   "to_goal_s": 26.8,
+   "cpu_percent": {
+    "jetson.server": {
+     "mean": 31.6,
+     "max": 46.4
+    },
+    "controller_server": {
+     "mean": 6.8,
+     "max": 14.8
+    },
+    "planner_server": {
+     "mean": 1.9,
+     "max": 9.9
+    },
+    "behavior_server": {
+     "mean": 1.3,
+     "max": 5.0
+    },
+    "bt_navigator": {
+     "mean": 3.2,
+     "max": 9.9
+    },
+    "bridge": {
+     "mean": 4.7,
+     "max": 9.9
+    }
+   },
+   "controller": "mppi"
+  },
+  "deadend": {
+   "collisions": 0,
+   "travelled_m": 11.77,
+   "min_clearance_m": 0.226,
+   "recoveries": 4,
+   "controller_hz_median": 20.0,
+   "controller_hz_min": 18.3,
+   "longest_standstill_s": 0.41,
+   "final": [
+    0.184,
+    -5.438
+   ],
+   "appeared": [
+    {
+     "name": "closed door",
+     "at_moving_s": 11.09,
+     "rover": [
+      -0.0,
+      -3.105
+     ]
+    }
+   ],
+   "coverage": 0.973,
+   "seconds": 73.3,
+   "goal": [
+    0.0,
+    -5.5
+   ],
+   "final_error_m": 0.194,
+   "state": "arrived",
+   "timed_out": false,
+   "to_goal_s": 73.4,
+   "cpu_percent": {
+    "jetson.server": {
+     "mean": 33.3,
+     "max": 54.3
+    },
+    "controller_server": {
+     "mean": 4.9,
+     "max": 14.7
+    },
+    "planner_server": {
+     "mean": 2.0,
+     "max": 9.9
+    },
+    "behavior_server": {
+     "mean": 1.4,
+     "max": 9.9
+    },
+    "bt_navigator": {
+     "mean": 3.7,
+     "max": 9.9
+    },
+    "bridge": {
+     "mean": 5.3,
+     "max": 14.8
+    }
+   },
+   "after_popup": {
+    "collisions": 0,
+    "travelled_m": 11.77,
+    "min_clearance_m": 0.226,
+    "recoveries": 4,
+    "controller_hz_median": 20.0,
+    "controller_hz_min": 18.3,
+    "longest_standstill_s": 0.41,
+    "final": [
+     0.184,
+     -5.438
+    ],
+    "appeared": [
+     {
+      "name": "closed door",
+      "at_moving_s": 11.09,
+      "rover": [
+       -0.0,
+       -3.105
+      ]
+     }
+    ],
+    "coverage": 0.973,
+    "seconds": 73.3,
+    "goal": [
+     0.0,
+     -5.5
+    ],
+    "final_error_m": 0.194
+   },
+   "controller": "rpp"
+  },
+  "deadend_mppi": {
+   "collisions": 0,
+   "travelled_m": 14.245,
+   "min_clearance_m": 0.297,
+   "recoveries": 1,
+   "controller_hz_median": 20.0,
+   "controller_hz_min": 19.9,
+   "longest_standstill_s": 0.2,
+   "final": [
+    0.156,
+    -5.404
+   ],
+   "appeared": [
+    {
+     "name": "closed door",
+     "at_moving_s": 12.78,
+     "rover": [
+      0.012,
+      -3.104
+     ]
+    }
+   ],
+   "coverage": 0.986,
+   "seconds": 72.9,
+   "goal": [
+    0.0,
+    -5.5
+   ],
+   "final_error_m": 0.183,
+   "state": "arrived",
+   "timed_out": false,
+   "to_goal_s": 72.9,
+   "cpu_percent": {
+    "jetson.server": {
+     "mean": 34.4,
+     "max": 53.6
+    },
+    "controller_server": {
+     "mean": 7.4,
+     "max": 14.8
+    },
+    "planner_server": {
+     "mean": 2.1,
+     "max": 9.9
+    },
+    "behavior_server": {
+     "mean": 1.5,
+     "max": 9.9
+    },
+    "bt_navigator": {
+     "mean": 4.4,
+     "max": 14.6
+    },
+    "bridge": {
+     "mean": 6.0,
+     "max": 14.8
+    }
+   },
+   "after_popup": {
+    "collisions": 0,
+    "travelled_m": 14.245,
+    "min_clearance_m": 0.297,
+    "recoveries": 1,
+    "controller_hz_median": 20.0,
+    "controller_hz_min": 19.9,
+    "longest_standstill_s": 0.2,
+    "final": [
+     0.156,
+     -5.404
+    ],
+    "appeared": [
+     {
+      "name": "closed door",
+      "at_moving_s": 12.78,
+      "rover": [
+       0.012,
+       -3.104
+      ]
+     }
+    ],
+    "coverage": 0.986,
+    "seconds": 72.9,
+    "goal": [
+     0.0,
+     -5.5
+    ],
+    "final_error_m": 0.183
+   },
+   "controller": "mppi"
+  },
+  "explore": {
+   "collisions": 0,
+   "travelled_m": 4.3,
+   "min_clearance_m": 0.299,
+   "recoveries": 0,
+   "controller_hz_median": 20.0,
+   "controller_hz_min": 13.1,
+   "longest_standstill_s": 0.81,
+   "final": [
+    0.89,
+    -2.573
+   ],
+   "appeared": [],
+   "coverage": 0.906,
+   "seconds": 25.0,
+   "state": "driving",
+   "finished": true,
+   "cpu_percent": {
+    "jetson.server": {
+     "mean": 36.3,
+     "max": 49.5
+    },
+    "controller_server": {
+     "mean": 5.2,
+     "max": 14.7
+    },
+    "planner_server": {
+     "mean": 2.1,
+     "max": 9.9
+    },
+    "behavior_server": {
+     "mean": 1.6,
+     "max": 9.9
+    },
+    "bt_navigator": {
+     "mean": 4.6,
+     "max": 9.9
+    },
+    "bridge": {
+     "mean": 6.2,
+     "max": 14.7
+    }
+   },
+   "modes": [
+    "explore"
+   ],
+   "backend": "nav2",
+   "controller": "rpp",
+   "coverage_seconds": {
+    "0.5": 12.2,
+    "0.7": 15.8,
+    "0.8": 19.5,
+    "0.9": 25.0
+   },
+   "max_frontiers": 4
+  },
+  "explore_mppi": {
+   "collisions": 0,
+   "travelled_m": 6.003,
+   "min_clearance_m": 0.34,
+   "recoveries": 0,
+   "controller_hz_median": 20.0,
+   "controller_hz_min": 19.7,
+   "longest_standstill_s": 0.82,
+   "final": [
+    1.214,
+    -2.817
+   ],
+   "appeared": [],
+   "coverage": 0.901,
+   "seconds": 33.4,
+   "state": "driving",
+   "finished": true,
+   "cpu_percent": {
+    "jetson.server": {
+     "mean": 37.8,
+     "max": 53.6
+    },
+    "controller_server": {
+     "mean": 7.3,
+     "max": 14.9
+    },
+    "planner_server": {
+     "mean": 1.9,
+     "max": 9.9
+    },
+    "behavior_server": {
+     "mean": 1.4,
+     "max": 9.9
+    },
+    "bt_navigator": {
+     "mean": 3.9,
+     "max": 9.9
+    },
+    "bridge": {
+     "mean": 5.4,
+     "max": 14.8
+    }
+   },
+   "modes": [
+    "explore"
+   ],
+   "backend": "nav2",
+   "controller": "mppi",
+   "coverage_seconds": {
+    "0.5": 14.2,
+    "0.7": 22.8,
+    "0.8": 29.7,
+    "0.9": 33.4
+   },
+   "max_frontiers": 4
+  },
+  "seek": {
+   "collisions": 0,
+   "travelled_m": 5.944,
+   "min_clearance_m": 0.112,
+   "recoveries": 1,
+   "controller_hz_median": 20.0,
+   "controller_hz_min": 1.1,
+   "longest_standstill_s": 35.02,
+   "final": [
+    -0.243,
+    -5.62
+   ],
+   "appeared": [],
+   "coverage": 0.644,
+   "seconds": 90.0,
+   "state": "arrived",
+   "finished": false,
+   "cpu_percent": {
+    "jetson.server": {
+     "mean": 32.3,
+     "max": 84.0
+    },
+    "controller_server": {
+     "mean": 4.8,
+     "max": 93.1
+    },
+    "planner_server": {
+     "mean": 2.2,
+     "max": 75.2
+    },
+    "behavior_server": {
+     "mean": 1.6,
+     "max": 35.8
+    },
+    "bt_navigator": {
+     "mean": 2.6,
+     "max": 39.4
+    },
+    "bridge": {
+     "mean": 4.1,
+     "max": 19.0
+    }
+   },
+   "modes": [
+    "seek"
+   ],
+   "backend": "nav2",
+   "controller": "rpp",
+   "start_gap_m": 5.21,
+   "min_gap_m": 0.33,
+   "gap_after_30s_median_m": 1.18,
+   "gap_after_30s_max_m": 2.04,
+   "states": [
+    "arrived",
+    "driving",
+    "failed",
+    "idle",
+    "recovering"
+   ]
+  },
+  "seek_mppi": {
+   "collisions": 0,
+   "travelled_m": 6.109,
+   "min_clearance_m": 0.117,
+   "recoveries": 0,
+   "controller_hz_median": 20.0,
+   "controller_hz_min": 1.1,
+   "longest_standstill_s": 31.17,
+   "final": [
+    -0.116,
+    -5.521
+   ],
+   "appeared": [],
+   "coverage": 0.648,
+   "seconds": 90.1,
+   "state": "arrived",
+   "finished": false,
+   "cpu_percent": {
+    "jetson.server": {
+     "mean": 31.0,
+     "max": 44.0
+    },
+    "controller_server": {
+     "mean": 4.9,
+     "max": 14.8
+    },
+    "planner_server": {
+     "mean": 1.8,
+     "max": 9.9
+    },
+    "behavior_server": {
+     "mean": 1.3,
+     "max": 9.9
+    },
+    "bt_navigator": {
+     "mean": 2.2,
+     "max": 9.9
+    },
+    "bridge": {
+     "mean": 3.7,
+     "max": 9.9
+    }
+   },
+   "modes": [
+    "seek"
+   ],
+   "backend": "nav2",
+   "controller": "mppi",
+   "start_gap_m": 5.21,
+   "min_gap_m": 0.34,
+   "gap_after_30s_median_m": 1.24,
+   "gap_after_30s_max_m": 1.9,
+   "states": [
+    "arrived",
+    "driving",
+    "failed",
+    "idle"
+   ]
+  }
+ }
+}

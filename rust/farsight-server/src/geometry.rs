@@ -189,3 +189,137 @@ pub fn transform_point(t: &Mat4, local: [f64; 3]) -> [f64; 3] {
         t[2][0] * local[0] + t[2][1] * local[1] + t[2][2] * local[2] + t[2][3],
     ]
 }
+
+/// Deterministic visual-wire decimation for points.bin records.
+/// Stride-samples 16-byte records to at most `cap` vertices; `cap = 0`
+/// disables. Mirrors the board-agreed visual export cap: the internal
+/// map is untouched — only the served/exported payload is bounded.
+pub fn decimate_points_bin(raw: &[u8], cap: usize) -> Vec<u8> {
+    let n = raw
+        .get(..4)
+        .map(|b| u32::from_le_bytes(b.try_into().unwrap()) as usize)
+        .unwrap_or(0);
+    if cap == 0 || n <= cap {
+        return raw.to_vec();
+    }
+    let mut out = Vec::with_capacity(4 + cap * 16);
+    out.extend_from_slice(&(cap as u32).to_le_bytes());
+    for i in 0..cap {
+        let idx = i * n / cap;
+        out.extend_from_slice(&raw[4 + idx * 16..4 + idx * 16 + 16]);
+    }
+    out
+}
+
+/// Deterministic visual-wire decimation for mesh.bin bytes.
+/// Stride-samples triangles to at most `cap`, then compacts the vertex
+/// buffer to referenced vertices only and remaps indices so the wire
+/// format stays valid. `cap = 0` disables.
+pub fn decimate_mesh_bin(raw: &[u8], cap: usize) -> Vec<u8> {
+    let vcount = raw
+        .get(..4)
+        .map(|b| u32::from_le_bytes(b.try_into().unwrap()) as usize)
+        .unwrap_or(0);
+    let icount = raw
+        .get(4..8)
+        .map(|b| u32::from_le_bytes(b.try_into().unwrap()) as usize)
+        .unwrap_or(0);
+    let tris = icount / 3;
+    if cap == 0 || tris <= cap {
+        return raw.to_vec();
+    }
+    let verts = &raw[8..8 + vcount * 16];
+    let indices = &raw[8 + vcount * 16..8 + vcount * 16 + icount * 4];
+    // First: which triangle indices survive, and which vertices they use.
+    let mut remap = std::collections::HashMap::with_capacity(cap * 3);
+    let new_index = |old: u32, remap: &mut std::collections::HashMap<u32, u32>, count: &mut u32| -> u32 {
+        *remap.entry(old).or_insert_with(|| {
+            let v = *count;
+            *count += 1;
+            v
+        })
+    };
+    let mut new_vcount = 0u32;
+    let mut out_indices = Vec::with_capacity(cap * 12);
+    let mut used_verts: Vec<u32> = Vec::with_capacity(cap * 3);
+    for i in 0..cap {
+        let t = i * tris / cap;
+        for k in 0..3 {
+            let off = (t * 3 + k) * 4;
+            let old = u32::from_le_bytes(indices[off..off + 4].try_into().unwrap());
+            let nv = new_index(old, &mut remap, &mut new_vcount);
+            if nv as usize == used_verts.len() {
+                used_verts.push(old);
+            }
+            out_indices.extend_from_slice(&nv.to_le_bytes());
+        }
+    }
+    let mut out = Vec::with_capacity(8 + used_verts.len() * 16 + out_indices.len());
+    out.extend_from_slice(&(used_verts.len() as u32).to_le_bytes());
+    out.extend_from_slice(&((cap * 3) as u32).to_le_bytes());
+    for &v in &used_verts {
+        out.extend_from_slice(&verts[v as usize * 16..v as usize * 16 + 16]);
+    }
+    out.extend_from_slice(&out_indices);
+    out
+}
+
+#[cfg(test)]
+mod cap_tests {
+    use super::*;
+
+    fn points_bin(n: usize) -> Vec<u8> {
+        let pts: Vec<[f32; 3]> = (0..n).map(|i| [i as f32, 0.0, 0.0]).collect();
+        let colors: Vec<[u8; 3]> = vec![[1, 2, 3]; n];
+        encode_points(&pts, &colors)
+    }
+
+    #[test]
+    fn points_cap_stride_samples_and_preserves_records() {
+        let raw = points_bin(100);
+        let capped = decimate_points_bin(&raw, 10);
+        assert_eq!(u32::from_le_bytes(capped[0..4].try_into().unwrap()), 10);
+        assert_eq!(capped.len(), 4 + 10 * 16);
+        // stride: i*100/10 -> indices 0,10,20...; record x-coord = original idx
+        for i in 0..10 {
+            let x = f32::from_le_bytes(capped[4 + i * 16..8 + i * 16].try_into().unwrap());
+            assert_eq!(x, (i * 10) as f32);
+        }
+        // same input -> same output (deterministic / flicker-free)
+        assert_eq!(capped, decimate_points_bin(&raw, 10));
+        // under cap -> unchanged; cap 0 -> disabled
+        assert_eq!(decimate_points_bin(&raw, 200), raw);
+        assert_eq!(decimate_points_bin(&raw, 0), raw);
+    }
+
+    #[test]
+    fn mesh_cap_keeps_wire_valid_and_remaps() {
+        // two disjoint triangles sharing no vertices: 6 verts, 2 tris
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&6u32.to_le_bytes());
+        raw.extend_from_slice(&6u32.to_le_bytes());
+        for v in 0..6u32 {
+            for c in [v as f32, 0.0, 0.0] {
+                raw.extend_from_slice(&c.to_le_bytes());
+            }
+            raw.extend_from_slice(&[9u8, 9, 9, 0]);
+        }
+        for i in [0u32, 1, 2, 3, 4, 5] {
+            raw.extend_from_slice(&i.to_le_bytes());
+        }
+        let capped = decimate_mesh_bin(&raw, 1);
+        let v = u32::from_le_bytes(capped[0..4].try_into().unwrap());
+        let i = u32::from_le_bytes(capped[4..8].try_into().unwrap());
+        assert_eq!((v, i), (3, 3));
+        assert_eq!(capped.len(), 8 + 3 * 16 + 3 * 4);
+        // all indices in range, remapped to compact verts (first tri selected)
+        for k in 0..3 {
+            let idx = u32::from_le_bytes(
+                capped[8 + 3 * 16 + k * 4..12 + 3 * 16 + k * 4].try_into().unwrap());
+            assert!(idx < v);
+        }
+        assert_eq!(capped, decimate_mesh_bin(&raw, 1));
+        assert_eq!(decimate_mesh_bin(&raw, 5), raw);
+        assert_eq!(decimate_mesh_bin(&raw, 0), raw);
+    }
+}

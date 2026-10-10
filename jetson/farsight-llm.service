@@ -13,7 +13,13 @@ Environment="FARSIGHT_SELECTED_LLM_MMPROJ=@LLM_MMPROJ@"
 EnvironmentFile=@ENV_FILE@
 ExecStartPre=/usr/bin/test -s "${FARSIGHT_SELECTED_LLM_MODEL}"
 ExecStartPre=/usr/bin/test -s "${FARSIGHT_SELECTED_LLM_MMPROJ}"
-ExecStart=@SRC@/llama.cpp/build/bin/llama-server -m "${FARSIGHT_SELECTED_LLM_MODEL}" --mmproj "${FARSIGHT_SELECTED_LLM_MMPROJ}" --alias local --host 127.0.0.1 --port 8092 -c 2048 -ngl 99 --parallel 1 --image-max-tokens 256 --threads 2 --threads-batch 2
+ExecStart=@SRC@/llama.cpp/build/bin/llama-server -m "${FARSIGHT_SELECTED_LLM_MODEL}" --mmproj "${FARSIGHT_SELECTED_LLM_MMPROJ}" --alias local --host 127.0.0.1 --port 8092 -c 2048 -ngl 99 --parallel 1 --image-max-tokens 256 --threads 2 --threads-batch 2 --cache-ram 0
+# llama.cpp's host prompt cache defaults to 8 GiB (--cache-ram 8192) and grew ~200-300 MB/min with
+# triage on the 7.5 GB Orin Nano (likely cause of an unclean reset, 2026-10-10), so it is off. Baseline
+# is about 3.6 GB (2.2 GB CUDA/nvmap kernel memory, 1 GB model page cache, 0.4 GB anon); any future
+# growth throttles at MemoryHigh and is killed (then restarted) at MemoryMax, leaving ~1.9 GB available.
+MemoryHigh=4096M
+MemoryMax=4608M
 Restart=on-failure
 RestartSec=3
 StandardOutput=journal

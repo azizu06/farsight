@@ -13,9 +13,11 @@ class CapturePermits:
     PERIOD = .050
     MAX_RETAINED = 8
 
-    def __init__(self, session_id, map_epoch, enabled=False, clock=time.monotonic):
+    def __init__(self, session_id, map_epoch, enabled=False, clock=time.monotonic,
+                 supported_clocks=("avcapture_sync_to_host",)):
         self.session_id, self.map_epoch = session_id, map_epoch
         self.enabled, self.clock = enabled, clock
+        self.supported_clocks = frozenset(supported_clocks)
         self.active = True
         self.tokens = OrderedDict()
         self.lock = threading.Lock()
@@ -42,7 +44,8 @@ class CapturePermits:
         """
         capture, receipt = header.get("t_capture"), header.get("capture_permit_received_t")
         token = header.get("capture_permit")
-        if (header.get("capture_clock") != "avcapture_sync_to_host"
+        clock = header.get("capture_clock")
+        if (not isinstance(clock, str) or clock not in self.supported_clocks
                 or header.get("capture_clock_verified") is not True
                 or header.get("capture_bound") is not True
                 or header.get("session_id") != self.session_id

@@ -10,12 +10,18 @@ from .geometry import encode_points, export_ply
 from .phone import reconstruct
 from .surfaces import SurfaceMap
 from .voxel import VoxelMap
+from .wire import decimate_mesh_bin, decimate_points_bin
 from jetson.camera import adjusted_receipt, capture_diagnostics
+
+FUSION_BYPASSED = "Geometry lane external; fusion bypassed"
 
 
 class MapState:
-    def __init__(self, demo=False):
+    def __init__(self, demo=False, fusion_bypass=False):
         self.lock = threading.RLock()
+        # With the bypass the Jetson builds no 3D map: frames still publish the camera,
+        # depth view, pose and the navigation observers, but no voxel/mesh integration.
+        self.fusion_bypass = fusion_bypass
         self.cloud = VoxelMap()
         self.surfaces = SurfaceMap()
         self.demo = demo
@@ -38,10 +44,17 @@ class MapState:
         self.reason = "Waiting for iPhone RGB-D stream"
         self.jpeg = self.depth_jpeg = None
         self.capture_diagnostics = {}
-        self.latest_camera = (None, 0.0, -1, "SIMULATED" if demo else "IPHONE LIDAR")
+        self.latest_camera = (None, 0.0, -1, "SIMULATED" if demo else "IPHONE LIDAR", False, None)
         self.depth_range = None
         self.pose_history = OrderedDict()
         self.scan = None
+        # Visual wire caps (0 = uncapped): bound only the served/exported points.bin,
+        # mesh.bin and export.ply; fusion, Nav2 depth/occupancy and labels stay full.
+        self.points_cap = self.triangles_cap = 0
+        # Called with every accepted RGB-D frame before fusion (navigation costmaps
+        # need the newest depth, not only fused geometry). Must be cheap: keep a
+        # reference and return.
+        self.frame_observers = []
 
     def start_session(self, identity, device):
         with self.lock:
@@ -51,7 +64,7 @@ class MapState:
                 self.pose = np.eye(4)
                 self.jpeg = self.depth_jpeg = None
                 self.capture_diagnostics = {}
-                self.latest_camera = (None, 0.0, -1, "SIMULATED" if self.demo else "IPHONE LIDAR")
+                self.latest_camera = (None, 0.0, -1, "SIMULATED" if self.demo else "IPHONE LIDAR", False, None)
                 self.depth_range = None
                 self.last_received = 0.0
                 self.last_frame_received = 0.0
@@ -100,9 +113,14 @@ class MapState:
             self.last_received = time.monotonic()
             self.pose, self.tracking = transform, header["tracking"]
 
-    def process(self, frame):
+    def process(self, frame, permits=None):
         started = time.monotonic()
         camera_receipt = adjusted_receipt(frame.header, frame.header.get("_received_monotonic", started))
+        # Validate against this socket's live issuer, after decode/queue delay.
+        # No producer-supplied verified flag can substitute for these checks.
+        origin = permits.verified_origin(frame.header) if permits is not None else None
+        if origin is not None:
+            camera_receipt = min(camera_receipt, origin)
         with self.lock:
             if not self.connected or (frame.header["session_id"], frame.header["map_epoch"]) != self.identity:
                 return
@@ -119,7 +137,8 @@ class MapState:
             # Publish one immutable value. Safety/video readers must never wait
             # for the map lock while voxel or surface fusion is running.
             self.latest_camera = (self.jpeg, camera_receipt, self.frame_id,
-                                  "SIMULATED" if self.demo else "IPHONE LIDAR")
+                                  "SIMULATED" if self.demo else "IPHONE LIDAR",
+                                  origin is not None, permits if origin is not None else None)
             valid = np.isfinite(frame.depth) & (frame.depth > 0.15) & (frame.depth <= 8)
             scaled = np.where(valid, np.clip(frame.depth / 8 * 255, 0, 255), 0).astype(np.uint8)
             heat = cv2.applyColorMap(255 - scaled, cv2.COLORMAP_TURBO)
@@ -127,10 +146,15 @@ class MapState:
             _, encoded = cv2.imencode('.jpg', heat)
             self.depth_jpeg = encoded.tobytes()
             self.depth_range = [round(float(np.min(frame.depth[valid])), 2), round(float(np.max(frame.depth[valid])), 2)] if valid.any() else None
-            may_fuse = (not self.paused and frame.header["tracking"] == "normal"
+            may_fuse = (not self.fusion_bypass and not self.paused and frame.header["tracking"] == "normal"
                         and self.tracking == "normal")
-            self.reason = ("Fusion paused" if self.paused else "ARKit tracking limited; fusion frozen"
-                           if not may_fuse else None)
+            self.reason = (FUSION_BYPASSED if self.fusion_bypass else "Fusion paused" if self.paused
+                           else "ARKit tracking limited; fusion frozen" if not may_fuse else None)
+        for observer in self.frame_observers:
+            try:
+                observer(frame)
+            except Exception:
+                pass  # navigation must never break mapping or camera publication
         if not may_fuse:
             return
         points, colors, mesh = reconstruct(frame)
@@ -160,10 +184,11 @@ class MapState:
                         session_id=self.identity[0] if self.identity else None,
                         map_epoch=self.identity[1] if self.identity else None,
                         generation=self.generation, revision=self.revision,
-                        mesh_revision=self.surfaces.revision, paused=self.paused,
+                        mesh_revision=self.surfaces.revision, paused=self.paused, fusion_bypass=self.fusion_bypass,
                         tracking=self.tracking if fresh else "stale",
                         points=len(self.cloud.cells), triangles=self.surfaces.count,
                         keyframes=len(self.surfaces.keyframes), frames=self.frames,
+                        capped=self.visual_capped(),
                         rejected=self.rejected, dropped=self.dropped,
                         processing_ms=self.processing_ms, processing_fps=self.fps,
                         age_ms=round(age * 1000) if age is not None else None,
@@ -173,16 +198,37 @@ class MapState:
 
     def camera_snapshot(self):
         """Pose heartbeats never refresh the camera's capture receipt time."""
-        return self.latest_camera
+        return self.latest_camera[:4]
+
+    def lidar_drive_eligible(self):
+        """Live /phone session with normal ARKit tracking; lock-free for safety readers."""
+        return self.connected and not self.demo and self.tracking == "normal"
+
+    def camera_capture_snapshot(self):
+        """Immutable camera and issuer evidence, independent of fusion locks."""
+        value = self.latest_camera
+        return value if len(value) == 6 else (*value, False, None)
+
+    def visual_capped(self):
+        """True when a wire cap is currently decimating points or mesh triangles."""
+        with self.lock:
+            return ((0 < self.points_cap < len(self.cloud.cells))
+                    or (0 < self.triangles_cap < self.surfaces.count))
 
     def point_packet(self):
         with self.lock:
-            return encode_points(*self.cloud.snapshot())
+            return decimate_points_bin(encode_points(*self.cloud.snapshot()), self.points_cap)
 
     def mesh_packet(self):
         with self.lock:
-            return self.surfaces.encode()
+            return decimate_mesh_bin(self.surfaces.encode(), self.triangles_cap)
 
     def ply(self):
+        """Follows the capped points, like the Rust server's PLY derived from points.bin."""
         with self.lock:
-            return export_ply(*self.cloud.snapshot())
+            points, colors = self.cloud.snapshot()
+        n, cap = len(points), self.points_cap
+        if 0 < cap < n:
+            keep = np.arange(cap, dtype=np.int64) * n // cap
+            points, colors = points[keep], colors[keep]
+        return export_ply(points, colors)

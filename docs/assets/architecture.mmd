@@ -9,7 +9,7 @@ config:
 flowchart TB
   subgraph RV["ROVER KIT · drives freely"]
     direction LR
-    RPh["<b>Rover phone</b>, mounted · Farsight Capture app<br/>RGB, or measured LiDAR RGB-D + pose<br/>Personal Hotspot is the rover uplink"]
+    RPh["<b>Rover phone</b>, mounted · Farsight Capture<br/>RGB, or measured LiDAR RGB-D + pose<br/>mapping only, not a stop<br/>bridge :8081 ⇄ Jetson USB :8443"]
     subgraph JS["<b>Jetson Orin Nano</b> · python -m jetson.server"]
       direction LR
       Cam["<b>CameraService</b><br/>/phone/rgb, /phone, or USB camera"]
@@ -17,9 +17,10 @@ flowchart TB
       Vid["<b>VideoService</b><br/>H.264 fMP4 via FFmpeg, JPEG"]
       Map["<b>MapState + ScanService</b><br/>LiDAR fusion, or Depth Anything V2<br/>five-view scan (estimated depth)"]
       Mis["<b>Mission</b><br/>drill score, SBAR triage,<br/>report + snapshots, record / replay"]
-      Asst["<b>SceneAssistant + PhraseSpeaker</b><br/>Whisper, local VLM, Piper EN / ES"]
-      Ctl["<b>ControlService</b><br/>250 ms permit lease · 500 ms view guard<br/>ultrasonic stop · Explore / Seek"]
-      API["<b>FastAPI app</b> · HTTP + WebSocket routes"]
+      Asst["<b>SceneAssistant + PhraseSpeaker</b><br/>Qwen3-VL-2B default, Whisper base.en<br/>/ask voice in, Piper EN / ES out"]
+      Ctl["<b>ControlService</b><br/>250 ms lease · 500 ms view guard<br/>permits 40 Hz · rig must run with --proximity-stop off<br/>server default is on · Explore / Seek"]
+      API["<b>FastAPI app</b> · USB 172.20.10.3:8443<br/>down: video, boxes, map, status, report<br/>up: deadman, v, w, pan, 20 Hz"]
+      ROS["<b>optional ROS 2</b> · not on the rig<br/>--nav2 + SLAM Toolbox: sim-tested<br/>nvblox costmap: written, never run"]
       Cam --> Perc
       Cam --> Vid
       Cam --> Map
@@ -31,34 +32,37 @@ flowchart TB
       Mis --> API
       Asst <--> API
       Ctl <--> API
+      API <-.->|opt-in /ws/nav| ROS
     end
-    Uno["<b>Arduino Uno</b> · rover/farsight_uno<br/>300 ms motor watchdog<br/>drive motors, pan servo, ultrasonic"]
+    Uno["<b>Arduino Uno</b> · rover/farsight_uno<br/>sensorless: no ultrasonic, no pan servo<br/>300 ms stop · invalid-command stop<br/>D2 button kept · drive motors only"]
     RPh -->|"camera frames,<br/>local USB network"| Cam
-    Ctl <-->|"USB serial 115200<br/>PWM, pan · range"| Uno
+    RPh <-->|"video + control<br/>:8081 ⇄ :8443"| API
+    Ctl <-->|"USB serial 115200<br/>PWM, R → -1; P unused"| Uno
   end
 
-  TS{{"<b>Tailscale tunnel</b><br/>rover-phone cellular ⇄<br/>operator-phone cellular<br/>no venue Wi-Fi"}}
+  TS{{"<b>Phone-to-phone relay</b><br/>Farsight Capture bridge roles<br/>phone Tailscale over cellular<br/>no venue Wi-Fi"}}
 
   subgraph OP["OPERATOR KIT · judging table"]
     direction LR
-    OPh["<b>Operator phone</b><br/>USB tether, cellular data"]
-    Mac["<b>MacBook</b> · tools/operator_relay.py<br/>127.0.0.1:8080 serves quest/dist,<br/>proxies every HTTP + WebSocket route"]
+    OPh["<b>Operator phone</b> · Farsight Capture<br/>bridge role, 127.0.0.1:8081<br/>USB tether, cellular data"]
+    Mac["<b>MacBook</b> · tools/operator_relay.py<br/>127.0.0.1:8080 serves quest/dist<br/>proxies via iproxy to :18443"]
     Quest["<b>Quest 2</b> · Quest Browser, WebXR (quest/src)<br/>main.ts · rover.ts · h264.ts<br/>detection-match.js · control-safety.js<br/>pose-hud.js · assistant-voice.ts"]
-    OPh ---|USB| Mac
+    OPh ---|"USB + iproxy<br/>:18443 to :8081"| Mac
     Mac <-->|"USB + adb reverse :8080"| Quest
   end
 
-  API ==>|"<b>DOWN</b><br/>video: /ws/video<br/>detections: /ws/detections<br/>map: /ws/map, Brotli HTTP<br/>permits, status: /ws/control<br/>report: /mission/report<br/>answers + Piper audio"| TS
-  TS ==>|"<b>UP</b><br/>deadman, v, w, pan, mode<br/>+ permit echo, 20 Hz<br/>voice: /ask audio<br/>Scan, drill, Seek requests"| API
-  TS <==>|"every stream<br/>through the relay"| Mac
+  RPh <==>|"tailnet :8081"| TS
+  TS <==>|"cellular"| OPh
 
   classDef op fill:#e8f1ff,stroke:#2f6fd6,color:#0b2547
   classDef rv fill:#eaf7ee,stroke:#2e8b57,color:#0d2e1a
   classDef safe fill:#fff1e6,stroke:#d9661f,color:#3d1a05
   classDef net fill:#f4ecff,stroke:#7a4cc2,color:#26104a
   classDef hub fill:#ffffff,stroke:#2e8b57,color:#0d2e1a,stroke-width:2px
+  classDef opt fill:#f7f7f4,stroke:#8a8378,color:#3d3832,stroke-dasharray:5 4
   class Quest,Mac,OPh op
   class RPh,Cam,Vid,Perc,Map,Mis,Asst rv
   class Ctl,Uno safe
   class TS net
   class API hub
+  class ROS opt

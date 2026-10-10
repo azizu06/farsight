@@ -87,6 +87,17 @@ class PosePerceptionTests(unittest.TestCase):
         self.assertEqual(service.fps, 10)
 
 
+class DetectorRateTests(unittest.TestCase):
+    def test_rate_is_windowed_not_the_last_gap(self):
+        service = PerceptionService(None, mode="none")
+        self.assertEqual(service.windowed_rate(10.0), 0)
+        times = [10.0 + 0.16 * i for i in range(1, 13)]
+        times[5] = times[4] + 0.01  # two frames back to back: the last-gap rate read 100 fps
+        rates = [service.windowed_rate(t) for t in times]
+        self.assertTrue(all(4 < rate < 8 for rate in rates[6:]), rates)
+        self.assertLessEqual(times[-1] - service.completions[0], service.FPS_WINDOW)
+
+
 class FlakyGpu:
     """Stands in for a TensorRT pose detector whose CUDA context dies on the first call."""
     name = "pose-tensorrt"

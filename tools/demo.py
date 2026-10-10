@@ -74,6 +74,8 @@ def main():
     parser.add_argument("--adb", default="adb", help="ADB executable or path (use Windows adb.exe from WSL)")
     parser.add_argument("--adb-serial", help="Select the Quest when multiple ADB devices are connected")
     parser.add_argument("--ca-file", help="CA PEM for private Jetson TLS")
+    parser.add_argument("--bonded-upstream", help="Opt-in second route to the same Jetson; requires server --bonded-control, JPEG only")
+    parser.add_argument("--geometry-upstream", help="Optional loopback Mac geometry assembler; does not launch the assembler")
     parser.add_argument("--check", action="store_true", help="Check prerequisites and exit without starting servers")
     args = parser.parse_args()
     processes = []
@@ -93,6 +95,22 @@ def main():
                 upstream_origin(args.upstream)
             except ValueError as exc:
                 raise RuntimeError(str(exc))
+        if args.geometry_upstream:
+            from .geometry_relay import geometry_origin
+            try:
+                geometry_origin(args.geometry_upstream)
+            except ValueError as exc:
+                raise RuntimeError(str(exc)) from None
+        if args.bonded_upstream:
+            if args.simulate or not args.upstream:
+                raise RuntimeError("--bonded-upstream needs two explicit routes; configure fault-path simulation separately")
+            from .operator_relay import upstream_origin
+            try:
+                second = upstream_origin(args.bonded_upstream)
+            except ValueError as exc:
+                raise RuntimeError(str(exc)) from None
+            if second == upstream_origin(args.upstream):
+                raise RuntimeError("Bonded routes must be distinct")
         if args.build:
             if not shutil.which("npm") or not (ROOT / "quest/node_modules").is_dir():
                 raise RuntimeError("Build prerequisites missing; run npm --prefix quest ci before going offline")
@@ -132,6 +150,10 @@ def main():
                    "--port", str(args.port)]
         if args.ca_file:
             command += ["--ca-file", args.ca_file]
+        if args.bonded_upstream:
+            command += ["--bonded-upstream", args.bonded_upstream]
+        if args.geometry_upstream:
+            command += ["--geometry-upstream", args.geometry_upstream]
         relay = start(command)
         wait_http(f"http://127.0.0.1:{args.port}/relay/health", relay)
         if args.quest:

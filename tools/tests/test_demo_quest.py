@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+import socket
 import subprocess
 import sys
 import tempfile
@@ -67,9 +68,22 @@ class QuestLauncherTests(unittest.TestCase):
         self.assertEqual(self.commands(), [["get-state"]])
 
     def test_check_accepts_explicit_adb_without_probing_usb(self):
+        # The prerequisite check must not depend on ignored build output in
+        # the developer's checkout. Supply a minimal built-app fixture while
+        # still exercising the real parser in a separate process.
+        fixture_root = Path(self.directory.name) / "repo"
+        built_app = fixture_root / "quest/dist/index.html"
+        built_app.parent.mkdir(parents=True)
+        built_app.write_text("<!doctype html><title>Quest fixture</title>")
+        with socket.socket() as port_probe:
+            port_probe.bind(("127.0.0.1", 0))
+            port = port_probe.getsockname()[1]
         result = subprocess.run(
-            [sys.executable, "-m", "tools.demo", "--simulate", "--quest",
-             "--adb", str(self.adb), "--check"],
+            [sys.executable, "-c",
+             "from pathlib import Path; import sys; from tools import demo; "
+             "demo.ROOT = Path(sys.argv[1]); sys.argv = sys.argv[2:]; demo.main()",
+             str(fixture_root), "tools.demo", "--upstream", "http://127.0.0.1:18443",
+             "--quest", "--adb", str(self.adb), "--port", str(port), "--check"],
             cwd=demo.ROOT, capture_output=True, text=True, timeout=10,
         )
         self.assertEqual(result.returncode, 0, result.stderr)

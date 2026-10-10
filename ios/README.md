@@ -5,6 +5,16 @@ Choose **Rover** to run capture and TCP forwarding together, **Operator** for th
 USB-accessible relay without camera permission, or **Off** for legacy capture.
 Both phone VPN/listener/USB hops still require actual device qualification.
 The bridge defaults off and leaves HTTP/WebSocket messages unchanged.
+Operator mode supports the rover-phone primary plus an optional Jetson tailnet
+fallback, disabled by default. Each TCP session keeps its selected route;
+failures close it without replay. The UI shows primary/fallback session counts.
+An explicitly started operator listener re-arms after foregrounding; manual
+Stop or a role change clears that intent. Foreground listener bind failures
+retry with 0.5–8 s backoff; both dual listeners restart atomically. The optional
+**Pinned dual routes for host broker** mode binds primary loopback8081 and
+fallback loopback8082 separately for the experimental bonded Mac relay; it is
+mutually exclusive with automatic fallback and remains off by default. Both
+listeners must bind before accepting pairs, and a bind failure closes both.
 In Rover mode, capture and forwarding use the same validated Jetson USB address;
 changing role or addresses requires stopping active capture/forwarding first.
 
@@ -17,8 +27,8 @@ through AVFoundation. RGB-only mode is also the default on a Pro.
 It does **not** supply measured scene depth or create a LiDAR map. On a
 LiDAR-capable Pro model, deselecting “Send RGB only” checks ARKit scene-depth
 support at runtime and sends synchronized RGB + Float32 depth + confidence +
-same-frame camera pose to `/phone`. That mode is explicitly view-only for
-physical driving until its capture clock has a supported qualification path. The UI and backend clearly
+same-frame camera pose to `/phone`. That mode is view-only for physical
+driving unless the server runs with `FARSIGHT_LIDAR_DRIVE=1`. The UI and backend clearly
 identify the current source. Runtime support, rather than the typed phone model,
 selects the mode.
 
@@ -51,8 +61,11 @@ camera, LiDAR, or USB networking behavior.
 ## Connect locally to the Jetson over USB
 
 1. On the rover phone, enable cellular data and Personal Hotspot / Allow Others
-   to Join. Trust the Jetson when asked. This local app connection uses the USB
-   hotspot network; cellular uplink serves the Jetson → operator connection.
+   to Join. Trust the Jetson when asked. This local app connection uses the
+   cabled USB network, not a Wi-Fi link. In the primary design, the rover phone
+   owns the cellular relay to the operator phone; raw capture stays on USB. The
+   Quest must not join this phone's hotspot for Farsight traffic: it reaches the
+   MacBook through USB/ADB reverse.
 2. On the Jetson, identify the iPhone USB network interface and its assigned IP:
    `ip -br addr`, then `ip route`. This requires the Linux iPhone USB driver and
    phone pairing/tethering working; validate it before the demo.
@@ -71,7 +84,7 @@ camera, LiDAR, or USB networking behavior.
    `--camera`**, so the phone owns the camera source. Configure the Uno serial
    port separately only after its firmware and bench checks pass.
 4. Enter `ws://JETSON_USB_IP:8443` in the app and press Start capture. The shown
-   default `172.20.10.2` is an example, not an assured address. Use the Jetson's
+   default `172.20.10.3` is the last observed address, not an assured address. Use the Jetson's
    actual USB-interface IP, not the phone's gateway IP or its cellular address.
 5. Verify sent-frame count increases and `http://JETSON_USB_IP:8443/health`
    reports a fresh camera with `PHONE RGB` or `IPHONE LIDAR`. The MacBook's
@@ -100,9 +113,14 @@ driving with it: older frames leave less margin inside the 500 ms video guard.
 Stop capture before changing modes. JPEG quality is 0.5. One frame send
 can be in flight. New frames are skipped during that send; they are never kept
 for replay. A send that remains incomplete for 500 ms closes the socket. Any
-disconnect, camera interruption, or backgrounding stops capture; press Start
-to create a new phone session and ARKit world origin. The app does not reconnect
-automatically and replay old frames. Stop capture before opening another phone
+network disconnect retries while the app remains foreground and capture is
+explicitly started: 0.5, 1, 2, 4, then 8 s between attempts. Each attempt creates
+a new socket, hello/session ID and camera stream/world origin; old frames and
+callbacks are discarded. Negotiated capture permits silent for 1 s also replace
+the connection. That recovery watchdog grants no freshness and does not change
+the 250/500 ms control/video limits. Stop, role change, backgrounding, camera
+interruption or camera errors cancel capture/retry; press Start to resume.
+Network recovery alone never resumes rover motion; release and press the trigger. Stop capture before opening another phone
 camera connection.
 
 The backend's latest-frame camera timestamp and motor guard are independent
@@ -177,10 +195,13 @@ the original timestamp, report `capture_clock: "arkit_unverified"`,
 `capture_clock_verified: false`, `capture_bound: false`, and show an explicit
 view-only diagnostic. A numeric AR/host delta is displayed for investigation;
 it is not treated as a clock conversion or a driving qualification. The backend
-can view/fuse those real sensor frames but must keep physical motion disabled.
+views and fuses those frames; physical motion on them needs the server's opt-in
+`--lidar-drive` (`FARSIGHT_LIDAR_DRIVE=1`), which accepts fresh frames with
+normal tracking without a verified capture clock.
 
 The unsigned build and deterministic Swift tests prove compilation, permit
-parsing, exposure ordering and bounds; they do not prove phone sensor timing,
+parsing, exposure ordering, retry intent/backoff and bounds. Mac loopback tests
+exercise listener failure/recovery, atomic dual ports and Stop/background; they do not prove phone sensor timing,
 camera orientation, USB delivery or real-device capture performance. Measure
 actual headers on the installed phone before declaring that path qualified.
 
@@ -198,3 +219,50 @@ These checks compile the production Swift packet builder and send its output
 through the actual Python decoder/app. Real sensor alignment, physical device
 installation, phone-to-Jetson USB routing, and live floor operation still need
 the real devices.
+
+
+## Phone-built 3D mesh
+
+On the rover LiDAR phone, choose **Rover**, enter its Tailscale IPv4 and the
+Jetson USB IPv4, turn **Send RGB only** off, leave **Build 3D on this phone**
+on, then Start capture. The same ARSession constructs native mesh anchors and
+sends camera/depth/pose to the Jetson. A separate `:8083` listener serves
+`/geometry/status` and `/geometry/stream`. Compression runs off the capture
+queue; v1 uses native Brotli with latest-anchor coalescing and bounded memory.
+
+On the operator phone, choose **Operator**, enter the rover phone Tailscale
+IPv4, enable **Forward phone 3D over USB**, then Start bridge. It forwards
+loopback `:8083` to the rover's geometry port separately from `:8081` control
+and optional `:8082` bonded fallback. Both roles remain explicitly started;
+background and Stop close their sessions. Role/settings are saved, not capture
+or motion intent.
+
+On the Mac, `python -m tools.phone_usb --geometry --check` checks control and
+geometry separately; keep `python -m tools.phone_usb --geometry` running.
+Start `farsight-geometry --upstream ws://127.0.0.1:18445/geometry/stream` on
+loopback `:8484`, then use the operator launcher with
+`--geometry-upstream http://127.0.0.1:8484`. Direct tailnet geometry pull is an
+optional fallback. Enable Jetson fusion bypass only after the assembled map is
+visible. Geometry reconstruction does not replace fresh local Nav2 depth.
+
+Native build and Mac socket/codec fixtures verify the implementation, not
+phone VPN/cellular accessibility or ARKit capture on the rig. The installed
+phone-to-Mac-to-Quest check remains required. Scene resets create a fresh
+capture UUID/world; old geometry is discarded. Geometry-only reconnect sends a
+complete bounded retained-anchor snapshot with increasing wire sequence.
+
+Check the assembled phone mesh through the running Mac operator relay with:
+
+```sh
+python -m tools.qualify_geometry --relay http://127.0.0.1:8080 \
+  --timeout 5 --output /tmp/farsight-geometry-check.json
+```
+
+This read-only helper requests map status, mesh bytes, then status again. It
+requires a complete, connected, matched phone mesh with matching session/epoch
+headers and a stable published revision. Retained, incomplete or unknown
+snapshot evidence fails with a nonzero exit status; changing snapshots retry
+at most three times inside the overall deadline. JSON evidence includes any
+failure. This checks the HTTP source path only. It does not qualify Quest
+rendering, cellular routing/latency, camera freshness guards or physical motion;
+map `fresh` is pose association evidence, not the 500 ms displayed-video guard.

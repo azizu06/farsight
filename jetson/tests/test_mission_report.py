@@ -76,7 +76,7 @@ class MissionReportTests(unittest.TestCase):
 
     def test_real_control_status_packets_drive_the_summary(self):
         clock = Clock()
-        state = ControlState(simulated=True, clock=clock)
+        state = ControlState(simulated=True, clock=clock, proximity_stop=True)
         mission = Mission()
         state.set_connected(True)
         session = state.begin()

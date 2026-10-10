@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { fileURLToPath } from "node:url";
 import { chromium } from "@playwright/test";
 
 // Software-only rehearsal. No backend or hardware connection is needed.
@@ -8,12 +7,8 @@ const origin = "http://127.0.0.1:5257";
 const server = spawn(
   process.execPath,
   [
-    fileURLToPath(new URL("../node_modules/vite/bin/vite.js", import.meta.url)),
-    "--host",
-    "127.0.0.1",
-    "--port",
-    "5257",
-    "--strictPort",
+    "--input-type=module", "-e",
+    "import { createServer } from 'vite'; const server = await createServer({server:{host:'127.0.0.1',port:5257,strictPort:true,watch:null}}); await server.listen(); server.printUrls();",
   ],
   { cwd: new URL("..", import.meta.url), stdio: "pipe" },
 );
@@ -139,7 +134,7 @@ try {
       gripSpace: {},
       gamepad: {
         connected: true,
-        axes: [0, 0, 0, 0],
+        axes: [0, 0, 1, -1],
         buttons: [{ pressed: true }],
       },
     };
@@ -148,7 +143,7 @@ try {
       gripSpace: {},
       gamepad: {
         connected: true,
-        axes: [0, 0, 0, -1],
+        axes: [0, 0, -1, 1],
         buttons: [{ pressed: false }],
       },
     };
@@ -159,6 +154,7 @@ try {
     xr.getReferenceSpace = () => reference;
     xr.getCamera = () => camera;
     let loseLeft = false,
+      loseRight = false,
       viewerY = 0,
       viewerOn = true;
     const frame = {
@@ -171,12 +167,36 @@ try {
               },
             }
           : null,
-      getPose: (space) => (loseLeft && space === left.gripSpace ? null : {}),
+      getPose: (space) =>
+        (loseLeft && space === left.gripSpace) || (loseRight && space === right.gripSpace) ? null : {},
     };
+    const arm = (now, controller = right) => {
+      subject.gate.acceptStatus(
+        {
+          session_id: "software-only",
+          permit: "test-permit",
+          permit_ms: 250,
+          rover: true,
+        },
+        now,
+      );
+      subject.gate.acceptFrame(String(now), 0, now);
+      controller.gamepad.buttons[0].pressed = false;
+      subject.update(now, frame);
+      subject.gate.decide(false, now, true, subject.inputValid, subject.lastXRAt);
+      controller.gamepad.buttons[0].pressed = true;
+      subject.update(now + 1, frame);
+      return subject.gate.decide(true, now + 1, true, subject.inputValid, subject.lastXRAt);
+    };
+    const initialArm = arm(90);
     subject.update(100, frame);
     const tracked = {
+      initialArm,
       valid: subject.inputValid,
       held: subject.input.held,
+      v: subject.input.v,
+      w: subject.input.w,
+      moving: subject.gate.decide(true, 100, true, subject.inputValid, subject.lastXRAt),
       sampledAt: subject.lastXRAt,
     };
     loseLeft = true;
@@ -186,6 +206,8 @@ try {
       valid: subject.inputValid,
       held: subject.input.held,
       v: subject.input.v,
+      w: subject.input.w,
+      moving: subject.gate.decide(true, 110, true, subject.inputValid, subject.lastXRAt),
       needsRelease: subject.gate.needsRelease,
       stale: !Number.isFinite(subject.lastXRAt),
       displayVisible: subject.cockpit.visible,
@@ -198,48 +220,32 @@ try {
       held: subject.input.held,
       needsRelease: subject.gate.needsRelease,
     };
+    loseRight = true;
+    subject.update(125, frame);
+    const lostRight = {
+      valid: subject.inputValid,
+      held: subject.input.held,
+      v: subject.input.v,
+      w: subject.input.w,
+      moving: subject.gate.decide(true, 125, true, subject.inputValid, subject.lastXRAt),
+      needsRelease: subject.gate.needsRelease,
+      stale: !Number.isFinite(subject.lastXRAt),
+    };
+    loseRight = false;
     right.gamepad.connected = false;
     subject.update(130, frame);
     const disconnected = { valid: subject.inputValid, v: subject.input.v };
     right.gamepad.connected = true;
     subject.update(140);
     const missingFrame = { valid: subject.inputValid, v: subject.input.v };
-    const arm = (now) => {
-      subject.gate.acceptStatus(
-        {
-          session_id: "software-only",
-          permit: "test-permit",
-          permit_ms: 250,
-          rover: true,
-        },
-        now,
-      );
-      subject.gate.acceptFrame(String(now), 0, now);
-      right.gamepad.buttons[0].pressed = false;
-      subject.update(now, frame);
-      subject.gate.decide(
-        false,
-        now,
-        true,
-        subject.inputValid,
-        subject.lastXRAt,
-      );
-      right.gamepad.buttons[0].pressed = true;
-      subject.update(now + 1, frame);
-      return subject.gate.decide(
-        true,
-        now + 1,
-        true,
-        subject.inputValid,
-        subject.lastXRAt,
-      );
-    };
     const initiallyArmed = arm(150);
-    right.gamepad.axes = [0, 0, 0, -1];
     session.inputSources = [right];
     subject.update(170, frame);
     const removedLeft = {
       initiallyArmed,
+      valid: subject.inputValid,
+      v: subject.input.v,
+      w: subject.input.w,
       moving: subject.gate.decide(
         true,
         170,
@@ -250,6 +256,16 @@ try {
       needsRelease: subject.gate.needsRelease,
     };
     session.inputSources = [right, left];
+    left.gamepad.connected = false;
+    subject.update(175, frame);
+    const disconnectedLeft = {
+      valid: subject.inputValid,
+      v: subject.input.v,
+      w: subject.input.w,
+      moving: subject.gate.decide(true, 175, true, subject.inputValid, subject.lastXRAt),
+      needsRelease: subject.gate.needsRelease,
+    };
+    left.gamepad.connected = true;
     const rearmed = arm(180);
     const replacement = {
       ...right,
@@ -269,6 +285,28 @@ try {
       ),
       needsRelease: subject.gate.needsRelease,
     };
+    // A missing pose cannot count as the new controller's physical release.
+    replacement.gamepad.connected = false;
+    replacement.gamepad.buttons[0].pressed = false;
+    subject.update(201, frame);
+    subject.gate.decide(false, 201, true, subject.inputValid, subject.lastXRAt);
+    replacement.gamepad.connected = true;
+    replacement.gamepad.buttons[0].pressed = true;
+    subject.update(202, frame);
+    const replacementHeld = {
+      moving: subject.gate.decide(true, 202, true, subject.inputValid, subject.lastXRAt),
+      needsRelease: subject.gate.needsRelease,
+    };
+    const replacementReleased = arm(203, replacement);
+    session.inputSources = [left];
+    subject.update(206, frame);
+    const missingRight = {
+      valid: subject.inputValid,
+      v: subject.input.v,
+      w: subject.input.w,
+      moving: subject.gate.decide(true, 206, true, subject.inputValid, subject.lastXRAt),
+    };
+    session.inputSources = [replacement, left];
     viewerOn = false;
     subject.update(210, frame);
     const missingViewer = {
@@ -293,7 +331,7 @@ try {
       moving: subject.gate.decide(true, 240, true, subject.inputValid, subject.lastXRAt),
       needsRelease: subject.gate.needsRelease,
     };
-    // Left Y (buttons[5]) held across tracking loss must not fire scan on recovery.
+    // Left Y held across tracking loss must not open a menu on recovery.
     let scans = 0;
     subject.startScan = async () => { scans++; };
     left.gamepad.buttons = [0, 1, 2, 3, 4, 5].map(() => ({ pressed: false }));
@@ -302,12 +340,13 @@ try {
     subject.update(250, frame);
     loseLeft = false;
     subject.update(260, frame);
-    const scanWhileStillHeld = scans;
+    const menuWhileStillHeld = subject.actionMenu.visible;
     left.gamepad.buttons[5].pressed = false;
     subject.update(270, frame);
     left.gamepad.buttons[5].pressed = true;
     subject.update(280, frame);
-    const scanLatch = { scanWhileStillHeld, scanAfterRelease: scans };
+    const menuLatch = { menuWhileStillHeld, menuAfterRelease: subject.actionMenu.visible, scans };
+    subject.actionMenu.visible = false;
 
     const grant = (label) => {
       const next = permissions.shift();
@@ -317,7 +356,8 @@ try {
     const settle = () => new Promise((resolve) => setTimeout(resolve, 50));
     const voice = subject.voice;
     left.gamepad.buttons[5].pressed = false;
-    left.gamepad.axes = [0, 0, 0, 0]; // a deflected stick would (correctly) cancel a confirmed Seek
+    right.gamepad.axes = [0, 0, 0, 0]; // a deflected drive stick cancels a confirmed Seek
+    left.gamepad.axes = [0, 0, 0, 0];
     subject.update(290, frame);
     const offPress = (() => {
       left.gamepad.buttons[0].pressed = true; subject.update(292, frame);
@@ -328,6 +368,31 @@ try {
     [...document.querySelectorAll("#voice-vr-enable")].at(-1).click();
     grant("enable").resolve(fakeStream()); await settle();
     const enabled = { vrEnabled: voice.vrEnabled, probeStopped: tracks[0].stopped };
+    const armedBeforeDisconnect = arm(295);
+    left.gamepad.connected = false;
+    left.gamepad.buttons[0].pressed = true;
+    left.gamepad.buttons[5].pressed = true;
+    subject.update(296, frame);
+    const optionalLeftButtons = {
+      armedBeforeDisconnect,
+      disconnected: {
+        moving: subject.gate.decide(true, 296, true, subject.inputValid, subject.lastXRAt),
+        menu: subject.actionMenu.visible,
+        capturing: voice.capturing,
+        permissionCalls: permissions.length,
+      },
+    };
+    left.gamepad.connected = true;
+    subject.update(297, frame);
+    optionalLeftButtons.recoveredStillHeld = {
+      moving: subject.gate.decide(true, 297, true, subject.inputValid, subject.lastXRAt),
+      menu: subject.actionMenu.visible,
+      capturing: voice.capturing,
+      permissionCalls: permissions.length,
+    };
+    left.gamepad.buttons[0].pressed = false;
+    left.gamepad.buttons[5].pressed = false;
+    subject.update(298, frame);
     const armedBeforeTalk = arm(300);
     left.gamepad.buttons[0].pressed = true;
     subject.update(310, frame);
@@ -393,10 +458,12 @@ try {
     // The headset banner repaints on a later frame than the HUD, and never for unchanged text.
     const queued = !!subject.bannerPending;
     subject.bannerPending.at = -Infinity;
+    // Keep the HUD text at 420 while exercising the later banner paint.
+    subject.lastHudAt = 421;
     subject.paint(421);
     const painted = !subject.bannerPending;
     const bannerPixel = [...subject.bannerCanvas.getContext("2d").getImageData(1010, 100, 1, 1).data].slice(0, 3);
-    subject.drawHUD(421); // identical text, including the displayed age
+    subject.drawHUD(420); // identical text, including the displayed age
     const headsetBanner = { queued, painted, bannerPixel, unchangedQueued: !!subject.bannerPending };
     subject.sourceTruth.accept({ replay: true }, 430);
     subject.drawHUD(430);
@@ -418,16 +485,22 @@ try {
       tracked,
       lost,
       recovered,
+      lostRight,
       disconnected,
       missingFrame,
       removedLeft,
+      disconnectedLeft,
       replacedRight,
+      replacementHeld,
+      replacementReleased,
+      missingRight,
       missingViewer,
       blurred,
       refocused,
-      scanLatch,
+      menuLatch,
       offPress,
       enabled,
+      optionalLeftButtons,
       listeningStart,
       listening,
       answered,
@@ -439,39 +512,57 @@ try {
       headsetBanner,
     };
   });
-  assert.deepEqual(result.headsetBanner, { queued: true, painted: true, bannerPixel: [0x7c, 0x4a, 0x03], unchangedQueued: false });
   assert.ok(result.first.pixel[0] > 200);
   assert.ok(result.second.pixel[2] > 200);
   assert.ok(result.second.pixel[0] < 50);
   assert.equal(result.second.replaced, true);
   assert.deepEqual([result.second.width, result.second.height], [1280, 720]);
-  assert.deepEqual(result.tracked, { valid: true, held: true, sampledAt: 100 });
+  assert.deepEqual(result.tracked, {
+    initialArm: true, valid: true, held: true, v: 0.45, w: 0.55, moving: true, sampledAt: 100,
+  }, "right Touch thumbstick drives despite opposite left-stick axes");
   assert.deepEqual(result.lost, {
-    valid: false,
+    valid: true,
     held: true,
-    v: 0,
-    needsRelease: true,
-    stale: true,
+    v: 0.45,
+    w: 0.55,
+    moving: true,
+    needsRelease: false,
+    stale: false,
     displayVisible: true,
-    headY: 0.25,
-  });
+    headY: 0,
+  }, "left tracking loss keeps otherwise valid right-controller driving enabled");
   assert.deepEqual(result.recovered, {
     valid: true,
     held: true,
-    needsRelease: true,
+    needsRelease: false,
   });
+  assert.deepEqual(result.lostRight, {
+    valid: false, held: true, v: 0, w: 0, moving: false, needsRelease: true, stale: true,
+  }, "right grip tracking loss stops and requires a new release");
   assert.deepEqual(result.disconnected, { valid: false, v: 0 });
   assert.deepEqual(result.missingFrame, { valid: false, v: 0 });
   assert.deepEqual(result.removedLeft, {
     initiallyArmed: true,
-    moving: false,
-    needsRelease: true,
-  });
+    valid: true,
+    v: 0.45,
+    w: 0.55,
+    moving: true,
+    needsRelease: false,
+  }, "removing the optional left controller does not interrupt right-controller driving");
+  assert.deepEqual(result.disconnectedLeft, {
+    valid: true, v: 0.45, w: 0.55, moving: true, needsRelease: false,
+  }, "disconnected left controller does not invalidate a tracked right controller");
   assert.deepEqual(result.replacedRight, {
     rearmed: true,
     moving: false,
     needsRelease: true,
   });
+  assert.deepEqual(result.replacementHeld, { moving: false, needsRelease: true },
+    "an untracked release cannot rearm the replacement right controller");
+  assert.equal(result.replacementReleased, true, "a fresh tracked release rearms the replacement right controller");
+  assert.deepEqual(result.missingRight, { valid: false, v: 0, w: 0, moving: false },
+    "left controller alone cannot supply steering or a right-trigger deadman");
+  assert.deepEqual(result.headsetBanner, { queued: true, painted: true, bannerPixel: [0x7c, 0x4a, 0x03], unchangedQueued: false });
   assert.deepEqual(result.missingViewer, {
     valid: false,
     displayVisible: false,
@@ -479,9 +570,14 @@ try {
   });
   assert.deepEqual(result.blurred, { rearmedVisible: true, valid: false, moving: false });
   assert.deepEqual(result.refocused, { held: true, moving: false, needsRelease: true });
-  assert.deepEqual(result.scanLatch, { scanWhileStillHeld: 0, scanAfterRelease: 1 });
+  assert.deepEqual(result.menuLatch, { menuWhileStillHeld: false, menuAfterRelease: true, scans: 0 });
   assert.deepEqual(result.offPress, { permissionCalls: 0, phase: "error" });
   assert.deepEqual(result.enabled, { vrEnabled: true, probeStopped: 1 });
+  assert.deepEqual(result.optionalLeftButtons, {
+    armedBeforeDisconnect: true,
+    disconnected: { moving: true, menu: false, capturing: false, permissionCalls: 0 },
+    recoveredStillHeld: { moving: true, menu: false, capturing: false, permissionCalls: 0 },
+  }, "stale left Y/trigger presses cannot open actions or start voice through disconnection and recovery");
   assert.deepEqual(result.listeningStart, { armedBeforeTalk: true, capturing: true, needsRelease: true, moving: false, panelVisible: true });
   assert.deepEqual(result.listening, { phase: "listening", recorder: "recording" });
   assert.deepEqual(result.answered, {
@@ -499,6 +595,149 @@ try {
   assert.equal(result.banners.live.kind, "LIVE");
   assert.match(result.banners.live.detail, /USB CAMERA · frame 9001 · 40 ms/);
   assert.equal(result.banners.liveExpired, "UNVERIFIED");
+
+  // Real RoverExperience methods with tracked-pose/gamepad doubles and a local
+  // send spy. No motor backend: freshness here is explicitly injected.
+  const interactions = await page.evaluate(async () => {
+    const { RoverExperience } = await import("/src/rover.ts");
+    const THREE = await import("/node_modules/three/build/three.module.js");
+    const renderer = new THREE.WebGLRenderer();
+    const scene = new THREE.Scene(), camera = new THREE.PerspectiveCamera(70, 1, .01, 100);
+    let view = "camera";
+    const subject = new RoverExperience(renderer, scene, camera, () => view, next => { view = next; });
+    const buttons = () => Array.from({ length: 6 }, () => ({ pressed: false }));
+    const right = { handedness: "right", gripSpace: {}, targetRaySpace: {}, gamepad: { connected: true, axes: [0, 0, 0, 0], buttons: buttons() } };
+    const left = { handedness: "left", gripSpace: {}, gamepad: { connected: true, axes: [0, 0, 0, 0], buttons: buttons() } };
+    const session = { visibilityState: "visible", inputSources: [right, left] }, reference = {};
+    renderer.xr.isPresenting = true;
+    renderer.xr.getSession = () => session;
+    renderer.xr.getReferenceSpace = () => reference;
+    renderer.xr.getCamera = () => camera;
+    const orientation = new THREE.Quaternion(), position = new THREE.Vector3(0, 1.6, 0);
+    const rayPosition = new THREE.Vector3(0, 1.6, 0), rayOrientation = new THREE.Quaternion();
+    let tracked = true, rayTracked = true, frames = 0;
+    const frame = {
+      getViewerPose: () => ({ transform: { position, orientation } }),
+      getPose: space => space === right.targetRaySpace ? rayTracked ? { transform: { position: rayPosition, orientation: rayOrientation } } : null
+        : space === right.gripSpace && !tracked ? null : { transform: { position, orientation } },
+    };
+    const messages = [];
+    subject.socket = { readyState: WebSocket.OPEN, bufferedAmount: 0, send(data) { messages.push(JSON.parse(data)); }, close() {} };
+    const stops = [], originalStop = subject.stop.bind(subject);
+    subject.stop = reason => { stops.push(reason); originalStop(reason); };
+    let cancels = 0;
+    subject.cancelNav = async () => { cancels++; subject.autonomy.clear(); };
+    const tick = () => {
+      const now = performance.now();
+      // Each tick models a fresh server permit, so held sends are not coalesced as same-permit repeats.
+      const status = { session_id: "interaction-fixture", permit: `fixture-token-${frames}`, permit_ms: 250, rover: true, simulated: true, requires_release: false };
+      subject.gate.acceptStatus(status, now); subject.status = status;
+      subject.gate.acceptFrame(String(++frames), 0, now);
+      subject.lastCanvasDraw = now; subject.lastSendAt = now;
+      subject.update(now, frame); subject.pump();
+    };
+    const press = (hand, index) => { hand.gamepad.buttons[index].pressed = false; tick(); hand.gamepad.buttons[index].pressed = true; tick(); };
+    try {
+      tick();
+      const anchored = { position: subject.cockpit.position.toArray(), quaternion: subject.cockpit.quaternion.toArray() };
+      position.set(.4, 1.9, .2);
+      orientation.setFromEuler(new THREE.Euler(.3, .8, .2, "YXZ")); tick();
+      const afterHeadMove = { position: subject.cockpit.position.toArray(), quaternion: subject.cockpit.quaternion.toArray() };
+      right.gamepad.buttons[0].pressed = true; tick();
+      press(left, 4);
+      const recentered = { position: subject.cockpit.position.toArray(), quaternion: subject.cockpit.quaternion.toArray(), needsRelease: subject.gate.needsRelease };
+      left.gamepad.buttons[4].pressed = false; tick();
+
+      // A hits a person rectangle but still changes view, never selecting Seek.
+      subject.drawnBoxes = [{ id: 7, cls: "person", x: 0, y: 0, w: 1, h: 1 }];
+      subject.panelPoint = () => ({ x: .5, y: .5 });
+      press(right, 4);
+      const viewWhileAHeld = view;
+      right.gamepad.buttons[4].pressed = false; tick(); // a tap toggles on release
+      const aOverPerson = { view, mode: subject.autonomy.mode, release: subject.gate.needsRelease, viewWhileAHeld };
+      press(right, 4); right.gamepad.buttons[4].pressed = false; tick();
+
+      // Hold right trigger + forward right stick, then B must stop and cancel.
+      right.gamepad.axes[3] = -1;
+      right.gamepad.buttons[0].pressed = false; tick();
+      right.gamepad.buttons[0].pressed = true; tick();
+      const drove = { deadman: messages.at(-1).deadman, v: messages.at(-1).v, w: messages.at(-1).w };
+      right.gamepad.axes[3] = 0; // go-to uses a centered stick; an override would cancel before B
+      // A drifting right stick inside the deadzone and a fully deflected left stick both keep Explore.
+      subject.autonomy.toggleExplore();
+      right.gamepad.axes[2] = .2; right.gamepad.axes[3] = -.2; left.gamepad.axes[3] = -1; tick();
+      const drift = { mode: subject.autonomy.mode, v: messages.at(-1).v, w: messages.at(-1).w };
+      right.gamepad.axes[3] = -.6; tick();
+      const override = subject.autonomy.mode;
+      right.gamepad.axes[2] = 0; right.gamepad.axes[3] = 0; left.gamepad.axes[3] = 0; tick();
+      subject.autonomy.goto(); subject.nav = { state: "driving", mode: "goto", backend: "nav2", path: [], frontiers: [], goal: { x: 1, z: 0 } };
+      press(right, 5);
+      const bStopped = { command: messages.at(-1), mode: subject.autonomy.mode, latch: subject.gate.needsRelease, cancels };
+      tick(); const heldAfterStop = messages.at(-1).deadman;
+      tracked = false; tick(); tracked = true; tick();
+      const bStopsAfterRecovery = stops.filter(reason => reason === "Stopped: release trigger").length;
+      right.gamepad.buttons[5].pressed = false; tick();
+      right.gamepad.buttons[0].pressed = false; tick();
+      right.gamepad.buttons[0].pressed = true; tick();
+      const resumedAfterRelease = messages.at(-1).deadman;
+
+      // Holding right A opens Actions without flipping the view.
+      const viewBeforeHold = view;
+      right.gamepad.buttons[4].pressed = false; tick();
+      right.gamepad.buttons[4].pressed = true; tick();
+      const aStart = performance.now();
+      while (performance.now() - aStart < 650) { await new Promise(resolve => setTimeout(resolve, 50)); tick(); }
+      right.gamepad.buttons[4].pressed = false; tick();
+      const holdA = { menu: subject.actionMenu.visible, view, viewBeforeHold };
+      subject.actionMenu.visible = false; tick();
+      press(left, 5);
+      const menuOpened = subject.actionMenu.visible;
+      right.gamepad.buttons[0].pressed = false; tick();
+      right.gamepad.buttons[0].pressed = true; tick();
+      const behindMenu = { motion: messages.at(-1).deadman, inputValid: subject.inputValid, visible: subject.actionMenu.visible };
+      right.gamepad.buttons[0].pressed = false;
+      rayTracked = false;
+      press(right, 1);
+      const missingRay = { menu: subject.actionMenu.visible, mode: subject.autonomy.mode, pointer: subject.pointer.visible };
+      rayTracked = true; tick();
+      const heldThroughRayRecovery = { menu: subject.actionMenu.visible, mode: subject.autonomy.mode };
+      right.gamepad.buttons[1].pressed = false; tick();
+      // Aim at the Explore card on the actual menu mesh, then a new grip press.
+      subject.cockpit.updateMatrixWorld(true);
+      const aim = subject.actionMenu.panel.localToWorld(new THREE.Vector3(0, .351, 0));
+      rayPosition.copy(position);
+      rayOrientation.setFromUnitVectors(new THREE.Vector3(0, 0, -1), aim.sub(rayPosition).normalize());
+      tick();
+      const hover = subject.updatePointer(frame, reference, right);
+      right.gamepad.buttons[0].pressed = true;
+      right.gamepad.buttons[1].pressed = true; tick();
+      const selected = { hover, mode: subject.autonomy.mode, menu: subject.actionMenu.visible, release: subject.gate.needsRelease, motion: messages.at(-1).deadman };
+      return { anchored, afterHeadMove, recentered, aOverPerson, drove, drift, override, holdA, bStopped, heldAfterStop,
+               bStopsAfterRecovery, resumedAfterRelease, menuOpened, behindMenu, missingRay,
+               heldThroughRayRecovery, selected };
+    } finally { renderer.xr.isPresenting = false; subject.dispose(); renderer.dispose(); }
+  });
+  assert.deepEqual(interactions.afterHeadMove, interactions.anchored, "head yaw/pitch/roll/translation cannot drag the anchored screen");
+  assert.deepEqual(interactions.recentered.position, [.4, 1.9, .2]);
+  assert.ok(Math.abs(interactions.recentered.quaternion[0]) < 1e-8 && Math.abs(interactions.recentered.quaternion[2]) < 1e-8, "recenter is yaw-only");
+  assert.ok(Math.abs(2 * Math.atan2(interactions.recentered.quaternion[1], interactions.recentered.quaternion[3]) - .8) < 1e-6, "recenter faces the current head yaw");
+  assert.equal(interactions.recentered.needsRelease, true);
+  assert.deepEqual(interactions.aOverPerson, { view: "3d", mode: "teleop", release: true, viewWhileAHeld: "camera" });
+  assert.deepEqual(interactions.drove, { deadman: true, v: 0.45, w: 0 }, "right stick forward drives");
+  assert.deepEqual(interactions.drift, { mode: "explore", v: 0, w: 0 }, "drift inside the deadzone and the left stick never override Explore");
+  assert.equal(interactions.override, "teleop", "a real right-stick push takes back control");
+  assert.deepEqual(interactions.holdA, { menu: true, view: "camera", viewBeforeHold: "camera" });
+  assert.deepEqual([interactions.bStopped.command.deadman, interactions.bStopped.command.v, interactions.bStopped.command.w], [false, 0, 0]);
+  assert.deepEqual([interactions.bStopped.mode, interactions.bStopped.latch, interactions.bStopped.cancels], ["teleop", true, 1]);
+  assert.equal(interactions.heldAfterStop, false);
+  assert.equal(interactions.bStopsAfterRecovery, 1, "B held through tracking recovery is not a new press");
+  assert.equal(interactions.resumedAfterRelease, true);
+  assert.equal(interactions.menuOpened, true);
+  assert.deepEqual(interactions.behindMenu, { motion: false, inputValid: false, visible: true });
+  assert.deepEqual(interactions.missingRay, { menu: true, mode: "teleop", pointer: false });
+  assert.deepEqual(interactions.heldThroughRayRecovery, { menu: true, mode: "teleop" });
+  assert.deepEqual(interactions.selected, { hover: "explore", mode: "explore", menu: false, release: true, motion: false });
+  result.interactions = interactions;
   // Exercise the real main viewer's transfer scheduling with fixture packets.
   // Deadman state is injected; this does not qualify physical input or motion.
   let pointPulls = 0, meshPulls = 0, jpegPulls = 0, mapCloses = 0;
@@ -520,8 +759,8 @@ try {
     let revision = 0;
     const timer = setInterval(() => socket.send(JSON.stringify({
       type: "status", source: "SIMULATED", device: "BUDGET FIXTURE", connected: true,
-      fresh: true, generation: 1, revision: revision++, mesh_revision: revision,
-      points_transport: "http", points: 0, triangles: 0, frames: revision,
+      fresh: true, session_id: "budget-sim-only", map_epoch: 1, generation: 1, revision: 1, mesh_revision: 1,
+      points_transport: "http", points: 0, triangles: 1, frames: revision++,
       rejected: 0, dropped: 0, processing_ms: 0, age_ms: 0, tracking: "normal",
       position: [0, 0, 0], transform: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
       depth_range: null, reason: null,
@@ -531,13 +770,20 @@ try {
   });
   await page.locator("#settings-toggle").click();
   await page.getByText("H.264 video", { exact: false }).locator("input").first().check();
+  await page.locator('[data-view="3d"]').click();
   await page.waitForTimeout(350);
   const jpegBefore = jpegPulls;
   await page.waitForTimeout(2200);
   assert.equal(jpegPulls, jpegBefore, "H.264 suppresses both JPEG polling paths");
-  assert.ok(pointPulls > 0 && pointPulls <= 1, `bounded point pulls: ${pointPulls}`);
+  assert.equal(pointPulls, 0, "hybrid derives points from its mesh without a duplicate download");
   assert.ok(meshPulls > 0 && meshPulls <= 1, `bounded mesh pulls: ${meshPulls}`);
   assert.ok(mapUrls.every(url => url.endsWith("?points=http")));
+  await page.locator("#settings-toggle").click();
+  await page.locator("#points-only").check();
+  await page.waitForTimeout(3200);
+  assert.equal(pointPulls, 1, "points-only downloads one snapshot after the shared five-second gate");
+  assert.equal(meshPulls, 1, "points-only does not keep pulling meshes");
+  await page.locator("#close-settings").click();
   await page.evaluate(async () => {
     const { RoverExperience } = await import("/src/rover.ts");
     window.budgetDeadmanDescriptor = Object.getOwnPropertyDescriptor(RoverExperience.prototype, "deadmanHeld");
@@ -554,6 +800,9 @@ try {
   });
   await page.waitForTimeout(600);
   assert.ok(mapUrls.length >= 2, "released deadman resumes authoritative map subscription");
+  const reconnectPulls = [pointPulls, meshPulls];
+  await page.waitForTimeout(5200);
+  assert.deepEqual([pointPulls, meshPulls], reconnectPulls, "same-source reconnect and unchanged revisions never redownload the map");
   result.cellularTransfers = { pointPulls, meshPulls, jpegSuppressed: true, deadmanPause: true, resumed: true };
 
   // Camera mount: ?mount=fixed persists, wins over a rover that reports a pan servo,
@@ -563,17 +812,26 @@ try {
   await mountContext.routeWebSocket("**/ws/**", (socket) => {
     if (!socket.url().endsWith("/ws/control")) return socket.close();
     let session = `mount-${controlMessages.length}-${Math.random()}`;
+    let latest = { seq: -1, deadman: false, v: 0, pan: 0 }, ordinal = 0;
     socket.onMessage((data) => {
       const message = JSON.parse(String(data));
       controlMessages.push(message);
+      latest = message;
+    });
+    const publish = () => {
+      const message = latest;
       // Mirrors jetson/control/state.py forward_blocked(): pan off-center blocks forward.
       const blocked = Math.abs(message.pan) > 10;
       socket.send(JSON.stringify({
-        type: "status", session_id: session, permit: `permit-${message.seq}`, permit_ms: 250, seq: message.seq,
+        type: "status", session_id: session, permit: `permit-${++ordinal}`, permit_ms: 250, seq: message.seq,
         rover: true, simulated: true, range_cm: 120, estop: blocked,
         reason: message.deadman && message.v > 0 && blocked ? "forward_blocked" : null,
       }));
-    });
+    };
+    publish();
+    const timer = setInterval(publish, 25);
+    mapTimers.add(timer);
+    socket.onClose(() => { clearInterval(timer); mapTimers.delete(timer); });
   });
   await mountContext.route("**/camera.jpg", (route) => route.fulfill({ status: 503, body: "" }));
   let reportsPan = true;
@@ -596,8 +854,8 @@ try {
     const renderer = new THREE.WebGLRenderer();
     const camera = new THREE.PerspectiveCamera(75, 4 / 3, 0.01, 100);
     const subject = new RoverExperience(renderer, new THREE.Scene(), camera, () => "camera", () => {});
-    const right = { handedness: "right", gripSpace: {}, gamepad: { connected: true, axes: [0, 0, 0, 0], buttons: [{ pressed: false }] } };
-    const left = { handedness: "left", gripSpace: {}, gamepad: { connected: true, axes: [0, 0, 0, -1], buttons: [{ pressed: false }] } };
+    const right = { handedness: "right", gripSpace: {}, gamepad: { connected: true, axes: [0, 0, 0, -1], buttons: [{ pressed: false }] } };
+    const left = { handedness: "left", gripSpace: {}, gamepad: { connected: true, axes: [0, 0, 0, 0], buttons: [{ pressed: false }] } };
     const session = { visibilityState: "visible", inputSources: [right, left] };
     renderer.xr.isPresenting = true;
     renderer.xr.getSession = () => session;
@@ -613,7 +871,7 @@ try {
         right.gamepad.buttons[0].pressed = held;
         subject.gate.acceptFrame(String(++frameId), 0, performance.now());
         subject.lastCanvasDraw = performance.now();
-        subject.update(performance.now(), frame);
+        subject.update(performance.now(), frame); subject.afterRender(performance.now()); // display loop: render, then pump
         stops.add(subject.stopKey);
         await new Promise((resolve) => setTimeout(resolve, 20));
       }
@@ -644,7 +902,7 @@ try {
     await drive(400, false);
   });
   const servoDrive = await driveMount();
-  assert.ok(servoDrive.drove.length >= 5 && servoDrive.drove.every((message) => Math.round(message.pan) === -40),
+  assert.ok(servoDrive.drove.length >= 5 && servoDrive.drove.slice(-3).every((message) => Math.round(message.pan) === -40),
     `servo mount sends head yaw as pan: ${servoDrive.pans}`);
   assert.ok(servoDrive.stops.some((key) => key.includes("Forward blocked")), "servo yaw shows forward_blocked");
   await mountPage.close();
@@ -668,7 +926,7 @@ try {
   };
   const noPan = await freshMount(false);
   assert.equal(noPan.value, "fixed", "camera_pan:false defaults to fixed");
-  assert.match(noPan.hud, /Fixed mount · digital pan 0° · JPEG video/);
+  assert.match(noPan.hud, /Fixed camera · full frame · JPEG video/);
   assert.equal((await freshMount(true)).value, "servo");
   assert.equal((await freshMount(undefined)).value, "servo", "older servers keep the servo default");
   await mountContext.close();
@@ -687,12 +945,21 @@ try {
   await navContext.routeWebSocket("**/ws/**", (socket) => {
     if (!socket.url().endsWith("/ws/control")) return socket.close();
     const session = `nav-${Math.random()}`;
+    let latest = { seq: -1, mode: "teleop" }, ordinal = 0;
     socket.onMessage((data) => {
       const message = JSON.parse(String(data));
       navControl.push(message);
-      socket.send(JSON.stringify({ type: "control_status", session_id: session, permit: `permit-${message.seq}`, permit_ms: 250,
-        seq: message.seq, rover: true, simulated: true, range_cm: 150, estop: false, reason: null, mode: message.mode ?? "teleop", nav: navFixture }));
+      latest = message;
     });
+    const publish = () => {
+      const message = latest;
+      socket.send(JSON.stringify({ type: "control_status", session_id: session, permit: `permit-${++ordinal}`, permit_ms: 250,
+        seq: message.seq, rover: true, simulated: true, range_cm: 150, estop: false, reason: null, mode: message.mode ?? "teleop", nav: navFixture }));
+    };
+    publish();
+    const timer = setInterval(publish, 25);
+    mapTimers.add(timer);
+    socket.onClose(() => { clearInterval(timer); mapTimers.delete(timer); });
   });
   await navContext.route("**/camera.jpg", (route) => route.fulfill({ status: 503, body: "" }));
   await navContext.route("**/health", (route) => route.fulfill({ contentType: "application/json",
@@ -756,6 +1023,11 @@ try {
     const pixel = (x, y) => { const value = new Uint8Array(4); gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, value); return [...value]; };
     const drawn = { points: subject.navOverlay.path.userData.points, frontiers: subject.navOverlay.frontiers.count,
       goal: subject.navOverlay.goal.visible, onPath: pixel(100, 100), offPath: pixel(100, 20) };
+    // The overview is now a small, tilted panel. Goal coordinates remain in
+    // map metres rather than inheriting the scene's scale, offset or pitch.
+    const overview = new THREE.Group(); overview.scale.setScalar(.18);
+    overview.rotation.x = -Math.PI / 6; overview.position.set(0, .5, -1.6);
+    scene.add(overview); overview.add(subject.navLayer); overview.updateMatrixWorld(true);
     const right = { handedness: "right", gripSpace: {}, targetRaySpace: {}, gamepad: { connected: true, axes: [0, 0, 0, 0],
       buttons: [0, 1, 2, 3, 4, 5].map(() => ({ pressed: false })) } };
     const left = { handedness: "left", gripSpace: {}, gamepad: { connected: true, axes: [0, 0, 0, 0], buttons: [{ pressed: false }] } };
@@ -765,8 +1037,10 @@ try {
     renderer.xr.getReferenceSpace = () => ({});
     renderer.xr.getCamera = () => camera;
     const head = { orientation: { x: 0, y: 0, z: 0, w: 1 }, position: { x: 0, y: 1.6, z: 0 } };
-    // Right controller at (1, 1.5, 0) aimed 45° down toward -z: the floor hit is (1, -1.5).
-    const aim = { position: { x: 1, y: 1.5, z: 0 }, orientation: { x: -Math.sin(Math.PI / 8), y: 0, z: 0, w: Math.cos(Math.PI / 8) } };
+    const aimPosition = new THREE.Vector3(1, 1.5, 0);
+    const goalWorld = subject.navLayer.localToWorld(new THREE.Vector3(1, 0, -1.5));
+    const aimQuaternion = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, -1), goalWorld.sub(aimPosition).normalize());
+    const aim = { position: aimPosition, orientation: aimQuaternion };
     let tracked = true;
     const frame = { getViewerPose: () => ({ transform: head }),
       getPose: (space) => space === right.targetRaySpace ? { transform: aim } : tracked || space !== right.gripSpace ? {} : null };
@@ -777,7 +1051,7 @@ try {
         set();
         subject.gate.acceptFrame(String(++frameId), 0, performance.now());
         subject.lastCanvasDraw = performance.now();
-        subject.update(performance.now(), frame);
+        subject.update(performance.now(), frame); subject.afterRender(performance.now()); // display loop: render, then pump
         await sleep(20);
       }
     };
@@ -817,7 +1091,7 @@ try {
   assert.deepEqual([vrNav.drawn.points, vrNav.drawn.frontiers, vrNav.drawn.goal], [3, 2, true]);
   assert.ok(vrNav.drawn.onPath[1] > 120 && vrNav.drawn.onPath[2] > 120, `glowing path pixel: ${vrNav.drawn.onPath}`);
   assert.ok(vrNav.drawn.offPath[1] < 40 && vrNav.drawn.offPath[2] < 40, `background off the path: ${vrNav.drawn.offPath}`);
-  assert.deepEqual(vrNav.liveGrip, { mode: "teleop", hint: "Go-to: press A for the map, point at the floor, then right grip", reticle: false });
+  assert.deepEqual(vrNav.liveGrip, { mode: "teleop", hint: "Point at a person, then right grip to select Seek", reticle: false });
   assert.ok(vrNav.reticle && Math.abs(vrNav.reticle[0] - 1) < 1e-3 && Math.abs(vrNav.reticle[1] + 1.5) < 1e-3, `reticle at aim: ${vrNav.reticle}`);
   assert.equal(goals.length, 1, "one goal for one grip press; a grip held through tracking loss does not post");
   assert.deepEqual(goals[0].body, { x: 1, z: -1.5 });

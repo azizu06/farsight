@@ -1,4 +1,5 @@
 import math
+import time
 import unittest
 
 from fastapi import FastAPI
@@ -20,7 +21,7 @@ class Clock:
 class PolicyTests(unittest.TestCase):
     def setUp(self):
         self.clock = Clock()
-        self.state = ControlState(clock=self.clock)
+        self.state = ControlState(clock=self.clock, proximity_stop=True)
         self.state.set_connected(True)
         self.session = self.state.begin()
         self.state.update_range(100)
@@ -204,6 +205,102 @@ class PolicyTests(unittest.TestCase):
         self.assertFalse(self.send())
 
 
+class ProximityStopOffTests(unittest.TestCase):
+    """Explicit opt-out: ultrasonic range never blocks; every other stop remains."""
+
+    def setUp(self):
+        self.clock = Clock()
+        self.state = ControlState(clock=self.clock, proximity_stop=False)
+        self.state.set_connected(True)
+        self.session = self.state.begin()
+        self.seq = 0
+        self.send(deadman=False)
+
+    def send(self, **values):
+        self.seq += 1
+        status = self.state.status(issue_permit=True)
+        message = {"session_id": self.session, "permit": status["permit"], "seq": self.seq,
+                   "deadman": True, "v": 0.5, "w": 0, "pan": 0, "mode": "teleop",
+                   "video_fresh": True, "video_age_ms": 0}
+        message.update(values)
+        return self.state.accept(message, self.session)
+
+    def test_close_missing_and_stale_range_do_not_block_forward(self):
+        self.assertFalse(self.state.proximity_stop)
+        self.assertTrue(ControlState().proximity_stop)  # on unless explicitly disabled
+        for reading in (10, None, "stale"):
+            with self.subTest(reading=reading):
+                if reading == "stale":
+                    self.state.update_range(100)
+                    self.clock.now += 1  # range goes stale; the lapsed lease needs a new press
+                    self.send(deadman=False)
+                elif reading is None:
+                    self.state.update_range(-1)
+                else:
+                    self.state.update_range(reading)
+                self.assertTrue(self.send())
+                self.assertEqual(self.state.output()[:2], (50, 50))
+                self.assertFalse(self.state.status()["estop"])
+
+    def test_pan_rule_deadman_lease_and_camera_stops_remain(self):
+        self.assertTrue(self.send(pan=30))
+        self.assertEqual(self.state.output()[:2], (0, 0))  # off-axis mount still blocks forward
+        self.assertTrue(self.state.status()["estop"])
+        self.assertTrue(self.send(pan=0))
+        self.assertEqual(self.state.output()[:2], (50, 50))
+        self.clock.now += .26
+        self.assertEqual(self.state.output()[:2], (0, 0))
+        self.assertEqual(self.state.reason, "lease_expired")
+        self.send(deadman=False)
+        self.state.camera_ready = lambda: False
+        self.assertFalse(self.send())
+        self.assertEqual(self.state.output()[:2], (0, 0))
+
+
+class NoPanMountTests(unittest.TestCase):
+    """--pan-mount none: the headset pans digitally; nothing else about the gates changes."""
+
+    def setUp(self):
+        self.clock = Clock()
+        self.state = ControlState(clock=self.clock, proximity_stop=False, pan_mount="none")
+        self.state.set_connected(True)
+        self.session = self.state.begin()
+        self.seq = 0
+        self.send(deadman=False)
+
+    send = PolicyTests.send
+
+    def test_commanded_pan_never_blocks_forward_or_moves_a_servo(self):
+        self.assertTrue(self.send(pan=40))
+        self.assertEqual(self.state.output(), (50, 50, 90))
+        self.assertTrue(self.send(pan=-80, v=0.5, w=0.25))
+        left, right, pan = self.state.output()
+        self.assertGreater(left, right)
+        self.assertEqual(pan, 90)
+        self.assertEqual(self.state.status()["pan_deg"], 90)
+        self.assertFalse(self.state.status()["estop"])
+
+    def test_pan_is_still_validated_and_every_stop_remains(self):
+        self.assertFalse(self.send(pan=90))  # outside -80..80 is still an invalid command
+        self.assertEqual(self.state.reason, "invalid_command")
+        self.send(deadman=False)
+        self.assertTrue(self.send(pan=40))
+        self.clock.now += .26
+        self.assertEqual(self.state.output()[:2], (0, 0))
+        self.assertEqual(self.state.reason, "lease_expired")
+        self.send(deadman=False)
+        self.assertTrue(self.send(pan=40))
+        self.send(deadman=False)
+        self.assertEqual(self.state.output()[:2], (0, 0))
+        self.state.camera_ready = lambda: False
+        self.assertFalse(self.send(pan=40))
+        self.assertEqual(self.state.output()[:2], (0, 0))
+
+    def test_unknown_mount_is_rejected(self):
+        with self.assertRaises(ValueError):
+            ControlState(pan_mount="gimbal")
+
+
 class ScanStartRaceTests(unittest.TestCase):
     """The operator's last teleop heartbeat (WebSocket) and POST /scan (HTTP)
     carry the same permit but travel separately, so either may arrive first."""
@@ -312,6 +409,17 @@ class SocketTests(unittest.TestCase):
         app.include_router(self.service.router)
         self.client = TestClient(app)
 
+    def wait_status(self, ws, predicate, timeout=1):
+        deadline = time.monotonic() + timeout
+        latest = None
+        while time.monotonic() < deadline:
+            latest = ws.receive_json()
+            if time.monotonic() >= deadline:
+                break
+            if predicate(latest):
+                return latest
+        self.fail(f"Authoritative control status timed out: {latest}")
+
     def test_socket_drive_release_disconnect_and_single_owner(self):
         with self.client.websocket_connect("/ws/control") as ws:
             status = ws.receive_json()
@@ -321,11 +429,16 @@ class SocketTests(unittest.TestCase):
                 with self.client.websocket_connect("/ws/control") as other:
                     other.receive_json()
             ws.send_json({"session_id": status["session_id"], "seq": 0, "deadman": False})
+            status = self.wait_status(ws, lambda packet: packet["seq"] == 0)
+            self.assertEqual(status["reason"], "deadman_released")
+            self.assertFalse(status["requires_release"])
             ws.send_json({"session_id": status["session_id"], "permit": status["permit"],
                           "seq": 1, "deadman": True, "v": 0.5, "w": 0,
                           "video_fresh": True, "video_age_ms": 50})
-            active = ws.receive_json()
+            active = self.wait_status(ws, lambda packet: packet["seq"] == 1)
             self.assertEqual(active["left_pwm"], 50)
+            self.assertEqual(active["right_pwm"], 50)
+            self.assertEqual(self.service.state.output()[:2], (50, 50))
         self.assertEqual(self.service.state.output()[:2], (0, 0))
         self.assertIsNone(self.service.state.session_id)
 
@@ -333,8 +446,10 @@ class SocketTests(unittest.TestCase):
         with self.client.websocket_connect("/ws/control") as ws:
             ws.receive_json()
             ws.send_text("not json")
-            status = ws.receive_json()
+            status = self.wait_status(ws, lambda packet: packet["reason"] == "invalid_json")
             self.assertEqual(status["reason"], "invalid_json")
+            self.assertEqual((status["left_pwm"], status["right_pwm"]), (0, 0))
+            self.assertTrue(status["requires_release"])
             public = self.client.get("/control/status").json()
             self.assertNotIn("session_id", public)
             self.assertIsNone(public["permit"])

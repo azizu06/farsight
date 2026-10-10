@@ -12,10 +12,10 @@ def ask(uno, line):
 
 
 def test_valid_commands():
-    uno = st.FakeUno(range_cm=42)
+    uno = st.FakeUno()
     assert ask(uno, "M 0 0") == "OK"
     assert ask(uno, "P 90") == "OK"
-    assert ask(uno, "R") == "R 42"
+    assert ask(uno, "R") == "R -1"
 
 
 def test_invalid_lines_stop_motors():
@@ -31,13 +31,17 @@ def test_overlong_line_errs_once_and_recovers():
     link = st.Link(uno)
     assert link.ask("M " + "1" * 80) == "ERR line"
     assert link.readline() == ""
-    assert link.ask("R") == "R 100"
+    assert link.ask("R") == "R -1"
 
 
-def test_forward_blocked_by_close_obstacle():
-    uno = st.FakeUno(range_cm=10)
+def test_forward_never_blocked_without_range_sensor():
+    uno = st.FakeUno()
+    assert ask(uno, "R") == "R -1"
+    assert ask(uno, "P 30") == "OK"
     assert ask(uno, "M 50 50") == "OK"
-    assert uno.motors == (0, 0)
+    assert uno.motors == (50, 50)
+    assert ask(uno, "M 40 0") == "OK"
+    assert uno.motors == (40, 0)
 
 
 def test_watchdog_stops_after_300ms():

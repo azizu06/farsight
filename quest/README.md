@@ -5,10 +5,11 @@ map. All requests use the page origin, so the headset stays on the MacBook's USB
 relay instead of trying to reach the Jetson directly.
 
 Build with `npm ci && npm run build` from `quest/`. Run `npm test` for protocol,
-crop geometry, and control safety checks. `npm run test:browser` runs the
+full-frame geometry, action-menu hit testing, and control safety checks. `npm run test:browser` runs the
 production `RoverExperience` in headless Chromium (SwiftShader, simulated XR
 poses, generated camera pixels, stubbed microphone, no backend) for resize,
-tracking-loss, left-trigger push-to-talk and source-banner cases;
+tracking loss, A/B/X/Y actions, menu motion blocking, recentering, transformed
+map goal coordinates, left-trigger push-to-talk and source-banner cases;
 run `npx playwright install chromium-headless-shell` once first. `npm run perf`
 profiles the built app under an emulated Quest 2 (IWER) against a running
 simulator; see the [first-run guide](../docs/quest-first-run.md#7-frame-budget).
@@ -16,16 +17,37 @@ Use the [operator launcher](../tools/demo.py)
 for the integrated app; Vite development mode uses port 8443 as its upstream.
 Do not confuse an old server already on that port with a freshly launched demo.
 
+Full map transfers start at most once every five seconds, with one request in
+flight and only when the selected geometry revision changes. Hybrid 3D view
+downloads the mesh and derives its point overlay locally; points-only/2D mode
+requests the point snapshot. Same-source reconnects keep applied revisions.
+Opening camera settings does not download a map, and holding the deadman pauses
+map transfers. Source/session, epoch or mapper generation changes clear retained
+geometry. This reduces snapshot traffic while the phone-to-Mac delta lane lands.
+
+`node tests/vr-visual-audit.mjs --after` launches its own isolated simulated
+server/relay and captures the production stereo view and menu hover into `/tmp`.
+For comparative upload profiling, point `PERF_ORIGIN` at a separate simulated
+relay and run `node tests/perf-audit.browser.mjs`; `PERF_RETURN=1` also checks
+camera return after map mode. These are desktop diagnostics, not Quest
+qualification. The scoped redesign measurement is saved in
+[quest-vr-redesign.json](../docs/qualification/quest-vr-redesign.json).
+
 ## Controls
 
-- Quest: hold the right trigger, then use the left thumbstick to drive. If only
-  the right controller is present, its thumbstick works instead. Release the
-  trigger to stop. Forward speed is capped at 45% of the server's PWM ceiling;
+- Quest: everything is on the right controller. Hold the right trigger, then use
+  the right thumbstick to drive; release the trigger to stop. The left stick is
+  ignored, and the left controller may be idle, asleep or missing without stopping
+  the rover. Right-stick input inside a 0.25 deadzone counts as centered, so slight
+  drift does not cancel Explore, Seek or go-to. Forward speed is capped at 45% of the server's PWM ceiling;
   calibrate that ceiling on the actual car so motor stiction does not prevent motion.
-- Turn your head to pan. Right A selects the person under the controller ray for
-  Seek, or otherwise toggles live camera / map. Right B toggles Explore. Left X
-  centers the pan, left Y (with the trigger held) starts a scan, and left grip
-  starts the rescue drill. A view change stops driving and requires a release.
+- Tap right A to switch camera/map (on release). Hold right A for 0.6 s to open
+  the actions menu instead (left Y also opens it). Right B stops and cancels
+  navigation. Left X recenters the anchored view. In the actions menu, point the
+  right controller and squeeze its grip to select Explore, Scan or Drill. The
+  menu stops driving. In camera view, right grip selects a pointed person for
+  Seek. Release and press the trigger after changing views or selecting an action.
+  Head turns command pan only with a servo mount; fixed mode shows the full frame.
 - Voice controls appear only when the rover's `/health` reports `assistant.whisper`;
   otherwise they stay hidden and the left trigger only confirms a pending proposal.
   With a Whisper model, hold the left trigger to ask the local assistant by voice;
@@ -81,12 +103,40 @@ Do not confuse an old server already on that port with a freshly launched demo.
 - In settings, select the camera mounting. Servo mode shows the full frame and
   sends head yaw as physical pan; the server and Uno block forward driving while
   pan is more than 10° off center. Fixed-camera mode keeps physical pan at zero
-  and moves a 70% crop inside the measured image. It cannot see beyond that image.
+  and shows the entire measured image with its original aspect ratio. The screen
+  stays anchored when you turn your head; X recenters it.
   The HUD names the mount and video format. A mode change requires a new deadman press.
 - Mount, H.264, in-VR voice and diagnostics are saved in `localStorage` and can be
   deep-linked: `?mount=fixed|servo&h264=0|1&voice=0|1&diag=0|1`. A query value
   beats the saved choice and is saved; a saved choice beats the default. With no
   mount chosen, `/health.camera_pan: false` selects fixed (`src/viewer-settings.js`).
+  With no H.264 choice, `/health.video.enabled: true` selects H.264 for that page
+  (unsaved); if no verified decoded frame arrives within 6 s it reverts to JPEG.
+
+## Walk-through map (VR)
+
+`src/map-walk.js` exports the shared `mapWalk`. In walk mode, the reconstructed
+map renders in XR at 1:1 scale: the map's low-percentile floor sits on the
+headset floor, and the viewer starts at the map origin (the rover start pose).
+Head tracking stays free. Walk mode keeps map transfers running while the
+deadman is held or the rover explores. Overview mode keeps the earlier
+tabletop map, which is hidden in live camera view.
+
+The controls layer drives it:
+
+- `mapWalk.setMode("walk" | "overview")`: AUTO uses walk mode.
+- `mapWalk.moveViewer(forward, right = 0, up = 0, turn = 0)`: metres relative
+  to the gaze heading, and radians where positive turns left about the head.
+- `mapWalk.reset()`: return to the rover start pose.
+
+`?walk=1` starts in walk mode for testing. Until AUTO drives it, a temporary test
+input in `main.ts` lets the left stick click toggle walk mode in VR (resetting to the
+start pose) and the left stick move the viewer at up to 1.5 m/s. A new map generation resets the
+viewer. Display only: this module sends no commands and gates no motion.
+
+When the server reports `capped: true` for a Jetson mesh, the 3D view pulls
+`/map/points.bin` too, alternating with `/map/mesh.bin` under the same 5 s,
+one-at-a-time gate. It no longer derives points from the sparse capped mesh.
 
 ## Freshness and bandwidth
 
@@ -164,7 +214,7 @@ These are required physical checks; desktop tests do not prove them.
    controller off and on, and hold Y through the loss: the rover stays stopped,
    the camera stays visible, and nothing acts until each control is released.
 6. Test camera/map switching and both mounting modes. In fixed-camera mode, the
-   physical pan must remain centered and detections must follow the cropped image.
+   physical pan must remain centered and detections must follow the full image.
 7. Test H.264 on the actual headset under the actual cellular path. Observe video
    age and control acknowledgment delay; do not increase the freshness limits to
    hide stalls. Retain JPEG as the compatibility fallback.

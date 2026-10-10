@@ -13,9 +13,14 @@ struct PhoneBridgeConfig {
     let upstream: IPv4Address
     let localPort: NWEndpoint.Port
     let upstreamPort: NWEndpoint.Port
+    var fallbackUpstream: IPv4Address? = nil
+    var fallbackPort: NWEndpoint.Port? = nil
+    var dualRoutes = false
+    var dualSecondaryPort: NWEndpoint.Port = 8082
 
     static func make(role: PhoneBridgeRole, localTailIP: String, roverPeerIP: String,
-                     jetsonUSBIP: String) throws -> PhoneBridgeConfig {
+                     jetsonUSBIP: String, fallbackPeerIP: String? = nil,
+                     dualRoutes: Bool = false) throws -> PhoneBridgeConfig {
         func address(_ text: String) throws -> IPv4Address {
             let parts = text.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: ".", omittingEmptySubsequences: false)
             guard parts.count == 4, parts.allSatisfy({ UInt8($0).map { String($0) } == String($0) }),
@@ -28,9 +33,16 @@ struct PhoneBridgeConfig {
             return value
         }
         if role == .operator {
-            return PhoneBridgeConfig(local: IPv4Address("127.0.0.1")!, upstream: try tail(roverPeerIP),
-                                     localPort: 8081, upstreamPort: 8081)
+            let primary = try tail(roverPeerIP)
+            let fallback = try fallbackPeerIP.map { try tail($0) }
+            guard fallback != primary else { throw BridgeError("Fallback must differ from primary") }
+            guard !dualRoutes || fallback != nil else { throw BridgeError("Dual routes require both tailnet addresses") }
+            return PhoneBridgeConfig(local: IPv4Address("127.0.0.1")!, upstream: primary,
+                                     localPort: 8081, upstreamPort: 8081,
+                                     fallbackUpstream: fallback, fallbackPort: fallback == nil ? nil : 8081,
+                                     dualRoutes: dualRoutes)
         }
+        guard !dualRoutes else { throw BridgeError("Dual routes are available only in Operator role") }
         guard role == .rover else { throw BridgeError("Choose a phone role before starting") }
         let local = try tail(localTailIP), upstream = try address(jetsonUSBIP), bytes = Array(upstream.rawValue)
         guard (bytes[0] == 172 && bytes[1] == 20 && bytes[2] == 10 && bytes[3] < 16) ||
@@ -50,6 +62,10 @@ struct BridgeError: LocalizedError {
 private func bridgeTCPParameters() -> NWParameters {
     let options = NWProtocolTCP.Options()
     options.noDelay = true
+    options.enableKeepalive = true
+    options.keepaliveIdle = 15
+    options.keepaliveInterval = 5
+    options.keepaliveCount = 3
     return NWParameters(tls: nil, tcp: options)
 }
 
@@ -64,6 +80,10 @@ struct PhoneBridgeSnapshot {
     var forwardedBytes: UInt64 = 0
     var bufferedBytes = 0
     var peakBufferedBytes = 0
+    var primaryActive = 0
+    var fallbackActive = 0
+    var lastChosen = "none"
+    var listenerFailed = false
     var status = "Bridge off"
 }
 
@@ -74,18 +94,24 @@ final class PhoneBridgeServer {
     private var listener: NWListener?
     private var pairs: [UUID: BridgePair] = [:]
     private var snapshot = PhoneBridgeSnapshot()
+    private var activePaths: [UUID: BridgePath] = [:]
+    private var badUntil: [BridgePath: Double] = [:]
     private var generation = UUID()
+    private var acceptingConnections = true
     private let maxPairs: Int
     private let connectTimeout: Double
     private let sendTimeout: Double
+    private let candidateReadyDelay: (BridgePath) -> Double
     var onSnapshot: ((PhoneBridgeSnapshot) -> Void)?
 
     func setSnapshotHandler(_ handler: @escaping (PhoneBridgeSnapshot) -> Void) {
         queue.async { [weak self] in self?.onSnapshot = handler }
     }
 
-    init(maxPairs: Int = 16, connectTimeout: Double = 3, sendTimeout: Double = 3) {
+    init(maxPairs: Int = 16, connectTimeout: Double = 3, sendTimeout: Double = 3,
+         candidateReadyDelay: @escaping (BridgePath) -> Double = { _ in 0 }) {
         self.maxPairs = maxPairs; self.connectTimeout = connectTimeout; self.sendTimeout = sendTimeout
+        self.candidateReadyDelay = candidateReadyDelay
     }
 
     deinit {
@@ -93,11 +119,17 @@ final class PhoneBridgeServer {
         for pair in pairs.values { pair.cancel() }
     }
 
-    func start(_ config: PhoneBridgeConfig) {
-        queue.async { [weak self] in self?.startOnQueue(config) }
+    func start(_ config: PhoneBridgeConfig, accepting: Bool = true) {
+        queue.async { [weak self] in self?.startOnQueue(config, accepting: accepting) }
     }
 
+    func enableAcceptingConnections() { queue.async { [weak self] in self?.acceptingConnections = true } }
+
     func stop() { queue.async { [weak self] in self?.stopOnQueue("Bridge stopped") } }
+
+    func readSnapshot(_ handler: @escaping (PhoneBridgeSnapshot) -> Void) {
+        queue.async { [weak self] in if let self { handler(self.snapshot) } }
+    }
 
     private func emit() { onSnapshot?(snapshot) }
 
@@ -105,15 +137,23 @@ final class PhoneBridgeServer {
         generation = UUID()
         listener?.stateUpdateHandler = nil; listener?.newConnectionHandler = nil
         listener?.cancel(); listener = nil
-        let old = pairs; pairs.removeAll()
+        let old = pairs; pairs.removeAll(); activePaths.removeAll()
         for pair in old.values { pair.cancel() }
-        snapshot.running = false; snapshot.ready = false; snapshot.active = 0; snapshot.bufferedBytes = 0
+        snapshot.running = false; snapshot.ready = false; snapshot.active = 0; snapshot.primaryActive = 0; snapshot.fallbackActive = 0; snapshot.bufferedBytes = 0
+        snapshot.listenerFailed = reason.hasPrefix("Listener failed:")
         snapshot.status = reason; emit()
     }
 
-    private func startOnQueue(_ config: PhoneBridgeConfig) {
+    private func countPaths() {
+        snapshot.primaryActive = activePaths.values.filter { $0 == .primary }.count
+        snapshot.fallbackActive = activePaths.values.filter { $0 == .fallback }.count
+    }
+
+    private func startOnQueue(_ config: PhoneBridgeConfig, accepting: Bool) {
         stopOnQueue("Bridge starting")
+        acceptingConnections = accepting
         snapshot = PhoneBridgeSnapshot(); snapshot.running = true; snapshot.status = "Binding local listener"
+        badUntil.removeAll()
         let token = generation
         do {
             let parameters = bridgeTCPParameters()
@@ -126,7 +166,7 @@ final class PhoneBridgeServer {
                 guard let self, self.generation == token else { return }
                 switch state {
                 case .ready:
-                    self.snapshot.ready = true; self.snapshot.port = listener.port?.rawValue ?? 0
+                    self.snapshot.ready = true; self.snapshot.port = self.listener?.port?.rawValue ?? 0
                     self.snapshot.status = "Listener ready · phone VPN/USB path unqualified"; self.emit()
                 case .failed(let error): self.snapshot.errors += 1; self.stopOnQueue("Listener failed: \(error)")
                 case .waiting(let error): self.snapshot.status = "Listener waiting: \(error)"; self.emit()
@@ -135,16 +175,30 @@ final class PhoneBridgeServer {
             }
             listener.newConnectionHandler = { [weak self] connection in
                 guard let self, self.generation == token else { connection.cancel(); return }
-                guard self.pairs.count < self.maxPairs else {
+                guard self.acceptingConnections, self.pairs.count < self.maxPairs else {
                     connection.cancel(); self.snapshot.rejected += 1; self.emit(); return
                 }
                 let id = UUID()
                 // No requiredInterfaceType or local binding on outbound connections:
                 // system VPN routes select the path to the fixed upstream.
-                let upstream = NWConnection(host: .ipv4(config.upstream), port: config.upstreamPort, using: bridgeTCPParameters())
-                let pair = BridgePair(client: connection, upstream: upstream, queue: self.queue,
+                let primary = BridgeTarget(path: .primary, host: config.upstream, port: config.upstreamPort)
+                let fallback = config.fallbackUpstream.map { BridgeTarget(path: .fallback, host: $0, port: config.fallbackPort ?? config.upstreamPort) }
+                let preferFallback = fallback != nil && (self.badUntil[.primary] ?? 0) > ProcessInfo.processInfo.systemUptime &&
+                    (self.badUntil[.fallback] ?? 0) <= ProcessInfo.processInfo.systemUptime
+                let targets = preferFallback ? [fallback!, primary] : [primary] + (fallback.map { [$0] } ?? [])
+                let pair = BridgePair(client: connection, targets: targets, queue: self.queue,
                                       connectTimeout: self.connectTimeout, sendTimeout: self.sendTimeout,
-                                      onBytes: { [weak self] count in
+                                      candidateReadyDelay: self.candidateReadyDelay,
+                                      onBad: { [weak self] path in
+                    guard let self, self.generation == token else { return }
+                    self.badUntil[path] = ProcessInfo.processInfo.systemUptime + 5
+                }, onSelected: { [weak self] target in
+                    guard let self, self.generation == token else { return }
+                    self.activePaths[id] = target.path; self.badUntil[target.path] = nil
+                    self.snapshot.lastChosen = "\(target.path.rawValue) \(target.host):\(target.port.rawValue)"
+                    self.snapshot.status = "Selected \(self.snapshot.lastChosen); existing sessions do not migrate"
+                    self.countPaths(); self.emit()
+                }, onBytes: { [weak self] count in
                     guard let self, self.generation == token else { return }
                     self.snapshot.forwardedBytes += UInt64(count); self.emit()
                 }, onBuffer: { [weak self] delta in
@@ -154,7 +208,8 @@ final class PhoneBridgeServer {
                     self.emit()
                 }, onClose: { [weak self] error in
                     guard let self, self.generation == token else { return }
-                    self.pairs.removeValue(forKey: id); self.snapshot.active = self.pairs.count
+                    self.pairs.removeValue(forKey: id); self.activePaths.removeValue(forKey: id)
+                    self.snapshot.active = self.pairs.count; self.countPaths()
                     if let error { self.snapshot.errors += 1; self.snapshot.status = "Pair closed: \(error)" }
                     self.emit()
                 })
@@ -166,8 +221,105 @@ final class PhoneBridgeServer {
     }
 }
 
+enum BridgePath: String { case primary, fallback }
+
+private struct BridgeTarget {
+    let path: BridgePath
+    let host: IPv4Address
+    let port: NWEndpoint.Port
+}
+
+/// Selects a ready transport before the client is read. Candidates never get
+/// request bytes, so a refused/slow connection cannot duplicate a POST or drive.
+private final class BridgeUpstreamRace {
+    private let targets: [BridgeTarget], queue: DispatchQueue, deadline: Double
+    private let onBad: (BridgePath) -> Void
+    private let completion: (BridgeTarget?, NWConnection?, String?) -> Void
+    private let readyDelay: (BridgePath) -> Double
+    private var connections: [Int: NWConnection] = [:]
+    private var failures = Set<Int>()
+    private var deadlineTimer: DispatchSourceTimer?, staggerTimer: DispatchSourceTimer?
+    private var finished = false
+
+    init(targets: [BridgeTarget], queue: DispatchQueue, deadline: Double,
+         onBad: @escaping (BridgePath) -> Void,
+         readyDelay: @escaping (BridgePath) -> Double,
+         completion: @escaping (BridgeTarget?, NWConnection?, String?) -> Void) {
+        self.targets = targets; self.queue = queue; self.deadline = deadline
+        self.onBad = onBad; self.completion = completion
+        self.readyDelay = readyDelay
+    }
+
+    private func timer(_ seconds: Double, _ action: @escaping () -> Void) -> DispatchSourceTimer {
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + seconds); timer.setEventHandler(handler: action); timer.resume()
+        return timer
+    }
+
+    func start() {
+        deadlineTimer = timer(deadline) { [weak self] in
+            guard let self, !self.finished else { return }
+            for target in self.targets { self.onBad(target.path) }
+            self.fail("Upstream selection deadline exceeded")
+        }
+        attempt(0)
+        if targets.count > 1 {
+            staggerTimer = timer(0.15) { [weak self] in self?.attempt(1) }
+        }
+    }
+
+    private func attempt(_ index: Int) {
+        guard !finished, index < targets.count, connections[index] == nil, !failures.contains(index) else { return }
+        let target = targets[index]
+        let connection = NWConnection(host: .ipv4(target.host), port: target.port, using: bridgeTCPParameters())
+        connections[index] = connection
+        connection.stateUpdateHandler = { [weak self] state in
+            guard let self, !self.finished else { return }
+            switch state {
+            case .ready:
+                // Default zero. The portable fixture delays only readiness
+                // delivery, while real loopback sockets prove loser byte counts.
+                self.queue.asyncAfter(deadline: .now() + self.readyDelay(target.path)) { [weak self] in
+                    self?.choose(index, connection: connection)
+                }
+            case .failed(let error):
+                self.failures.insert(index); self.onBad(target.path)
+                connection.stateUpdateHandler = nil; connection.cancel(); self.connections.removeValue(forKey: index)
+                if index == 0 && self.targets.count > 1 { self.attempt(1) }
+                if self.failures.count == self.targets.count { self.fail("Both upstream paths unavailable: \(error)") }
+            default: break
+            }
+        }
+        connection.start(queue: queue)
+    }
+
+    private func choose(_ index: Int, connection: NWConnection) {
+        guard !finished, connections[index] === connection, !failures.contains(index) else { return }
+        finished = true; deadlineTimer?.cancel(); staggerTimer?.cancel()
+        if index != 0 { onBad(targets[0].path) }
+        connections.removeValue(forKey: index); connection.stateUpdateHandler = nil
+        for candidate in connections.values { candidate.stateUpdateHandler = nil; candidate.cancel() }
+        connections.removeAll(); completion(targets[index], connection, nil)
+    }
+
+    private func fail(_ error: String) {
+        guard !finished else { return }; cancel(); completion(nil, nil, error)
+    }
+
+    func cancel() {
+        finished = true; deadlineTimer?.cancel(); staggerTimer?.cancel()
+        for connection in connections.values { connection.stateUpdateHandler = nil; connection.cancel() }
+        connections.removeAll()
+    }
+}
+
 private final class BridgePair {
-    private let connections: [NWConnection]
+    private var connections: [NWConnection]
+    private let targets: [BridgeTarget]
+    private let candidateReadyDelay: (BridgePath) -> Double
+    private let onBad: (BridgePath) -> Void, onSelected: (BridgeTarget) -> Void
+    private var selector: BridgeUpstreamRace?
+    private var selected: BridgeTarget?
     private let queue: DispatchQueue
     private let connectTimeout: Double, sendTimeout: Double
     private let onBytes: (Int) -> Void, onBuffer: (Int) -> Void, onClose: (String?) -> Void
@@ -178,44 +330,60 @@ private final class BridgePair {
     private var terminalDrainTimer: DispatchSourceTimer?
     private var pumping = false, closed = false
 
-    init(client: NWConnection, upstream: NWConnection, queue: DispatchQueue,
+    init(client: NWConnection, targets: [BridgeTarget], queue: DispatchQueue,
          connectTimeout: Double, sendTimeout: Double,
+         candidateReadyDelay: @escaping (BridgePath) -> Double,
+         onBad: @escaping (BridgePath) -> Void, onSelected: @escaping (BridgeTarget) -> Void,
          onBytes: @escaping (Int) -> Void, onBuffer: @escaping (Int) -> Void,
          onClose: @escaping (String?) -> Void) {
-        connections = [client, upstream]; self.queue = queue
+        connections = [client]; self.targets = targets; self.queue = queue
+        self.onBad = onBad; self.onSelected = onSelected
+        self.candidateReadyDelay = candidateReadyDelay
         self.connectTimeout = connectTimeout; self.sendTimeout = sendTimeout
         self.onBytes = onBytes; self.onBuffer = onBuffer; self.onClose = onClose
     }
 
     func start() {
-        connectTimer = timer(seconds: connectTimeout) { [weak self] in self?.finish("Upstream connection deadline exceeded") }
-        for index in 0...1 {
-            connections[index].stateUpdateHandler = { [weak self] state in
-                guard let self, !self.closed else { return }
-                switch state {
-                case .ready:
-                    self.ready[index] = true
-                    if self.ready.allSatisfy({ $0 }) && !self.pumping {
-                        self.pumping = true; self.connectTimer?.cancel(); self.connectTimer = nil
-                        self.read(0); self.read(1)
-                    }
-                case .failed(let error):
-                    if self.pumping && self.finished[1 - index] && !self.finished[index] {
-                        // Network.framework may report a terminal state after
-                        // local SHUT_WR while queued receive bytes remain. Do
-                        // not turn that state into EOF or discard the response.
-                        // The receive callback must confirm EOF/error; drain is bounded.
-                        if self.terminalDrainTimer == nil {
-                            self.terminalDrainTimer = self.timer(seconds: self.sendTimeout) { [weak self] in
-                                self?.finish("Terminal receive drain deadline: \(error)")
-                            }
+        connectTimer = timer(seconds: connectTimeout) { [weak self] in
+            guard let self else { return }
+            if self.ready[0] && !self.ready[1] { for target in self.targets { self.onBad(target.path) } }
+            self.finish("Connection deadline exceeded")
+        }
+        attachState(0)
+        connections[0].start(queue: queue)
+        let selector = BridgeUpstreamRace(targets: targets, queue: queue, deadline: connectTimeout,
+                                          onBad: onBad, readyDelay: candidateReadyDelay) { [weak self] target, connection, error in
+            guard let self, !self.closed else { connection?.cancel(); return }
+            guard let target, let connection else { self.finish(error ?? "Both upstream paths unavailable"); return }
+            self.selected = target; self.connections.append(connection)
+            self.attachState(1); self.ready[1] = true
+            self.onSelected(target); self.beginPump()
+        }
+        self.selector = selector; selector.start()
+    }
+
+    private func beginPump() {
+        guard ready.allSatisfy({ $0 }), !pumping, !closed else { return }
+        pumping = true; connectTimer?.cancel(); connectTimer = nil
+        read(0); read(1)
+    }
+
+    private func attachState(_ index: Int) {
+        connections[index].stateUpdateHandler = { [weak self] state in
+            guard let self, !self.closed else { return }
+            switch state {
+            case .ready: self.ready[index] = true; self.beginPump()
+            case .failed(let error):
+                if self.pumping && self.finished[1 - index] && !self.finished[index] {
+                    if self.terminalDrainTimer == nil {
+                        self.terminalDrainTimer = self.timer(seconds: self.sendTimeout) { [weak self] in
+                            self?.finish("Terminal receive drain deadline: \(error)", upstreamFailed: index == 1)
                         }
-                    } else { self.finish("\(index == 0 ? "Client" : "Upstream") state: \(error)") }
-                case .cancelled: self.finish("Connection cancelled")
-                default: break
-                }
+                    }
+                } else { self.finish("\(index == 0 ? "Client" : "Upstream") state: \(error)", upstreamFailed: index == 1) }
+            case .cancelled: self.finish("Connection cancelled", upstreamFailed: index == 1)
+            default: break
             }
-            connections[index].start(queue: queue)
         }
     }
 
@@ -233,19 +401,19 @@ private final class BridgePair {
             guard let self, !self.closed else { return }
             if let data, !data.isEmpty {
                 self.buffered[lane] = data.count; self.onBuffer(data.count)
-                self.writes[lane] = self.timer(seconds: self.sendTimeout) { [weak self] in self?.finish("Write backpressure deadline exceeded") }
+                self.writes[lane] = self.timer(seconds: self.sendTimeout) { [weak self] in self?.finish("Write backpressure deadline exceeded", upstreamFailed: lane == 0) }
                 self.connections[1 - lane].send(content: data, completion: .contentProcessed { [weak self] error in
                     guard let self, !self.closed else { return }
                     self.writes[lane]?.cancel(); self.writes[lane] = nil
                     self.onBuffer(-self.buffered[lane]); self.buffered[lane] = 0
-                    if let error { self.finish("Write: \(error)"); return }
+                    if let error { self.finish("Write: \(error)", upstreamFailed: lane == 0); return }
                     self.onBytes(data.count)
                     // A receive can carry final bytes together with an error.
                     // Preserve those bytes before closing, without fabricating EOF.
-                    if let readError { self.finish("Read: \(readError)"); return }
+                    if let readError { self.finish("Read: \(readError)", upstreamFailed: lane == 1); return }
                     if eof { self.halfClose(lane) } else { self.read(lane) }
                 })
-            } else if let readError { self.finish("Read: \(readError)") }
+            } else if let readError { self.finish("Read: \(readError)", upstreamFailed: lane == 1) }
             else if eof { self.halfClose(lane) }
             else { self.read(lane) }
         }
@@ -253,75 +421,231 @@ private final class BridgePair {
 
     private func halfClose(_ lane: Int) {
         guard !closed, !finished[lane] else { return }
-        writes[lane] = timer(seconds: sendTimeout) { [weak self] in self?.finish("FIN drain deadline exceeded") }
+        writes[lane] = timer(seconds: sendTimeout) { [weak self] in self?.finish("FIN drain deadline exceeded", upstreamFailed: lane == 0) }
         connections[1 - lane].send(content: nil, contentContext: .finalMessage, isComplete: true,
                                    completion: .contentProcessed { [weak self] error in
             guard let self, !self.closed else { return }
             self.writes[lane]?.cancel(); self.writes[lane] = nil
-            if let error { self.finish("FIN: \(error)"); return }
+            if let error { self.finish("FIN: \(error)", upstreamFailed: lane == 0); return }
             self.finished[lane] = true
             // A request FIN must not cancel the reverse response stream.
             if self.finished.allSatisfy({ $0 }) { self.finish(nil) }
         })
     }
 
-    private func finish(_ error: String?) {
+    private func finish(_ error: String?, upstreamFailed: Bool = false) {
         guard !closed else { return }; closed = true
+        if upstreamFailed, let selected { onBad(selected.path) }
+        selector?.cancel(); selector = nil
         connectTimer?.cancel(); connectTimer = nil
         terminalDrainTimer?.cancel(); terminalDrainTimer = nil
         for lane in 0...1 {
             writes[lane]?.cancel(); writes[lane] = nil
             if buffered[lane] != 0 { onBuffer(-buffered[lane]); buffered[lane] = 0 }
-            connections[lane].stateUpdateHandler = nil; connections[lane].cancel()
+            if lane < connections.count { connections[lane].stateUpdateHandler = nil; connections[lane].cancel() }
         }
         onClose(error)
     }
+}
+
+/// In-memory operator intent only. Suspension never grants camera or motion intent.
+struct BridgeForegroundIntent {
+    private(set) var operatorWanted = false
+    mutating func explicitStart(role: PhoneBridgeRole) { operatorWanted = role == .operator }
+    mutating func manualStopOrRoleChange() { operatorWanted = false }
+    func shouldRearmOnActive(role: PhoneBridgeRole) -> Bool { operatorWanted && role == .operator }
 }
 
 final class PhoneBridge: ObservableObject {
     @Published private(set) var running = false
     @Published private(set) var status = "Bridge off · phone VPN/USB path unqualified"
     @Published private(set) var counters = "0 connections · 0 bytes"
-    private let server = PhoneBridgeServer()
+    @Published private(set) var operatorRecoveryWanted = false
+    @Published private(set) var listeningPort: UInt16 = 0
+    @Published private(set) var secondaryListeningPort: UInt16 = 0
+    @Published private(set) var primaryRouteStatus = "Primary listener off"
+    @Published private(set) var secondaryRouteStatus = "Fallback listener off"
+    @Published private(set) var geometryListeningPort: UInt16 = 0
+    @Published private(set) var geometryStatus = "Geometry forwarding disabled"
+    @Published private(set) var dualRoutesActive = false
+    private let server: PhoneBridgeServer, secondaryServer: PhoneBridgeServer
+    private let configuration: (PhoneBridgeRole, String, String, String, String?) throws -> PhoneBridgeConfig
     private var generation = UUID()
     private let snapshotLock = NSLock()
-    private var latestSnapshot: (UUID, PhoneBridgeSnapshot)?
-    private var updateScheduled = false
+    private var snapshotToken = UUID()
+    private var pendingSnapshots: [Int: (UUID, PhoneBridgeSnapshot)] = [:]
+    private var routeSnapshots: [Int: PhoneBridgeSnapshot] = [:]
+    private var updateScheduled = false, dualArmed = false
+    private var foregroundIntent = BridgeForegroundIntent()
+    private var operatorConfig: PhoneBridgeConfig?
+    private var foregroundActive = true
+    private var listenerRetry: DispatchWorkItem?
+    private var listenerFailures = 0
+    private let geometryForwarder: PhoneBridgeServer
+    private let geometryConfiguration: (PhoneBridgeConfig) -> PhoneBridgeConfig
+    private var geometryWanted = false
+    private var geometryGeneration = UUID()
+    private var geometryRetry: DispatchWorkItem?
 
-    private func enqueue(_ snapshot: PhoneBridgeSnapshot, token: UUID) {
+    init(server: PhoneBridgeServer = PhoneBridgeServer(), secondaryServer: PhoneBridgeServer = PhoneBridgeServer(),
+         geometryForwarder: PhoneBridgeServer = PhoneBridgeServer(maxPairs: 2, sendTimeout: 8),
+         geometryConfiguration: @escaping (PhoneBridgeConfig) -> PhoneBridgeConfig = {
+            PhoneBridgeConfig(local: $0.local, upstream: $0.upstream, localPort: 8083, upstreamPort: 8083)
+         },
+         configuration: @escaping (PhoneBridgeRole, String, String, String, String?) throws -> PhoneBridgeConfig = {
+        try PhoneBridgeConfig.make(role: $0, localTailIP: $1, roverPeerIP: $2, jetsonUSBIP: $3, fallbackPeerIP: $4)
+    }) {
+        self.server = server; self.secondaryServer = secondaryServer; self.configuration = configuration
+        self.geometryForwarder = geometryForwarder; self.geometryConfiguration = geometryConfiguration
+    }
+
+    private func enqueue(_ snapshot: PhoneBridgeSnapshot, token: UUID, route: Int = 0) {
         snapshotLock.lock()
-        latestSnapshot = (token, snapshot)
-        let schedule = !updateScheduled
-        updateScheduled = true
+        guard snapshotToken == token else { snapshotLock.unlock(); return }
+        // Preserve listener failure across the subsequent stop notification.
+        if pendingSnapshots[route]?.1.listenerFailed != true { pendingSnapshots[route] = (token, snapshot) }
+        let schedule = !updateScheduled; updateScheduled = true
+        if snapshot.listenerFailed { server.stop(); secondaryServer.stop() }
         snapshotLock.unlock()
         guard schedule else { return }
-        // Counter refreshes replace one slot; bulk traffic cannot create an
-        // unbounded queue of UI work while the main thread is busy.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-            guard let self else { return }
-            self.snapshotLock.lock()
-            let latest = self.latestSnapshot
-            self.latestSnapshot = nil; self.updateScheduled = false
-            self.snapshotLock.unlock()
-            guard let (token, snapshot) = latest, self.generation == token else { return }
-            self.running = snapshot.running; self.status = snapshot.status
-            self.counters = "\(snapshot.active)/16 active · \(snapshot.accepted) accepted · \(snapshot.rejected) rejected · \(snapshot.errors) errors · \(snapshot.forwardedBytes) bytes"
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in self?.drainSnapshots() }
+    }
+
+    private func drainSnapshots() {
+        snapshotLock.lock()
+        let pending = pendingSnapshots; pendingSnapshots.removeAll(); updateScheduled = false
+        snapshotLock.unlock()
+        for (route, value) in pending where value.0 == generation { routeSnapshots[route] = value.1 }
+        guard let primary = routeSnapshots[0] else { return }
+        if dualRoutesActive {
+            let secondary = routeSnapshots[1] ?? PhoneBridgeSnapshot()
+            if primary.listenerFailed || secondary.listenerFailed {
+                closeTransport("Dual \(primary.listenerFailed ? "primary" : "fallback") listener failed: \(primary.listenerFailed ? primary.status : secondary.status). Both stopped.")
+                scheduleOperatorRetry()
+                return
+            }
+            primaryRouteStatus = "Primary listener :\(primary.port) · \(primary.ready ? "ready" : "not ready") · \(primary.active)/16 active · \(primary.errors) errors"
+            secondaryRouteStatus = "Fallback listener :\(secondary.port) · \(secondary.ready ? "ready" : "not ready") · \(secondary.active)/16 active · \(secondary.errors) errors"
+            listeningPort = primary.ready ? primary.port : 0
+            secondaryListeningPort = secondary.ready ? secondary.port : 0
+            if primary.ready && secondary.ready { listenerFailures = 0 }
+            if primary.ready && secondary.ready && !dualArmed {
+                dualArmed = true; server.enableAcceptingConnections(); secondaryServer.enableAcceptingConnections()
+            }
+            running = primary.running || secondary.running
+            status = dualArmed ? "Dual pinned listeners ready · routes never migrate or replay" : "Starting both dual listeners; requests gated"
+            counters = "Primary \(primary.forwardedBytes) bytes · fallback \(secondary.forwardedBytes) bytes"
+        } else {
+            if primary.listenerFailed {
+                closeTransport("Bridge listener failed: \(primary.status)")
+                scheduleOperatorRetry(); return
+            }
+            if primary.ready { listenerFailures = 0 }
+            running = primary.running; status = primary.status; listeningPort = primary.ready ? primary.port : 0
+            counters = "\(primary.active)/16 active (primary \(primary.primaryActive), fallback \(primary.fallbackActive), connecting \(primary.active - primary.primaryActive - primary.fallbackActive)) · \(primary.errors) errors · \(primary.forwardedBytes) bytes · last \(primary.lastChosen)"
         }
     }
 
-    func start(role: PhoneBridgeRole, localTailIP: String, roverPeerIP: String, jetsonUSBIP: String) {
+    func start(role: PhoneBridgeRole, localTailIP: String, roverPeerIP: String, jetsonUSBIP: String,
+               fallbackPeerIP: String? = nil, dualRoutes: Bool = false, geometry: Bool = false) {
         guard !running else { return }
         do {
-            let config = try PhoneBridgeConfig.make(role: role, localTailIP: localTailIP,
-                                                  roverPeerIP: roverPeerIP, jetsonUSBIP: jetsonUSBIP)
-            let token = UUID(); generation = token; running = true; status = "Starting fixed-upstream bridge"
-            server.setSnapshotHandler { [weak self] snapshot in self?.enqueue(snapshot, token: token) }
-            server.start(config)
+            var config = try configuration(role, localTailIP, roverPeerIP, jetsonUSBIP, fallbackPeerIP)
+            guard !dualRoutes || (role == .operator && config.fallbackUpstream != nil) else {
+                throw BridgeError("Operator dual routes require both validated tailnet addresses")
+            }
+            config.dualRoutes = dualRoutes
+            listenerFailures = 0; geometryWanted = role == .operator && geometry
+            foregroundIntent.explicitStart(role: role); operatorRecoveryWanted = foregroundIntent.operatorWanted
+            operatorConfig = role == .operator ? config : nil
+            startConfigured(config)
         } catch { status = error.localizedDescription }
     }
 
     func stop() {
-        generation = UUID(); running = false; status = "Bridge stopped"
-        counters = "0/16 active · bridge stopped"; server.stop()
+        geometryWanted = false
+        foregroundIntent.manualStopOrRoleChange(); operatorRecoveryWanted = false; operatorConfig = nil
+        closeTransport("Bridge stopped")
+    }
+
+    private func startConfigured(_ config: PhoneBridgeConfig) {
+        listenerRetry?.cancel(); listenerRetry = nil
+        let token = UUID(); generation = token; running = true; status = "Starting fixed-upstream bridge"
+        dualRoutesActive = config.dualRoutes; dualArmed = false; routeSnapshots.removeAll()
+        // Enqueue the complete listener transaction under one lock. A fast
+        // bind failure must queue peer-stop AFTER both starts, not before the
+        // other start has even been submitted.
+        snapshotLock.lock(); snapshotToken = token; pendingSnapshots.removeAll()
+        server.setSnapshotHandler { [weak self] snapshot in self?.enqueue(snapshot, token: token) }
+        if config.dualRoutes, let fallback = config.fallbackUpstream {
+            var primary = config; primary.fallbackUpstream = nil; primary.fallbackPort = nil; primary.dualRoutes = false
+            let secondary = PhoneBridgeConfig(local: config.local, upstream: fallback,
+                                              localPort: config.dualSecondaryPort,
+                                              upstreamPort: config.fallbackPort ?? config.upstreamPort)
+            secondaryServer.setSnapshotHandler { [weak self] snapshot in self?.enqueue(snapshot, token: token, route: 1) }
+            server.start(primary, accepting: false); secondaryServer.start(secondary, accepting: false)
+        } else { secondaryServer.stop(); server.start(config) }
+        snapshotLock.unlock()
+        if geometryWanted { startGeometryForwarder(config, token: token) }
+    }
+
+    private func startGeometryForwarder(_ config: PhoneBridgeConfig, token: UUID) {
+        geometryRetry?.cancel(); geometryRetry = nil
+        let geometryToken = UUID(); geometryGeneration = geometryToken
+        geometryStatus = "Starting USB geometry port 8083"
+        geometryForwarder.setSnapshotHandler { [weak self] snapshot in
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.generation == token, self.geometryGeneration == geometryToken, self.geometryWanted, self.foregroundActive else { return }
+                self.geometryListeningPort = snapshot.ready ? snapshot.port : 0
+                self.geometryStatus = "Geometry: \(snapshot.status)"
+                if snapshot.ready { self.geometryRetry?.cancel(); self.geometryRetry = nil }
+                if snapshot.listenerFailed && self.geometryRetry == nil {
+                    let work = DispatchWorkItem { [weak self] in
+                        guard let self, self.generation == token, self.geometryGeneration == geometryToken, self.geometryListeningPort == 0, self.operatorRecoveryWanted, self.geometryWanted, self.foregroundActive else { return }
+                        self.startGeometryForwarder(config, token: token)
+                    }
+                    self.geometryRetry = work; DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: work)
+                }
+            }
+        }
+        let geometry = geometryConfiguration(config)
+        geometryForwarder.start(geometry)
+    }
+
+    private func closeTransport(_ reason: String) {
+        listenerRetry?.cancel(); listenerRetry = nil
+        geometryGeneration = UUID(); geometryRetry?.cancel(); geometryRetry = nil; geometryForwarder.stop()
+        geometryListeningPort = 0; geometryStatus = "Geometry forwarding stopped"
+        generation = UUID(); running = false; status = reason; listeningPort = 0; secondaryListeningPort = 0
+        snapshotLock.lock(); snapshotToken = generation; pendingSnapshots.removeAll(); snapshotLock.unlock()
+        dualRoutesActive = false; dualArmed = false; routeSnapshots.removeAll()
+        primaryRouteStatus = "Primary listener stopped"; secondaryRouteStatus = "Fallback listener stopped"
+        counters = "0 active · bridge stopped"; server.stop(); secondaryServer.stop()
+    }
+
+    private func scheduleOperatorRetry() {
+        guard foregroundActive, operatorRecoveryWanted, let config = operatorConfig else { return }
+        listenerFailures = min(listenerFailures + 1, 5)
+        let delay = min(8, 0.5 * pow(2, Double(listenerFailures - 1)))
+        let token = generation
+        status += " Re-arming in \(delay)s; Stop cancels."
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.generation == token, self.foregroundActive,
+                  self.operatorRecoveryWanted, !self.running else { return }
+            self.startConfigured(config)
+        }
+        listenerRetry = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    func suspendForBackground() {
+        foregroundActive = false
+        closeTransport(operatorRecoveryWanted ? "Operator suspended; foreground re-arms listener only" : "Bridge stopped on background")
+    }
+
+    func recoverOperatorOnActive(role: PhoneBridgeRole) {
+        foregroundActive = true
+        guard !running, foregroundIntent.shouldRearmOnActive(role: role), let operatorConfig else { return }
+        startConfigured(operatorConfig)
     }
 }

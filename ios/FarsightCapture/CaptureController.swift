@@ -4,10 +4,12 @@ import Combine
 import CoreImage
 import CoreMedia
 import Foundation
+import Network
 import UIKit
 
-// All AR/transport state lives on this one serial queue. Main-thread published
-// values are presentation only. There is never more than one frame send active.
+// Camera/control transport is serialized on its capture queue; geometry
+// compression and streaming use bounded independent workers. Published values
+// are presentation only. There is never more than one camera frame send active.
 final class CaptureController: NSObject, ObservableObject, ARSessionDelegate, AVCaptureVideoDataOutputSampleBufferDelegate {
     @Published var running = false
     @Published var status = "Ready. Connect the rover phone to the Jetson over USB."
@@ -17,11 +19,14 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate, AV
     @Published var skipped = 0
     @Published var preview: UIImage?
     @Published var resolvedEndpoint = ""
+    @Published var geometryStatus = "Phone 3D disabled"
     @Published var clockDiagnostic = "Capture clock not checked"
 
+    let supportsMesh = ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh)
     let supportsDepth = ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth)
-    private let capture = ARSession()
+    private var capture = ARSession()
     private let rgbCapture = AVCaptureSession()
+    private var rgbOutput: AVCaptureVideoDataOutput?
     private var permitGate = CapturePermitGate()
     private var capturePermitsNegotiated = false
     private var lastDiagnosticAt = -Double.infinity
@@ -32,6 +37,43 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate, AV
     private var socket: URLSessionWebSocketTask?
     private var generation: UUID?
     private var uiGeneration: UUID?
+    private var uiAttempt: UUID?
+    private struct Request { let intent: UUID; let url: URL; let depth: Bool; let device: String; let meshHost: String? }
+    private var request: Request?
+    private var reconnect = CaptureReconnect()
+    private let admission = CaptureIntentAdmission()
+    private let geometryFeed = PhoneGeometryFeed()
+    private var geometryReady = false
+    private var geometryRetry: DispatchWorkItem?
+    private lazy var geometryServer: PhoneGeometryServer = {
+        let server = PhoneGeometryServer(status: { [weak self] in
+            guard let self else { return ["geometry": true, "protocol": 1, "ready": false] }
+            return self.queue.sync {
+                var packet = self.geometryFeed.status()
+                let allowed = self.request.map { self.admission.withIntent($0.intent, { true }) == true } ?? false
+                packet["ready"] = allowed && self.generation != nil && self.geometryReady && self.withDepth
+                return packet
+            }
+        }, subscribe: { [weak self] in self?.geometryFeed.snapshot() ?? [] })
+        server.onStateTagged = { [weak self] id, state, port in
+            self?.queue.async { [weak self] in
+                guard let self, self.generation == id else { return }
+                self.geometryReady = state == "ready"
+                self.publish(id) { $0.geometryStatus = state == "ready" ? "Phone-built mesh · port \(port)" : "Phone mesh: \(state)" }
+                if state.hasPrefix("failed"), let host = self.request?.meshHost, let local = IPv4Address(host) {
+                    let work = DispatchWorkItem { [weak self] in
+                        guard let self, self.generation == id, let request = self.request,
+                              self.admission.withIntent(request.intent, { true }) == true else { return }
+                        self.geometryServer.start(local: local, context: id)
+                    }
+                    self.geometryRetry = work; self.queue.asyncAfter(deadline: .now() + 1, execute: work)
+                }
+            }
+        }
+        return server
+    }()
+    private var permitWatchdog: DispatchWorkItem?
+    private var retryWork: DispatchWorkItem?
     private var sessionID = ""
     private var withDepth = false
     private var helloSent = false
@@ -46,12 +88,22 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate, AV
         super.init()
         capture.delegate = self
         capture.delegateQueue = queue
+        geometryFeed.onRecord = { [weak self] session, packet in
+            self?.queue.async { [weak self] in
+                guard let self, self.sessionID == session.uuidString, self.generation != nil, let request = self.request,
+                      self.admission.withIntent(request.intent, { true }) == true else { return }
+                self.geometryServer.publish(packet)
+            }
+        }
+    }
+
+    private func observeRGBCamera(id: UUID) {
         for name in [Notification.Name.AVCaptureSessionWasInterrupted, .AVCaptureSessionRuntimeError] {
             cameraObservers.append(NotificationCenter.default.addObserver(forName: name, object: rgbCapture, queue: nil) { [weak self] note in
                 let error = (note.userInfo?[AVCaptureSessionErrorKey] as? NSError)?.localizedDescription
                 self?.queue.async { [weak self] in
-                    guard let self, !self.withDepth, let id = self.generation else { return }
-                    self.fail(error.map { "RGB camera: \($0)" } ?? "RGB camera interrupted", id: id)
+                    guard let self, !self.withDepth, self.generation == id else { return }
+                    self.fail(error.map { "RGB camera: \($0)" } ?? "RGB camera interrupted", id: id, retryable: false)
                 }
             })
         }
@@ -59,7 +111,7 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate, AV
 
     deinit { for observer in cameraObservers { NotificationCenter.default.removeObserver(observer) } }
 
-    func start(endpoint: String, rgbOnly: Bool) {
+    func start(endpoint: String, rgbOnly: Bool, meshHost: String? = nil) {
         guard !running else { return }
         let depth = supportsDepth && !rgbOnly
         guard !depth || ARWorldTrackingConfiguration.isSupported else {
@@ -70,8 +122,14 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate, AV
             status = "Enter ws://JETSON_USB_IP:8443 (or a trusted wss:// address)."
             return
         }
+        let geometryHost = depth && supportsMesh ? meshHost?.trimmingCharacters(in: .whitespacesAndNewlines) : nil
+        if let geometryHost, IPv4Address(geometryHost) == nil {
+            status = "Enter the rover phone Tailscale IPv4 to share its mesh."; return
+        }
         let id = UUID()
+        admission.start(id)
         uiGeneration = id
+        uiAttempt = nil
         running = true
         status = "Requesting camera permission…"
         resolvedEndpoint = url.absoluteString
@@ -90,29 +148,47 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate, AV
                     return
                 }
                 self.status = "Connecting to \(url.host ?? "Jetson")…"
-                self.queue.async { self.connect(url: url, depth: depth, device: deviceName, id: id) }
+                self.queue.async {
+                    let request = Request(intent: id, url: url, depth: depth, device: deviceName, meshHost: geometryHost)
+                    self.request = request; self.reconnect.start(id); self.connect(request)
+                }
             }
         }
     }
 
     func stop() {
-        uiGeneration = nil
+        admission.stop()
+        uiGeneration = nil; uiAttempt = nil
         running = false
+        geometryStatus = "Phone mesh stopped"
         status = "Stopped. Rover video freshness will expire and motors will stop."
         UIApplication.shared.isIdleTimerDisabled = false
-        queue.async { [weak self] in self?.disconnect() }
+        queue.async { [weak self] in
+            self?.request = nil; self?.reconnect.stop(); self?.disconnect()
+        }
     }
 
     private func publish(_ id: UUID, _ change: @escaping (CaptureController) -> Void) {
+        guard let intent = request?.intent else { return }
         DispatchQueue.main.async { [weak self] in
-            guard let self, self.uiGeneration == id else { return }
+            guard let self, self.uiGeneration == intent, self.uiAttempt == id else { return }
             change(self)
         }
     }
 
-    private func connect(url: URL, depth: Bool, device: String, id: UUID) {
+    private func connect(_ request: Request) {
+        guard admission.withIntent(request.intent, { true }) == true else { return }
+        guard let id = reconnect.beginAttempt(for: request.intent) else { return }
         disconnect()
         generation = id
+        let url = request.url, depth = request.depth, device = request.device
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.uiGeneration == request.intent else { return }
+            self.uiAttempt = id; self.preview = nil; self.tracking = "not_available"
+            self.sent = 0; self.skipped = 0; self.clockDiagnostic = "Capture clock not checked"
+            self.geometryStatus = request.meshHost == nil ? "Phone 3D disabled" : "Starting phone 3D…"
+            self.status = "Connecting to \(url.host ?? "Jetson")…"
+        }
         sessionID = UUID().uuidString
         permitGate.start(sessionID: sessionID, mapEpoch: 1)
         capturePermitsNegotiated = false
@@ -124,28 +200,36 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate, AV
         frameID = 0
         sentCount = 0
         skippedCount = 0
+        if let host = request.meshHost, let local = IPv4Address(host), let session = UUID(uuidString: sessionID) {
+            geometryFeed.begin(session: session)
+            geometryServer.start(local: local, context: id)
+        }
         if depth {
+            capture = ARSession(); capture.delegate = self; capture.delegateQueue = queue
             let configuration = ARWorldTrackingConfiguration()
             configuration.worldAlignment = .gravity
             configuration.frameSemantics = [.sceneDepth]
-            capture.run(configuration, options: [.resetTracking, .removeExistingAnchors])
+            if request.meshHost != nil { configuration.sceneReconstruction = .mesh }
+            guard admission.withIntent(request.intent, { capture.run(configuration, options: [.resetTracking, .removeExistingAnchors]); return true }) == true else { disconnect(); return }
         } else {
+            observeRGBCamera(id: id)
             do { try startRGBCapture() }
-            catch { fail("RGB camera: \(error.localizedDescription)", id: id); return }
+            catch { fail("RGB camera: \(error.localizedDescription)", id: id, retryable: false); return }
         }
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 5
-        let task = network.webSocketTask(with: request)
+        var socketRequest = URLRequest(url: url)
+        socketRequest.timeoutInterval = 5
+        let task = network.webSocketTask(with: socketRequest)
         task.maximumMessageSize = 65_536
         socket = task
-        task.resume()
-        receive(task, id: id)
+        guard admission.withIntent(request.intent, { task.resume(); receive(task, id: id); return true }) == true else { disconnect(); return }
         do {
             let hello: [String: Any] = ["type": "hello", "version": 1,
                 "session_id": sessionID, "map_epoch": 1, "device": device,
-                "supports_scene_depth": depth, "supports_mesh": false, "supports_capture_permits": true]
+                "supports_scene_depth": depth, "supports_mesh": request.meshHost != nil, "supports_capture_permits": true,
+                "geometry_transport": request.meshHost != nil ? "separate_mesh_v1" : "none"]
             let json = try JSONSerialization.data(withJSONObject: hello)
             let text = String(decoding: json, as: UTF8.self)
+            guard admission.withIntent(request.intent, {
             task.send(.string(text)) { [weak self] error in
                 self?.queue.async { [weak self] in
                     guard let self, self.generation == id else { return }
@@ -154,6 +238,9 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate, AV
                     self.publish(id) { $0.status = "Streaming locally over the selected connection" }
                 }
             }
+            return true
+            }) == true else { disconnect(); return }
+            armPermitWatchdog(id: id)
             armTimeout(id: id, seconds: 5, message: "Connection timed out. Verify the Jetson USB IP and server.")
         } catch { fail(error.localizedDescription, id: id) }
     }
@@ -193,7 +280,25 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate, AV
         queue.asyncAfter(deadline: .now() + seconds, execute: work)
     }
 
+    private func armPermitWatchdog(id: UUID) {
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.generation == id else { return }
+            if self.capturePermitsNegotiated, let permit = self.permitGate.permit,
+               Self.hostTime() - permit.receivedAt >= 1 {
+                self.fail("Jetson capture permits stopped; replacing the connection", id: id)
+                return
+            }
+            self.armPermitWatchdog(id: id)
+        }
+        permitWatchdog = work
+        queue.asyncAfter(deadline: .now() + 0.25, execute: work)
+    }
+
     private func disconnect() {
+        geometryRetry?.cancel(); geometryRetry = nil; geometryReady = false
+        geometryServer.stop(); geometryFeed.stop()
+        permitWatchdog?.cancel(); permitWatchdog = nil
+        retryWork?.cancel(); retryWork = nil
         timeout?.cancel()
         timeout = nil
         generation = nil
@@ -201,19 +306,39 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate, AV
         inFlight = false
         permitGate.clear()
         capturePermitsNegotiated = false
-        capture.pause()
+        capture.delegate = nil; capture.pause()
+        for observer in cameraObservers { NotificationCenter.default.removeObserver(observer) }
+        cameraObservers.removeAll()
+        rgbOutput?.setSampleBufferDelegate(nil, queue: nil); rgbOutput = nil
         if rgbCapture.isRunning { rgbCapture.stopRunning() }
         socket?.cancel(with: .normalClosure, reason: nil)
         socket = nil
     }
 
-    private func fail(_ message: String, id: UUID) {
+    private func fail(_ message: String, id: UUID, retryable: Bool = true) {
+        guard generation == id else { return }
+        let ticket = reconnect.failed(id)
         disconnect()
-        publish(id) {
-            $0.running = false
-            $0.status = message + " Press Start to create a fresh session; old frames are discarded."
-            UIApplication.shared.isIdleTimerDisabled = false
+        guard retryable, let ticket, let request else {
+            publish(id) {
+                $0.running = false; $0.preview = nil; $0.tracking = "not_available"
+                $0.status = message + " Press Start after correcting the camera error."
+                UIApplication.shared.isIdleTimerDisabled = false
+            }
+            if let intent = self.request?.intent { admission.revoke(intent) }
+            self.request = nil; reconnect.stop()
+            return
         }
+        publish(id) {
+            $0.preview = nil; $0.tracking = "not_available"
+            $0.status = message + " Reconnecting in \(ticket.delay)s; Stop cancels."
+        }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.reconnect.mayRetry(ticket) else { return }
+            self.connect(request)
+        }
+        retryWork = work
+        queue.asyncAfter(deadline: .now() + ticket.delay, execute: work)
     }
 
     private static func hostTime() -> Double {
@@ -238,20 +363,23 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate, AV
         output.setSampleBufferDelegate(self, queue: queue)
         guard rgbCapture.canAddOutput(output) else { throw NSError(domain: "FarsightCamera", code: 6) }
         rgbCapture.addOutput(output)
+        rgbOutput = output
         if let connection = output.connection(with: .video), connection.isVideoOrientationSupported {
             connection.videoOrientation = .landscapeRight
         }
         // startRunning must occur after commitConfiguration and off the main queue.
+        let id = generation, intent = request?.intent
         queue.async { [weak self] in
-            guard let self, self.generation != nil, !self.withDepth else { return }
-            self.rgbCapture.startRunning()
+            guard let self, let id, self.generation == id, self.rgbOutput === output, !self.withDepth else { return }
+            guard let intent else { return }
+            _ = self.admission.withIntent(intent) { self.rgbCapture.startRunning() }
         }
     }
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer,
                        from connection: AVCaptureConnection) {
         let callbackHost = Self.hostTime()
-        guard !withDepth, let pixels = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        guard !withDepth, output === rgbOutput, let pixels = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         guard let clock = rgbCapture.synchronizationClock else {
             if let id = generation { publish(id) { $0.clockDiagnostic = "RGB synchronization clock unavailable; frames blocked" } }
             return
@@ -268,6 +396,7 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate, AV
     }
 
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
+        guard session === capture else { return }
         guard withDepth else { return }
         sendFrame(pixels: frame.capturedImage, captureTime: frame.timestamp,
                   rawTimestamp: frame.timestamp, callbackHost: Self.hostTime(),
@@ -389,12 +518,15 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate, AV
             }
             frameID += 1
             armTimeout(id: id, seconds: 0.5, message: "Frame send stalled for 500 ms; closed to discard stale frames.")
+            guard let intent = request?.intent else { inFlight = false; return }
+            guard admission.withIntent(intent, {
             task.send(.data(packet)) { [weak self] error in
                 self?.queue.async { [weak self] in
                     guard let self, self.generation == id else { return }
                     self.timeout?.cancel()
                     self.inFlight = false
                     if let error { self.fail(error.localizedDescription, id: id); return }
+                    self.reconnect.healthy(id)
                     self.sentCount += 1
                     let sent = self.sentCount, skipped = self.skippedCount
                     let depthMode = self.withDepth
@@ -404,13 +536,15 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate, AV
                         $0.tracking = state
                         $0.preview = UIImage(cgImage: cgImage)
                         $0.status = bound ? "Permit-bound RGB streaming — \(Int(fps)) fps target" :
-                            depthMode ? "LiDAR view only · AR clock unverified" : "Legacy view only · server capture permits unavailable"
+                            depthMode ? "LiDAR streaming · AR clock unverified" : "Legacy view only · server capture permits unavailable"
                     }
                 }
             }
+            return true
+            }) == true else { inFlight = false; return }
         } catch {
             inFlight = false
-            fail(error.localizedDescription, id: id)
+            fail(error.localizedDescription, id: id, retryable: false)
         }
     }
 
@@ -441,13 +575,50 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate, AV
         }
     }
 
+    // Copy SDK-owned mesh buffers before returning from the delegate callback.
+    // Compression and dirty-anchor coalescing happen on the feed worker queue.
+    private func ingestMesh(_ anchors: [ARAnchor], session: ARSession, removing: Bool = false) {
+        guard session === capture, withDepth, request?.meshHost != nil,
+              generation != nil, let source = UUID(uuidString: sessionID) else { return }
+        for anchor in anchors {
+            guard let mesh = anchor as? ARMeshAnchor else { continue }
+            if removing { geometryFeed.remove(session: source, anchor: mesh.identifier); continue }
+            let vertices = mesh.geometry.vertices, faces = mesh.geometry.faces
+            guard vertices.format == .float3, vertices.count > 0, vertices.count <= GeometryWire.maxVertices,
+                  vertices.offset >= 0, vertices.stride >= 12, vertices.stride <= 256,
+                  vertices.offset + (vertices.count - 1) * vertices.stride + 12 <= vertices.buffer.length,
+                  faces.indexCountPerPrimitive == 3, faces.count > 0, faces.count <= GeometryWire.maxIndices / 3,
+                  faces.bytesPerIndex == 2 || faces.bytesPerIndex == 4,
+                  faces.count * 3 * faces.bytesPerIndex <= faces.buffer.length else {
+                geometryFeed.reject(session: source); continue
+            }
+            let base = vertices.buffer.contents().advanced(by: vertices.offset)
+            var xyz = [Float](); xyz.reserveCapacity(vertices.count * 3)
+            for index in 0..<vertices.count {
+                let vertex = base.advanced(by: index * vertices.stride)
+                for axis in 0..<3 { xyz.append(vertex.advanced(by: axis * 4).loadUnaligned(as: Float.self)) }
+            }
+            let indexBase = faces.buffer.contents()
+            var indices = [UInt32](); indices.reserveCapacity(faces.count * 3)
+            for index in 0..<(faces.count * 3) {
+                let pointer = indexBase.advanced(by: index * faces.bytesPerIndex)
+                indices.append(faces.bytesPerIndex == 2 ? UInt32(pointer.loadUnaligned(as: UInt16.self)) : pointer.loadUnaligned(as: UInt32.self))
+            }
+            let transform = (0..<4).flatMap { column in (0..<4).map { row in mesh.transform[column][row] } }
+            geometryFeed.replace(session: source, anchor: mesh.identifier, transform: transform, vertices: xyz, indices: indices)
+        }
+    }
+    func session(_ session: ARSession, didAdd anchors: [ARAnchor]) { ingestMesh(anchors, session: session) }
+    func session(_ session: ARSession, didUpdate anchors: [ARAnchor]) { ingestMesh(anchors, session: session) }
+    func session(_ session: ARSession, didRemove anchors: [ARAnchor]) { ingestMesh(anchors, session: session, removing: true) }
+
     func session(_ session: ARSession, didFailWithError error: Error) {
-        guard let id = generation else { return }
-        fail("Camera: \(error.localizedDescription)", id: id)
+        guard session === capture, let id = generation else { return }
+        fail("Camera: \(error.localizedDescription)", id: id, retryable: false)
     }
 
     func sessionWasInterrupted(_ session: ARSession) {
-        guard let id = generation else { return }
-        fail("Camera interrupted", id: id)
+        guard session === capture, let id = generation else { return }
+        fail("Camera interrupted", id: id, retryable: false)
     }
 }

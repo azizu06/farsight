@@ -122,6 +122,24 @@ class WaitTests(unittest.TestCase):
                                               "FARSIGHT_SERIAL_PORT": "/dev/ttyACM0"}),
                          ["/dev/video0", "/dev/ttyACM0"])
 
+    def test_rig_without_sensors_maps_proximity_and_pan_mount(self):
+        args = launch.build_args({"FARSIGHT_PROXIMITY_STOP": "off", "FARSIGHT_PAN_MOUNT": "none",
+                                  "FARSIGHT_SERIAL_PORT": "/dev/ttyUSB0"})
+        args += launch.build_args({"FARSIGHT_MAX_PWM": "255", "FARSIGHT_MIN_PWM": "70", "FARSIGHT_AUTONOMY_MAX_PWM": "100",
+                                   "FARSIGHT_DRIVE_PROFILE": "/etc/farsight/drive-profile.json",
+                                   "FARSIGHT_ALLOW_CALIBRATION": "1"})
+        self.assertIn("--allow-calibration", args)
+        self.assertNotIn("--allow-calibration", launch.build_args({"FARSIGHT_ALLOW_CALIBRATION": ""}))
+        self.assertIn("--lidar-drive", launch.build_args({"FARSIGHT_LIDAR_DRIVE": "1"}))
+        self.assertNotIn("--lidar-drive", launch.build_args({"FARSIGHT_LIDAR_DRIVE": ""}))
+        self.assertIn("--fusion-bypass", launch.build_args({"FARSIGHT_FUSION_BYPASS": "1"}))
+        self.assertNotIn("--fusion-bypass", launch.build_args({"FARSIGHT_FUSION_BYPASS": ""}))
+        for pair in (["--proximity-stop", "off"], ["--pan-mount", "none"], ["--serial-port", "/dev/ttyUSB0"],
+                     ["--max-pwm", "255"], ["--min-pwm", "70"], ["--autonomy-max-pwm", "100"],
+                     ["--drive-profile", "/etc/farsight/drive-profile.json"]):
+            i = args.index(pair[0])
+            self.assertEqual(args[i:i + 2], pair)
+
 
 class ServerContractTests(unittest.TestCase):
     def test_every_launch_flag_is_accepted_by_the_canonical_server(self):
@@ -131,6 +149,11 @@ class ServerContractTests(unittest.TestCase):
                                    text=True, check=True, cwd=os.path.dirname(os.path.dirname(os.path.dirname(__file__)))).stdout
         for flag in [f for _, f in launch.VALUE_FLAGS] + [f for _, f in launch.BOOL_FLAGS] + ["--host", "--port", "--scan-intrinsics"]:
             self.assertIn(flag, help_text, f"jetson.server has no {flag}; update jetson/launch.py")
+
+    def test_physical_scan_pan_needs_a_pan_servo(self):
+        from jetson.mapping.server import create_app
+        with self.assertRaisesRegex(ValueError, "pan servo"):
+            create_app(True, scan_pan=True, pan_mount="none")
 
 
 class EnvFileTests(unittest.TestCase):

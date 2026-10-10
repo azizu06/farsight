@@ -120,7 +120,7 @@ class DepthModelTests(unittest.TestCase):
 class ScanSafetyTests(unittest.TestCase):
     def setUp(self):
         self.now = 10
-        self.state = ControlState(simulated=True, clock=lambda: self.now)
+        self.state = ControlState(simulated=True, clock=lambda: self.now, proximity_stop=True)
         self.state.set_connected(True)
         self.session = self.state.begin()
         self.seq = 0
@@ -278,16 +278,18 @@ class ScanDeliveryTests(unittest.TestCase):
             self.assertTrue(result["simulated"])
             self.assertTrue(result["approximate"])
             packet = client.get("/map/points.bin").content
-            count = struct.unpack_from("<I", packet)[0]
-            self.assertEqual(count, result["points"])
+            count = result["points"]
             self.assertGreater(count, 1000)
             self.assertLessEqual(count, 100_000)
-            self.assertEqual(len(packet), 4 + count * 16)
+            sent = struct.unpack_from("<I", packet)[0]
+            self.assertEqual(sent, min(count, 30_000))  # visual wire cap; the scan itself stays full
+            self.assertEqual(len(packet), 4 + sent * 16)
             with client.websocket_connect("/ws/map") as map_ws:
                 self.assertEqual(map_ws.receive_json()["scan"]["points"], count)
                 self.assertEqual(map_ws.receive_bytes(), packet)
             health = client.get("/health").json()
             self.assertEqual(health["scan"]["points"], count)
+            self.assertEqual(health["capped"], count > 30_000)
             self.assertTrue(health["paused"])
             self.assertEqual(health["triangles"], 0)
             heartbeat(False)

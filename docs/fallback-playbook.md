@@ -32,7 +32,7 @@ the trigger first in every case.
 ### 1. Link drop (cellular, Tailscale, USB relay)
 
 - **Detect:** HUD video age climbs or stops; rover stops; `tools.ready` shows `server WAIT`.
-- **Do (0-10 s):** Operator **release trigger**. Rig tech `tailscale ping <jetson>`; check both phones show a USB connection and hotspot on. On the Quest side: `adb reverse tcp:8080 tcp:8080`, reload `http://localhost:8080`.
+- **Do (0-10 s):** Operator **release trigger**. Check both phone bridge screens, cellular/Tailscale state, and phone USB cables. On the Mac run `python -m tools.phone_usb --check`; on the Quest side run `adb reverse tcp:8080 tcp:8080`, then reload `http://localhost:8080`.
 - **Do (10-25 s):** If the path returns: operator Enter VR, **release then press** the trigger (a restored link never re-arms a held trigger). If not: switch to tier 2 or 3 commands above on the MacBook.
 - **Say:** "The cellular link dropped and the rover stopped itself, as designed. I'm switching to a recorded run / simulator and it will be labelled."
 - **Do not:** hold the trigger through reconnect expecting movement; swap the 250 ms lease; use venue Wi-Fi unannounced.
@@ -40,7 +40,7 @@ the trigger first in every case.
 
 ### 2. Jetson down (no boot, no SSH, service dead)
 
-- **Detect:** `python -m tools.ready --url http://<jetson>:8443` (board profile is plain HTTP; `https://` with `--ca-file` if TLS was installed) not `READY`; `journalctl -u farsight -n 50` on the Jetson if reachable.
+- **Detect:** `python -m tools.ready --url http://127.0.0.1:18443` through the running Mac phone-USB helper is not `READY`; `journalctl -u farsight -n 50` on the Jetson if reachable.
 - **Do (0-15 s):** One `sudo systemctl restart farsight` if you can reach it. Otherwise do not debug on stage.
 - **Do (15-30 s):** Run tier 2 (if a real recording exists) else tier 3 on the MacBook. Both run without the Jetson.
 - **Say:** "The Jetson isn't up, so you are seeing the [recorded rover run | simulator], not the live robot. Here is what the Jetson runs when it is up:" then use [architecture.md](architecture.md) and any measured numbers with their stated source.

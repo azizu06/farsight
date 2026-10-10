@@ -1,0 +1,195 @@
+{
+  "revision": "da4ea5a",
+  "scope": "Software-only SIMULATED backend and SwiftShader browser. No target, phones or physical motors. Delay explicitly holds POST response delivery; CPU throttle uses Chromium CDP.",
+  "result": "3 profiles completed; 4x CPU profile aborted with camera_age_ms reaching1073. No threshold changes or retries. This is not physical qualification.",
+  "profiles": [
+    {
+      "profile": {
+        "name": "baseline",
+        "postDelayMs": 0,
+        "cpuRate": 1
+      },
+      "outcome": {
+        "state": "complete",
+        "running": false,
+        "simulated": true,
+        "approximate": true,
+        "views": [
+          {
+            "yaw_deg": -80,
+            "depth_ms": 0,
+            "samples": 19200
+          },
+          {
+            "yaw_deg": -40,
+            "depth_ms": 0.36,
+            "samples": 19200
+          },
+          {
+            "yaw_deg": 0,
+            "depth_ms": 0,
+            "samples": 19200
+          },
+          {
+            "yaw_deg": 40,
+            "depth_ms": 0,
+            "samples": 19200
+          },
+          {
+            "yaw_deg": 80,
+            "depth_ms": 0,
+            "samples": 19200
+          }
+        ],
+        "points": 60082,
+        "markers": [],
+        "backend": "synthetic-depth",
+        "scan_ms": 515.71
+      },
+      "details": "LINK OK \u00b7 48 ms \u00b7 det 3.0 fps \u00b7 SIMULATED \u00b7 Fixed camera \u00b7 full frame \u00b7 JPEG video 454 ms \u00b7 control ack 39 ms \u00b7 120 cm \u00b7 0 detections (1 frame ahead) \u00b7 60,082 points \u00b7 0.5 s \u00b7 approximate",
+      "pending_held_commands": 1,
+      "max_held_command_gap_ms": 49.10000002384186,
+      "max_camera_age_ms": 164
+    },
+    {
+      "profile": {
+        "name": "delayed-response",
+        "postDelayMs": 300,
+        "cpuRate": 1
+      },
+      "outcome": {
+        "state": "complete",
+        "running": false,
+        "simulated": true,
+        "approximate": true,
+        "views": [
+          {
+            "yaw_deg": -80,
+            "depth_ms": 0,
+            "samples": 19200
+          },
+          {
+            "yaw_deg": -40,
+            "depth_ms": 0,
+            "samples": 19200
+          },
+          {
+            "yaw_deg": 0,
+            "depth_ms": 0,
+            "samples": 19200
+          },
+          {
+            "yaw_deg": 40,
+            "depth_ms": 0,
+            "samples": 19200
+          },
+          {
+            "yaw_deg": 80,
+            "depth_ms": 0,
+            "samples": 19200
+          }
+        ],
+        "points": 60082,
+        "markers": [],
+        "backend": "synthetic-depth",
+        "scan_ms": 435.99
+      },
+      "details": "LINK OK \u00b7 30 ms \u00b7 det 3.0 fps \u00b7 SIMULATED \u00b7 Fixed camera \u00b7 full frame \u00b7 JPEG video 327 ms \u00b7 control ack 20 ms \u00b7 120 cm \u00b7 0 detections (1 frame ahead) \u00b7 60,082 points \u00b7 0.4 s \u00b7 approximate",
+      "pending_held_commands": 18,
+      "max_held_command_gap_ms": 64.89999997615814,
+      "max_camera_age_ms": 90
+    },
+    {
+      "profile": {
+        "name": "completion-before-response",
+        "postDelayMs": 700,
+        "cpuRate": 1
+      },
+      "outcome": {
+        "state": "complete",
+        "running": false,
+        "simulated": true,
+        "approximate": true,
+        "views": [
+          {
+            "yaw_deg": -80,
+            "depth_ms": 0,
+            "samples": 19200
+          },
+          {
+            "yaw_deg": -40,
+            "depth_ms": 0.02,
+            "samples": 19200
+          },
+          {
+            "yaw_deg": 0,
+            "depth_ms": 0,
+            "samples": 19200
+          },
+          {
+            "yaw_deg": 40,
+            "depth_ms": 0.03,
+            "samples": 19200
+          },
+          {
+            "yaw_deg": 80,
+            "depth_ms": 0,
+            "samples": 19200
+          }
+        ],
+        "points": 60082,
+        "markers": [],
+        "backend": "synthetic-depth",
+        "scan_ms": 380.5
+      },
+      "details": "LINK OK \u00b7 49 ms \u00b7 det 3.0 fps \u00b7 SIMULATED \u00b7 Fixed camera \u00b7 full frame \u00b7 JPEG video 486 ms \u00b7 control ack 9 ms \u00b7 120 cm \u00b7 0 detections (2 frames ahead) \u00b7 60,082 points \u00b7 0.4 s \u00b7 approximate",
+      "pending_held_commands": 19,
+      "max_held_command_gap_ms": 41.19999998807907,
+      "max_camera_age_ms": 101
+    },
+    {
+      "profile": {
+        "name": "cpu-four",
+        "postDelayMs": 0,
+        "cpuRate": 4
+      },
+      "outcome": {
+        "state": "aborted",
+        "running": false,
+        "simulated": true,
+        "approximate": true,
+        "views": [
+          {
+            "yaw_deg": -80,
+            "depth_ms": 0,
+            "samples": 19200
+          },
+          {
+            "yaw_deg": -40,
+            "depth_ms": 0,
+            "samples": 19200
+          },
+          {
+            "yaw_deg": 0,
+            "depth_ms": 0,
+            "samples": 19200
+          },
+          {
+            "yaw_deg": 40,
+            "depth_ms": 0,
+            "samples": 19200
+          }
+        ],
+        "points": 0,
+        "markers": [],
+        "backend": "synthetic-depth",
+        "error": "Scan cancelled: operator lease, override, or safety stop",
+        "scan_ms": 1434.92
+      },
+      "details": "LINK OK \u00b7 96 ms \u00b7 det 1.5 fps \u00b7 SIMULATED \u00b7 Fixed camera \u00b7 full frame \u00b7 JPEG video 82 ms \u00b7 control ack 12 ms \u00b7 120 cm \u00b7 detections stale \u00b7 Scan cancelled: release, stale view, or stick override",
+      "pending_held_commands": 0,
+      "max_held_command_gap_ms": 52.10000002384186,
+      "max_camera_age_ms": 1073
+    }
+  ]
+}

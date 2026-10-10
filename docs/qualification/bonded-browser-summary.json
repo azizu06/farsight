@@ -1,0 +1,54 @@
+{
+  "scope": "Software-only Chromium/SwiftShader; canonical simulated backend and production bonded relay. Local TCP proxies add zero latency and no bandwidth cap. No phone, Quest, cellular, physical camera, target access or real motors.",
+  "passed": true,
+  "elapsed_ms": 7210,
+  "fatal": null,
+  "phases": [
+    {
+      "name": "profile",
+      "savedH264": true,
+      "effectiveJPEG": true
+    },
+    {
+      "name": "both-paths",
+      "samples": 9,
+      "maximumDrawAgeMs": 234,
+      "controlConnections": 1,
+      "ownerOrdinal": 1
+    },
+    {
+      "name": "one-path",
+      "samples": 19,
+      "maximumDrawAgeMs": 223,
+      "positiveStatuses": 40,
+      "sameOwner": true,
+      "sameQuestWS": true
+    },
+    {
+      "name": "last-loss",
+      "observedZeroMs": 32,
+      "questClosed": true
+    },
+    {
+      "name": "restored-held",
+      "zeroSamples": 11,
+      "newOwner": true,
+      "activeCommands": 0,
+      "physicalKeyReleaseEvents": 0
+    },
+    {
+      "name": "fresh-press",
+      "positivePWM": true
+    }
+  ],
+  "source_commit": "3adad44",
+  "reproduce": "node quest/tests/bonded-control.e2e.mjs --out /tmp/bonded-browser.json",
+  "not_verified": [
+    "cellular bandwidth or RTT",
+    "phone VPN/usbmux routing",
+    "Quest hardware/controller input",
+    "physical camera provenance",
+    "motor stop time/distance",
+    "sustained power/thermal load"
+  ]
+}
