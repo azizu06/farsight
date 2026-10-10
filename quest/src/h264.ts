@@ -1,6 +1,7 @@
 import { sampleFrame } from "./camera-view.js";
 import { videoSocketUrl } from "./mac-view-urls.js";
 import { VideoRequests } from "./video-requests.js";
+import { chaseLiveEdge } from "./live-edge.js";
 
 export { videoSocketUrl };
 type Segment = {
@@ -37,6 +38,10 @@ export class H264Viewer {
   private callbackSupported = "requestVideoFrameCallback" in this.video;
   /** Decoder processing time of the last presented frame, for diagnostics only. */
   decodeMs: number | null = null;
+  /** Per-hop latency, for diagnostics: server capture-to-send age of the newest fragment,
+   * buffered lead the player is behind its newest data, and live-edge corrections made. */
+  latency = { serverAgeMs: null as number | null, leadMs: 0, seeks: 0, fast: false };
+  private lastSeekAt = -Infinity;
   /** Last video_init / video_segment JSON. The Mac view reads this for frame age. */
   lastMessage: Record<string, unknown> | null = null;
 
@@ -96,7 +101,7 @@ export class H264Viewer {
                 message.age_ms < 0 || message.media_end_s <= message.media_start_s) {
               this.reset("H.264 freshness metadata rejected"); return;
             }
-            this.pending = message;
+            this.pending = message; this.latency.serverAgeMs = Math.round(message.age_ms);
           } else if (message.type === "video_error") {
             this.problem = `H.264 unavailable: ${String(message.reason ?? message.error ?? "encoder disabled")}. Use JPEG until recovered.`;
             this.state = this.problem;
@@ -146,7 +151,7 @@ export class H264Viewer {
       const ranges = this.buffer.buffered;
       if (ranges.length) {
         const end = ranges.end(ranges.length - 1);
-        if (end - this.video.currentTime > 0.25) this.video.currentTime = Math.max(ranges.start(ranges.length - 1), end - 0.05);
+        this.chase();
         if (this.video.currentTime > 3 && ranges.start(0) < this.video.currentTime - 3) {
           this.buffer.remove(ranges.start(0), this.video.currentTime - 2); return;
         }
@@ -164,8 +169,23 @@ export class H264Viewer {
       this.socket.send(JSON.stringify({ type: "next", request_id: requestId }));
     }
   }
+  /** Trim playback lag with gentle rate changes; seek only for a real backlog (live-edge.js). */
+  private chase() {
+    const ranges = this.buffer?.buffered;
+    if (!ranges?.length) return;
+    const last = { start: ranges.start(ranges.length - 1), end: ranges.end(ranges.length - 1) };
+    const now = performance.now();
+    const { seekTo, rate, lead } = chaseLiveEdge(this.video.currentTime, last, { now, lastSeekAt: this.lastSeekAt, seeking: this.video.seeking });
+    this.latency.leadMs = Math.round(lead * 1000);
+    if (seekTo !== null) { this.video.currentTime = seekTo; this.lastSeekAt = now; this.latency.seeks++; }
+    if (this.video.playbackRate !== rate) this.video.playbackRate = rate;
+    this.latency.fast = rate > 1;
+    // A live stream should never sit paused with data buffered ahead of it.
+    if (this.video.paused && lead > 0) void this.video.play().catch(() => {});
+  }
   update() {
     if (this.stopped) return;
+    try { this.chase(); } catch { /* buffer detached mid-reset; the next append retries */ }
     if (!this.callbackSupported && this.video.readyState >= 2) this.onFrame();
     if (this.requests.expired(performance.now())) {
       this.reset("H.264 segment stalled: restarting");
