@@ -127,6 +127,22 @@ class AutonomyControlTests(unittest.TestCase):
         self.send(mode="explore", target_id=None)
         self.assertEqual(self.state.status()["mode"], "seek")  # person found
 
+    def test_autonomy_ceiling_keeps_autonomous_speed_while_teleop_uses_full_range(self):
+        self.state = ControlState(simulated=True, max_pwm=255, min_pwm=70, autonomy_max_pwm=100,
+                                  clock=lambda: self.now, proximity_stop=True, detections=lambda: self.snapshot)
+        self.state.set_connected(True)
+        self.session = self.state.begin()
+        self.send(deadman=False)
+        self.assertTrue(self.send())  # seek at v = 0.3
+        self.assertEqual(self.state.output()[:2], (79, 79))  # 70 + (100 - 70) * 0.3
+        self.send(v=-.5)  # stick override: teleop gets the full ceiling
+        self.assertEqual(self.state.output()[:2], (-162, -162))  # 70 + (255 - 70) * 0.5
+        self.assertEqual(self.state.status()["max_pwm"], 255)
+        for bad in (256, 70, 60, 2.5):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                ControlState(max_pwm=255, min_pwm=70, autonomy_max_pwm=bad)
+        self.assertEqual(ControlState(max_pwm=200).autonomy_max_pwm, 200)  # default: unchanged
+
     def test_lease_expiry_without_commands_stops_and_requires_release(self):
         self.send()
         self.now += .251

@@ -20,12 +20,14 @@ class ControlService:
 
     def __init__(self, serial_port=None, simulate=False, max_pwm=100, camera_ready=None, min_pwm=0,
                  detections=None, proximity_stop=True, navigator=None, simulated_range=None,
-                 drive_profile=None, allow_calibration=False, pan_mount="servo", bonded=False):
+                 drive_profile=None, allow_calibration=False, pan_mount="servo", bonded=False,
+                 autonomy_max_pwm=None):
         self.on_status = None
         self.state = ControlState(simulated=simulate, max_pwm=max_pwm, camera_ready=camera_ready,
                                   min_pwm=min_pwm, detections=detections, proximity_stop=proximity_stop,
                                   navigator=navigator, drive_profile=drive_profile,
-                                  allow_calibration=allow_calibration, pan_mount=pan_mount)
+                                  allow_calibration=allow_calibration, pan_mount=pan_mount,
+                                  autonomy_max_pwm=autonomy_max_pwm)
         self.pump = SerialPump(self.state, port=serial_port, simulate=simulate, simulated_range=simulated_range)
         self.router = APIRouter()
         self.router.add_api_websocket_route("/ws/control", self.websocket)
