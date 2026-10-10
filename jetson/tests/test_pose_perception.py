@@ -1,6 +1,11 @@
+import asyncio
 import os
+import threading
+import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import cv2
 import numpy as np
@@ -147,6 +152,177 @@ class GpuRecoveryTests(unittest.TestCase):
         service = self.service()
         self.assertFalse(service._recover_gpu(ValueError("bad frame")))
         self.assertEqual(service.rebuilds, 0)
+
+
+class GpuStartupRecoveryTests(unittest.IsolatedAsyncioTestCase):
+    def service(self):
+        frame = SimpleNamespace(source="FIXTURE", frame_id=1, received=time.monotonic(),
+                                age_ms=0, jpeg=jpeg())
+        camera = SimpleNamespace(snapshot=lambda: frame)
+        service = PerceptionService(camera, model="fixture.engine", mode="pose")
+        service.REBUILD_INTERVAL = .05
+        return service
+
+    async def wait(self, condition):
+        try:
+            async with asyncio.timeout(.5):
+                while not condition():
+                    await asyncio.sleep(.005)
+        except TimeoutError:
+            self.fail("detector startup did not recover within the fixture deadline")
+
+    async def test_initial_cuda_allocation_failure_recovers_without_server_restart(self):
+        service = self.service()
+        detector = FlakyGpu(healthy=True)
+        with patch("jetson.pose.make_pose_detector", side_effect=[TensorRTError("cudaMalloc: out of memory"), detector]):
+            try:
+                await service.start()
+                self.assertIn("out of memory", service.health()["detector_error"])
+                self.assertEqual(service.health()["detector_fps"], 0)
+                await self.wait(lambda: bool(service.snapshot()["boxes"]))
+                self.assertEqual(len(service.snapshot()["boxes"]), 2)
+                self.assertEqual(service.health()["detector_backend"], "pose-tensorrt")
+                self.assertIsNone(service.health()["detector_error"])
+            finally:
+                await service.close()
+        self.assertTrue(detector.closed)
+
+    async def test_persistent_startup_failure_is_paced_and_close_cancels_retry(self):
+        service = self.service()
+        attempts = []
+        def factory(*args):
+            attempts.append(time.monotonic())
+            raise TensorRTError("cudaMalloc: out of memory")
+        with patch("jetson.pose.make_pose_detector", side_effect=factory):
+            try:
+                await service.start()
+                await self.wait(lambda: len(attempts) >= 2)
+                self.assertGreaterEqual(attempts[1] - attempts[0], .04, "startup recovery busy-spun")
+                self.assertIn("out of memory", service.health()["detector_error"])
+                self.assertEqual(service.health()["detector_fps"], 0)
+                self.assertIsNone(service.pose, "must not silently switch to a CPU detector")
+            finally:
+                await service.close()
+            total = len(attempts)
+            await asyncio.sleep(.075)
+            self.assertEqual(len(attempts), total, "closed service retried setup")
+
+    async def test_close_drains_inflight_setup_and_closes_the_late_detector(self):
+        service = self.service()
+        entered, release = threading.Event(), threading.Event()
+        detector = FlakyGpu(healthy=True)
+        attempts = 0
+        def factory(*args):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise TensorRTError("cudaMalloc: out of memory")
+            entered.set()
+            release.wait(1)
+            return detector
+        with patch("jetson.pose.make_pose_detector", side_effect=factory):
+            closing = None
+            try:
+                await service.start()
+                await self.wait(entered.is_set)
+                closing = asyncio.create_task(service.close())
+                await asyncio.sleep(.01)
+                self.assertFalse(closing.done(), "close abandoned the allocating worker")
+                release.set()
+                await asyncio.wait_for(closing, .5)
+                self.assertTrue(detector.closed)
+                self.assertFalse(service.snapshot()["fresh"], "closed service published detections")
+            finally:
+                release.set()
+                if closing is not None:
+                    await closing
+                else:
+                    await service.close()
+
+    async def test_invalid_model_error_stays_visible_without_automatic_retry(self):
+        service = self.service()
+        with patch("jetson.pose.make_pose_detector", side_effect=ValueError("wrong model output shape")) as factory:
+            try:
+                await service.start()
+                await asyncio.sleep(.075)
+                self.assertEqual(factory.call_count, 1)
+                self.assertIn("wrong model output shape", service.health()["detector_error"])
+                self.assertEqual(service.health()["detector_fps"], 0)
+                self.assertIsNone(service.task)
+            finally:
+                await service.close()
+
+    async def test_close_drains_runtime_rebuild_after_startup_recovery(self):
+        service = self.service()
+        entered, release = threading.Event(), threading.Event()
+        broken, fresh = FlakyGpu(healthy=False), FlakyGpu(healthy=True)
+        attempts = 0
+
+        def factory(*args):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise TensorRTError("cudaMalloc: out of memory")
+            if attempts == 2:
+                return broken
+            entered.set()
+            release.wait(1)
+            return fresh
+
+        with patch("jetson.pose.make_pose_detector", side_effect=factory):
+            closing = None
+            try:
+                await service.start()
+                await self.wait(entered.is_set)
+                closing = asyncio.create_task(service.close())
+                await asyncio.sleep(.01)
+                self.assertFalse(closing.done(), "close abandoned the runtime allocating worker")
+                release.set()
+                await asyncio.wait_for(closing, .5)
+                self.assertTrue(broken.closed)
+                self.assertTrue(fresh.closed, "late runtime replacement remained open after close")
+                self.assertFalse(service.snapshot()["fresh"], "closed service published detections")
+            finally:
+                release.set()
+                if closing is not None:
+                    await closing
+                else:
+                    await service.close()
+
+    async def test_close_drains_active_inference_before_releasing_detector(self):
+        service = self.service()
+        entered, release = threading.Event(), threading.Event()
+
+        class PausedGpu(FlakyGpu):
+            used_after_close = False
+
+            def detect(self, image):
+                entered.set()
+                release.wait(1)
+                self.used_after_close = self.closed
+                return FakePose().detect(image)
+
+        detector = PausedGpu(healthy=True)
+        with patch("jetson.pose.make_pose_detector", return_value=detector):
+            closing = None
+            try:
+                await service.start()
+                await self.wait(entered.is_set)
+                closing = asyncio.create_task(service.close())
+                await asyncio.sleep(.01)
+                self.assertFalse(closing.done(), "close abandoned active detector inference")
+                self.assertFalse(detector.closed, "detector closed while inference still used it")
+                release.set()
+                await asyncio.wait_for(closing, .5)
+                self.assertTrue(detector.closed)
+                self.assertFalse(detector.used_after_close)
+                self.assertFalse(service.snapshot()["fresh"], "cancelled inference published detections")
+            finally:
+                release.set()
+                if closing is not None:
+                    await closing
+                else:
+                    await service.close()
 
 
 class FaceGatingTests(unittest.TestCase):

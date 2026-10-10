@@ -1,8 +1,11 @@
 """Server side of the Nav2 seam (jetson/nav.py): contract, lease gating, bridge protocol."""
 
+import asyncio
 import math
 import time
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 from fastapi.testclient import TestClient
@@ -39,6 +42,119 @@ class Clock:
 
     def __call__(self):
         return self.now
+
+
+class NavSocket:
+    """Loopback bridge fixture; stop after one complete sender iteration."""
+    client = SimpleNamespace(host="127.0.0.1")
+
+    def __init__(self, on_json=None):
+        self.done = asyncio.Event()
+        self.records = []
+        self.on_json = on_json
+
+    async def accept(self):
+        pass
+
+    async def close(self, **kwargs):
+        self.done.set()
+
+    async def receive_json(self):
+        return dict(type="hello", version=1)
+
+    async def receive(self):
+        await self.done.wait()
+        return dict(type="websocket.disconnect")
+
+    async def send_json(self, message):
+        self.records.append(message)
+        if self.on_json:
+            self.on_json(message)
+        if message["type"] == "intent":
+            self.done.set()
+
+    async def send_bytes(self, packet):
+        self.records.append(decode_depth(packet)[0])
+
+
+class SenderAuthorityTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.now = time.monotonic()
+        self.nav = NavService(MapState(), clock=lambda: self.now)
+        feed(self.nav)
+        self.nav.frame_at = self.now
+        self.nav.mapping.last_received = self.now
+
+    async def run_sender(self, socket):
+        with patch("jetson.nav.time", SimpleNamespace(monotonic=lambda: self.now)):
+            await asyncio.wait_for(self.nav.websocket(socket), 1)
+
+    async def test_depth_age_includes_encoding_delay_at_publication(self):
+        socket = NavSocket()
+        def delayed_encoder(frame, **kwargs):
+            self.now += .2
+            return encode_depth(frame, **kwargs)
+        with patch("jetson.nav.encode_depth", delayed_encoder):
+            await self.run_sender(socket)
+        depth = next(record for record in socket.records if record["type"] == "depth")
+        self.assertEqual(depth["age_ms"], 200.0)
+
+    async def test_depth_that_expires_during_encoding_is_not_published(self):
+        socket = NavSocket()
+        def delayed_encoder(frame, **kwargs):
+            self.now += 1.1
+            return encode_depth(frame, **kwargs)
+        with patch("jetson.nav.encode_depth", delayed_encoder):
+            await self.run_sender(socket)
+        self.assertFalse(any(record["type"] == "depth" for record in socket.records))
+
+    def reset_world(self):
+        self.nav.mapping.start_session(("second", 2), "fixture")
+        feed(self.nav, identity=("second", 2))
+        transform = np.eye(4)
+        transform[0, 3] = 99
+        self.nav.mapping.pose = transform
+        self.nav.frame.transform = transform
+        self.nav.mapping.last_received = self.nav.frame_at = self.now
+
+    def assert_generation_order(self, records):
+        announced = None
+        for record in records:
+            if record["type"] in ("hello", "reset"):
+                announced = record["generation"]
+            elif record["type"] in ("pose", "depth", "intent"):
+                self.assertEqual(record["generation"], announced, record)
+        self.assertTrue(any(record["type"] == "reset" for record in records))
+
+    async def test_reset_during_pose_snapshot_never_labels_new_world_as_old_generation(self):
+        socket = NavSocket()
+        snapshot = self.nav.pose_snapshot
+        reset = False
+        def resetting_snapshot():
+            nonlocal reset
+            if not reset:
+                reset = True
+                self.reset_world()
+            return snapshot()
+        with patch.object(self.nav, "pose_snapshot", resetting_snapshot):
+            await self.run_sender(socket)
+        self.assert_generation_order(socket.records)
+        for record in socket.records:
+            if record["type"] == "pose" and record["transform"][12] == 99:
+                self.assertEqual(record["generation"], self.nav.generation)
+
+    async def test_reset_after_pose_is_announced_before_new_depth_and_intent(self):
+        reset = False
+        def reset_after_pose(message):
+            nonlocal reset
+            if message["type"] == "pose" and not reset:
+                reset = True
+                self.reset_world()
+        socket = NavSocket(on_json=reset_after_pose)
+        await self.run_sender(socket)
+        self.assert_generation_order(socket.records)
+        self.assertTrue(any(record["type"] == "depth" and record["generation"] == self.nav.generation
+                            for record in socket.records))
 
 
 class GeometryTests(unittest.TestCase):
@@ -106,6 +222,9 @@ class LeaseTests(unittest.TestCase):
         return self.state.accept(message, self.session)
 
     def bridge(self, **message):
+        message.setdefault("generation", self.nav.generation)
+        if message.get("type") == "cmd_vel":
+            message.setdefault("goal_id", self.nav.intent()["goal_id"])
         self.nav.receive(message)
 
     def test_goal_needs_backend_controller_and_a_valid_permit_while_held(self):
@@ -343,6 +462,85 @@ class LeaseTests(unittest.TestCase):
                 self.send(deadman=False)
                 self.drive_goto()
 
+    def begin_seek(self):
+        self.state.detections = lambda: dict(boxes=[dict(id=4, cls="person", x=.45, y=.2, w=.1, h=.6)],
+                                             fresh=True, error=None)
+        self.bridge(type="status", state="idle", goal_id=None)
+        self.assertTrue(self.send(mode="seek", target_id=4))
+        self.state.output()
+        return self.nav.intent()["goal_id"]
+
+    def test_seek_replacement_stops_until_a_command_for_the_new_goal_arrives(self):
+        first = self.begin_seek()
+        self.bridge(type="cmd_vel", linear=.2, angular=0, goal_id=first)
+        self.assertGreater(self.state.output()[0], 0)
+        self.nav.frame.depth[:] = 4
+        self.nav.seek_checked = 0
+        self.assertEqual(self.state.output()[:2], (0, 0))
+        second = self.nav.intent()["goal_id"]
+        self.assertNotEqual(second, first)
+        self.bridge(type="cmd_vel", linear=-.2, angular=0, goal_id=first)
+        self.assertEqual(self.state.output()[:2], (0, 0))
+        self.bridge(type="cmd_vel", linear=.2, angular=0, goal_id=second)
+        self.assertGreater(self.state.output()[0], 0)
+
+    def test_sensor_reset_discards_seek_goal(self):
+        self.begin_seek()
+        self.nav.mapping.start_session(("second", 2), "iPhone")
+        self.nav.sync_generation()
+        self.assertIsNone(self.nav.intent()["goal"])
+        self.assertIsNone(self.nav.seek)
+
+    def test_seek_computed_before_sensor_reset_cannot_rearm_the_old_goal(self):
+        self.begin_seek()
+        locate = self.nav.locate
+
+        def reset_during_projection(box, frame):
+            person = locate(box, frame)
+            self.nav.mapping.start_session(("second", 2), "iPhone")
+            feed(self.nav, identity=("second", 2))
+            return person
+
+        self.nav.locate = reset_during_projection
+        self.nav.seek_checked = 0
+        self.state.output()
+        self.assertIsNone(self.nav.seek)
+        self.assertIsNone(self.nav.intent()["goal"])
+
+    def test_explore_rejects_old_or_missing_command_generation_after_reset(self):
+        self.bridge(type="status", state="driving", goal_id="explore-1")
+        self.assertTrue(self.send(mode="explore"))
+        self.state.output()
+        old_generation = self.nav.generation
+        self.nav.mapping.start_session(("second", 2), "iPhone")
+        feed(self.nav, identity=("second", 2))
+        self.bridge(type="cmd_vel", linear=.2, angular=0, goal_id="explore-1", generation=old_generation)
+        self.assertEqual(self.state.output()[:2], (0, 0))
+        self.nav.receive(dict(type="cmd_vel", linear=.2, angular=0, goal_id="explore-1"))
+        self.assertEqual(self.state.output()[:2], (0, 0))
+        self.bridge(type="cmd_vel", linear=.2, angular=0, goal_id="explore-2")
+        self.assertGreater(self.state.output()[0], 0)
+
+    def test_old_generation_status_cannot_replace_the_current_path(self):
+        self.drive_goto()
+        self.bridge(type="status", state="driving", goal_id=self.nav.goal_id, path=[[0, 0], [1, 0]])
+        current = self.nav.remote.copy()
+        self.bridge(type="status", generation=self.nav.generation - 1,
+                    state="arrived", goal_id=self.nav.goal_id, path=[[9, 9]])
+        self.assertEqual(self.nav.remote, current)
+
+    def test_depth_producer_delay_is_part_of_navigation_freshness(self):
+        self.nav.frame.header["producer_delay_ms"] = 2000
+        self.nav.offer_frame(self.nav.frame)
+        self.assertEqual(self.nav.sensor_fault(), "nav_depth_lost")
+
+    def test_late_old_session_frame_cannot_withdraw_current_depth(self):
+        feed(self.nav, identity=("second", 2))
+        current = self.nav.frame
+        self.nav.offer_frame(type("Frame", (), dict(header=dict(session_id=PHONE[0], map_epoch=PHONE[1],
+                                                                 tracking="normal")))())
+        self.assertIs(self.nav.frame, current)
+
     def test_seek_projects_the_person_through_depth_and_follows_with_standoff(self):
         from jetson.mapping.geometry import Calibration
         depth = np.full((120, 160), 3.0, np.float32)
@@ -474,7 +672,7 @@ class LeaseTests(unittest.TestCase):
         self.assertNotEqual(self.state.output()[:2], (0, 0))
 
     def test_command_caps_and_conversion(self):
-        self.nav.receive(dict(type="cmd_vel", linear=10.0, angular=-50.0))
+        self.nav.receive(dict(type="cmd_vel", linear=10.0, angular=-50.0, generation=self.nav.generation))
         v, w = self.nav.cmd[:2]
         self.assertEqual((v, w), (self.nav.max_v, self.nav.max_w))
         with self.assertRaises(ValueError):
@@ -562,7 +760,7 @@ class ServerTests(unittest.TestCase):
                         import json
                         seen.add(json.loads(message["text"])["type"])
                 self.assertEqual(seen, {"pose", "depth", "range", "intent"})
-                bridge.send_json(dict(type="status", state="idle", goal_id=None))
+                bridge.send_json(dict(type="status", state="idle", goal_id=None, generation=hello["generation"]))
                 time.sleep(0.05)
                 self.assertTrue(client.get("/health").json()["nav"]["available"])
                 with client.websocket_connect("/ws/control") as ws:
@@ -584,7 +782,8 @@ class ServerTests(unittest.TestCase):
                         ws.send_json(dict(session_id=status["session_id"], permit=status["permit"], seq=seq,
                                           deadman=True, v=0, w=0, pan=0, mode="goto", video_fresh=True, video_age_ms=0))
                         if status["mode"] == "goto":
-                            bridge.send_json(dict(type="cmd_vel", linear=0.2, angular=0.0))
+                            bridge.send_json(dict(type="cmd_vel", linear=0.2, angular=0.0,
+                                                  generation=app.state.nav.generation, goal_id=app.state.nav.goal_id))
                             if status["left_pwm"] > 0:
                                 break
                     self.assertEqual(status["mode"], "goto")

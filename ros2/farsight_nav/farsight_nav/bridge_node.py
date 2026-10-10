@@ -168,6 +168,9 @@ class FarsightBridge(Node):
         self.config = {}
         self.yaw_offset = 0.0  # drive profile camera_yaw_offset_rad, from the server hello
         self.generation = None  # server sensor generation (hello/reset); older samples are dropped
+        self.intent_active = False
+        self.intent_goal_id = None
+        self.goal_generation = None
         self.last_tf_stamp = None
         self.velocity = frames.VelocityEstimator()  # odometry twist over a 150 ms window
         self.robot = None           # (x, y, yaw) in odom
@@ -235,7 +238,7 @@ class FarsightBridge(Node):
         kind = message.get("type")
         if kind == "hello":
             self.config = message
-            self.generation = message.get("generation")
+            self.on_reset(dict(generation=message.get("generation"), reason="navigation server connected"))
             offset = message.get("camera_yaw_offset_rad")
             self.yaw_offset = float(offset) if isinstance(offset, (int, float)) and math.isfinite(offset) else 0.0
         elif kind == "reset":
@@ -252,6 +255,9 @@ class FarsightBridge(Node):
         """New sensor session: nothing from the old one may steer the rover or mark a costmap."""
         with self.lock:
             self.generation = message.get("generation")
+            self.intent_active, self.intent_goal_id, self.exploring = False, None, False
+            self.nav_command, self.nav_command_at = None, -math.inf
+            self.frontiers, self.frontiers_odom = [], []
             self.velocity = frames.VelocityEstimator()
             self.robot = None
             self.global_grid, self.local_support, self.depth_snapshot = None, None, None
@@ -334,6 +340,10 @@ class FarsightBridge(Node):
         goal_id = message.get("goal_id")
         exploring = bool(active and mode == "explore" and self.explore)
         with self.lock:
+            if not protocol.accept_generation(message, self.generation):
+                return  # a queued old intent cannot resume navigation after reset
+            self.intent_active = bool(active and (exploring or (mode in ("goto", "seek") and goal is not None)))
+            self.intent_goal_id = goal_id if self.intent_active and not exploring else None
             if exploring and not self.exploring:
                 self.explore_session += 1
                 self.explore_target, self.blacklist = None, []  # a new Explore press starts fresh
@@ -356,6 +366,9 @@ class FarsightBridge(Node):
                 self.inactive_since = None
                 return  # explore_tick sends frontier goals
             if not active or mode not in ("goto", "seek") or goal is None:
+                self.nav_command, self.nav_command_at = None, -math.inf
+                if self.goal_pending:
+                    self.cancel_goal("operator released or changed mode before goal acceptance")
                 if self.goal_handle is not None:
                     now = time.monotonic()
                     self.inactive_since = self.inactive_since or now
@@ -530,11 +543,11 @@ class FarsightBridge(Node):
     def motion_tick(self):
         """One Explore command writer: current Nav2 or fresh local planning fallback."""
         with self.lock:
-            if not self.exploring:
+            if not self.exploring or not self.intent_active or type(self.generation) is not int:
                 return
             now = time.monotonic()
             if self.explore_finished or not self.ready():
-                self.send(protocol.cmd_vel(0, 0, self.goal_id))
+                self.send(protocol.cmd_vel(0, 0, self.goal_id, self.generation))
                 return
             support, resolution, origin, obstacles = self.local_support or (None, 1, (0, 0), None)
             depth, header = self.depth_snapshot or (None, {})
@@ -555,7 +568,7 @@ class FarsightBridge(Node):
                 support=support, resolution=resolution, origin=origin, map_at=self.global_grid_at,
                 to_map=to_map, body_clear=body_clear)
             if command is not None:
-                self.send(protocol.cmd_vel(*command, self.goal_id))
+                self.send(protocol.cmd_vel(*command, self.goal_id, self.generation))
 
     # -- Nav2 ----------------------------------------------------------------------------
 
@@ -566,7 +579,7 @@ class FarsightBridge(Node):
             return
         x, y = float(goal["x"]), float(goal["y"])
         with self.lock:
-            robot = self.robot
+            robot, generation = self.robot, self.generation
         yaw = goal.get("yaw")
         if yaw is None:
             yaw = math.atan2(y - robot[1], x - robot[0]) if robot else 0.0
@@ -580,9 +593,14 @@ class FarsightBridge(Node):
         request = NavigateToPose.Goal()
         request.pose = pose
         with self.lock:
+            if generation != self.generation or not self.intent_active:
+                return False  # sensor reset or release while the TF lookup ran
             if explore_session is not None and (explore_session != self.explore_session or not self.exploring):
                 return False  # operator released/changed mode while scoring or TF lookup ran
+            if explore_session is None and (self.exploring or goal_id != self.intent_goal_id):
+                return False
             self.goal_id, self.goal_state, self.goal_message = goal_id, "planning", ""
+            self.goal_generation = generation
             self.path, self.recoveries = [], 0
             self.nav_command, self.nav_command_at = None, -math.inf
             self.explore_blocked = False
@@ -612,9 +630,11 @@ class FarsightBridge(Node):
                     handle.cancel_goal_async()
                 return
             self.goal_pending = False
+            self.nav_command, self.nav_command_at = None, -math.inf
             if handle.accepted:
                 self.goal_handle = handle
             else:
+                self.goal_handle, self.goal_generation = None, None
                 self.goal_state, self.goal_message = "failed", "Nav2 rejected the goal"
                 if self.exploring and self.explore_target is not None:
                     self.explore_session += 1
@@ -686,6 +706,8 @@ class FarsightBridge(Node):
             handle, self.goal_handle = self.goal_handle, None
             self.goal_seq += 1  # any in-flight acceptance for the cancelled send is dropped
             self.goal_pending = False
+            self.goal_generation = None
+            self.nav_command, self.nav_command_at = None, -math.inf
             self.goal_state, self.goal_message, self.path = "idle", reason, []
             self.goal_id, self.inactive_since = None, None
         if handle is not None:
@@ -703,12 +725,20 @@ class FarsightBridge(Node):
         now = time.monotonic()
         with self.lock:
             self.cmd_times = [t for t in self.cmd_times if now - t < 2.0] + [now]
+            if (not self.intent_active or self.goal_pending or self.goal_handle is None
+                    or type(self.generation) is not int or self.goal_generation != self.generation):
+                return
             goal_id = self.goal_id
+            if not self.exploring and goal_id != self.intent_goal_id:
+                return
             if self.exploring:
                 self.nav_command = (float(message.linear.x), float(message.angular.z))
                 self.nav_command_at = now
                 return  # motion_tick arbitrates; never race two command writers
-        self.send(protocol.cmd_vel(message.linear.x, message.angular.z, goal_id))
+            # Twist carries no goal id: this gates reset/pending callbacks, but
+            # cannot identify a delayed old Twist after a new goal is accepted.
+            outgoing = protocol.cmd_vel(message.linear.x, message.angular.z, goal_id, self.generation)
+        self.send(outgoing)
 
     def send_status(self):
         with self.lock:
@@ -716,7 +746,7 @@ class FarsightBridge(Node):
             message = protocol.status(self.goal_state, self.goal_id, path=self.path[::2] if len(self.path) > 400 else self.path,
                                       frontiers=self.frontiers_odom, exploring=self.exploring,
                                       message=self.goal_message, controller_hz=round(hz, 1),
-                                      recoveries=self.recoveries, nav2=self.ready())
+                                      recoveries=self.recoveries, nav2=self.ready(), generation=self.generation)
         self.send(message)
 
     # -- WebSocket -----------------------------------------------------------------------
@@ -753,8 +783,9 @@ class FarsightBridge(Node):
                 self.get_logger().warning(f"Server link: {exc}", throttle_duration_sec=10.0)
             finally:
                 self.ws = None
-                if self.goal_handle is not None:
-                    self.cancel_goal("server link lost")
+                with self.lock:
+                    self.intent_active, self.intent_goal_id, self.exploring = False, None, False
+                self.cancel_goal("server link lost")
             await asyncio.sleep(1.0)
 
     def run_websocket(self):

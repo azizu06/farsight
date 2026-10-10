@@ -142,7 +142,7 @@ def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5, bonded_upstr
             from .geometry_relay import GeometryRelay
             app["geometry"] = GeometryRelay(
                 lambda: app["bonded"].preferred_origin() if second is not None else origin,
-                geometry_upstream)
+                geometry_upstream, ssl_context=tls)
             await app["geometry"].start()
         try:
             yield
@@ -163,12 +163,14 @@ def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5, bonded_upstr
                   "demo_mode": demo_mode,
                   "quest_built": (dist / "index.html").is_file(),
                   "control_closures": control_closures.status(enabled=second is None),
-                  "render": {"configured": render is not None, "endpoints": list(RENDER_PATHS),
+                  "render": {"configured": render is not None, "upstream": str(render) if render else None,
+                             "endpoints": list(RENDER_PATHS),
                              "transport_only": True}}
         if second is not None:
             packet["transport"] = app["bonded"].status()
         if geometry_upstream is not None:
             packet["geometry"] = app["geometry"].status()["geometry"]
+            packet["geometry"]["upstream"] = str(app["geometry"].origin)
         return web.json_response(packet,
                                  headers={"Cache-Control": "no-store"})
 

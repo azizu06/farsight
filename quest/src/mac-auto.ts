@@ -9,7 +9,7 @@ import { H264Viewer } from "./h264.js";
 import { mapWalk } from "./map-walk.js";
 import { socketUrl } from "./mac-view-urls.js";
 import {
-  DEFAULT_ASPECT, DEFAULT_FOV_Y_DEG, PICTURE_DISTANCE, PoseRing, frameSeenAt, macPresenting, mapPoseMessage, pictureSize, shouldSendPose,
+  DEFAULT_ASPECT, DEFAULT_FOV_Y_DEG, MAC_STALE_MS, PICTURE_DISTANCE, PoseRing, frameSeenAt, macPresenting, mapPoseMessage, pictureSize, shouldSendPose,
 } from "./mac-auto-pose.js";
 
 export const MACVIEW_PATH = "/ws/macview";
@@ -68,8 +68,15 @@ export class MacAutoView {
     this.sendPose(now, xrCamera);
     this.viewer.update();
     const shown = this.viewer.displayedFrame;
-    this.lastFrameAt = frameSeenAt(this.lastFrameAt, this.lastFrameId, shown?.id ?? null, now);
-    if (shown && shown.id !== this.lastFrameId) { this.lastFrameId = shown.id; this.place(shown.pose, shown.fovY); }
+    if (shown) {
+      const fresh = Number.isFinite(shown.age) && shown.age >= 0 && shown.age < MAC_STALE_MS;
+      // Decoder progress does not renew an old capture; carry its bounded age into the watchdog.
+      this.lastFrameAt = fresh ? frameSeenAt(this.lastFrameAt, this.lastFrameId, shown.id, now - shown.age) : -Infinity;
+      if (shown.id !== this.lastFrameId) {
+        this.lastFrameId = shown.id;
+        if (fresh) this.place(shown.pose, shown.fovY);
+      }
+    }
     this.presenting = macPresenting(true, this.lastFrameAt, now);
     this.picture.visible = this.presenting;
     this.paintLabel(this.presenting ? LABEL : LOST);

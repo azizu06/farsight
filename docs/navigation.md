@@ -130,13 +130,32 @@ Loopback only; one bridge at a time; other hosts get close code 1008.
 | Direction | Message |
 |---|---|
 | bridge -> server | `hello {version, node, nav2, controller, slam, costmap_source}` |
-| server -> bridge | `hello {version, speed_mps, turn_radps, max_v, max_w, camera_height, frame, camera_yaw_offset_rad, drive_profile, generation}` |
+| server -> bridge | `hello {version, speed_mps, turn_radps, max_v, max_w, camera_height, frame, camera_yaw_offset_rad, drive_profile, generation, command_generation_required:true}` |
 | server -> bridge | `reset {generation, reason}` when the phone session or map epoch changes: the bridge cancels its goal, clears both costmaps and its odometry history |
 | server -> bridge | `pose {transform (16, column-major ARKit camera-to-world), tracking, source, generation, age_ms, floor_y}` every 40 ms, only with fresh normal tracking; `floor_y` is `-nav_camera_height` |
 | server -> bridge | binary depth: `uint32` header length, JSON header (`frame_id, width, height, fx, fy, cx, cy, transform, floor_y, source, age_ms, generation, tracking`; intrinsics scaled to the subsampled size), normal-tracking frames only, `uint16` millimetres (0 = no return), at most 160 px wide |
-| server -> bridge | `range {cm, age_ms}` at 10 Hz; `intent {active, mode, goal {x, y, yaw} in odom, goal_id, target_id}` on change and every 200 ms |
-| bridge -> server | `cmd_vel {linear, angular, goal_id}` (m/s, rad/s counter-clockwise) at the controller rate; go-to commands for another `goal_id` are dropped |
-| bridge -> server | `status {state, goal_id, path, frontiers, message, controller_hz, recoveries, nav2}` at 4 Hz; `path` and `frontiers` in odom |
+| server -> bridge | `range {cm, age_ms}` at 10 Hz; `intent {generation, active, mode, goal {x, y, yaw} in odom, goal_id, target_id}` on change and every 200 ms |
+| bridge -> server | `cmd_vel {generation, linear, angular, goal_id}` (m/s, rad/s counter-clockwise) at the controller rate; Goto/Seek commands for another `goal_id` are dropped |
+| bridge -> server | `status {generation, state, goal_id, path, frontiers, message, controller_hz, recoveries, nav2}` at 4 Hz; `path` and `frontiers` in odom |
+
+Deploy the Python server and rebuilt `farsight_nav` ROS overlay from the same
+revision. `cmd_vel` and `status` must echo the current integer generation from
+hello/reset; missing, boolean or older generations fail closed. Goto and Seek
+also require the exact current goal ID. Replacing a Seek goal withdraws its
+previous command immediately. The bridge blocks Twist forwarding during reset,
+pending goal acceptance and rejection, and captures authority before enqueueing.
+An older bridge cannot drive the updated server. With the rover stopped, rebuild
+the overlay with `colcon build --packages-select farsight_nav` from `ros2/`, source
+its `install/setup.bash` in the bridge launch environment, then restart the server
+and bridge together using the rig's existing service manager. These are deployment
+steps, not commands for an unattended test.
+
+Pose/depth publication rechecks the generation after CPU work and announces reset
+before new-world data. Depth age includes encoding and worker queueing; samples
+that expire before sending are dropped. Raw ROS `Twist` has no goal ID, so a delayed
+old Twist arriving after a new goal is accepted cannot be conclusively attributed.
+Supervised goal-change and reconnect checks on the deployed ROS stack remain
+necessary; callback tests do not establish physical stopping behavior.
 
 The bridge drops any pose or depth sample whose `tracking` is not `normal` or whose
 `generation` is not the current one, so limited tracking or an old phone session
