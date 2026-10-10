@@ -36,7 +36,24 @@ hog|none --detector-model --h264 --video-fps --video-bitrate --mission-dir
 --record --replay --depth-model --scan-pan --scan-fov --scan-intrinsics
 --scan-turn-dps --assistant-url --whisper-url --whisper-bin --whisper-model
 --piper-bin --piper-model --piper-model-es --speaker-cmd --triage-interval
---tts-dir`.
+--tts-dir --bulk-limit-mbps`.
+
+## Cellular link budget (#62)
+
+The Jetson→operator hop is the congested leg. Two mitigations live here:
+
+- `--bulk-limit-mbps N` caps the server's *aggregate* bulk egress (map packets,
+  video fragments, camera/mjpeg frames) so control/permit frames always keep
+  link headroom. Control traffic is never paced. Set it below the measured
+  link rate — e.g. 1.4 on a 2 Mbps link. Pacing must happen at the jetson's
+  egress: relay-side limiting cannot create headroom because bytes have
+  already crossed the link.
+- The relay sends `/control/status`, `/scan` and `/ask` over a dedicated
+  4-connection upstream pool so bulk downloads can't starve control slots.
+
+Measured via `tools/fault_proxy` (2 Mbps, 100 ms): control-status RTT p95
+256 ms paced vs 501 ms unpaced; `tools/qualify_link` control-ack median
+253 / p95 269 / max 273 ms under load.
 
 ## Run — operator (MacBook)
 
