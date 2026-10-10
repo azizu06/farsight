@@ -165,8 +165,10 @@ class FakeUno:
     partial-line timeout) is evaluated lazily against time.monotonic().
     """
 
-    def __init__(self, range_cm: int = 100):
+    def __init__(self, range_cm: int = 100, proximity_stop: bool = True):
         self.range_cm = range_cm
+        # False mirrors a sketch built with -DFARSIGHT_DISABLE_PROXIMITY_STOP.
+        self.proximity_stop = proximity_stop
         self.pan = 90
         self._left = self._right = 0
         self._lease = False
@@ -216,7 +218,8 @@ class FakeUno:
             if v and all(-255 <= x <= 255 for x in v):
                 self._last_motor = time.monotonic()
                 self._lease = True
-                forward_blocked = self.range_cm < 25 or abs(self.pan - 90) > 10
+                forward_blocked = ((self.proximity_stop and self.range_cm < 25)
+                                   or abs(self.pan - 90) > 10)
                 left, right = v
                 if left + right > 0 and forward_blocked:
                     t = (left + right + 1) // 2

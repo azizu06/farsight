@@ -20,7 +20,7 @@ class Clock:
 class PolicyTests(unittest.TestCase):
     def setUp(self):
         self.clock = Clock()
-        self.state = ControlState(clock=self.clock)
+        self.state = ControlState(clock=self.clock, proximity_stop=True)
         self.state.set_connected(True)
         self.session = self.state.begin()
         self.state.update_range(100)
@@ -202,6 +202,58 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(self.state.output()[:2], (0, 0))
         self.assertTrue(self.state.requires_release)
         self.assertFalse(self.send())
+
+
+class ProximityStopOffTests(unittest.TestCase):
+    """Explicit opt-out: ultrasonic range never blocks; every other stop remains."""
+
+    def setUp(self):
+        self.clock = Clock()
+        self.state = ControlState(clock=self.clock, proximity_stop=False)
+        self.state.set_connected(True)
+        self.session = self.state.begin()
+        self.seq = 0
+        self.send(deadman=False)
+
+    def send(self, **values):
+        self.seq += 1
+        status = self.state.status(issue_permit=True)
+        message = {"session_id": self.session, "permit": status["permit"], "seq": self.seq,
+                   "deadman": True, "v": 0.5, "w": 0, "pan": 0, "mode": "teleop",
+                   "video_fresh": True, "video_age_ms": 0}
+        message.update(values)
+        return self.state.accept(message, self.session)
+
+    def test_close_missing_and_stale_range_do_not_block_forward(self):
+        self.assertFalse(self.state.proximity_stop)
+        self.assertTrue(ControlState().proximity_stop)  # on unless explicitly disabled
+        for reading in (10, None, "stale"):
+            with self.subTest(reading=reading):
+                if reading == "stale":
+                    self.state.update_range(100)
+                    self.clock.now += 1  # range goes stale; the lapsed lease needs a new press
+                    self.send(deadman=False)
+                elif reading is None:
+                    self.state.update_range(-1)
+                else:
+                    self.state.update_range(reading)
+                self.assertTrue(self.send())
+                self.assertEqual(self.state.output()[:2], (50, 50))
+                self.assertFalse(self.state.status()["estop"])
+
+    def test_pan_rule_deadman_lease_and_camera_stops_remain(self):
+        self.assertTrue(self.send(pan=30))
+        self.assertEqual(self.state.output()[:2], (0, 0))  # off-axis mount still blocks forward
+        self.assertTrue(self.state.status()["estop"])
+        self.assertTrue(self.send(pan=0))
+        self.assertEqual(self.state.output()[:2], (50, 50))
+        self.clock.now += .26
+        self.assertEqual(self.state.output()[:2], (0, 0))
+        self.assertEqual(self.state.reason, "lease_expired")
+        self.send(deadman=False)
+        self.state.camera_ready = lambda: False
+        self.assertFalse(self.send())
+        self.assertEqual(self.state.output()[:2], (0, 0))
 
 
 class ScanStartRaceTests(unittest.TestCase):

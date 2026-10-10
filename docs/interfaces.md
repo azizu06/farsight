@@ -13,7 +13,7 @@ MacBook operator relay (tools/operator_relay.py, serves the Quest app, proxies H
 Jetson Orin Nano (on the rover)  -- the brain
    camera -> TensorRT YOLO -> detections
    camera -> Depth Anything V2 (stretch) -> point cloud
-   control server: 20 Hz pump, 250 ms lease, ultrasonic e-stop
+   control server: 20 Hz pump, 250 ms lease, ultrasonic e-stop (opt-out)
    |  USB serial 115200
    v
 Arduino Uno (ELEGOO V4 board) -> motors, ultrasonic (pan servo optional; the phone camera is fixed, look-around is digital)
@@ -138,9 +138,15 @@ Autonomy never renews a permit or lease itself. Example held-deadman heartbeat:
   latched against further autonomous heartbeats until a deadman release or an
   explicit `teleop` message. Release/repress or select teleop then reselect
   autonomy to retry an arrived/lost target.
-- Autonomy centres pan at zero. Missing/stale front range stops all autonomous
-  motion. Range below 25 cm also stops autonomous turns; normal teleop reverse
-  and turn escape remain available. The PWM ceiling and camera guard still apply.
+- Autonomy centres pan at zero. The PWM ceiling and camera guard still apply.
+- The proximity stop is **on by default**: missing/stale front range stops all
+  autonomous motion, range below 25 cm also stops autonomous turns, and forward
+  translation is blocked; reverse and turn escape remain available. Turning it off
+  is an explicit opt-in (server `--proximity-stop off` / `FARSIGHT_PROXIMITY_STOP=0`,
+  Uno built with `-DFARSIGHT_DISABLE_PROXIMITY_STOP`) for runs where navigation
+  steers around obstacles. Then range never stops motion, and the reactive policy
+  keeps its 70 cm turn cue and estimates Seek arrival from the box width when there
+  is no range.
 
 Status replies add optional `autonomy_state` and `target_id` fields; `mode`
 reports the active mode, including automatic Explore-to-Seek handover. States
@@ -157,9 +163,10 @@ Jetson replies on the same socket, 20 Hz:
  "left_pwm":40,"right_pwm":20,"pan_deg":90,"max_pwm":100,"min_pwm":0}
 ```
 
-`estop` also covers unknown/stale range and an ultrasonic pan outside ±10°.
-Those conditions block forward translation; camera/link failure stops all
-motion. `link_ms` is permit age at command arrival; the browser's acknowledged
+`estop` reports a blocked forward translation: unknown/stale range, range below
+25 cm and an ultrasonic pan outside ±10° (the range conditions only while the
+proximity stop is on, the default).
+Camera/link failure stops all motion regardless. `link_ms` is permit age at command arrival; the browser's acknowledged
 sequence RTT is a different measurement. Optional autonomy fields follow below.
 
 ## H264 over WebSocket `/ws/video`

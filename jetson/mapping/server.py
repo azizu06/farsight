@@ -38,7 +38,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                piper_bin=None, piper_model=None, tts_dir=None, face_model=None, whisper_url=None,
                piper_model_es=None, speaker_cmd="auto", triage_interval=3.0,
                depth_model=None, scan_pan=False, scan_fov=70, scan_intrinsics=None, scan_turn_dps=90,
-               record=False, replay=None):
+               record=False, replay=None, proximity_stop=True):
     if replay is not None and (serial_port or camera_device is not None or demo or simulate_rover or record):
         raise ValueError("Replay cannot be combined with serial, live/simulated sources, or recording")
     if (demo or simulate_rover) and serial_port:
@@ -50,7 +50,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
     perception = ReplayPerception(camera_service) if replay is not None else PerceptionService(camera_service, model=detector_model, mode=detector, on_detection=mission.detect, face_model=face_model)
     control = ReplayControl() if replay is not None else ControlService(serial_port=serial_port, simulate=simulate_rover, max_pwm=max_pwm, min_pwm=min_pwm,
                              camera_ready=lambda: camera_service.status()["camera"],
-                             detections=perception.snapshot)
+                             detections=perception.snapshot, proximity_stop=proximity_stop)
     replay_session = ReplaySession(replay, camera_service, perception, control) if replay is not None else None
     if record:
         control.on_status = lambda packet: mission.record("control", packet)
@@ -575,6 +575,15 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
 app = create_app()
 
 
+def on_off(value):
+    text = str(value).strip().lower()
+    if text in ("1", "on", "true", "yes"):
+        return True
+    if text in ("0", "off", "false", "no"):
+        return False
+    raise argparse.ArgumentTypeError("expected on or off")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--demo", action="store_true", help="Ray-cast room; no hardware needed")
@@ -587,6 +596,9 @@ def main():
     parser.add_argument("--simulate-rover", action="store_true", help="Explicit virtual rover; never opens serial")
     parser.add_argument("--max-pwm", type=int, default=100, help="Initial motor PWM ceiling, 1..255")
     parser.add_argument("--min-pwm", type=int, default=0, help="Measured wheel starting PWM floor; default 0 until calibrated")
+    parser.add_argument("--proximity-stop", type=on_off, default=True, metavar="on|off",
+                        help="Ultrasonic stop: range < 25 cm or stale range blocks forward (default on). "
+                             "'off' is an explicit opt-in for navigation runs that steer around obstacles")
     parser.add_argument("--detector", choices=("hog", "pose", "none"), default="hog",
                         help="hog: bundled CPU detector; pose: YOLO11-pose (needs --detector-model); none")
     parser.add_argument("--detector-model", help="YOLOv8/11 ONNX or TensorRT engine path; overrides bundled HOG. With --detector pose: YOLO11-pose model")
@@ -634,7 +646,7 @@ def main():
                 speaker_cmd=args.speaker_cmd, triage_interval=args.triage_interval,
                 depth_model=args.depth_model, scan_pan=args.scan_pan, scan_fov=args.scan_fov,
                 scan_intrinsics=args.scan_intrinsics, scan_turn_dps=args.scan_turn_dps,
-                record=args.record, replay=args.replay), host=args.host, port=args.port,
+                record=args.record, replay=args.replay, proximity_stop=args.proximity_stop), host=args.host, port=args.port,
                 ssl_certfile=args.ssl_certfile, ssl_keyfile=args.ssl_keyfile,
                 ws_max_size=8 * 1024 * 1024, access_log=False,
                 timeout_graceful_shutdown=5)

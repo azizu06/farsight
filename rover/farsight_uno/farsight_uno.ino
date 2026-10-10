@@ -5,6 +5,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+// Ultrasonic proximity stop: range < 25 cm or a reading older than 250 ms strips
+// forward translation. On by default. Build with -DFARSIGHT_DISABLE_PROXIMITY_STOP
+// only for navigation runs where the Jetson's planner steers around obstacles (and
+// run the server with --proximity-stop off). The off-centre pan rule, the 300 ms
+// motor watchdog, the stop button and malformed-line stops are unaffected.
+
 const uint8_t LEFT_PWM = 6, RIGHT_PWM = 5, LEFT_DIR = 8, RIGHT_DIR = 7;
 const uint8_t STANDBY = 3, PAN_PIN = 10, TRIGGER = 13, ECHO = 12, STOP_BUTTON = 2;
 const unsigned long MOTOR_WATCHDOG_MS = 300;
@@ -35,8 +41,10 @@ void stopMotors() {
 }
 
 bool forwardBlocked() {
-  return rangeCm < 25 || millis() - rangeAt > 250 || abs(panAngle - 90) > 10
-      || millis() - panChangedAt < 200;
+#ifndef FARSIGHT_DISABLE_PROXIMITY_STOP
+  if (rangeCm < 25 || millis() - rangeAt > 250) return true;
+#endif
+  return abs(panAngle - 90) > 10 || millis() - panChangedAt < 200;
 }
 
 void checkedMotors(int left, int right) {

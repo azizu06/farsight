@@ -61,9 +61,26 @@ class AutonomyPolicyTests(unittest.TestCase):
         for mode in ("explore", "seek"):
             for cm in (None, float("nan"), 0, 20):
                 with self.subTest(mode=mode, cm=cm):
-                    policy = Autonomy()
+                    policy = Autonomy(proximity_stop=True)
                     policy.select(mode, 7 if mode == "seek" else None, 10)
                     self.assertEqual(policy.step(10, cm, detection(.7)), (0, 0))
+
+    def test_proximity_off_unknown_or_close_range_keeps_exploring_and_seeking(self):
+        empty = dict(fresh=True, error=None, age_ms=0, boxes=[])
+        policy = Autonomy(choose_turn=lambda: 1, proximity_stop=False)
+        policy.select("explore", None, 10)
+        self.assertEqual(policy.step(10, None, empty), (.25, 0))
+        self.assertEqual(policy.step(10.1, 20, empty), (0, .35))  # close range turns, never estop
+        self.assertEqual(policy.phase, "turning")
+        seek = Autonomy(proximity_stop=False)
+        seek.select("seek", 7, 10)
+        v, w = seek.step(10, None, detection(.6))
+        self.assertGreater(v, 0)
+        self.assertGreater(w, 0)
+        wide = detection(.2)
+        wide["boxes"][0]["w"] = .6
+        self.assertEqual(seek.step(10.1, None, wide), (0, 0))
+        self.assertEqual(seek.phase, "arrived")
 
     def test_malformed_person_box_is_not_a_motion_target(self):
         for x, width in ((float("nan"), .2), (.2, -1), (.9, .5), (".4", .2)):
@@ -79,7 +96,7 @@ class AutonomyControlTests(unittest.TestCase):
     def setUp(self):
         self.now = 10
         self.snapshot = detection()
-        self.state = ControlState(simulated=True, max_pwm=80, clock=lambda: self.now,
+        self.state = ControlState(simulated=True, max_pwm=80, clock=lambda: self.now, proximity_stop=True,
                                   detections=lambda: self.snapshot)
         self.state.set_connected(True)
         self.session = self.state.begin()

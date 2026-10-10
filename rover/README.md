@@ -33,9 +33,13 @@ Uno UART. Do not run the serial monitor at the same time as the Jetson.
 
 The Uno starts stopped, stops if no valid `M` arrives for 300 ms, and treats the
 D2 button as an immediate motor stop while held. `R -1` means no valid echo;
-it is **not** a clear road. Its independent 10 Hz range check blocks forward
-translation below 25 cm, without an echo, with an off-centre pan head, or while
-the pan servo settles. Reverse and turning remain available. Because the stock
+it is **not** a clear road. Forward translation is removed while the pan head is
+off centre or the pan servo settles, and (by default) below 25 cm or without a fresh
+echo. For navigation runs where the Jetson's planner steers around obstacles, the
+proximity part can be compiled out with
+`--build-property compiler.cpp.extra_flags=-DFARSIGHT_DISABLE_PROXIMITY_STOP`; run the
+Jetson server with `--proximity-stop off` to match. Reverse and turning always remain
+available. Because the stock
 range sensor pans with the camera, physically keep that sensor facing forward
 or use fixed camera/digital pan to drive while looking sideways.
 
@@ -67,7 +71,8 @@ Bench qualification is required before floor driving:
 3. Clear the forward sensor; send `M 50 50`, then stop sending. Both sides
    must stop within 300 ms (plus the bounded 12 ms sensor call).
 4. Send `P 90`, wait 250 ms, and read `R`. Put an object within 25 cm and
-   verify forward is blocked; reverse and turning must still work.
+   verify forward is blocked; reverse and turning must still work. A
+   `FARSIGHT_DISABLE_PROXIMITY_STOP` build must keep driving forward instead.
 5. Unplug the USB cable while moving slowly; verify the Uno stops.
 6. Hold the board button; both motors must stop while it is held.
 

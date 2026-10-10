@@ -27,6 +27,7 @@ VALUE_FLAGS = (
     ("FARSIGHT_VIDEO_FPS", "--video-fps"), ("FARSIGHT_VIDEO_BITRATE", "--video-bitrate"),
     ("FARSIGHT_TRIAGE_INTERVAL", "--triage-interval"), ("FARSIGHT_DEPTH_MODEL", "--depth-model"),
     ("FARSIGHT_SCAN_FOV", "--scan-fov"), ("FARSIGHT_SCAN_TURN_DPS", "--scan-turn-dps"),
+    ("FARSIGHT_PROXIMITY_STOP", "--proximity-stop"),
 )
 BOOL_FLAGS = (("FARSIGHT_H264", "--h264"), ("FARSIGHT_SIMULATE_ROVER", "--simulate-rover"),
               ("FARSIGHT_SCAN_PAN", "--scan-pan"), ("FARSIGHT_RECORD", "--record"))

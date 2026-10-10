@@ -19,7 +19,7 @@ class ControlState:
     RANGE_TTL = 0.350
 
     def __init__(self, simulated=False, max_pwm=100, clock=time.monotonic, camera_ready=None, min_pwm=0,
-                 detections=None):
+                 detections=None, proximity_stop=True, navigator=None):
         if (type(min_pwm) is not int or type(max_pwm) is not int
                 or not 0 <= min_pwm < max_pwm <= 255):
             raise ValueError("PWM bounds must satisfy 0 <= min_pwm < max_pwm <= 255")
@@ -28,7 +28,18 @@ class ControlState:
         self.camera_ready = camera_ready
         # Optional, bounded in-memory snapshot reader; never inference or I/O.
         self.detections = detections
-        self.autonomy = Autonomy() if detections is not None else None
+        # Ultrasonic proximity stop (range < 25 cm or stale range blocks forward
+        # translation). On by default; turning it off is an explicit opt-in
+        # (server --proximity-stop off) for runs where navigation avoids
+        # obstacles instead. The pan-angle rule and every lease/link/camera stop
+        # stay regardless of this option.
+        self.proximity_stop = proximity_stop
+        # Optional navigation stack (jetson.nav_bridge.NavBridge). When it is
+        # available, autonomy modes apply its velocity commands; otherwise the
+        # reactive jetson.autonomy policy runs as before.
+        self.navigator = navigator
+        self.autonomy = (Autonomy(proximity_stop=proximity_stop)
+                         if detections is not None or navigator is not None else None)
         self.stick_override = False
         self.lock = threading.RLock()
         self.session_id = None
@@ -130,9 +141,14 @@ class ControlState:
             self.range_cm = cm if math.isfinite(cm) and 0 < cm <= 500 else None
             self.range_at = self.clock()
 
+    def range_unsafe(self):
+        """The ultrasonic proximity rule; never true when the option is off."""
+        return self.proximity_stop and (self.range_cm is None or self.clock() - self.range_at >= self.RANGE_TTL
+                                        or self.range_cm < 25)
+
     def forward_blocked(self):
-        return (self.range_cm is None or self.clock() - self.range_at >= self.RANGE_TTL
-                or self.range_cm < 25 or abs(self.pan) > 10)
+        # The pan rule protects the ultrasonic/camera mount and stays on.
+        return self.range_unsafe() or abs(self.pan) > 10
 
     def camera_is_ready(self):
         if self.camera_ready is None:
@@ -243,8 +259,7 @@ class ControlState:
             v, w = self.v, self.w
             if self.scan_token is not None:
                 v, w = 0.0, self.scan_w
-                if w and (self.range_cm is None or self.clock() - self.range_at >= self.RANGE_TTL
-                          or self.range_cm < 25):
+                if w and self.range_unsafe():
                     self.stop("scan_range_stop")
                     v = w = 0.0
             if self.autonomy and self.autonomy.mode != "teleop" and self.deadline:
