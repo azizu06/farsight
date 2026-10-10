@@ -351,6 +351,13 @@ async fn scan_start(State(s): State<Arc<AppState>>, Json(body): Json<Value>) -> 
         )
             .into_response();
     }
+    if s.replay.is_some() {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"detail": "Replay is read-only; live scans are disabled"})),
+        )
+            .into_response();
+    }
     let session_id = session_id.map(str::to_string);
     let permit = permit.map(str::to_string);
     let scanner = s.scanner.clone();
