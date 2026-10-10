@@ -30,6 +30,7 @@ The issue branch and review are [PR #153](https://github.com/azizu06/farsight/pu
 | Seek projects upright or delayed detections into the newest unrelated native depth | Retain 12 exact captures and use the detector input's source, socket, frame and orientation. Recheck after projection; invalid pairing withdraws the old goal, while delayed valid inference uses its retained measured capture |
 | Simulated Seek has no capture metadata, or withdraws a valid target while new simulated depth is still pending | Publish simulated boxes only after the exact depth reaches observers, retaining the previous accepted packet and its original age during pending work |
 | Packed stereo without a matching eye pair falls back to a double-image mono picture | Require actual matching eye placement for packed segments; invalid layout or missing pair returns to the local map. Actual-class tests cover pair recovery and stale captures |
+| Fast real-camera inference discards a valid Seek goal before its new depth reaches Nav | Retain the last successfully projected input without renewing its age. Preserve its goal only while the exact newer input is proven by the current camera, the target remains visible, and the prior measured input remains fresh; update from new depth when accepted |
 
 The frame and motion age cutoffs are preserved. Repairs do not grant face
 recognition or model text authority over motors, synthesize metric geometry, or

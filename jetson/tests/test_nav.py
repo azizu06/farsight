@@ -2,6 +2,7 @@
 
 import asyncio
 import math
+import threading
 import time
 import unittest
 from types import SimpleNamespace
@@ -11,10 +12,14 @@ import numpy as np
 from fastapi.testclient import TestClient
 
 from jetson.control.state import ControlState
+from jetson.camera import CameraService
 from jetson.mapping.demo import simulated_frame
+from jetson.mapping.phone import decode_frame
+from jetson.mapping.tests.test_mapping import bundle, flat_frame
 from jetson.mapping.server import create_app
 from jetson.mapping.state import MapState
 from jetson.nav import NavLane, NavService, Refused, decode_depth, encode_depth, odom_to_world, simplify, world_to_odom
+from jetson.perception import PerceptionService
 
 NAV_KEYS = {"state", "mode", "goal", "path", "frontiers", "backend", "message", "revision"}
 PHONE = ("phone-session", 1)
@@ -169,6 +174,152 @@ class SenderAuthorityTests(unittest.IsolatedAsyncioTestCase):
         self.assert_generation_order(socket.records)
         self.assertTrue(any(record["type"] == "depth" and record["generation"] == self.nav.generation
                             for record in socket.records))
+
+
+class PhysicalPendingSeekTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.clock = Clock()
+        self.mapping = MapState(fusion_bypass=True)
+        self.socket = self.mapping.start_session(PHONE, "fixture")
+        self.mapping.paused = True
+        self.camera = CameraService(self.mapping)
+        self.nav = NavService(self.mapping, clock=self.clock, camera_snapshot=self.camera.snapshot)
+        self.mapping.frame_observers.append(self.nav.offer_frame)
+        self.perception = PerceptionService(self.camera, mode="none", fps=100)
+        self.perception._detect_primary = lambda image: [dict(cls="person", x=.45, y=.2, w=.1, h=.6)]
+        self.inferred = {number: asyncio.Event() for number in (1, 2)}
+        loop = asyncio.get_running_loop()
+        self.perception.on_detection = lambda packet, frame: loop.call_soon_threadsafe(self.inferred[frame.frame_id].set)
+        self.state = ControlState(clock=self.clock, navigator=self.nav, detections=self.perception.snapshot,
+                                  proximity_stop=False)
+        self.nav.attach(self.state)
+        self.state.set_connected(True)
+        self.session, self.seq = self.state.begin(), 0
+        self.gate, self.entered = threading.Event(), threading.Event()
+        self.pending = None
+        wire, received = self.publish_camera(1, 3.)
+        self.consume(wire, received)
+        self.perception.task = asyncio.create_task(self.perception._run())
+        await asyncio.wait_for(self.inferred[1].wait(), 1)
+        self.old_packet = self.perception.snapshot()
+        self.nav.bridge = object()
+        self.nav.receive(dict(type="status", generation=self.nav.generation, state="idle", goal_id=None))
+        self.send(deadman=False)
+        self.send()
+        self.state.output()
+        self.command()
+        self.assertGreater(self.state.output()[0], 0)
+
+    async def asyncTearDown(self):
+        self.gate.set()
+        if self.pending is not None:
+            await asyncio.wait_for(self.pending, 1)
+        await self.perception.close()
+        self.mapping.dense_worker.close()
+
+    def send(self, **values):
+        self.seq += 1
+        status = self.state.status(issue_permit=True)
+        message = dict(session_id=self.session, permit=status["permit"], seq=self.seq, deadman=True,
+                       v=0, w=0, pan=0, mode="seek", target_id=1, video_fresh=True, video_age_ms=0)
+        message.update(values)
+        self.assertTrue(self.state.accept(message, self.session))
+
+    def command(self):
+        self.nav.receive(dict(type="cmd_vel", generation=self.nav.generation, linear=.2, angular=0,
+                              goal_id=self.nav.intent()["goal_id"]))
+
+    def publish_camera(self, number, distance):
+        frame = flat_frame()
+        frame.depth[:] = distance
+        frame.header.update(session_id=PHONE[0], map_epoch=PHONE[1], frame_id=number, t_capture=float(number))
+        wire, received = bundle(frame), time.monotonic()
+        self.camera.accept_phone_rgbd(wire, PHONE, received_at=received, socket_generation=self.socket)
+        return wire, received
+
+    def consume(self, wire, received):
+        frame = decode_frame(wire, PHONE)
+        frame.header["_received_monotonic"] = received
+        self.mapping.process(frame, socket_generation=self.socket)
+
+    async def pending_capture(self):
+        wire, received = self.publish_camera(2, 6.)
+        def blocked_consume():
+            self.entered.set()
+            if not self.gate.wait(1):
+                raise AssertionError("fixture map consumer was not released")
+            self.consume(wire, received)
+        self.pending = asyncio.create_task(asyncio.to_thread(blocked_consume))
+        self.assertTrue(await asyncio.to_thread(self.entered.wait, 1))
+        await asyncio.wait_for(self.inferred[2].wait(), 1)
+        self.assertEqual(self.perception.snapshot()["frame"], 2)
+        self.assertEqual(self.nav.frame.header["frame_id"], 1)
+        self.assertIsNone(self.nav.sensor_fault())
+        return self.perception.snapshot()
+
+    async def test_pending_real_camera_inference_preserves_fresh_paired_goal_without_renewing_it(self):
+        goal, cmd, seek = self.nav.intent()["goal_id"], self.nav.cmd, self.nav.seek.copy()
+        await self.pending_capture()
+        self.old_packet["boxes"][0]["id"] = 99  # publication cannot mutate Nav's retained input
+        self.assertGreater(self.state.output()[0], 0)
+        self.assertEqual(self.nav.intent()["goal_id"], goal)
+        self.assertEqual(self.nav.seek, seek)
+        self.assertIs(self.nav.cmd, cmd)
+        self.gate.set()
+        await asyncio.wait_for(self.pending, 1)
+        self.nav.seek_checked = 0
+        self.assertEqual(self.state.output()[:2], (0, 0))
+        self.assertNotEqual(self.nav.intent()["goal_id"], goal)
+        self.assertEqual(self.nav.seek["person"], (0., -6.))
+
+    async def test_pending_camera_does_not_hide_invalid_or_absent_target_metadata(self):
+        packet = await self.pending_capture()
+        for change in (dict(source="PHONE RGB"), dict(sensor_key=[*PHONE, self.socket, 99, 99.]),
+                       dict(frame=99), dict(mirrored=None), dict(boxes=[])):
+            with self.subTest(change=change):
+                self.state.detections = lambda: self.old_packet
+                self.nav.seek_checked = 0
+                self.state.output()
+                self.command()
+                self.assertGreater(self.state.output()[0], 0)
+                bad = dict(packet, **change)
+                self.state.detections = lambda: bad
+                self.assertEqual(self.state.output()[:2], (0, 0))
+                self.assertIsNone(self.nav.intent()["goal"])
+                self.assertIsNone(self.nav.cmd)
+
+    async def test_pending_camera_cannot_extend_expired_pair(self):
+        await self.pending_capture()
+        with patch("jetson.nav.time", SimpleNamespace(monotonic=lambda: self.nav.frame_at + 1.1)):
+            self.assertEqual(self.state.output()[:2], (0, 0))
+            self.assertIsNone(self.nav.intent()["goal"])
+
+    async def test_pending_camera_cannot_extend_deadman_or_command_lease(self):
+        await self.pending_capture()
+        self.assertGreater(self.state.output()[0], 0)
+        self.clock.now += .3
+        self.assertEqual(self.state.output()[:2], (0, 0))
+        self.assertIsNone(self.nav.seek)
+
+    async def test_pending_camera_callback_failure_holds(self):
+        await self.pending_capture()
+        def unavailable():
+            raise RuntimeError("fixture camera unavailable")
+        self.nav.camera_snapshot = unavailable
+        self.assertEqual(self.state.output()[:2], (0, 0))
+        self.assertIsNone(self.nav.cmd)
+
+    async def test_pending_camera_that_expires_during_proof_cannot_preserve_goal(self):
+        await self.pending_capture()
+        clock = SimpleNamespace(now=time.monotonic())
+        def delayed_snapshot():
+            result = self.camera.snapshot()
+            clock.now += 1.1
+            return result
+        self.nav.camera_snapshot = delayed_snapshot
+        with patch("jetson.nav.time", SimpleNamespace(monotonic=lambda: clock.now)):
+            self.assertEqual(self.state.output()[:2], (0, 0))
+        self.assertIsNone(self.nav.intent()["goal"])
 
 
 class GeometryTests(unittest.TestCase):

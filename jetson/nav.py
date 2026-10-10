@@ -183,12 +183,14 @@ class NavService:
     DEPTH_TTL = 1.0    # ... and measured depth of the same sensor session at least this fresh
 
     def __init__(self, mapping, *, speed_mps=0.45, turn_radps=3.0, max_v=0.7, max_w=0.8,
-                 camera_height=0.15, backed_modes=NAV_MODES, standoff=0.8, clock=time.monotonic):
+                 camera_height=0.15, backed_modes=NAV_MODES, standoff=0.8, clock=time.monotonic,
+                 camera_snapshot=None):
         for name, value in (("speed_mps", speed_mps), ("turn_radps", turn_radps), ("max_v", max_v),
                             ("max_w", max_w), ("camera_height", camera_height)):
             if not math.isfinite(value) or value <= 0:
                 raise ValueError(f"Navigation {name} must be positive")
         self.mapping, self.clock = mapping, clock
+        self.camera_snapshot = camera_snapshot
         self.speed_mps, self.turn_radps = speed_mps, turn_radps
         self.max_v, self.max_w = min(max_v, 1.0), min(max_w, 1.0)
         self.camera_height = camera_height
@@ -199,6 +201,7 @@ class NavService:
         self.seek = None            # dict(target_id, person, seen_at, goal, goal_id, state, distance)
         self.seek_seq = 0
         self.seek_checked = 0.0
+        self.seek_input = None      # detached last successfully projected detector input
         self.control = None
         self.lock = threading.RLock()
         self.bridge = None
@@ -242,6 +245,7 @@ class NavService:
                 self.generation += 1
                 self.goal = self.cmd = self.frame = self.frame_at = None
                 self.seek_frames.clear()
+                self.seek_input = None
                 self.seek, self.seek_checked = None, 0.0
                 self.remote = dict(self.remote, state="idle", goal_id=None, path=[], frontiers=[])
             return self.generation
@@ -303,6 +307,7 @@ class NavService:
             active = bool(active and mode)
             if mode != "seek" or not active or (self.seek and self.seek["target_id"] != target_id):
                 self.seek = None
+                self.seek_input = None
             if active and not self.active:
                 self.cmd = None  # never resume on a command computed before this press
             self.mode, self.target_id, self.active = mode, target_id, active
@@ -506,6 +511,7 @@ class NavService:
             self.sync_generation()
             if self.mode != "seek" or not self.active:
                 return
+            generation = self.generation
             paired = self._seek_capture(detections, now)
             boxes = detections.get("boxes") if isinstance(detections, dict) else None
             box = next((b for b in boxes if isinstance(b, dict) and type(b.get("id")) is int
@@ -517,6 +523,10 @@ class NavService:
                         and b["x"] + b["w"] <= 1 + 1e-6
                         and b["y"] + b["h"] <= 1 + 1e-6), None) if isinstance(boxes, (list, tuple)) else None
             if paired is None or box is None:
+                if box is not None and self._pending_seek_capture(detections, now):
+                    return  # current goal retains only its original, still-fresh input
+                if generation != self.sync_generation():
+                    return
                 self._hold_seek(now)
                 return
             if now - self.seek_checked < 0.2:
@@ -557,9 +567,15 @@ class NavService:
                     seek["goal_id"] = f"seek-{self.seek_seq}"
                     self.cmd = None  # a previous goal's command cannot move toward this one
                 self.seek = seek
+                age = detections.get("age_ms", 0)
+                self.seek_input = (dict(sensor_key=tuple(detections["sensor_key"]), frame=detections["frame"],
+                                        source=detections["source"], mirrored=mirrored, fresh=True, error=None,
+                                        box=box.copy()),
+                                   min(paired[1], now - age / 1000)) if (type(age) in (int, float)
+                                   and math.isfinite(age) and age >= 0) else None
 
-    def _seek_capture(self, detections, now):
-        """Exact detector input and source; caller holds the navigation lock."""
+    def _seek_key(self, detections):
+        """Current source and internally consistent input metadata, independent of depth arrival."""
         if (not isinstance(detections, dict) or detections.get("fresh") is not True
                 or detections.get("error") is not None or type(detections.get("mirrored")) is not bool
                 or not getattr(self.mapping, "connected", False)
@@ -567,7 +583,15 @@ class NavService:
             return None
         key = _capture_key(detections.get("sensor_key"))
         if (key is None or key[:2] != self.identity or key[2] != self.socket_generation
-                or type(detections.get("frame")) is not int or detections["frame"] != key[3]):
+                or type(detections.get("frame")) is not int or detections["frame"] != key[3]
+                or detections.get("source") != ("SIMULATED" if self.mapping.demo else "IPHONE LIDAR")):
+            return None
+        return key
+
+    def _seek_capture(self, detections, now):
+        """Exact detector input and source; caller holds the navigation lock."""
+        key = self._seek_key(detections)
+        if key is None:
             return None
         held = self.seek_frames.get(key)
         if held is None:
@@ -577,6 +601,32 @@ class NavService:
             return None
         return frame, received, source, detections["mirrored"]
 
+    def _pending_seek_capture(self, detections, now):
+        """A proven newer camera input may wait for depth without renewing the prior goal."""
+        key = self._seek_key(detections)
+        if (key is None or self.camera_snapshot is None or self.seek_input is None
+                or self.seek is None or self.seek["state"] != "driving" or self.seek["goal"] is None):
+            return False
+        prior, received = self.seek_input
+        prior_key = prior["sensor_key"]
+        if (prior["box"]["id"] != self.target_id or not 0 <= now - received < self.DEPTH_TTL
+                or self._seek_capture(prior, now) is None or key in self.seek_frames
+                or key[3] <= prior_key[3] or key[4] <= prior_key[4]):
+            return False
+        generation = self.generation
+        try:
+            camera = self.camera_snapshot()
+            proven = (camera is not None and _capture_key(camera.sensor_key) == key
+                      and type(camera.frame_id) is int and camera.frame_id == key[3]
+                      and camera.source == detections["source"] and camera.mirrored is detections["mirrored"]
+                      and camera.tracking == "normal" and 0 <= now - camera.received < .5)
+        except Exception:
+            return False
+        checked = time.monotonic()
+        return (proven and generation == self.sync_generation()
+                and 0 <= checked - received < self.DEPTH_TTL and 0 <= checked - camera.received < .5
+                and self._seek_capture(prior, checked) is not None)
+
     def _hold_seek(self, now):
         """Withdraw the old goal/command immediately; keep the existing target-loss timer."""
         seek = self.seek.copy() if self.seek else dict(target_id=self.target_id, person=None, seen_at=now,
@@ -584,6 +634,7 @@ class NavService:
         seek.update(goal=None, goal_id=None,
                     state="failed" if now - seek["seen_at"] >= self.SEEK_LOST_S else "planning")
         self.seek, self.cmd, self.seek_checked = seek, None, 0.0
+        self.seek_input = None
 
     def receive(self, message):
         """Apply one bridge message (cmd_vel or status)."""
