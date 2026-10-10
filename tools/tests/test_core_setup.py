@@ -19,6 +19,9 @@ class CoreSetupTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("nvidia-jetpack", result.stdout)
         self.assertIn("venv --system-site-packages", result.stdout)
+        for package in ("usbmuxd", "libimobiledevice-utils", "ipheth-utils"):
+            self.assertIn(f"apt-get install -y {package}", result.stdout)
+        self.assertNotIn("idevicepair pair", result.stdout, "setup cannot approve phone trust automatically")
         self.assertIn("TensorRT FP16 engines", result.stdout)
         self.assertIn("Optional model downloads skipped", result.stdout)
         for optional_work in ("would download", "pip install -q piper-tts", "git clone --depth 1",

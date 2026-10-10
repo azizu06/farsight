@@ -54,6 +54,15 @@ step "System packages"
 run sudo apt-get update
 run sudo apt-get install -y openssh-server avahi-daemon tmux v4l-utils git cmake build-essential \
   python3-venv python3-pip libcurl4-openssl-dev libssl-dev ffmpeg alsa-utils pulseaudio-utils openssl curl rsync
+# Ubuntu Server may not include the host pairing/tether helpers needed by the
+# primary rover iPhone. Install available packages; pairing/trust stays manual.
+for pkg in usbmuxd libimobiledevice-utils ipheth-utils; do
+  if [ "$DRY" = 1 ] || have_candidate "$pkg"; then
+    run sudo apt-get install -y "$pkg" || warn "could not install $pkg; phone USB tethering needs verification"
+  else
+    warn "no apt candidate for $pkg; check the Ubuntu universe repository before phone USB setup"
+  fi
+done
 # JetPack runtime (CUDA, TensorRT, trtexec). A missing NVIDIA apt source must not abort the rest of the setup.
 for pkg in nvidia-jetpack python3-libnvinfer; do
   if [ "$DRY" = 1 ] || have_candidate "$pkg"; then

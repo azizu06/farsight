@@ -46,6 +46,17 @@ camera, LiDAR, or USB networking behavior.
 2. On the Jetson, identify the iPhone USB network interface and its assigned IP:
    `ip -br addr`, then `ip route`. This requires the Linux iPhone USB driver and
    phone pairing/tethering working; validate it before the demo.
+   `jetson/setup.sh` now prepares available `usbmuxd`, `libimobiledevice-utils`
+   and `ipheth-utils` packages. On a minimal image, verify them before relying
+   on the phone for downloads. Unlock the phone and approve Trust. Use
+   `idevice_id -l` to identify the rover phone, then
+   `idevicepair -u ROVER_PHONE_UDID validate`; if pairing is absent, deliberately
+   run `idevicepair -u ROVER_PHONE_UDID pair` and approve the phone's prompt.
+   These helpers do not prove the IP route or available cellular throughput.
+   If they fail, retain the exact error; do not automatically unpair/reset the
+   phone. [Ubuntu's tether helper](https://packages.ubuntu.com/noble/net/ipheth-utils)
+   and the [upstream pairing tool](https://github.com/libimobiledevice/libimobiledevice/blob/master/docs/idevicepair.1)
+   describe the package and pairing operations.
 3. Start the server on the Jetson, bound to `0.0.0.0`, **without `--demo` or
    `--camera`**, so the phone owns the camera source. Configure the Uno serial
    port separately only after its firmware and bench checks pass.
