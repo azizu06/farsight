@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use axum::body::{Body, Bytes};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -741,18 +741,31 @@ async fn control_status(State(s): State<Arc<AppState>>) -> Json<Value> {
 
 // ---------- WebSocket routes ----------
 
-async fn ws_map(ws: WebSocketUpgrade, State(s): State<Arc<AppState>>) -> Response {
-    ws.on_upgrade(move |socket| handle_ws_map(socket, s))
+async fn ws_map(
+    ws: WebSocketUpgrade,
+    State(s): State<Arc<AppState>>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    // Opt-in (#67): `?points=http` subscribers get status only and pull
+    // compressed HTTP snapshots at their own pace; legacy subscribers keep
+    // binary pushes.
+    let http_points = q.get("points").is_some_and(|v| v == "http");
+    ws.on_upgrade(move |socket| handle_ws_map(socket, s, http_points))
 }
 
-async fn handle_ws_map(socket: WebSocket, s: Arc<AppState>) {
+async fn handle_ws_map(socket: WebSocket, s: Arc<AppState>, http_points: bool) {
     let (mut tx, mut rx) = socket.split();
     let mapping = s.mapping.clone();
     let sender = tokio::spawn(async move {
         let mut revision: i64 = -1;
         loop {
-            let status = mapping.status();
-            if status["revision"].as_i64().unwrap_or(-1) != revision {
+            let mut status = mapping.status();
+            if http_points {
+                status["points_transport"] = json!("http");
+                if tx.send(Message::Text(status.to_string().into())).await.is_err() {
+                    return;
+                }
+            } else if status["revision"].as_i64().unwrap_or(-1) != revision {
                 let (packet, _) = mapping.point_packet("");
                 if tx.send(Message::Text(status.to_string().into())).await.is_err() {
                     return;
