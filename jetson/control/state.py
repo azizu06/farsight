@@ -45,6 +45,9 @@ class ControlState:
         self.link_ms = None
         self.scan_token = None
         self.scan_w = 0.0
+        # Permits already issued when the scan began: a zero-stick teleop
+        # heartbeat carrying one was sent before POST /scan and may race it.
+        self.scan_race_permits = frozenset()
         # Optional on_output(v, w, forward_blocked) observer of the command actually applied.
         self.on_output = None
 
@@ -60,6 +63,7 @@ class ControlState:
                 raise ValueError("Scan requires a stopped rover and a live operator-held permit")
             self.scan_token = object()
             self.scan_w = 0.0
+            self.scan_race_permits = frozenset(self.permits)
             return self.scan_token
 
     def scan_command(self, token, *, w=0, pan=0):
@@ -85,6 +89,7 @@ class ControlState:
             self.deadline = 0.0
             self.scan_token = None
             self.scan_w = 0.0
+            self.scan_race_permits = frozenset()
             self.reason = reason
             if self.autonomy:
                 self.autonomy.reset()
@@ -196,6 +201,11 @@ class ControlState:
             if not (-1 <= v <= 1 and -1 <= w <= 1 and -80 <= pan <= 80):
                 self.stop("invalid_command")
                 return False
+            if (self.scan_token is not None and mode == "teleop" and not v and not w
+                    and token in self.scan_race_permits):
+                mode = "scan"  # pre-POST heartbeat: renews like a scan heartbeat, within its own permit
+            elif mode == "scan":
+                self.scan_race_permits = frozenset()  # client is in scan mode; later teleop overrides
             if self.scan_token is not None:
                 if mode != "scan" or v or w:
                     self.stop("scan_override", require_release=False)

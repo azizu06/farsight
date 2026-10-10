@@ -269,6 +269,11 @@ Keep sending the ordinary ordered, fresh-video, held-deadman envelope on
 `/ws/control`, now with `mode: "scan"`, `v: 0`, `w: 0`. Only operator heartbeats
 renew the lease. Release, disconnect, expired permit, stale camera/video, or
 teleop/stick override cancels; stale/unsafe range also cancels rover rotation.
+One exception covers the pre-POST heartbeat racing `POST /scan` on its separate path:
+until the first `mode: "scan"` heartbeat, a `teleop` heartbeat with `v == 0` and
+`w == 0` whose permit was issued before the scan began is handled as a scan heartbeat
+(lease capped by that permit as always, `pan` ignored). Nonzero `v`/`w`, any other mode,
+or a teleop heartbeat with a newer permit still cancels.
 Scan mode without an active reservation fails stopped. Completion requires a release.
 
 `GET /scan` and `/health.scan` report `state` (`idle`, `sweeping`, `complete`,
