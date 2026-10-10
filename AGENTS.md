@@ -59,7 +59,7 @@ must follow the final implementation, not an earlier plan.
 |---|---|
 | Python rover | `python -m jetson.server`; implementation in `jetson/mapping/server.py` |
 | Operator and Quest USB | `tools/demo.py`, `tools/operator_relay.py`, `docs/transport-setup.md`; cellular emulation and stutter threshold: `docs/link-lab.md` |
-| Quest | `quest/src/main.ts`, `quest/src/rover.ts`, `quest/README.md`; headset bring-up and frame budget in `docs/quest-first-run.md` |
+| Quest | `quest/src/main.ts`, `quest/src/rover.ts`, `quest/README.md`; headset bring-up and frame budget in `docs/quest-first-run.md`. The default build relaxes some client guards in VR (`quest/src/demo-config.js`); load `?demo=0` to test the strict ones |
 | iPhone capture | `ios/README.md`; RGB on ordinary phones, measured RGB-D only with scene-depth support |
 | Motor firmware and control | `rover/README.md`, `jetson/control/README.md`; drive calibration (PWM to m/s, rad/s): `docs/drive-calibration.md` |
 | Inference and models | `docs/inference-setup.md`, `models/README.md`; models are ignored artifacts copied separately. Voice/VLM memory profiles and CUDA-build check: `docs/assistant-setup.md` |

@@ -62,7 +62,7 @@ try {
       body: JSON.stringify({ question: "who is there", answer: "One person ahead.", audio_url: null, action: { type: "seek", target_id: 7 } }),
     });
   });
-  await page.goto(origin);
+  await page.goto(`${origin}/?demo=0`); // guards on: this file pins the default safety behaviour
   const result = await page.evaluate(async () => {
     // Stub microphone and recorder before construction (headless Chromium may lack both).
     const permissions = [], recorders = [], tracks = [];
@@ -331,7 +331,7 @@ try {
       moving: subject.gate.decide(true, 240, true, subject.inputValid, subject.lastXRAt),
       needsRelease: subject.gate.needsRelease,
     };
-    // Left Y held across tracking loss must not open a menu on recovery.
+    // Left Y (controller diagram) held across tracking loss must not reopen it on recovery.
     let scans = 0;
     subject.startScan = async () => { scans++; };
     left.gamepad.buttons = [0, 1, 2, 3, 4, 5].map(() => ({ pressed: false }));
@@ -340,13 +340,13 @@ try {
     subject.update(250, frame);
     loseLeft = false;
     subject.update(260, frame);
-    const menuWhileStillHeld = subject.actionMenu.visible;
+    const menuWhileStillHeld = Number.isFinite(subject.hintUntil);
     left.gamepad.buttons[5].pressed = false;
     subject.update(270, frame);
     left.gamepad.buttons[5].pressed = true;
     subject.update(280, frame);
-    const menuLatch = { menuWhileStillHeld, menuAfterRelease: subject.actionMenu.visible, scans };
-    subject.actionMenu.visible = false;
+    const menuLatch = { menuWhileStillHeld, menuAfterRelease: Number.isFinite(subject.hintUntil), scans };
+    subject.hintUntil = -Infinity;
 
     const grant = (label) => {
       const next = permissions.shift();
@@ -453,6 +453,7 @@ try {
 
     // Source banner: server truth only, mirrored on desktop DOM and the headset panel.
     const banner = subject.sourceBanner;
+    subject.bannerKey = ""; // the chip only repaints when its source, mode or tone changes
     subject.drawHUD(420);
     const simulated = { kind: banner.dataset.kind, title: banner.querySelector("strong").textContent, vr: subject.bannerPanel.visible && subject.bannerPanel.parent === subject.cockpit };
     // The headset banner repaints on a later frame than the HUD, and never for unchanged text.
@@ -462,7 +463,10 @@ try {
     subject.lastHudAt = 421;
     subject.paint(421);
     const painted = !subject.bannerPending;
-    const bannerPixel = [...subject.bannerCanvas.getContext("2d").getImageData(1010, 100, 1, 1).data].slice(0, 3);
+    // The chip's source tag is filled with the SIMULATED colour somewhere on the canvas.
+    const chipData = subject.bannerCanvas.getContext("2d").getImageData(0, 0, subject.bannerCanvas.width, subject.bannerCanvas.height).data;
+    let bannerPixel = null;
+    for (let i = 0; i < chipData.length; i += 4) if (chipData[i] === 0x7c && chipData[i + 1] === 0x4a && chipData[i + 2] === 0x03 && chipData[i + 3] === 255) { bannerPixel = [0x7c, 0x4a, 0x03]; break; }
     subject.drawHUD(420); // identical text, including the displayed age
     const headsetBanner = { queued, painted, bannerPixel, unchangedQueued: !!subject.bannerPending };
     subject.sourceTruth.accept({ replay: true }, 430);
@@ -648,14 +652,27 @@ try {
       const recentered = { position: subject.cockpit.position.toArray(), quaternion: subject.cockpit.quaternion.toArray(), needsRelease: subject.gate.needsRelease };
       left.gamepad.buttons[4].pressed = false; tick();
 
-      // A hits a person rectangle but still changes view, never selecting Seek.
+      // A over a person rectangle switches to AUTO (never selecting Seek): Explore armed, map shown,
+      // live camera kept as a small window, and a fresh trigger release required.
       subject.drawnBoxes = [{ id: 7, cls: "person", x: 0, y: 0, w: 1, h: 1 }];
       subject.panelPoint = () => ({ x: .5, y: .5 });
       press(right, 4);
       const viewWhileAHeld = view;
-      right.gamepad.buttons[4].pressed = false; tick(); // a tap toggles on release
-      const aOverPerson = { view, mode: subject.autonomy.mode, release: subject.gate.needsRelease, viewWhileAHeld };
+      right.gamepad.buttons[4].pressed = false; tick(); // a tap switches on release
+      const aOverPerson = { view, mode: subject.autonomy.mode, release: subject.gate.needsRelease, viewWhileAHeld,
+        auto: subject.freeRoam.active, cameraWindow: subject.cameraScreen.visible && subject.cameraScreen.scale.x < .5, mapShown: !subject.vrCameraView };
+      // AUTO: deadman held with the stick fully deflected. Heartbeats carry Explore with v = w = 0; the stick only roams.
+      right.gamepad.buttons[0].pressed = false; tick();
+      right.gamepad.axes[3] = -1; right.gamepad.axes[2] = .9;
+      right.gamepad.buttons[0].pressed = true; tick();
+      subject.lastRoamAt -= 40; tick(); // 40 ms of walking (sub-ms ticks are below the timer resolution)
+      const autoMessage = messages.at(-1);
+      const autoDrive = { deadman: autoMessage.deadman, mode: autoMessage.mode, v: autoMessage.v, w: autoMessage.w, intent: subject.autonomy.mode,
+        roamed: subject.freeRoam.x !== 0 || subject.freeRoam.z !== 0, turned: subject.freeRoam.yaw !== 0 };
+      right.gamepad.axes[3] = 0; right.gamepad.axes[2] = 0;
+      // A again: back to MANUAL, autonomy off, motion latched until the trigger is released.
       press(right, 4); right.gamepad.buttons[4].pressed = false; tick();
+      const backToManual = { mode: subject.autonomy.mode, release: subject.gate.needsRelease, auto: subject.freeRoam.active, cameraView: subject.vrCameraView, deadman: messages.at(-1).deadman };
 
       // Hold right trigger + forward right stick, then B must stop and cancel.
       right.gamepad.axes[3] = -1;
@@ -689,8 +706,6 @@ try {
       while (performance.now() - aStart < 650) { await new Promise(resolve => setTimeout(resolve, 50)); tick(); }
       right.gamepad.buttons[4].pressed = false; tick();
       const holdA = { menu: subject.actionMenu.visible, view, viewBeforeHold };
-      subject.actionMenu.visible = false; tick();
-      press(left, 5);
       const menuOpened = subject.actionMenu.visible;
       right.gamepad.buttons[0].pressed = false; tick();
       right.gamepad.buttons[0].pressed = true; tick();
@@ -702,7 +717,7 @@ try {
       rayTracked = true; tick();
       const heldThroughRayRecovery = { menu: subject.actionMenu.visible, mode: subject.autonomy.mode };
       right.gamepad.buttons[1].pressed = false; tick();
-      // Aim at the Explore card on the actual menu mesh, then a new grip press.
+      // Aim at the Controls card on the actual menu mesh, then a new grip press.
       subject.cockpit.updateMatrixWorld(true);
       const aim = subject.actionMenu.panel.localToWorld(new THREE.Vector3(0, .351, 0));
       rayPosition.copy(position);
@@ -711,8 +726,10 @@ try {
       const hover = subject.updatePointer(frame, reference, right);
       right.gamepad.buttons[0].pressed = true;
       right.gamepad.buttons[1].pressed = true; tick();
-      const selected = { hover, mode: subject.autonomy.mode, menu: subject.actionMenu.visible, release: subject.gate.needsRelease, motion: messages.at(-1).deadman };
-      return { anchored, afterHeadMove, recentered, aOverPerson, drove, drift, override, holdA, bStopped, heldAfterStop,
+      const flashed = subject.actionMenu.visible; // the chosen card flashes green before the menu closes
+      subject.menuCloseAt -= 300; tick();
+      const selected = { flashed, hover, mode: subject.autonomy.mode, menu: subject.actionMenu.visible, release: subject.gate.needsRelease, motion: messages.at(-1).deadman, hint: subject.hintPanel.visible };
+      return { anchored, afterHeadMove, recentered, aOverPerson, autoDrive, backToManual, drove, drift, override, holdA, bStopped, heldAfterStop,
                bStopsAfterRecovery, resumedAfterRelease, menuOpened, behindMenu, missingRay,
                heldThroughRayRecovery, selected };
     } finally { renderer.xr.isPresenting = false; subject.dispose(); renderer.dispose(); }
@@ -722,7 +739,10 @@ try {
   assert.ok(Math.abs(interactions.recentered.quaternion[0]) < 1e-8 && Math.abs(interactions.recentered.quaternion[2]) < 1e-8, "recenter is yaw-only");
   assert.ok(Math.abs(2 * Math.atan2(interactions.recentered.quaternion[1], interactions.recentered.quaternion[3]) - .8) < 1e-6, "recenter faces the current head yaw");
   assert.equal(interactions.recentered.needsRelease, true);
-  assert.deepEqual(interactions.aOverPerson, { view: "3d", mode: "teleop", release: true, viewWhileAHeld: "camera" });
+  assert.deepEqual(interactions.aOverPerson, { view: "camera", mode: "explore", release: true, viewWhileAHeld: "camera", auto: true, cameraWindow: true, mapShown: true });
+  assert.deepEqual(interactions.autoDrive, { deadman: true, mode: "explore", v: 0, w: 0, intent: "explore", roamed: true, turned: true },
+    "AUTO: a deflected stick roams the map and never sends physical v/w or a stick override");
+  assert.deepEqual(interactions.backToManual, { mode: "teleop", release: true, auto: false, cameraView: true, deadman: false });
   assert.deepEqual(interactions.drove, { deadman: true, v: 0.45, w: 0 }, "right stick forward drives");
   assert.deepEqual(interactions.drift, { mode: "explore", v: 0, w: 0 }, "drift inside the deadzone and the left stick never override Explore");
   assert.equal(interactions.override, "teleop", "a real right-stick push takes back control");
@@ -736,7 +756,7 @@ try {
   assert.deepEqual(interactions.behindMenu, { motion: false, inputValid: false, visible: true });
   assert.deepEqual(interactions.missingRay, { menu: true, mode: "teleop", pointer: false });
   assert.deepEqual(interactions.heldThroughRayRecovery, { menu: true, mode: "teleop" });
-  assert.deepEqual(interactions.selected, { hover: "explore", mode: "explore", menu: false, release: true, motion: false });
+  assert.deepEqual(interactions.selected, { flashed: true, hover: "help", mode: "teleop", menu: false, release: true, motion: false, hint: true });
   result.interactions = interactions;
   // Exercise the real main viewer's transfer scheduling with fixture packets.
   // Deadman state is injected; this does not qualify physical input or motion.
@@ -984,7 +1004,7 @@ try {
   const navPage = await navContext.newPage();
   const navErrors = [];
   navPage.on("pageerror", (error) => navErrors.push(error.message));
-  await navPage.goto(`${origin}/?view=map`);
+  await navPage.goto(`${origin}/?view=map&demo=0`);
   const navLine = navPage.locator("#rover-nav");
   await navLine.waitFor({ state: "visible", timeout: 5000 });
   assert.match(await navLine.textContent(), /^Nav2 · Go-to driving · 2\.0 m path · 2 frontiers/);
@@ -1066,27 +1086,27 @@ try {
     await tick(100, () => { right.gamepad.buttons[1].pressed = true; });
     await tick(60, () => { right.gamepad.buttons[1].pressed = false; });
     const liveGrip = { mode: subject.autonomy.mode, hint: subject.navMessage, reticle: subject.navOverlay.reticle.visible };
-    subject.xrLive = false; // A toggles to the map view
+    subject.auto = true; // AUTO: grip aims at the map floor
     await tick(60);
     const reticle = subject.navOverlay.reticle.visible ? [subject.navOverlay.reticle.position.x, subject.navOverlay.reticle.position.z] : null;
     await tick(100, () => { right.gamepad.buttons[1].pressed = true; });
     await tick(150, () => { right.gamepad.buttons[1].pressed = false; });
     const armed = { mode: subject.autonomy.mode, mapMotion: subject.gate.decide(true, performance.now(), true, subject.inputValid, subject.lastXRAt) };
     // Back to the live view: the view-change stop keeps the accepted goal armed; the deadman gates it.
-    subject.xrLive = true; subject.stop("View changed: release trigger");
+    subject.auto = false; subject.stop("View changed: release trigger");
     window.navMessages = [];
     await tick(200, () => { right.gamepad.buttons[0].pressed = false; });
     await tick(400, () => { right.gamepad.buttons[0].pressed = true; });
     await tick(200, () => { right.gamepad.buttons[0].pressed = false; });
     const afterGoal = subject.autonomy.mode;
     // Grip held through tracking loss never fires on recovery.
-    subject.xrLive = false;
+    subject.auto = true;
     tracked = false;
     await tick(60, () => { right.gamepad.buttons[1].pressed = true; });
     tracked = true;
     await tick(100, () => { right.gamepad.buttons[1].pressed = true; });
     await tick(60, () => { right.gamepad.buttons[1].pressed = false; });
-    subject.xrLive = true;
+    subject.auto = false;
     // Right thumbstick click cancels.
     await tick(80, () => { right.gamepad.buttons[3].pressed = true; });
     await tick(150, () => { right.gamepad.buttons[3].pressed = false; });
@@ -1101,7 +1121,8 @@ try {
   assert.ok(vrNav.reticle && Math.abs(vrNav.reticle[0] - 1) < 1e-3 && Math.abs(vrNav.reticle[1] + 1.5) < 1e-3, `reticle at aim: ${vrNav.reticle}`);
   assert.equal(goals.length, 1, "one goal for one grip press; a grip held through tracking loss does not post");
   assert.deepEqual(goals[0].body, { x: 1, z: -1.5 });
-  assert.deepEqual(vrNav.armed, { mode: "goto", mapMotion: false });
+  // AUTO keeps the live camera window painted, so (unlike the old map view) a held deadman may drive the goal.
+  assert.deepEqual(vrNav.armed, { mode: "goto", mapMotion: true });
   const held = navControl.filter((message) => message.deadman);
   const gotoHeld = held.filter((message) => message.mode === "goto");
   assert.ok(gotoHeld.length >= 5, `held deadman sends go-to heartbeats: ${gotoHeld.length}`);
@@ -1117,6 +1138,85 @@ try {
     desktop: { pathPoints: 3, doubleClickGoal: desktopGoal, cancelButtonAndKey: true },
     vr: { pathPixel: vrNav.drawn.onPath, goal: { x: 1, z: -1.5 }, gotoHeartbeats: gotoHeld.length, latchedGrip: true, stickClickCancel: true },
   };
+  // Demo mode (the default build, captain's decision): relaxed client guards. `?demo=0` above pins the strict ones.
+  const demoPage = await browser.newPage();
+  await demoPage.goto(`${origin}/?demo=1`);
+  const demo = await demoPage.evaluate(async () => {
+    const { RoverExperience } = await import("/src/rover.ts");
+    const THREE = await import("/node_modules/three/build/three.module.js");
+    const renderer = new THREE.WebGLRenderer();
+    const scene = new THREE.Scene(), camera = new THREE.PerspectiveCamera(70, 1, .01, 100);
+    const subject = new RoverExperience(renderer, scene, camera, () => "camera", () => {});
+    const buttons = () => Array.from({ length: 6 }, () => ({ pressed: false, value: 0 }));
+    const right = { handedness: "right", gripSpace: {}, targetRaySpace: {}, gamepad: { connected: true, axes: [0, 0, 0, 0], buttons: buttons() } };
+    const session = { visibilityState: "visible", inputSources: [right] }, reference = {};
+    renderer.xr.isPresenting = true; renderer.xr.getSession = () => session;
+    renderer.xr.getReferenceSpace = () => reference; renderer.xr.getCamera = () => camera;
+    const position = new THREE.Vector3(0, 1.6, 0), orientation = new THREE.Quaternion();
+    let tracked = true, frames = 0, freshVideo = true;
+    const frame = { getViewerPose: () => ({ transform: { position, orientation } }),
+      getPose: space => space === right.gripSpace && !tracked ? null : { transform: { position, orientation } } };
+    // Detach the page's real control socket so its close/reconnect cannot race the fixture.
+    const real = subject.socket; if (real) { real.onclose = real.onerror = real.onmessage = null; real.close(); }
+    const messages = [];
+    subject.socket = { readyState: WebSocket.OPEN, bufferedAmount: 0, send(data) { messages.push(JSON.parse(data)); }, close() {} };
+    const stops = [], originalStop = subject.stop.bind(subject);
+    subject.stop = (reason, hard) => { stops.push(reason); originalStop(reason, hard); };
+    subject.cancelNav = async () => { subject.autonomy.clear(); };
+    const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+    const tick = () => {
+      const now = performance.now();
+      const status = { session_id: "demo-fixture", permit: `p-${frames}`, permit_ms: 250, rover: true, simulated: true, requires_release: false };
+      subject.gate.acceptStatus(status, now); subject.status = status;
+      if (freshVideo) subject.gate.acceptFrame(String(++frames), 0, now); else frames++;
+      subject.lastCanvasDraw = now; subject.lastSendAt = now;
+      subject.update(now, frame); subject.pump(); subject.drawHUD(now);
+    };
+    const run = async ms => { const end = performance.now() + ms; while (performance.now() < end) { tick(); await sleep(40); } };
+    const trigger = held => { right.gamepad.buttons[0] = { pressed: held, value: held ? 1 : 0 }; };
+    const press = async index => { right.gamepad.buttons[index].pressed = true; await run(80); right.gamepad.buttons[index].pressed = false; await run(80); };
+    try {
+      await run(120);
+      trigger(true); right.gamepad.axes[3] = -1; await run(160);
+      const driving = { deadman: messages.at(-1).deadman, v: messages.at(-1).v };
+      // A 300 ms right-controller tracking blip: no stop, no re-press; manual v/w pause.
+      const before = stops.length, mark = messages.length; tracked = false; await run(300);
+      const blip = { stops: stops.slice(before), deadman: messages.slice(mark).every(m => m.deadman), v: messages.at(-1).v };
+      tracked = true; await run(120);
+      const afterBlip = { deadman: messages.at(-1).deadman, v: messages.at(-1).v };
+      // Gone for more than 1 s still stops; when it returns with the trigger held the client resumes on its own.
+      tracked = false; await run(1300);
+      const lost = { deadman: messages.at(-1).deadman, stopped: stops.some(r => r.startsWith("XR tracking unavailable")) };
+      const resumeMark = messages.length; tracked = true; await run(200);
+      const resumed = { releaseTick: messages.slice(resumeMark).some(m => !m.deadman), deadman: messages.at(-1).deadman };
+      // Stale video: the client keeps sending (truthfully video_fresh: false; the rover may still refuse) and warns.
+      freshVideo = false; await run(700);
+      const stale = { deadman: messages.at(-1).deadman, videoFresh: messages.at(-1).video_fresh, warning: subject.stopKey.includes("VIDEO STALE") };
+      freshVideo = true; right.gamepad.axes[3] = 0; trigger(false); await run(160);
+      // Hands-free AUTO: tap A with no trigger held; Explore heartbeats keep the deadman up with v = w = 0.
+      await press(4); await run(200);
+      const auto = { deadman: messages.at(-1).deadman, mode: messages.at(-1).mode, v: messages.at(-1).v, w: messages.at(-1).w, roaming: subject.freeRoam.active };
+      // B: immediate stop, back to MANUAL, and a hard latch that a held trigger cannot skip.
+      trigger(true); await press(5);
+      const bStop = { deadman: messages.at(-1).deadman, auto: subject.freeRoam.active, mode: messages.at(-1).mode };
+      await run(200);
+      const heldAfterB = messages.at(-1).deadman;
+      trigger(false); await run(120); trigger(true); await run(160);
+      return { driving, blip, afterBlip, lost, resumed, stale, auto, bStop, heldAfterB, rePressed: messages.at(-1).deadman };
+    } finally { renderer.xr.isPresenting = false; subject.dispose(); renderer.dispose(); }
+  });
+  assert.deepEqual(demo.driving, { deadman: true, v: 0.45 });
+  assert.deepEqual(demo.blip, { stops: [], deadman: true, v: 0 }, "a short tracking blip neither stops nor needs a re-press");
+  assert.deepEqual(demo.afterBlip, { deadman: true, v: 0.45 });
+  assert.deepEqual(demo.lost, { deadman: false, stopped: true }, "right controller gone > 1 s stops");
+  assert.deepEqual(demo.resumed, { releaseTick: true, deadman: true }, "held trigger resumes after one client-sent release");
+  assert.deepEqual(demo.stale, { deadman: true, videoFresh: false, warning: true }, "stale video warns instead of blocking on the client");
+  assert.deepEqual(demo.auto, { deadman: true, mode: "explore", v: 0, w: 0, roaming: true }, "AUTO is hands-free");
+  assert.deepEqual(demo.bStop, { deadman: false, auto: false, mode: "teleop" });
+  assert.equal(demo.heldAfterB, false, "after B a held trigger still needs a release");
+  assert.equal(demo.rePressed, true);
+  await demoPage.close();
+  result.demoMode = demo;
   const report = {
     passed: true,
     environment:
