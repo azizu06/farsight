@@ -21,6 +21,7 @@ from jetson.camera import CameraService
 from jetson.video import VideoService
 from jetson.perception import PerceptionService
 from jetson.mission import Mission
+from jetson.replay import ReplayControl, ReplayPerception, ReplaySession
 from jetson.control import ControlService
 from jetson.assistant import SceneAssistant, AssistantError
 from jetson.phrases import PhraseSpeaker, SpeechError
@@ -35,17 +36,38 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                video_fps=10, video_bitrate=500000, assistant_url=None, whisper_bin=None, whisper_model=None,
                piper_bin=None, piper_model=None, tts_dir=None, face_model=None, whisper_url=None,
                piper_model_es=None, speaker_cmd="auto", triage_interval=3.0,
-               depth_model=None, scan_pan=False, scan_fov=70, scan_intrinsics=None, scan_turn_dps=90):
+               depth_model=None, scan_pan=False, scan_fov=70, scan_intrinsics=None, scan_turn_dps=90,
+               record=False, replay=None):
+    if replay is not None and (serial_port or camera_device is not None or demo or simulate_rover or record):
+        raise ValueError("Replay cannot be combined with serial, live/simulated sources, or recording")
     if (demo or simulate_rover) and serial_port:
         raise ValueError("Simulated sources cannot be combined with a physical motor serial port")
     state = MapState(demo)
     camera_service = CameraService(state, device=camera_device)
     video_service = VideoService(camera_service, enabled=h264, fps=video_fps, bitrate=video_bitrate)
-    mission = Mission(mission_dir)
-    perception = PerceptionService(camera_service, model=detector_model, mode=detector, on_detection=mission.detect, face_model=face_model)
-    control = ControlService(serial_port=serial_port, simulate=simulate_rover, max_pwm=max_pwm, min_pwm=min_pwm,
+    mission = Mission(mission_dir, record=record)
+    perception = ReplayPerception(camera_service) if replay is not None else PerceptionService(camera_service, model=detector_model, mode=detector, on_detection=mission.detect, face_model=face_model)
+    control = ReplayControl() if replay is not None else ControlService(serial_port=serial_port, simulate=simulate_rover, max_pwm=max_pwm, min_pwm=min_pwm,
                              camera_ready=lambda: camera_service.status()["camera"],
                              detections=perception.snapshot)
+    replay_session = ReplaySession(replay, camera_service, perception, control) if replay is not None else None
+    if record:
+        control.on_status = lambda packet: mission.record("control", packet)
+
+    async def record_run():
+        previous = None
+        next_status = 0
+        while True:
+            frame = camera_service.snapshot()
+            identity = (frame.source, frame.frame_id, frame.received) if frame else None
+            if frame and identity != previous:
+                await asyncio.to_thread(mission.record, "frame", frame)
+                previous = identity
+            if time.monotonic() >= next_status:
+                await asyncio.to_thread(mission.record, "control", control.status())
+                next_status = time.monotonic() + .1
+            await asyncio.sleep(.01)
+
     assistant = SceneAssistant(camera_service, perception, control, server_url=assistant_url,
                                whisper_bin=whisper_bin, whisper_model=whisper_model,
                                piper_bin=piper_bin, piper_model=piper_model, output_dir=tts_dir,
@@ -69,6 +91,8 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
     @asynccontextmanager
     async def lifespan(app):
         task = asyncio.create_task(simulate()) if demo else None
+        replay_task = asyncio.create_task(replay_session.run.play(replay_session.publish)) if replay_session else None
+        record_task = asyncio.create_task(record_run()) if record else None
         control.start()
         await camera_service.start()
         await video_service.start()
@@ -78,6 +102,12 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
             yield
         finally:
             await scanner.close()
+            for stream_task in (record_task, replay_task):
+                if stream_task:
+                    stream_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await stream_task
+            await asyncio.to_thread(mission.finish_recording)
             await asyncio.to_thread(control.close)
             await assistant.close()
             await phrases.close()
@@ -128,7 +158,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
         status["scan"] = scanner.result
         rover = control.status()
         status.update(perception.health())
-        status.update(rover=rover["rover"], estop=rover["estop"], control=rover,
+        status.update(replay=replay is not None, recording=record, rover=rover["rover"], estop=rover["estop"], control=rover,
                       detector=perception.mode, detector_error=perception.error,
                       detector_fps=perception.snapshot()["fps"] if perception.snapshot()["fresh"] else 0,
                       video=dict(enabled=h264, ready=video_service.ready, error=video_service.error,
@@ -148,6 +178,8 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
 
     @app.post("/scan", status_code=202)
     async def scan(body: ScanRequest):
+        if replay is not None:
+            raise HTTPException(409, "Replay is read-only; live scans are disabled")
         try:
             return scanner.start(body.session_id, body.permit)
         except ValueError as exc:
@@ -281,7 +313,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
         try:
             while True:
                 packet = perception.snapshot()
-                identity = (packet["frame"], packet["source"], packet["fresh"], packet["error"])
+                identity = (packet["frame"], packet["source"], packet["fresh"], packet["error"], packet.get("replay_loop"))
                 if identity != previous or time.monotonic() - last_sent > 2:
                     await asyncio.wait_for(ws.send_json(packet), .5)
                     previous, last_sent = identity, time.monotonic()
@@ -411,7 +443,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
     @app.websocket("/phone")
     async def phone(ws: WebSocket):
         await ws.accept()
-        if demo or app.state.phone_owner is not None:
+        if replay is not None or demo or app.state.phone_owner is not None:
             await ws.close(code=1008, reason="Demo is active or another phone owns the stream")
             return
         owner = object()
@@ -475,7 +507,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
     @app.websocket("/phone/rgb")
     async def phone_rgb(ws: WebSocket):
         await ws.accept()
-        if demo or app.state.phone_owner is not None or camera_device is not None:
+        if replay is not None or demo or app.state.phone_owner is not None or camera_device is not None:
             await ws.close(code=1008, reason="Another camera source is active")
             return
         owner = object()
@@ -534,6 +566,8 @@ def main():
     parser.add_argument("--h264", action="store_true", help="Enable ffmpeg H264 fragmented MP4 WebSocket")
     parser.add_argument("--video-fps", type=int, default=10)
     parser.add_argument("--video-bitrate", type=int, default=500000, help="H264 bit/s; start low for cellular headroom")
+    parser.add_argument("--record", action="store_true", help="Record JPEG, detections and control in --mission-dir")
+    parser.add_argument("--replay", help="Loop a recorded mission directory; motors always disabled")
     parser.add_argument("--mission-dir", help="Persist detection evidence beneath this directory")
     parser.add_argument("--assistant-url", help="Local llama-server origin, e.g. http://127.0.0.1:8082")
     parser.add_argument("--whisper-url", help="Running whisper-server origin (model stays loaded), e.g. http://127.0.0.1:8091")
@@ -547,6 +581,10 @@ def main():
     parser.add_argument("--triage-interval", type=float, default=3.0, help="Minimum seconds between SBAR model calls")
     parser.add_argument("--tts-dir", default="/tmp/farsight-tts", help="Bounded locally generated speech replies")
     args = parser.parse_args()
+    if args.record and not args.mission_dir:
+        parser.error("--record requires --mission-dir")
+    if args.replay and (args.serial_port or args.camera is not None or args.demo or args.simulate_rover or args.record):
+        parser.error("Replay cannot be combined with serial, live/simulated sources, or recording")
     if args.simulate_rover and args.serial_port:
         parser.error("--simulate-rover cannot be combined with --serial-port")
     if args.demo and args.serial_port:
@@ -562,7 +600,8 @@ def main():
                 whisper_url=args.whisper_url, piper_model_es=args.piper_model_es,
                 speaker_cmd=args.speaker_cmd, triage_interval=args.triage_interval,
                 depth_model=args.depth_model, scan_pan=args.scan_pan, scan_fov=args.scan_fov,
-                scan_intrinsics=args.scan_intrinsics, scan_turn_dps=args.scan_turn_dps), host=args.host, port=args.port,
+                scan_intrinsics=args.scan_intrinsics, scan_turn_dps=args.scan_turn_dps,
+                record=args.record, replay=args.replay), host=args.host, port=args.port,
                 ssl_certfile=args.ssl_certfile, ssl_keyfile=args.ssl_keyfile,
                 ws_max_size=8 * 1024 * 1024, access_log=False,
                 timeout_graceful_shutdown=5)
