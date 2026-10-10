@@ -35,17 +35,21 @@ ros2 launch farsight_nav nav.launch.py                 # or the farsight-nav sys
     a 0.36 m wide goal (any gap the ~0.35 m body fits through) and final 1.2 m
     approach; if none does, a relaxed pass accepts a 0.36 m corridor with a
     0.6 m approach. Nav2 plans the full route. The
-    current broad direction is held for at least 4 s and changes only for a
+    current broad direction is held for at least 2 s and changes only for a
     score improvement of 0.8, unless its approach becomes unsafe or disappears.
     Within 0.6 m it selects the next patch before the current goal completes.
-    A goal Nav2 fails, or one that takes over 25 s, is skipped for that press.
+    A frontier is skipped for 30 s, and the next one picked at once, when Nav2
+    aborts or rejects it, starts a recovery on it, gets no 0.3 m closer for 3 s,
+    or has not reached it in 15 s.
     Explore never ends on its own (captain's order, 2026-10-10). Planning gaps,
     and stretches with no reachable frontier at all, creep along the most open
     measured arc; with no open arc it turns in place to look, restarting after
-    each full turn, and re-scores frontiers every second. A detected
+    each full turn, and re-scores frontiers every 0.5 s. A detected
     person never switches Explore to Seek: people are moving obstacles in the
     LiDAR costmaps. Seek runs only when the operator selects it.
-    The 20 Hz planning-gap arbiter uses the current validated depth and pose
+    The 20 Hz motion arbiter forwards Nav2 whenever its command is moving.
+    Otherwise (planning gaps, goal changes, a controller zero, a recovery
+    hand-off) it drives itself, using the current validated depth and pose
     (each under 0.5 s) and a costmap under 2.5 s. It projects the sampled swept
     corridor at rover body height into the depth camera: every ray needs a real
     return beyond the corridor. Unknown/missing forward rays are blocked for that
@@ -55,8 +59,8 @@ ros2 launch farsight_nav nav.launch.py                 # or the farsight-nav sys
     the body disc makes it back straight off (at most 0.35 m, only over floor
     the costmap has seen or the rover has driven), then turn away from it.
     The fallback selects the widest supported gentle arc at 0.25 m/s, or turns
-    in place at 0.82 rad/s. A live-plan controller stop is never replaced. Only
-    a stale pose, depth or costmap stops it. Server deadman, B/STOP, the lease
+    in place at 0.82 rad/s; it never stands still waiting for Nav2 (captain,
+    2026-10-10). Only a stale pose, depth or costmap stops it. Server deadman, B/STOP, the lease
     (link-loss stop) and the Nav2 sensor gate still apply; the
     `/ws/nav` and viewer status contracts are unchanged.
   - **Seek:** the server projects the tracked person's box through the LiDAR depth
@@ -152,23 +156,26 @@ the goal.
   with a 0.13 m radius RPP clipped a wall end.
 - **Planner:** `SmacPlanner2D`, `allow_unknown` (goals are often in unseen space),
   0.25 m tolerance.
-- **Controller:** Regulated Pure Pursuit by default (20 Hz, 0.70 m/s, 0.45 m
-  lookahead, rotate to heading, cost-regulated slow-down near obstacles), or MPPI
+- **Controller:** Regulated Pure Pursuit by default (20 Hz, 0.70 m/s, 0.2-0.5 m
+  speed-scaled lookahead, rotate to heading), or MPPI
   with `controller:=mppi` (1000 samples, 2 s horizon, `vx_max` 0.70 m/s, `wz_max`
   2.5 rad/s). These suit `FARSIGHT_AUTONOMY_MAX_PWM=200` on the 2026-10-10 drive
   profile (0.74 m/s, 3.8 rad/s); no cost-regulated slow zone near obstacles and
   only 0.2 m of goal approach slowing. The earlier simulated results used 0.28-0.30 m/s. Both are loaded; the bridge picks one through the latched
   `controller_selector` topic. RPP is the default because it was faster in every
   simulated world and lighter (see the results below); MPPI hesitated in 0.65 m
-  gaps. RPP does not dodge obstacles by itself: the 0.4 s replanning does, which is
+  gaps. RPP does not dodge obstacles by itself: the 0.25 s replanning does, which is
   how it steers around a pop-up obstacle without stopping.
 - **Odometry twist:** the bridge estimates `/odom` velocity over a 150 ms window.
   Differencing single 30 Hz poses with jittery stamps produced rate spikes that
   made MPPI believe the rover was still spinning, and it spun in place.
-- **Behavior tree** (`behavior_trees/navigate_farsight.xml`): replans at least every
-  0.4 s, immediately when the path becomes invalid or the goal moves, and recovers
-  in turn by clearing costmaps, backing up 0.25 m, spinning 90 degrees and waiting
-  1 s. Goal checks are position only (0.20 m); final heading does not matter.
+- **Behavior tree** (`behavior_trees/navigate_farsight.xml`): ticks at 20 Hz and
+  replans at least every 0.25 s, within 50 ms when the path becomes invalid (the
+  global costmap updates at 15 Hz), or when the goal moves. It recovers in turn by
+  clearing the local costmap and the global costmap within 1.5 m of the rover (the
+  explored map stays), backing up 0.25 m at 0.3 m/s and spinning 90 degrees at up
+  to 2.2 rad/s; it never waits. Goal checks are position only (0.20 m); final
+  heading does not matter.
 
 ## Real-chassis tuning
 
@@ -396,7 +403,7 @@ throughout the footprint. Actual occupied/swept body discs fill the near-field
 unknown blind ring without erasing measured obstacles. A cluster supplies up to
 32 boundary samples so curved camera frontiers are not reduced to a close
 centroid. Distant all-unknown map padding is cropped with a full sensor-range
-rim to keep the 1 Hz NumPy work small. Unknown area beyond the body trail is
+rim to keep the 2 Hz NumPy work small. Unknown area beyond the body trail is
 prospective information gain only;
 known obstacles occlude it. Small lethal blobs near the approach add clutter
 cost. The 25 cm world-aligned visit grid decays over 60 s and survives rolling
@@ -421,7 +428,7 @@ hallway frontier `(7.45, 5.05)`, with its observed-free setback goal at
 visibility occlusion, hysteresis, revisit decay and immediate unsafe-goal release.
 `test_local_motion.py` exercises 80 consecutive 50 ms steps through valid-sensor
 Nav2/empty-plan transitions and noisy depth, with no idle command gaps, plus
-controller stops, blocked corridors, sensor loss, blind-ring scans and measured
+a controller zero that keeps moving, blocked corridors, sensor loss, blind-ring scans and measured
 full-turn exhaustion.
 These are software fixtures, not real-floor evidence.
 

@@ -1,6 +1,6 @@
-"""Bounded Explore planning-gap motion, using current measured depth and costmap.
+"""Explore motion whenever Nav2 is not moving the rover, using current measured depth and costmap.
 
-No ROS dependency. Nav2 remains the driver whenever its plan/controller is live.
+No ROS dependency. Nav2 remains the driver whenever its controller is moving.
 This policy never stores a velocity to replay after a sensor or operator fault.
 """
 
@@ -53,22 +53,20 @@ class LocalMotion:
         measured = depth[v, u]
         return bool((np.isfinite(measured) & (measured >= z + 0.1) & (measured <= 4.0)).all())
 
-    def command(self, *, now, active, planning, nav_command, nav_at, robot,
+    def command(self, *, now, active, nav_command, nav_at, robot,
                 pose_at, depth, header, depth_at, support, resolution, origin, map_at, to_map=None, body_clear=None):
         """SI (m/s, rad/s CCW). None means the existing Nav2 forwarding owns output.
 
-        A zero with a live plan is a controller stop and is never overridden.
-        Planning gaps (and no frontier at all) creep along the most open measured
-        arc, or turn in place to look when none is open. Something inside the body
-        disc backs off over observed floor, then turns away. Only missing sensor
-        evidence (stale pose, depth or map) produces a stop.
+        A fresh moving Nav2 command is forwarded. Anything else never stands still
+        (captain's order): planning gaps, goal changes, a controller zero or a
+        recovery hand-off creep along the most open measured arc, or turn in place
+        to look when none is open. Something inside the body disc backs off over
+        observed floor, then turns away. Only missing sensor evidence (stale pose,
+        depth or map) produces a stop.
         """
         if not active:
             self.reset()
             return None
-        if not planning:
-            self.reset()
-            return nav_command if now - nav_at <= 0.2 else (0.0, 0.0)
         if nav_command is not None and now - nav_at <= 0.2 and any(nav_command):
             self.reset()
             return nav_command

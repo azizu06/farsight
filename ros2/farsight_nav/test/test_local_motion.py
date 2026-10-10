@@ -13,7 +13,7 @@ def scene():
     depth = np.full((80, 120), 3.0)
     transform = np.eye(4)
     transform[1, 3] = 0.15
-    return dict(active=True, planning=True, nav_command=None, nav_at=-100,
+    return dict(active=True, nav_command=None, nav_at=-100,
                 robot=(0, 0, 0), depth=depth,
                 header=dict(transform=transform.flatten(order="F").tolist(), floor_y=0,
                             fx=60, fy=60, cx=60, cy=40),
@@ -27,7 +27,7 @@ def test_no_idle_gap_during_goal_changes_and_noisy_depth():
     for i in range(80):
         now = i * 0.05
         # Alternate valid Nav2 driving and empty-plan waypoint transitions.
-        args.update(planning=i % 20 >= 12, nav_command=(0.3, 0) if i % 20 < 12 else (0, 0), nav_at=now)
+        args.update(nav_command=(0.3, 0) if i % 20 < 12 else (0, 0), nav_at=now)
         # Small measured noise should not turn clear corridors into standstills.
         args['depth'][:] = 3 + 0.03 * np.sin(i)
         command = motion.command(now=now, pose_at=now, depth_at=now, map_at=now, **args)
@@ -48,13 +48,15 @@ def test_missing_depth_stops_obstacles_back_off_and_creep_never_expires():
     assert motion.command(now=14, pose_at=14, depth_at=14, map_at=14, **args)[0] > 0  # no budget: keep creeping
 
 
-def test_controller_stop_and_release_are_not_overridden():
+def test_controller_zero_keeps_moving_and_release_hands_back():
     motion = local_motion.LocalMotion()
     args = scene()
-    args.update(planning=False, nav_command=(0, 0), nav_at=0)
-    assert motion.command(now=0, pose_at=0, depth_at=0, map_at=0, **args) == (0, 0)
-    args.update(active=False, planning=True)
-    assert motion.command(now=0.1, pose_at=0.1, depth_at=0.1, map_at=0.1, **args) is None
+    args.update(nav_command=(0.5, 0.2), nav_at=0)
+    assert motion.command(now=0, pose_at=0, depth_at=0, map_at=0, **args) == (0.5, 0.2)
+    args.update(nav_command=(0, 0), nav_at=0.05)  # controller stop or recovery hand-off: never stand still
+    assert motion.command(now=0.1, pose_at=0.1, depth_at=0.1, map_at=0.1, **args)[0] > 0
+    args.update(active=False)
+    assert motion.command(now=0.2, pose_at=0.2, depth_at=0.2, map_at=0.2, **args) is None
 
 
 def test_blocked_corridor_reorients_only_in_observed_safe_footprint():
