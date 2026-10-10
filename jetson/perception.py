@@ -1,6 +1,7 @@
 """Local person detection: bundled CPU fallback, optional YOLO ONNX/TensorRT, or YOLO11-pose (adds kpts/down)."""
 
 import asyncio
+from collections import deque
 from contextlib import suppress
 import math
 import time
@@ -88,7 +89,7 @@ class PerceptionService:
         self.rebuilds = 0
         self.packet = dict(ts=0, frame=-1, fps=0, boxes=[], detector="disabled", source="WAITING")
         self.tracker = Tracker()
-        self.last_inference = None
+        self.completions = deque()  # monotonic inference completions in the last FPS_WINDOW seconds
         self.labels = None
 
     def _setup(self):
@@ -207,6 +208,17 @@ class PerceptionService:
         except Exception as exc:
             self.error = f"Detector unavailable: {exc}"
 
+    FPS_WINDOW = 2.0
+
+    def windowed_rate(self, completed):
+        """Inferences per second over the last FPS_WINDOW s. The rate between only the last
+        two inferences swung 2-30 with phone frame-arrival jitter at a steady ~6 fps."""
+        self.completions.append(completed)
+        while completed - self.completions[0] > self.FPS_WINDOW:
+            self.completions.popleft()
+        span = completed - self.completions[0]
+        return (len(self.completions) - 1) / span if span > 0 else 0
+
     async def _run(self):
         previous = None
         while True:
@@ -219,8 +231,7 @@ class PerceptionService:
                     boxes = await asyncio.to_thread(self._detect, frame.jpeg)
                     duration = time.monotonic() - started
                     completed = time.monotonic()
-                    rate = 1 / (completed - self.last_inference) if self.last_inference else 0
-                    self.last_inference = completed
+                    rate = self.windowed_rate(completed)
                     # Inference results retain the input timestamp, not completion freshness.
                     self.packet = dict(ts=time.time(), frame=frame.frame_id, fps=round(rate, 1), inference_ms=round(duration * 1000, 1),
                            boxes=self.track(boxes, time.monotonic()), detector=self.mode,
