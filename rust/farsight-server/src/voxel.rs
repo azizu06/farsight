@@ -2,6 +2,9 @@
 //! Port of jetson/mapping/voxel.py (OrderedDict -> indexmap for identical LRU order).
 
 use indexmap::IndexMap;
+use rustc_hash::FxBuildHasher;
+
+type FxIndexMap<K, V> = IndexMap<K, V, FxBuildHasher>;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Cell {
@@ -13,13 +16,13 @@ pub struct Cell {
 pub struct VoxelMap {
     pub size: f64,
     pub capacity: usize,
-    pub cells: IndexMap<(i64, i64, i64), Cell>,
+    pub cells: FxIndexMap<(i64, i64, i64), Cell>,
 }
 
 impl VoxelMap {
     pub fn new(size: f64, capacity: usize) -> Self {
         assert!(size.is_finite() && size > 0.0 && capacity > 0, "Voxel size and capacity must be positive");
-        Self { size, capacity, cells: IndexMap::new() }
+        Self { size, capacity, cells: FxIndexMap::with_hasher(FxBuildHasher) }
     }
 
     pub fn clear(&mut self) {
@@ -31,7 +34,7 @@ impl VoxelMap {
             return;
         }
         // Group samples by voxel key (np.unique(keys, axis=0) equivalent).
-        let mut groups: IndexMap<(i64, i64, i64), ([f64; 3], [f64; 3], u32)> = IndexMap::new();
+        let mut groups: FxIndexMap<(i64, i64, i64), ([f64; 3], [f64; 3], u32)> = FxIndexMap::with_hasher(FxBuildHasher);
         for (p, c) in points.iter().zip(colors.iter()) {
             if !p.iter().all(|v| v.is_finite()) {
                 continue;

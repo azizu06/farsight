@@ -1119,6 +1119,9 @@ async fn handle_ws_map(socket: WebSocket, s: Arc<AppState>, http_points: bool) {
     let mapping = s.mapping.clone();
     let sender = tokio::spawn(async move {
         let mut revision: i64 = -1;
+        // Wake on a fresh map revision to push the new packet at fusion
+        // time; the 500 ms tick still drives the periodic status frame.
+        let mut watch = mapping.revision_watch();
         loop {
             let mut status = mapping.status();
             if http_points {
@@ -1139,7 +1142,10 @@ async fn handle_ws_map(socket: WebSocket, s: Arc<AppState>, http_points: bool) {
             } else if tx.send(Message::Text(status.to_string().into())).await.is_err() {
                 return;
             }
-            tokio::time::sleep(Duration::from_millis(500)).await;
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_millis(500)) => {}
+                r = watch.changed() => { if r.is_err() { return; } }
+            }
         }
     });
     while rx.next().await.is_some() {}
