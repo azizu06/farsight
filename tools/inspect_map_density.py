@@ -3,6 +3,8 @@
 Run ``python tools/inspect_map_density.py`` for the three local default hops, or
 select endpoints: ``--operator http://MAC:8080 --renderer http://MAC:8090``.
 An explicitly supplied --phone URL probes the phone's /geometry/status contract.
+Only an operator /map/status HTTP 404 triggers a same-origin /health fallback;
+both attempts and the actual evidence URL are recorded under the shared deadline.
 No binary geometry, producer, control, scan, pause or reset requests are made.
 Reported mesh vertices are not deduplicated measured LiDAR points. Unknown fields
 stay null; this snapshot alone is not hardware or visual qualification.
@@ -149,6 +151,29 @@ async def probe(client, name, url, max_bytes):
     return result
 
 
+def attempt_summary(result):
+    return {key: result[key] for key in ("url", "method", "requested_at_utc", "ok", "http_status",
+                                         "response_bytes", "error", "elapsed_ms", "response_excerpt")
+            if key in result}
+
+
+async def probe_hop(client, name, url, max_bytes, deadline):
+    started = time.monotonic()
+    result = await probe(client, name, url, max_bytes)
+    attempts = [attempt_summary(result)]
+    fallback = name == "operator" and result["http_status"] == 404
+    if fallback and time.monotonic() < deadline:
+        parts = urlsplit(url)
+        health_url = urlunsplit((parts.scheme, parts.netloc, "/health", "", ""))
+        result = await probe(client, name, health_url, max_bytes)
+        attempts.append(attempt_summary(result))
+    result.update(requested_url=url, attempts=attempts, fallback_attempted=len(attempts) > 1,
+                  elapsed_ms=round((time.monotonic() - started) * 1000, 2))
+    if fallback:
+        result["fallback_reason"] = "Operator /map/status returned HTTP 404; legacy same-origin GET /health compatibility fallback"
+    return result
+
+
 def identity(session):
     try:
         return str(uuid.UUID(session))
@@ -160,6 +185,9 @@ def findings(hops):
     result = []
     good = [hop for hop in hops if hop["ok"]]
     for hop in hops:
+        if hop.get("fallback_attempted"):
+            result.append(dict(kind="legacy_operator_health_fallback", hops=[hop["name"]],
+                               detail="/map/status returned HTTP 404; evidence/error comes from the recorded same-origin /health attempt"))
         if not hop["ok"]:
             result.append(dict(kind="unavailable", hops=[hop["name"]], detail=hop["error"]))
             continue
@@ -191,11 +219,12 @@ async def inspect(endpoints, timeout=5.0, max_bytes=DEFAULT_MAX_BYTES):
         raise ValueError("timeout must be finite and positive; max_bytes must be positive")
     urls = [(name, endpoint_url(name, value)) for name, value in endpoints.items()]
     started = time.monotonic()
+    deadline = started + timeout
     async with aiohttp.ClientSession(auto_decompress=False, trust_env=False,
                                      timeout=aiohttp.ClientTimeout(total=timeout)) as client:
-        tasks = [asyncio.create_task(probe(client, name, url, max_bytes)) for name, url in urls]
+        tasks = [asyncio.create_task(probe_hop(client, name, url, max_bytes, deadline)) for name, url in urls]
         try:
-            hops = await asyncio.wait_for(asyncio.gather(*tasks), timeout=timeout)
+            hops = await asyncio.wait_for(asyncio.gather(*tasks), timeout=max(0, deadline - time.monotonic()))
         except asyncio.TimeoutError:
             # probe records cancellation, and wait_for waits for cancellation cleanup.
             hops = [task.result() for task in tasks]

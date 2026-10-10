@@ -101,7 +101,10 @@ headset FPS, source truth, stereo, or pose-to-photon latency.
 
 The density snapshot reports only the selected endpoints' actual fields. Unknown
 counts stay null; retained mesh vertices and repeated observations are distinct
-from unique measured points. A failed hop still writes JSON with its error.
+from unique measured points. Older Python deployments fall back from operator
+`/map/status` to `/health` only on HTTP 404, recording both attempts and the actual
+evidence URL. Other failures remain failures. A failed hop still writes JSON
+with its error.
 
 For an isolated desktop check of the **standalone** page before an occupied
 headset session, the browser helper records decoding, source/stereo declarations,
