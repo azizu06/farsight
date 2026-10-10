@@ -15,7 +15,6 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
-use tower_http::compression::CompressionLayer;
 use tower_http::services::ServeDir;
 
 use crate::camera::CameraService;
@@ -400,23 +399,29 @@ async fn scan_start(State(s): State<Arc<AppState>>, Json(body): Json<Value>) -> 
     }
 }
 
-async fn map_points(State(s): State<Arc<AppState>>) -> Response {
-    (
-        [(header::CONTENT_TYPE, "application/octet-stream")],
-        s.mapping.point_packet(),
-    )
-        .into_response()
+async fn map_points(State(s): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    let (body, coding) = s.mapping.point_packet(accept_encoding(&headers));
+    packet_response(body, coding, false)
 }
 
-async fn map_mesh(State(s): State<Arc<AppState>>) -> Response {
-    (
-        [
-            (header::CONTENT_TYPE, "application/octet-stream"),
-            (header::CACHE_CONTROL, "no-store"),
-        ],
-        s.mapping.mesh_packet(),
-    )
-        .into_response()
+async fn map_mesh(State(s): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    let (body, coding) = s.mapping.mesh_packet(accept_encoding(&headers));
+    packet_response(body, coding, true)
+}
+
+fn accept_encoding(headers: &HeaderMap) -> &str {
+    headers.get(header::ACCEPT_ENCODING).and_then(|v| v.to_str().ok()).unwrap_or("")
+}
+
+fn packet_response(body: Vec<u8>, coding: &'static str, no_store: bool) -> Response {
+    let mut response = ([(header::CONTENT_TYPE, "application/octet-stream"), (header::VARY, "Accept-Encoding")], body).into_response();
+    if !coding.is_empty() {
+        response.headers_mut().insert(header::CONTENT_ENCODING, coding.parse().unwrap());
+    }
+    if no_store {
+        response.headers_mut().insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+    }
+    response
 }
 
 async fn map_export(State(s): State<Arc<AppState>>) -> Response {
@@ -663,7 +668,7 @@ async fn handle_ws_map(socket: WebSocket, s: Arc<AppState>) {
         loop {
             let status = mapping.status();
             if status["revision"].as_i64().unwrap_or(-1) != revision {
-                let packet = mapping.point_packet();
+                let (packet, _) = mapping.point_packet("");
                 if tx.send(Message::Text(status.to_string().into())).await.is_err() {
                     return;
                 }
@@ -1045,11 +1050,11 @@ async fn index_fallback() -> Json<Value> {
 pub fn router(state: Arc<AppState>, dist: Option<PathBuf>) -> Router {
     let app = Router::new()
         .route("/health", get(health))
-        // Raw 16 B/point payloads crossing a cellular link; browsers
-        // transparently decode br/gzip so quest needs no changes.
-        .route("/map/points.bin", get(map_points).layer(CompressionLayer::new()))
-        .route("/map/mesh.bin", get(map_mesh).layer(CompressionLayer::new()))
-        .route("/map/export.ply", get(map_export).layer(CompressionLayer::new()))
+        // Raw 16 B/point payloads crossing a cellular link; compressed
+        // variants are cached per map version inside MapState.
+        .route("/map/points.bin", get(map_points))
+        .route("/map/mesh.bin", get(map_mesh))
+        .route("/map/export.ply", get(map_export))
         .route("/map/reset", post(map_reset))
         .route("/map/pause", post(map_pause))
         .route("/camera.jpg", get(camera_jpg))
