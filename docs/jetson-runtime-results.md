@@ -7,13 +7,16 @@ OS and USB recovery evidence is in `jetson-recovery-results.md`.
 
 - Source deployed to `/home/ubuntu/farsight`; Python 3.12 virtual environment
   includes system packages so NVIDIA TensorRT bindings remain accessible.
+  Application snapshot `8522c8e` includes the cellular map budget and detection
+  matching improvements; its viewer build and 89 tests passed, along with 28
+  mapping/budget/proxy checks and the 13-step simulated/replay judge flow.
 - ARM64 runtime wheels installed from `/home/ubuntu/farsight-wheelhouse` with
   `--no-index`. Imports passed for OpenCV 4.14, FastAPI 0.143, ONNX Runtime
   1.31, NumPy 2.5.3 and aiohttp. Models copied separately: detection, pose,
   UltraFace, SmolVLM plus projector, Whisper tiny.en and Piper low voice.
 - `farsight.service` is enabled and serves HTTP on USB address
   `http://192.168.55.1:8443`. Configuration is `/etc/farsight.env`, with phone
-  input, physical serial unset, pose ONNX and H.264 enabled. TLS is omitted
+  input, physical serial unset, target-built pose TensorRT and H.264 enabled. TLS is omitted
   for this USB bring-up; operator relay provides the Quest-facing origin.
 - `/health` loaded pose ONNX without detector error and reported camera
   `WAITING`, rover disabled, estop true and release required. No camera,
@@ -31,10 +34,42 @@ OS and USB recovery evidence is in `jetson-recovery-results.md`.
   This is a local synthesis/transcription check, not microphone qualification.
 - CUDA 13.2 runtime initialized device 0; TensorRT 10.16.2.10 imported.
   NVCC 13.2 and cuBLAS development libraries are installed for native GPU
-  voice builds. Engine builds and those builds are still separate checks.
+  voice builds. Pose and COCO target-built engines passed actual CUDA execution;
+  native GPU voice builds remain separate checks.
 - Tailscale 1.104.1 and `iproxy` are installed. Tailscale used the official
   [Ubuntu Noble signed package source](https://pkgs.tailscale.com/stable/#ubuntu-noble).
   Tailnet authentication and phone cellular transport remain pending.
+- The 775 MiB source/model transfer bundle verified on the Jetson: source
+  `ef33912`, 266 files, 812,192,417 payload bytes. It includes metric depth,
+  pose/detection and selected local voice/vision models. Native engines and
+  runtime installation remain separate from this portable bundle.
+
+## Actual GPU and browser evidence
+
+Target-built FP16 pose raw inference `[1,56,8400]` passed 20 zero-input runs:
+median 15.29 ms, p95 18.83 ms. COCO `[1,84,8400]` passed the same smoke:
+median 11.66 ms, p95 21.44 ms. Pose also detected four people on the public
+test photo. These measurements occurred under concurrent native-build load;
+they measure engine execution rather than camera-to-eye latency.
+
+The real Jetson GPU pose, phone-input protocol, USB commissioning link and
+production Mac operator viewer rendered H.264, green boxes and blue skeletons.
+Detector samples were around 7.5–8.9 FPS while native builds continued.
+The image below uses a public static photo, **not an attached phone camera**.
+The banner correctly reports the disabled motor board and unverified live rig.
+
+![Jetson GPU output in the production viewer using a static test photo](qualification/jetson-ui-h264.jpg)
+
+An isolated source drawing trace observed 172 box/skeleton phases and zero
+paints with invalid metadata. That trace used an instrumentation wrapper;
+the screenshot above was taken from the production bundle.
+
+A writer-only temporary aiohttp producer originally disconnected after 40
+seconds: it did not call `receive()`, so it failed to answer the server's PING
+and received `1011: keepalive ping timeout`. The corrected producer used a
+concurrent receive loop, answered both pings, delivered 558 static-photo frames
+over 57 seconds and intentionally closed both sockets normally (`1000`).
+The iOS client already has a receive loop. No runtime timeouts were loosened.
 
 ## Software H.264 repair
 
@@ -75,9 +110,9 @@ Ubuntu's empty sources file was restored from its installer backup and the
 stale installation-media source disabled. No distribution upgrade or
 autoremove was run.
 
-TensorRT/CUDA installation and target-built engine execution are separate
-checks. Phone signing/trust/capture, cellular routing, Quest USB/browser,
+Native CUDA vision/Whisper builds and metric-depth engine execution are still
+being qualified. Phone signing/trust/capture, cellular routing, Quest USB/browser,
 actual motor direction/PWM, watchdog disconnects and power under load must
-still be verified on the complete rig. System-site `pip check` also exposes
-the preinstalled SciPy's NumPy constraint and missing cffi for PyNaCl;
-neither package is used by the verified service startup.
+still be verified on the complete rig. Compatible SciPy and cffi wheels were
+installed in the venv to resolve inherited system-package constraints;
+`pip check` now reports no broken requirements.
