@@ -196,6 +196,15 @@ pub fn build_state(
         if replay.is_some() { None } else { detector_model.as_deref() },
         if replay.is_some() { None } else { face_model.as_deref() },
     ));
+    // Tracked-person 3D markers (f1b883c): MapState offers RGB-D frames to
+    // the locator; perception annotates tracked boxes detected on held
+    // frames. Replay path skips it like Python (ReplayPerception has no
+    // annotate hook).
+    let people = Arc::new(crate::people::PersonLocator::new());
+    if replay.is_none() {
+        let pl = people.clone();
+        perception.set_annotate(Box::new(move |boxes, frame| pl.annotate(boxes, frame)));
+    }
     let cam = camera.clone();
     let perc = perception.clone();
     // Physical serial requires verified drive eligibility (camera_drive_ready);
@@ -250,6 +259,16 @@ pub fn build_state(
             .unwrap()
             .push(Arc::new(move |frame: &crate::phone::RgbdFrame| {
                 observer.offer_frame(frame)
+            }));
+    }
+    {
+        let pl = people.clone();
+        mapping
+            .frame_observers
+            .lock()
+            .unwrap()
+            .push(Arc::new(move |frame: &crate::phone::RgbdFrame| {
+                pl.offer_frame(frame)
             }));
     }
     let replay_control = replay.as_ref().map(|_| Arc::new(ReplayControl::new()));

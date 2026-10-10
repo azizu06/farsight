@@ -21,6 +21,7 @@ from .demo import stream_demo
 from jetson.sim.stream import SimFeed, stream_world
 from jetson.sim.world import RoverSim
 from jetson.sim.worlds import WORLDS, load as load_world
+from .people import PersonLocator
 from .phone import Hello, decode_frame, validate_pose
 from .state import MapState
 from jetson.camera import CameraService
@@ -91,7 +92,9 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
     # Opt-in ROS 2 Nav2 backend (ros2/farsight_nav); without --nav2 autonomy is unchanged.
     nav = NavService(state, speed_mps=nav_speed_mps, turn_radps=nav_turn_radps, max_v=nav_max_v,
                      max_w=nav_max_w, camera_height=nav_camera_height) if nav2 else None
-    perception = ReplayPerception(camera_service) if replay is not None else PerceptionService(camera_service, model=detector_model, mode=detector, on_detection=mission.detect, face_model=face_model)
+    people = PersonLocator()
+    state.frame_observers.append(people.offer_frame)
+    perception = ReplayPerception(camera_service) if replay is not None else PerceptionService(camera_service, model=detector_model, mode=detector, on_detection=mission.detect, face_model=face_model, annotate=people.annotate)
     control = ReplayControl() if replay is not None else ControlService(serial_port=serial_port, simulate=simulate_rover, max_pwm=max_pwm, min_pwm=min_pwm,
                              drive_profile=drive_profile, allow_calibration=allow_calibration,
                              camera_ready=lambda: camera_service.status()["camera_drive_ready" if serial_port else "camera"],

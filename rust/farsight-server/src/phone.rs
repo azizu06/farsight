@@ -243,11 +243,49 @@ pub struct Mesh {
     pub indices: Vec<[u32; 3]>,
 }
 
+/// Coarser grid strides kept per keyframe for the capped visual mesh export.
+/// Matches jetson/mapping/phone.py VISUAL_LODS.
+pub const VISUAL_LODS: [usize; 2] = [4, 8];
+
 /// Project measured samples and build triangles only across observed surfaces.
 /// Port of reconstruct: strided sampling, depth-edge rejection, vertex compaction.
 pub fn reconstruct(frame: &RgbdFrame, stride: usize, min_confidence: u8) -> (Vec<[f32; 3]>, Vec<[u8; 3]>, Mesh) {
+    let (points, colors, mesh, _) = reconstruct_lods(frame, stride, min_confidence, &[]);
+    (points, colors, mesh)
+}
+
+/// Like `reconstruct`, plus a coarse triangulation of the same depth grid per
+/// entry in `lods` — (stride, mesh) pairs for the capped visual export.
+pub fn reconstruct_lods(
+    frame: &RgbdFrame,
+    stride: usize,
+    min_confidence: u8,
+    lods: &[usize],
+) -> (Vec<[f32; 3]>, Vec<[u8; 3]>, Mesh, Vec<(usize, Mesh)>) {
     let (dw, dh) = (frame.depth_width, frame.depth_height);
     let usable_full = valid_depth(&frame.depth, dw, dh, 0.15, 8.0, 0.12);
+    let (points, colors, mesh) =
+        reconstruct_at(frame, stride, min_confidence, &usable_full);
+    let lod_meshes: Vec<(usize, Mesh)> = lods
+        .iter()
+        .map(|&step| (step, grid_mesh(frame, step, min_confidence, &usable_full)))
+        .collect();
+    (points, colors, mesh, lod_meshes)
+}
+
+/// Triangulate one strided sampling of the depth grid — the `grid_mesh` port.
+fn grid_mesh(frame: &RgbdFrame, stride: usize, min_confidence: u8, usable_full: &[bool]) -> Mesh {
+    let (_, _, mesh) = reconstruct_at(frame, stride, min_confidence, usable_full);
+    mesh
+}
+
+fn reconstruct_at(
+    frame: &RgbdFrame,
+    stride: usize,
+    min_confidence: u8,
+    usable_full: &[bool],
+) -> (Vec<[f32; 3]>, Vec<[u8; 3]>, Mesh) {
+    let (dw, dh) = (frame.depth_width, frame.depth_height);
     // Strided sampling keeps the same strided grid layout as [::stride, ::stride].
     let h2 = dh.div_ceil(stride);
     let w2 = dw.div_ceil(stride);

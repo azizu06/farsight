@@ -935,6 +935,8 @@ export class RoverExperience {
     }
   }
   get deadmanHeld() { return this.input.held; }
+  /** Newest detections packet and when its frame arrived, for 3D person markers (display only). */
+  get latestDetections(): { packet: Detections | null; at: number } { return { packet: this.detections, at: this.detectionsAt }; }
   get videoStreaming() { return this.h264Enabled; }
   /** Head-locked panel beside the camera, e.g. the diagnostics overlay. */
   addCockpitPanel(panel: THREE.Object3D) { this.cockpit.add(panel); }

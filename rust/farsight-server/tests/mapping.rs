@@ -153,10 +153,10 @@ fn surfaces_skip_and_encode() {
         colors: vec![[1, 2, 3]; 3],
         indices: vec![[0, 1, 2]],
     };
-    surfaces.integrate(mesh.clone(), &farsight_server::geometry::IDENTITY);
+    surfaces.integrate(mesh.clone(), &farsight_server::geometry::IDENTITY, Vec::new());
     assert_eq!(surfaces.keyframes.len(), 1);
     // Same pose again is skipped (delta < 0.18m, angle < 14deg).
-    surfaces.integrate(mesh.clone(), &farsight_server::geometry::IDENTITY);
+    surfaces.integrate(mesh.clone(), &farsight_server::geometry::IDENTITY, Vec::new());
     assert_eq!(surfaces.keyframes.len(), 1);
     let encoded = surfaces.encode();
     assert_eq!(encoded.len(), 8 + 16 * 3 + 4 * 3);

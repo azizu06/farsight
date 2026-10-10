@@ -130,6 +130,7 @@ Optional pose fields (YOLO11-pose), present when the detector is a pose model:
 
 - `kpts`: 17 COCO keypoints (nose, eyes, ears, shoulders, elbows, wrists, hips, knees, ankles), each `[x, y, conf]`. Omitted if the detector has no pose.
 - `down`: true when the person looks fallen (body axis more than 60 degrees from vertical, or a wide box when keypoints are unreliable). Omitted fields mean false/absent; clients must ignore unknown fields.
+- `world` (optional): `[x, y, z]` metres in the map frame (ARKit world, Y up) of a tracked person's torso, from the median confident LiDAR depth in the box centre of the exact RGB-D frame it was detected on. Absent for RGB-only or estimated-depth sources and when too few depth samples are valid. The Quest draws a labeled, expiring `PERSON #id` capsule there (`quest/src/person-markers.js`); it is never fused into the map.
 - `id` is stable across frames: the server runs a small IoU + velocity tracker (`jetson/tracker.py`) over every detector mode, keeping an id through brief dropouts (about 5 frames or 2 s) and never reusing one. Clients may rely on it for `target_id`.
 
 ## WebSocket `/ws/control` (Quest -> Jetson), JSON, 20 Hz timer plus one per new permit while the deadman is held
@@ -812,3 +813,24 @@ encoding, headset display or stereo. The initial renderer contract uses the
 `stereo: false`; renderer message semantics and pose validation belong to the
 renderer/viewer owners. Render/pose timestamps do not establish physical
 camera freshness and never enter `/ws/control` through this transport.
+
+The Quest AUTO viewer (`?macview=1`, `quest/src/mac-auto.ts`) sends pose
+version 1 unchanged: `type`, `version`, `sent_mono_ms`, `sent_wall_ms`, `head`,
+and `ray` (currently `null`). `head` is in **AR-map coordinates**, not raw
+headset coordinates. It adds these optional fields, which a v1 renderer may
+ignore:
+
+| Field | Meaning |
+|---|---|
+| `pose_id` | Monotonic per Quest page. Renderers should echo it in `video_segment.pose`. |
+| `space` | `"ar_map"`. |
+| `session_id` | New per AUTO entry. |
+| `map_revision` | Point revision of the Quest's local map, or `null`. |
+| `viewer` | `{x, y, z, yaw}` of `mapWalk`. |
+| `eyes[]` | `{position, quaternion, projection[16]}` per XR eye, in map coordinates. `projection` is column-major. |
+| `fov_y_deg`, `aspect` | The picture the Quest would like to receive. |
+| `stereo` | `false`. |
+
+The viewer finds a frame's render pose by the echoed `pose_id`, or failing
+that by an exact `sent_mono_ms`. It sizes the picture from the echoed
+`video_segment.fov_y_deg`, which defaults to 50.
