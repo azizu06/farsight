@@ -92,7 +92,21 @@ Every connection starts with a text JSON v1 `hello`, a new UUID `session_id`,
 RGB packets are `[uint32 LE header bytes][UTF-8 JSON][JPEG]`, with v1
 `type: "rgb_frame"`, `session_id`, increasing `frame_id`, monotonic `t_capture`,
 `t_wall_ms`, and the actual `jpeg_len`. Extra width/height/tracking metadata is
-included. Pro packets use the calibrated v1 `frame` header and append JPEG,
+included. Both modes optionally include `producer_delay_ms`: a local monotonic
+interval from entry into the ARKit frame callback through JPEG/depth/confidence
+buffer construction, sampled immediately before JSON framing. This measures
+encoding work only. It excludes camera/ARKit work before the callback, JSON
+framing afterward, send queue/network time, and server decode/queue time.
+
+Apple's [ARFrame timestamp contract](https://developer.apple.com/documentation/arkit/arframe/timestamp)
+does not specify a shared clock origin with
+[ProcessInfo.systemUptime](https://developer.apple.com/documentation/foundation/processinfo/systemuptime),
+so the app does not subtract those values or claim `producer_delay_ms` is full
+capture age. The server can account for the reported interval in addition to
+its independently measured receipt/decode/queue timing. Older packets omit
+this optional field and remain valid.
+
+Pro packets use the calibrated v1 `frame` header and append JPEG,
 little-endian Float32 measured depth, and UInt8 confidence as specified in
 `docs/mapping.md`. No estimated or simulated depth is sent.
 

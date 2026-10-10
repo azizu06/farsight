@@ -15,6 +15,8 @@ import numpy as np
 
 from jetson.mapping.phone import decode_frame
 from jetson.mapping.server import create_app
+from jetson.mapping.state import MapState
+from jetson.camera import CameraService
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -111,6 +113,17 @@ class NativeWireTests(unittest.TestCase):
                 self.assertEqual(health["camera_source"], "IPHONE LIDAR")
                 self.assertGreater(health["points"], 0)
                 self.assertEqual(health["position"], [1, 2, 3])
+
+    def test_optional_producer_interval_passes_through_native_framing(self):
+        header = dict(self.rgb_header(), producer_delay_ms=37.25)
+        packet = self.packet(header, self.jpeg)
+        length = struct.unpack_from("<I", packet)[0]
+        self.assertEqual(json.loads(packet[4:4 + length])["producer_delay_ms"], 37.25)
+        self.assertEqual(packet[4 + length:], self.jpeg)
+        camera = CameraService(MapState())
+        self.assertEqual(camera.accept_phone_rgb(packet, "native-test"), 0)
+        self.assertEqual(camera.status()["camera_source"], "PHONE RGB")
+
 
     def test_endpoint_mode_selection_and_invalid_urls(self):
         for supplied, mode, expected in (

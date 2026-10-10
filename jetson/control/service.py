@@ -11,8 +11,8 @@ from .state import ControlState
 
 
 class ControlService:
-    def __init__(self, serial_port=None, simulate=False, max_pwm=100, camera_ready=None):
-        self.state = ControlState(simulated=simulate, max_pwm=max_pwm, camera_ready=camera_ready)
+    def __init__(self, serial_port=None, simulate=False, max_pwm=100, camera_ready=None, min_pwm=0):
+        self.state = ControlState(simulated=simulate, max_pwm=max_pwm, camera_ready=camera_ready, min_pwm=min_pwm)
         self.pump = SerialPump(self.state, port=serial_port, simulate=simulate)
         self.router = APIRouter()
         self.router.add_api_websocket_route("/ws/control", self.websocket)
@@ -79,5 +79,5 @@ class ControlService:
                 task.cancel()
                 with suppress(asyncio.CancelledError, WebSocketDisconnect, OSError, RuntimeError, asyncio.TimeoutError):
                     await task
-            with suppress(RuntimeError, OSError):
+            with suppress(RuntimeError, OSError, WebSocketDisconnect):
                 await ws.close()

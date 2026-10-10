@@ -385,3 +385,6 @@ canvas:focus-visible {
 .local-assistant p { font-size: 11px; line-height: 1.5; color: #bbc8d4; }
 .local-assistant a { color: #a6c9ec; font-size: 11px; }
 @media (max-width: 600px) { .rover-controls { bottom: 10px; left: 10px; width: calc(100vw - 20px); padding: 10px; } }
+.camera-mount-option { display: grid; gap: 7px; margin: 18px 0; color: #becbda; }
+.camera-mount-option select { width: 100%; padding: 8px; border: 1px solid #566478; border-radius: 3px; background: #263343; color: #e0e8f1; }
+.camera-mount-option small { font-size: 10px; line-height: 1.5; color: #a6b3c2; }
