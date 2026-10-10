@@ -69,8 +69,8 @@ confirmation prompt. The Jetson never executes it without that confirmation.
 
 ## WebSocket `/ws/points` (Jetson -> Quest), binary, 3D scan
 
-Little-endian: `uint32 n`, then `n * (float32 x, y, z, uint8 r, g, b, pad)`, metres, camera frame
-(x right, y up, z forward).
+Little-endian: `uint32 n`, then `n * (float32 x, y, z, uint8 r, g, b, pad)`, metres, rover frame at the scan position
+(x right, y up, z forward, origin at the camera with pan 0).
 
 ## Serial (Jetson <-> Uno), 115200 baud, newline-terminated ASCII
 
