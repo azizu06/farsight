@@ -100,6 +100,8 @@ export class RoverExperience {
   private recenterDown = false;
   private xrLive = true;
   private scanPending = false;
+  private scanGeneration = 0;
+  private scanReserved = false;
   private scanPendingCancelled = false;
   private scanArmed = false;
   private scanning = false;
@@ -356,6 +358,7 @@ export class RoverExperience {
   stop(reason: string) {
     // An accepted go-to goal stays armed (see AutonomyIntent.release); motion still needs a fresh deadman press.
     this.autonomy.release();
+    this.scanGeneration++; this.scanReserved = false;
     if (this.scanPending) this.scanPendingCancelled = true;
     this.scanArmed = false;
     this.scanning = false;
@@ -379,7 +382,7 @@ export class RoverExperience {
           if (newSession) this.resetSessionView();
           this.nav = parseNav(next.nav);
           // The next held heartbeat after end_scan reports release_required before most status ticks; pollScan decides complete vs aborted.
-          if ((this.scanning || (this.scanPending && !this.scanPendingCancelled)) && next.requires_release && (next.reason === "scan_finished" || next.reason === "release_required")) this.scanCompleting = true;
+          this.observeScanStatus(next);
           if (typeof next.seq === "number" && this.sent.has(next.seq)) this.ackMs = performance.now() - this.sent.get(next.seq)!;
           if (next.requires_release) this.gate.invalidate(next.reason ?? "Release deadman to continue");
           // Spend a new permit at once while driving: waiting for the next 50 ms
@@ -806,6 +809,11 @@ export class RoverExperience {
     this.lastSendAt = performance.now();
     this.lastDeadman = deadman;
   }
+  private observeScanStatus(next: ControlStatus) {
+    if (this.scanPending && !this.scanPendingCancelled && next.mode === "scan") this.scanReserved = true;
+    if ((this.scanning || (this.scanPending && !this.scanPendingCancelled && this.scanReserved)) &&
+        next.requires_release && (next.reason === "scan_finished" || next.reason === "release_required")) this.scanCompleting = true;
+  }
   private async startScan() {
     if (this.scanPending || this.scanning) return;
     if (this.autonomy.mode !== "teleop" || !this.input.held || this.input.v || this.input.w || this.gate.needsRelease ||
@@ -814,6 +822,8 @@ export class RoverExperience {
       return;
     }
     this.send(true);
+    const generation = ++this.scanGeneration;
+    this.scanReserved = false; this.scanCompleting = false;
     this.scanPendingCancelled = false;
     this.scanPending = true;
     const abort = new AbortController(), timer = window.setTimeout(() => abort.abort(), 1000);
@@ -822,24 +832,32 @@ export class RoverExperience {
         body: JSON.stringify({ session_id: this.status?.session_id, permit: this.status?.permit }), signal: abort.signal });
       if (!response.ok) throw new Error(String((await response.json()).detail ?? response.status));
       const result = await response.json();
-      if (this.scanPendingCancelled) return; // a late 202 must not rearm a cancelled reservation
+      if (generation !== this.scanGeneration || this.scanPendingCancelled) return; // a late reply cannot rearm a cancelled reservation
       this.scanning = true;
       this.scanMessage = `${result.simulated ? "SIMULATED · " : ""}Scanning${result.approximate ? " · approximate rover turn" : " · physical pan"}; keep holding deadman`;
-    } catch (error) { this.scanMessage = `Scan unavailable: ${String(error)}`; this.stop(this.scanMessage); }
+    } catch (error) {
+      if (generation !== this.scanGeneration) return;
+      this.scanMessage = `Scan unavailable: ${String(error)}`; this.stop(this.scanMessage);
+    }
     finally { this.scanPending = false; window.clearTimeout(timer); }
   }
   private async pollScan() {
+    if (this.scanPending && !this.scanReserved) return;
+    const generation = this.scanGeneration;
     const abort = new AbortController(), timer = window.setTimeout(() => abort.abort(), 1000);
     try {
       const response = await fetch("/scan", { cache: "no-store", signal: abort.signal });
       if (!response.ok) throw new Error(`Scan status ${response.status}`);
       const result = await response.json();
-      if ((!this.scanning && !this.scanPending) || result.running) return;
+      if (generation !== this.scanGeneration || (!this.scanning && !this.scanPending) || result.running) return;
       this.scanMessage = result.state === "complete" ?
         `${result.points.toLocaleString()} points · ${(result.scan_ms / 1000).toFixed(1)} s${result.approximate ? " · approximate" : ""}` : `Scan aborted: ${result.error}`;
       this.stop(this.scanMessage);
       if (result.state === "complete") { this.xrLive = false; this.setView("3d"); }
-    } catch (error) { this.scanMessage = String(error); this.stop("Scan status unavailable"); }
+    } catch (error) {
+      if (generation !== this.scanGeneration) return;
+      this.scanMessage = String(error); this.stop("Scan status unavailable");
+    }
     finally { window.clearTimeout(timer); }
   }
   private drawCamera(now: number) {

@@ -34,7 +34,7 @@ function fixture() {
   Object.assign(view, { gate, status, socket, renderer: { xr: { isPresenting: false } },
     getView: () => 'camera', inputValid: true, contextLost: false, lastCanvasDraw: clock,
     input: { held: true, v: 0, w: 0, pan: 0 }, lastSendAt: clock - 25, lastDeadman: true,
-    scanPending: false, scanPendingCancelled: false, scanning: false, scanCompleting: false, scanArmed: false,
+    scanPending: false, scanGeneration: 0, scanReserved: false, scanPendingCancelled: false, scanning: false, scanCompleting: false, scanArmed: false,
     scanPollAt: clock, digitalPan: true, seq: 1, sent: new Map(), autonomy: new AutonomyIntent() });
   return { view, gate, socket, sent };
 }
@@ -123,7 +123,7 @@ test('late successful POST cannot rearm a reservation cancelled by newly sampled
 
 test('completion observed before POST delivery polls before classifying a held stick or release latch as abort', () => {
   const { view, gate, sent } = fixture();
-  view.scanPending = true; view.scanCompleting = true; view.scanPollAt = -200;
+  view.scanPending = true; view.scanReserved = true; view.scanCompleting = true; view.scanPollAt = -200;
   view.input.v = .35; gate.invalidate('release_required');
   let polls = 0; view.pollScan = () => { polls++; };
   view.pump();
@@ -135,7 +135,7 @@ test('completion observed before POST delivery polls before classifying a held s
 
 test('pending completion poll accepts the authoritative result without waiting for the POST response', async () => {
   const { view } = fixture();
-  view.scanPending = true; view.scanCompleting = true;
+  view.scanPending = true; view.scanReserved = true; view.scanCompleting = true;
   let selected;
   view.setView = next => { selected = next; };
   fetchImpl = async () => ({ ok: true, json: async () => ({ state: 'complete', running: false,
@@ -144,4 +144,43 @@ test('pending completion poll accepts the authoritative result without waiting f
   assert.equal(selected, '3d'); assert.equal(view.scanning, false);
   assert.equal(view.scanPendingCancelled, true, 'late POST must not overwrite the completed result');
   assert.match(view.scanMessage, /123 points/);
+});
+
+
+test('old release latch cannot complete a pending scan before a reservation is observed', async () => {
+  const { view } = fixture();
+  view.scanPending = true;
+  view.observeScanStatus({ requires_release: true, reason: 'release_required', mode: 'teleop' });
+  assert.equal(view.scanCompleting, false);
+  let polls = 0;
+  fetchImpl = async () => { polls++; return { ok: true, json: async () => ({ state: 'complete', points: 999 }) }; };
+  await view.pollScan();
+  assert.equal(polls, 0, 'the previous result is not fetched for an unreserved POST');
+  view.observeScanStatus({ mode: 'scan' });
+  view.observeScanStatus({ requires_release: true, reason: 'release_required', mode: 'teleop' });
+  assert.equal(view.scanCompleting, true, 'a witnessed reservation can finish before its POST response');
+});
+
+test('an old completion poll cannot stop or select the map for a later scan', async () => {
+  const { view } = fixture(); view.scanning = true;
+  let deliver, selected;
+  view.setView = next => { selected = next; };
+  fetchImpl = () => new Promise(resolve => { deliver = resolve; });
+  const oldPoll = view.pollScan();
+  view.stop('operator cancelled');
+  view.scanGeneration++; view.scanning = true; view.scanMessage = 'new scan running';
+  deliver({ ok: true, json: async () => ({ state: 'complete', running: false, points: 999, scan_ms: 400 }) });
+  await oldPoll;
+  assert.equal(view.scanning, true); assert.equal(view.scanMessage, 'new scan running');
+  assert.equal(selected, undefined);
+});
+
+test('a late failed POST cannot replace an explicit cancellation reason', async () => {
+  const { view } = fixture(); let reject;
+  fetchImpl = () => new Promise((_, fail) => { reject = fail; });
+  const pending = view.startScan();
+  view.stop('Stopped by B'); view.scanMessage = 'Stopped by B';
+  reject(new Error('late transport timeout')); await pending;
+  assert.equal(view.scanMessage, 'Stopped by B'); assert.equal(view.scanning, false);
+  assert.equal(view.scanPending, false);
 });
