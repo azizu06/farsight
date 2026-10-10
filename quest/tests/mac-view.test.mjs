@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { frameAgeMs, poseMessage, shouldSendPose, POSE_HZ, LABEL } from "../src/mac-view.ts";
+import { socketUrl, videoSocketUrl } from "../src/mac-view-urls.js";
+import {
+  frameAgeMs, poseMessage, rightInputIndex, shouldSendPose, POSE_HZ, LABEL, MacView,
+} from "../src/mac-view.ts";
 
 test("frame age is now minus the capture timestamp", () => {
   assert.equal(frameAgeMs(1_000, 1_040), 40);
@@ -27,4 +30,31 @@ test("poses stay at or under 72 Hz and the label says this is not stereo", () =>
   assert.equal(shouldSendPose(0, 1000 / POSE_HZ - 0.01), false);
   assert.equal(shouldSendPose(0, 1000 / POSE_HZ), true);
   assert.match(LABEL, /not stereo/);
+});
+
+test("?mac= moves both sockets, and a path still stays on the page", () => {
+  assert.equal(socketUrl("http://127.0.0.1:8091", "/ws/macview"), "ws://127.0.0.1:8091/ws/macview");
+  assert.equal(socketUrl("http://127.0.0.1:8091", "/ws/macview-pose"), "ws://127.0.0.1:8091/ws/macview-pose");
+  assert.equal(videoSocketUrl("/ws/video", "http://127.0.0.1:8080/"), "ws://127.0.0.1:8080/ws/video");
+  assert.equal(
+    videoSocketUrl("ws://127.0.0.1:8091/ws/macview", "http://127.0.0.1:8092/"),
+    "ws://127.0.0.1:8091/ws/macview",
+  );
+});
+
+test("right controller is matched by hand, not by index 0", () => {
+  assert.equal(rightInputIndex([{ handedness: "left" }, { handedness: "right" }]), 1);
+  assert.equal(rightInputIndex([{ handedness: "none" }]), -1);
+});
+
+test("a sidecar paints a non-empty frame age", () => {
+  const panel = { append() {} };
+  globalThis.document = { createElement: () => ({ className: "", textContent: "" }) };
+  const view = new MacView("http://127.0.0.1:8090", panel, {
+    video: {}, start() {}, stop() {},
+    lastMessage: { macview: "macview_segment", capture_wall_ms: Date.now() - 40 },
+  });
+  view.tick();
+  assert.match(view.age.textContent, /frame age \d+ ms/);
+  assert.ok(view.frameAgeMs >= 0);
 });

@@ -1,5 +1,8 @@
 import { sampleFrame } from "./camera-view.js";
+import { videoSocketUrl } from "./mac-view-urls.js";
 import { VideoRequests } from "./video-requests.js";
+
+export { videoSocketUrl };
 type Segment = {
   request_id: number; media_start_s: number; media_end_s: number;
   frame: number | string; age_ms: number; source: string; server_wait_ms?: number;
@@ -32,8 +35,10 @@ export class H264Viewer {
   private callbackSupported = "requestVideoFrameCallback" in this.video;
   /** Decoder processing time of the last presented frame, for diagnostics only. */
   decodeMs: number | null = null;
+  /** Last video_init / video_segment JSON. The Mac view reads this for frame age. */
+  lastMessage: Record<string, unknown> | null = null;
 
-  constructor(private onFrame: () => void, private onReset: () => void, readonly streamPath = "/ws/video") {
+  constructor(private onFrame: () => void, private onReset: () => void, readonly streamUrl = "/ws/video") {
     this.video.muted = true; this.video.autoplay = true; this.video.playsInline = true;
     this.video.onerror = () => this.reset("Decoder error: restarting H.264");
   }
@@ -64,12 +69,13 @@ export class H264Viewer {
     if (this.stopped || this.connecting) return;
     if (!("MediaSource" in window)) { this.state = "H.264 unavailable: MediaSource unsupported"; this.stopped = true; return; }
     this.connecting = true;
-    const socket = new WebSocket(new URL(this.streamPath, location.origin).href.replace(/^http/, "ws"));
+    const socket = new WebSocket(videoSocketUrl(this.streamUrl, location.href));
     this.socket = socket; socket.binaryType = "arraybuffer";
     socket.onmessage = event => {
       if (typeof event.data === "string") {
         try {
           const message = JSON.parse(event.data);
+          this.lastMessage = message;
           if (message.type === "video_init") {
             if (typeof message.mime !== "string" || !MediaSource.isTypeSupported(message.mime)) {
               this.state = "H.264 codec unsupported: use JPEG"; this.stop(false); return;

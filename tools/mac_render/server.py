@@ -9,6 +9,7 @@ import asyncio
 import base64
 import json
 import shutil
+import struct
 import time
 from contextlib import suppress
 from pathlib import Path
@@ -18,8 +19,9 @@ from aiohttp import WSMsgType, web
 from .encode import screencast_to_ffmpeg, videobox_available
 from .mp4 import Mp4Reader, fragment_timing
 from .protocol import (
-    POSE_STALE_MS,
+    oldest_of,
     parse_pose,
+    pose_is_stale,
     pose_to_frame_ms,
     segment_sidecar,
 )
@@ -40,9 +42,12 @@ class RenderEncoder:
         self.encoder = None
         self.error = None
         self.frame_id = 0
-        self.fragments = asyncio.Queue(maxsize=4)
+        self.fragments = asyncio.Queue(maxsize=8)
+        self.viewers = set()
+        self.keyframe = None
         self.latest_pose = None
         self.samples = []
+        self._in_flight = []
         self._tasks = []
         self._screencast = None
 
@@ -63,10 +68,11 @@ class RenderEncoder:
 
     def apply_pose(self, message, now_mono_ms):
         pose = parse_pose(message, now_mono_ms)
-        if now_mono_ms - pose["sent_mono_ms"] > POSE_STALE_MS and pose["sent_mono_ms"] > 0:
-            # Viewer clock is not our clock. Stale is judged on our receipt age only
-            # when the viewer clock happens to match. Always keep the newest.
-            pass
+        # Drop the pose the Mac has already been holding past the limit, then
+        # take this one. Both ends of that check are the Mac monotonic clock.
+        # A message that just arrived has not been held at all.
+        if self.latest_pose is not None and pose_is_stale(self.latest_pose, now_mono_ms):
+            self.latest_pose = None
         self.latest_pose = pose
         return pose
 
@@ -96,18 +102,24 @@ class RenderEncoder:
             " pose: window.__mac && window.__mac.poseEcho || null })")
         jpeg = base64.b64decode(params["data"])
         self.frame_id += 1
-        self.samples.append({
+        drawn = meta.get("pose") or None
+        arrived = time.monotonic()
+        sample = {
             "frame_id": self.frame_id,
-            "capture_mono_ms": time.monotonic() * 1000,
+            "capture_mono_ms": arrived * 1000,
             "capture_wall_ms": time.time() * 1000,
             "render_ms": meta.get("renderMs") or 0,
             "capture_ms": round((time.monotonic() - started) * 1000, 3),
             "source": meta.get("source") or "WAITING",
-            "pose": meta.get("pose") or self._pose_echo(),
-        })
+            "pose": drawn,
+        }
+        self.samples.append(sample)
         del self.samples[:-600]
         if self.process and self.process.stdin and self.process.returncode is None:
             self.process.stdin.write(jpeg)
+            sample["arrived_mono"] = arrived
+            sample["fed_mono"] = time.monotonic()
+            self._in_flight.append(sample)
             with suppress(Exception):
                 await self.process.stdin.drain()
         with suppress(Exception):
@@ -133,31 +145,60 @@ class RenderEncoder:
                     self.init = data
                     self.mime = self.reader.mime
                     continue
-                encode_started = time.monotonic()
-                first, count, start, end = fragment_timing(data, self.fps)
-                # fragment_timing's index assumes frames were fed at `fps` from
-                # t=0. CDP does not deliver that, so take the newest capture.
-                newest = self.samples[-1] if self.samples else {
+                _first, count, start, end = fragment_timing(data, self.fps)
+                covered = self._in_flight[:count]
+                del self._in_flight[:count]
+                # The fragment holds every frame from the oldest fed JPEG to
+                # this mdat. Age is the oldest, or the picture looks newer
+                # than it is. Encode time is that JPEG hitting stdin until
+                # the fragment comes back out.
+                oldest = oldest_of(covered, count) or {
                     "frame_id": self.frame_id, "capture_mono_ms": time.monotonic() * 1000,
                     "capture_wall_ms": time.time() * 1000, "render_ms": 0, "capture_ms": 0,
-                    "source": "WAITING", "pose": self._pose_echo(),
+                    "source": "WAITING", "pose": None, "fed_mono": time.monotonic(),
                 }
+                fed = oldest.get("fed_mono") or time.monotonic()
+                arrived = oldest.get("arrived_mono") or fed
+                encode_ms = (time.monotonic() - fed) * 1000
+                # Screenshot to fragment, including the wait to hand the JPEG
+                # to the encoder. encode_ms is the encoder's own time.
+                sidecar_queue_ms = (fed - arrived) * 1000
                 sidecar = segment_sidecar(
-                    newest["frame_id"], newest.get("pose"), newest["capture_mono_ms"],
-                    newest["capture_wall_ms"], start, end, request_id=None,
-                    source=newest.get("source") or "MAC RENDER",
-                    encode_ms=(time.monotonic() - encode_started) * 1000,
-                    render_ms=newest.get("render_ms") or 0,
-                    capture_ms=newest.get("capture_ms") or 0,
+                    oldest["frame_id"], oldest.get("pose"), oldest["capture_mono_ms"],
+                    oldest["capture_wall_ms"], start, end, request_id=None,
+                    source=oldest.get("source") or "MAC RENDER",
+                    encode_ms=encode_ms,
+                    render_ms=oldest.get("render_ms") or 0,
+                    capture_ms=oldest.get("capture_ms") or 0,
                 )
+                sidecar["queue_ms"] = round(sidecar_queue_ms, 3)
                 sidecar["encoder"] = self.encoder
                 sidecar["bytes"] = len(data)
-                sidecar["pose_to_frame_ms"] = pose_to_frame_ms(newest.get("pose"), newest["capture_mono_ms"])
-                item = {"sidecar": sidecar, "payload": data}
-                if self.fragments.full():
-                    with suppress(asyncio.QueueEmpty):
-                        self.fragments.get_nowait()
-                self.fragments.put_nowait(item)
+                sidecar["frames"] = count
+                sidecar["pose_to_frame_ms"] = pose_to_frame_ms(
+                    oldest.get("pose"), oldest["capture_mono_ms"])
+                item = {"sidecar": sidecar, "payload": data, "keyframe": _is_keyframe(data)}
+                if item["keyframe"]:
+                    self.keyframe = item
+                self._publish(item)
+
+    def _publish(self, item):
+        """One copy per viewer, plus a short replay for a viewer that joins late.
+
+        Dropping the oldest fragment would drop a frame later pictures depend
+        on, so a full queue drops the whole viewer rather than a fragment.
+        """
+        stale = [viewer for viewer in self.viewers if viewer.full()]
+        for viewer in stale:
+            self.viewers.discard(viewer)
+        for viewer in list(self.viewers):
+            with suppress(asyncio.QueueFull):
+                viewer.put_nowait(item)
+        if self.fragments.full():
+            with suppress(asyncio.QueueEmpty):
+                self.fragments.get_nowait()
+        with suppress(asyncio.QueueFull):
+            self.fragments.put_nowait(item)
 
     async def _stderr(self):
         while line := await self.process.stderr.readline():
@@ -216,8 +257,15 @@ class App:
             "mime": encoder.mime, "source": "MAC RENDER",
             "width": self.args.width, "height": self.args.height,
             "fps": self.args.fps, "stereo": False,
+            "encoder": encoder.encoder,
         })
         await socket.send_bytes(encoder.init)
+        queue = asyncio.Queue(maxsize=8)
+        # Start on a keyframe so a late join is not handed a fragment whose
+        # earlier frames it never saw.
+        if encoder.keyframe is not None:
+            queue.put_nowait(encoder.keyframe)
+        encoder.viewers.add(queue)
         async for message in socket:
             if message.type != WSMsgType.TEXT:
                 continue
@@ -228,13 +276,14 @@ class App:
             if body.get("type") != "next":
                 continue
             try:
-                item = await asyncio.wait_for(encoder.fragments.get(), timeout=2)
+                item = await asyncio.wait_for(queue.get(), timeout=2)
             except asyncio.TimeoutError:
                 await socket.send_json({"type": "macview_error", "reason": "no fragment"})
                 continue
             sidecar = dict(item["sidecar"], request_id=body.get("request_id"))
             await socket.send_json(sidecar)
             await socket.send_bytes(item["payload"])
+        encoder.viewers.discard(queue)
         return socket
 
     async def pose(self, request):
@@ -254,7 +303,8 @@ class App:
                     """(pose) => { window.__macPose = {
                       position: pose.position, quaternion: pose.quaternion, ray: pose.ray,
                       sentMonoMs: pose.sent_mono_ms, sentWallMs: pose.sent_wall_ms,
-                      receivedMonoMs: pose.received_mono_ms }; }""",
+                      receivedMonoMs: pose.received_mono_ms,
+                      pageMonoMs: performance.now() }; }""",
                     pose)
         return socket
 
@@ -277,10 +327,34 @@ def create_app(args, browser=None, page=None):
 
     web_app.router.add_get("/render/{tail:.*}", files(HERE))
     web_app.router.add_get("/quest/{tail:.*}", files(ROOT / "quest"))
+    dist = ROOT / "quest" / "dist"
+    if dist.is_dir():
+        web_app.router.add_get("/", viewer_index(dist))
+        web_app.router.add_get("/macview.html", viewer_index(dist))
+        web_app.router.add_get("/assets/{tail:.*}", files(dist / "assets"))
     if args.upstream:
         web_app.router.add_get("/map/{tail:.*}", proxy(args.upstream))
         web_app.router.add_get("/health/map", proxy_one(args.upstream, "/health"))
     return web_app
+
+
+def viewer_index(dist):
+    async def send(_request):
+        page = dist / "macview.html"
+        if not page.is_file():
+            raise web.HTTPNotFound()
+        return web.FileResponse(page)
+    return send
+
+
+def _is_keyframe(data):
+    """A fragment that carries an IDR, so a late viewer can start on it."""
+    offset = data.find(b"tfhd")
+    if offset >= 0 and len(data) > offset + 16:
+        flags = struct.unpack_from(">I", data, offset + 8)[0]
+        if flags & 0x020000:
+            return True
+    return b"\x00\x00\x00\x01\x65" in data or b"\x00\x00\x01\x65" in data
 
 
 def proxy(upstream):
@@ -311,7 +385,10 @@ async def open_page(args):
               "--disable-renderer-backgrounding", f"--window-size={args.width},{args.height}"],
     )
     page = await browser.new_page(viewport={"width": args.width, "height": args.height})
-    query = f"upstream=http://127.0.0.1:{args.port}&width={args.width}&height={args.height}"
+    query = (
+        f"upstream=http://127.0.0.1:{args.port}&width={args.width}&height={args.height}"
+        f"&style={args.style}"
+    )
     page.on("pageerror", lambda error: print(f"render page: {error}", flush=True))
     page.on("console", lambda message: print(f"render console: {message.text}", flush=True))
     await page.goto(f"http://127.0.0.1:{args.port}/render/render.html?{query}")
@@ -340,6 +417,8 @@ def parse_args(argv=None):
     parser.add_argument("--no-browser", action="store_true", help="Serve sockets only; tests use this")
     parser.add_argument("--headed", action="store_true")
     parser.add_argument("--browser", help="Chromium binary, if Playwright has not downloaded its own")
+    parser.add_argument("--style", choices=("lit", "unlit"), default="lit",
+                        help="lit is the Mac render look. unlit is the old flat look, for the before shot")
     return parser.parse_args(argv)
 
 
@@ -362,10 +441,17 @@ def main(argv=None):
             web_app["mac"].browser = browser
             web_app["mac"].page = page
             await web_app["mac"].start_encoder()
-        print(f"Mac view on ws://127.0.0.1:{args.port}/ws/macview (visual only, not stereo)", flush=True)
+        print(f"Mac view on http://127.0.0.1:{args.port}/ (visual only, not stereo)", flush=True)
+        print(f"stream ws://127.0.0.1:{args.port}/ws/macview", flush=True)
 
-    loop.run_until_complete(boot())
-    loop.run_forever()
+    try:
+        loop.run_until_complete(boot())
+        loop.run_forever()
+    finally:
+        sim = web_app.get("sim")
+        if sim is not None:
+            from .sim import stop_sim
+            stop_sim(sim)
 
 
 if __name__ == "__main__":

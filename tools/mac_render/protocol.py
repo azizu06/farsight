@@ -39,6 +39,18 @@ def quaternion(value):
     return [item / length for item in raw]
 
 
+def pose_is_stale(pose, now_mono_ms, limit_ms=POSE_STALE_MS):
+    """True when the Mac has held this pose longer than the limit.
+
+    Both clocks are the Mac monotonic clock. The viewer's own timestamp is
+    never compared against ours, because those clocks are not the same.
+    """
+    received = pose.get("received_mono_ms") if isinstance(pose, dict) else None
+    if not finite(received) or not finite(now_mono_ms):
+        return True
+    return now_mono_ms - received > limit_ms
+
+
 def parse_pose(message, now_mono_ms):
     """Validate a pose. Returns the applied record, or raises ValueError."""
     if not isinstance(message, dict) or message.get("type") != "pose":
@@ -70,6 +82,13 @@ def parse_pose(message, now_mono_ms):
             raise ValueError("zero ray")
         pose["ray"] = {"origin": vec(ray.get("origin"), 3), "direction": direction}
     return pose
+
+
+def oldest_of(samples, count):
+    """The first frame inside a fragment, not the newest one stamped on it."""
+    if not samples or count < 1:
+        return None
+    return samples[-count] if len(samples) >= count else samples[0]
 
 
 def segment_sidecar(frame_id, pose, capture_mono_ms, capture_wall_ms, media_start_s, media_end_s,
