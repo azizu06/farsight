@@ -129,6 +129,12 @@ struct Args {
     /// 500 ms motion stop.
     #[arg(long, default_value_t = 0.0)]
     video_limit_mbps: f64,
+    /// #134 demo guard: transient stops still stop the motors but do not
+    /// latch requires_release (next held heartbeat resumes), and teleop
+    /// drives by hand with no camera-freshness gate. Env FARSIGHT_DEMO_MODE.
+    /// Off by default.
+    #[arg(long)]
+    demo_mode: bool,
     /// Opt-in bonded upstream control: adds /ws/control/bonded for trusted
     /// operator-relay paths; /ws/control single-owner behaviour unchanged
     #[arg(long)]
@@ -293,6 +299,8 @@ async fn main() {
         ),
         args.fusion_bypass
             || matches!(std::env::var("FARSIGHT_FUSION_BYPASS").ok().as_deref(), Some("1") | Some("true") | Some("on")),
+        args.demo_mode
+            || matches!(std::env::var("FARSIGHT_DEMO_MODE").ok().as_deref(), Some("1") | Some("true") | Some("on")),
     );
     server::start_services(&state);
     let dist = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../quest/dist");

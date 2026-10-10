@@ -90,7 +90,8 @@ fn scripted_drive_estop_and_release_summarise() {
 fn real_control_status_packets_drive_the_summary() {
     let state = farsight_server::control::ControlState::new(
         true, 0, 100, None, None, None, None, false, true, "servo", None, None,
-    )
+    
+            false,)
     .unwrap();
     let mission = Mission::new(None, false).unwrap();
     state.set_connected(true, None);
