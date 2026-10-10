@@ -137,8 +137,13 @@ step "TensorRT FP16 engines from the detector ONNX files (cached by ONNX hash; r
 if [ "$ENGINES" = 0 ]; then
   echo "skipped (--skip-engines)"
 elif compgen -G "$MODELS/yolo11n*.onnx" >/dev/null; then
+  # YOLO detection/pose engines. Failures are not fatal: the server runs the .onnx on CPU until the engine exists.
   (cd "$REPO" && run "$VENV/bin/python" -m jetson.build_engine "$MODELS"/yolo11n*.onnx) \
-    || warn "an engine build failed (see above); the server still runs the .onnx on CPU until it is fixed"
+    || warn "a YOLO engine build failed (see above); the server still runs the .onnx on CPU until it is fixed"
+  if compgen -G "$MODELS/depth_anything*.onnx" >/dev/null; then  # metric depth for 3D scans (#14)
+    (cd "$REPO" && run "$VENV/bin/python" -m jetson.build_engine "$MODELS"/depth_anything*.onnx) \
+      || warn "the depth engine build failed (see above); 3D scans fall back to the .onnx on CPU"
+  fi
 else
   warn "no models/yolo11n*.onnx yet: run tools/push_models.sh from the laptop, then re-run this script"
 fi

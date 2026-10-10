@@ -90,7 +90,7 @@ inference, network, or disk work in this callback.
 
 See [the additive protocol extension](../../docs/interfaces.md#optional-explore--seek-extension)
 for selection, override, arrival and target-loss behavior. Start the assembled
-hardware-free server with `python3 -m jetson.mapping.server --demo --simulate-rover`.
+hardware-free server with `python3 -m jetson.server --demo --simulate-rover`.
 The demo camera does not invent person detections. `test_full_server.py` injects
 explicit fake inference snapshots into the real demo server to exercise
 Explore → Seek, steering, target loss, stick override, and link-silence stops.
