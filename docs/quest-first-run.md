@@ -60,6 +60,9 @@ python -m tools.demo --simulate --quest                  # simulated rover, JPEG
 # To rehearse H.264 separately, add --h264 (requires FFmpeg).
 ```
 
+Stop the simulator launcher with **Ctrl-C** before starting the live relay below.
+Both launchers use port 8080; run only one at a time.
+
 First run the bounded USB health check; it opens no control socket and requests
 no motion:
 
