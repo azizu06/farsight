@@ -254,8 +254,17 @@ class RenderSocketTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(failure.exception.status, 503)
         self.assertEqual(len(self.render_paths), 4)
         await self.sockets[0].close()
-        await asyncio.sleep(.05)
-        socket = await self.connect("/ws/macview-pose"); await socket.receive()
+        async def connect_after_cleanup():
+            # Admission remains occupied until bounded upstream/local teardown
+            # finishes; the peer close handshake alone does not prove that.
+            while True:
+                try:
+                    return await self.connect("/ws/macview-pose")
+                except aiohttp.WSServerHandshakeError as error:
+                    self.assertEqual(error.status, 503)
+                    await asyncio.sleep(.01)
+        socket = await asyncio.wait_for(connect_after_cleanup(), 1)
+        await socket.receive()
         self.assertEqual(len(self.render_paths), 5)
         await self.render_sockets[-1].close(code=1001)
         self.assertEqual((await socket.receive()).type, aiohttp.WSMsgType.CLOSE)
