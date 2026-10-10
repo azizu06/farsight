@@ -57,13 +57,28 @@ impl BulkPacer {
 }
 
 static PACER: OnceLock<BulkPacer> = OnceLock::new();
+static LIVE: OnceLock<BulkPacer> = OnceLock::new();
 
 pub fn init(rate_mbps: f64) {
     let _ = PACER.set(BulkPacer::new(rate_mbps));
+}
+
+/// Live-video lane (#124): camera/depth JPEG, MJPEG and /ws/video payloads
+/// get their own budget — a shared cap made each ~40 KB camera JPEG wait
+/// behind map snapshots and pushed headset video age past the 500 ms
+/// motion-stop threshold. Default 0 = unpaced.
+pub fn init_live(rate_mbps: f64) {
+    let _ = LIVE.set(BulkPacer::new(rate_mbps));
 }
 
 /// Wait for `n` bulk bytes of link credit before sending. Call only for
 /// non-control traffic; control/permit paths must stay unpaced.
 pub async fn pace(n: usize) {
     PACER.get_or_init(|| BulkPacer::new(0.0)).take(n).await;
+}
+
+/// Wait for `n` bytes on the live-video lane. Unpaced when the live cap is
+/// 0, so video always stays ahead of paced map bulk.
+pub async fn pace_live(n: usize) {
+    LIVE.get_or_init(|| BulkPacer::new(0.0)).take(n).await;
 }

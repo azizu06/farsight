@@ -123,6 +123,12 @@ struct Args {
     /// reserved headroom on a constrained link. 0 disables pacing.
     #[arg(long, default_value_t = 0.0)]
     bulk_limit_mbps: f64,
+    /// Separate live-video cap in Mbps (camera/depth JPEG, MJPEG, H.264);
+    /// env FARSIGHT_VIDEO_LIMIT_MBPS. 0 keeps video unpaced and ahead of
+    /// map bulk — sharing one budget pushed headset video age past the
+    /// 500 ms motion stop.
+    #[arg(long, default_value_t = 0.0)]
+    video_limit_mbps: f64,
     /// Opt-in bonded upstream control: adds /ws/control/bonded for trusted
     /// operator-relay paths; /ws/control single-owner behaviour unchanged
     #[arg(long)]
@@ -185,6 +191,16 @@ async fn main() {
     tracing_subscriber::fmt::init();
     let args = Args::parse();
     farsight_server::pacer::init(args.bulk_limit_mbps);
+    // Env fallback mirrors launch.py's FARSIGHT_VIDEO_LIMIT_MBPS float.
+    let video_limit = if args.video_limit_mbps > 0.0 {
+        args.video_limit_mbps
+    } else {
+        std::env::var("FARSIGHT_VIDEO_LIMIT_MBPS")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(0.0)
+    };
+    farsight_server::pacer::init_live(video_limit);
     if args.simulate_rover && args.serial_port.is_some() {
         panic!("--simulate-rover cannot be combined with --serial-port");
     }

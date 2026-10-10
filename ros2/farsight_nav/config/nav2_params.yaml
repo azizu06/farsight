@@ -314,3 +314,26 @@ lifecycle_manager_navigation:
     autostart: true
     bond_timeout: 4.0
     node_names: ["controller_server", "planner_server", "behavior_server", "bt_navigator"]
+
+# Explore selection runs at 1 Hz; the planning-gap arbiter runs at 20 Hz.
+farsight_bridge:
+  ros__parameters:
+    explore_min_corridor_width: 0.7
+    explore_approach_length: 1.2
+    explore_sensor_range: 4.0
+    explore_clearance_weight: 2.5
+    explore_information_weight: 3.0
+    explore_size_weight: 1.5
+    explore_distance_weight: 0.35
+    explore_turn_weight: 0.8
+    explore_clutter_weight: 3.0
+    explore_revisit_weight: 3.0
+    explore_revisit_decay_s: 60.0
+    explore_commitment_s: 4.0
+    explore_switch_margin: 0.8
+    explore_transition_distance: 0.6
+    explore_creep_mps: 0.2
+    explore_scan_radps: 0.82
+    explore_gap_budget_s: 4.0
+    explore_scan_budget_s: 10.0
+    explore_body_radius: 0.35

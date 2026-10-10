@@ -105,9 +105,11 @@ the headset:
 http://localhost:8080/?mount=fixed&h264=1&voice=1&diag=1
 ```
 
-- **H.264 video** (`h264=0|1`): tick for the cellular demo. If the HUD then reads
-  *H.264 codec unsupported* or never shows *decoded frame verified*, untick it
-  and stay on JPEG; Quest 2 H.264 playback is not yet verified.
+- **H.264 video** (`h264=0|1`): on by default when the rover server runs with
+  `--h264`, and the page falls back to JPEG on its own if no decoded frame is
+  verified within 6 s. If the HUD reads *H.264 codec unsupported* or never shows
+  *decoded frame verified*, set `h264=0` to stay on JPEG; Quest 2 H.264 playback
+  is not yet verified.
 - **Camera mounting** (`mount=fixed|servo`): use **fixed** for the phone camera.
   Servo mode sends head yaw as pan, and both the Jetson and the Uno block
   forward driving when pan is more than 10° off center. With nothing chosen,

@@ -36,7 +36,7 @@ from std_msgs.msg import String
 from std_srvs.srv import Trigger
 from tf2_ros import Buffer, StaticTransformBroadcaster, TransformBroadcaster, TransformListener
 
-from . import frames, frontiers, protocol
+from . import frames, frontiers, local_motion, protocol
 
 try:
     import websockets
@@ -108,6 +108,16 @@ class FarsightBridge(Node):
         self.inactive_cancel_s = p("inactive_cancel_s", 0.3).value
         self.explore = p("explore", True).value  # frontier exploration for the server's Explore mode
         self.explore_goal_timeout_s = p("explore_goal_timeout_s", 25.0).value
+        self.explore_config = frontiers.ExploreConfig(**{
+            name: p("explore_" + name, field.default).value
+            for name, field in frontiers.ExploreConfig.__dataclass_fields__.items()})
+        self.local_motion = local_motion.LocalMotion(
+            min_width=self.explore_config.min_corridor_width,
+            creep_mps=p("explore_creep_mps", 0.2).value,
+            turn_radps=p("explore_scan_radps", 0.82).value,
+            budget_s=p("explore_gap_budget_s", 4.0).value,
+            scan_budget_s=p("explore_scan_budget_s", 10.0).value)
+        self.swept = frontiers.SweptFootprint(radius=p("explore_body_radius", 0.35).value)
         # "events": rclpy's C++ EventsExecutor. The Python MultiThreadedExecutor
         # rebuilt its wait set on every TF/costmap/feedback wakeup and spent
         # most of a core doing it. Callbacks here never block, so one thread is enough.
@@ -169,7 +179,16 @@ class FarsightBridge(Node):
         self.cmd_times = []
         # Explore: the bridge picks frontier goals itself (no explore_lite for Jazzy).
         self.exploring = False
+        self.explorer = frontiers.Explorer(self.explore_config)
         self.global_grid = None
+        self.global_grid_at = -math.inf
+        self.local_support = None
+        self.depth_snapshot = None
+        self.depth_at = self.pose_at = -math.inf
+        self.nav_command = None
+        self.nav_command_at = -math.inf
+        self.no_frontier_since = None
+        self.explore_finished = False
         self.frontiers = []          # Frontier list in the map frame, newest search
         self.frontiers_odom = []     # [(x, y)] goal points in odom, for the viewer
         self.explore_target = None   # map (x, y) of the current frontier goal
@@ -177,7 +196,10 @@ class FarsightBridge(Node):
         self.explore_seq = 0
         self.blacklist = []          # map (x, y) of frontier goals Nav2 failed to reach
         self.create_timer(0.25, self.send_status)
-        self.create_timer(1.0, self.explore_tick)
+        self.explore_busy = False
+        self.explore_session = 0
+        self.create_timer(1.0, self.request_explore_tick)
+        self.create_timer(0.05, self.motion_tick)
 
     def check_lifecycle(self):
         if self.lifecycle_pending or not self.lifecycle.service_is_ready():
@@ -221,6 +243,13 @@ class FarsightBridge(Node):
             self.generation = message.get("generation")
             self.velocity = frames.VelocityEstimator()
             self.robot = None
+            self.global_grid, self.local_support, self.depth_snapshot = None, None, None
+            self.depth_at = self.pose_at = self.global_grid_at = -math.inf
+            self.explorer = frontiers.Explorer(self.explore_config)
+            self.swept = frontiers.SweptFootprint(self.swept.radius)
+            self.explore_session += 1
+            self.local_motion.reset()
+            self.explore_target, self.no_frontier_since = None, None
         self.cancel_goal(str(message.get("reason") or "sensor session changed"))
         for client in self.clear_costmaps:
             if client.service_is_ready():
@@ -247,6 +276,9 @@ class FarsightBridge(Node):
         with self.lock:
             twist = self.velocity.add(now, float(base_pos[0]), float(base_pos[1]), yaw)
             self.robot = (base_pos[0], base_pos[1], yaw)
+            self.swept.record(base_pos[:2])
+            age = max(0, (self.get_clock().now().nanoseconds - stamp_ns) / 1e9)
+            self.pose_at = time.monotonic() - age
         odom = Odometry()
         odom.header.stamp, odom.header.frame_id, odom.child_frame_id = stamp, self.odom_frame, self.base_frame
         odom.pose.pose.position.x, odom.pose.pose.position.y = float(base_pos[0]), float(base_pos[1])
@@ -263,6 +295,9 @@ class FarsightBridge(Node):
         # The frame carries its own pose: publish TF at the cloud's stamp so the costmap's
         # raytrace origin is the camera that actually captured these points.
         self.on_pose(dict(transform=header["transform"], floor_y=header.get("floor_y", -0.15)), stamp=stamp)
+        with self.lock:
+            self.depth_snapshot = (depth, header)
+            self.depth_at = time.monotonic() - max(0, float(header.get("age_ms") or 0) / 1000)
         points = frames.depth_points(depth, header["fx"], header["fy"], header["cx"], header["cy"])
         if len(points) > self.max_cloud_points:
             points = points[:: math.ceil(len(points) / self.max_cloud_points)]
@@ -289,7 +324,20 @@ class FarsightBridge(Node):
         exploring = bool(active and mode == "explore" and self.explore)
         with self.lock:
             if exploring and not self.exploring:
+                self.explore_session += 1
                 self.explore_target, self.blacklist = None, []  # a new Explore press starts fresh
+                self.no_frontier_since, self.explore_finished = None, False
+                # Keep decaying visits, start a separate commitment object so an
+                # older scoring result cannot arm this new operator press.
+                previous = self.explorer
+                self.explorer = frontiers.Explorer(self.explore_config)
+                self.explorer.visits = dict(previous.visits)
+                self.explorer.last_robot = previous.last_robot
+                self.local_motion.reset()
+                self.nav_command, self.nav_command_at = None, -math.inf
+            if self.exploring and not exploring:
+                self.local_motion.reset()
+                self.nav_command, self.nav_command_at = None, -math.inf
             self.exploring = exploring
             if exploring:
                 self.inactive_since = None
@@ -315,6 +363,7 @@ class FarsightBridge(Node):
     def on_global_costmap(self, message):
         with self.lock:
             self.global_grid = message
+            self.global_grid_at = time.monotonic()
 
     def planar(self, target, source):
         """(x, y, yaw) -> (x, y, yaw) from source to target frame; identity when TF has none (map == odom)."""
@@ -327,51 +376,143 @@ class FarsightBridge(Node):
         c, s, tx, ty = math.cos(turn), math.sin(turn), t.translation.x, t.translation.y
         return lambda x, y, yaw=0.0: (c * x - s * y + tx, s * x + c * y + ty, yaw + turn)
 
+    def request_explore_tick(self):
+        # The EventsExecutor has one callback thread. Scoring must not starve
+        # 20 Hz command output or sensor callbacks on a large costmap.
+        with self.lock:
+            if self.explore_busy:
+                return
+            self.explore_busy = True
+
+        def update():
+            try:
+                self.explore_tick()
+            except Exception as exc:
+                self.get_logger().error(f"Explore scoring: {exc}")
+            finally:
+                with self.lock:
+                    self.explore_busy = False
+        threading.Thread(target=update, name="explore-score", daemon=True).start()
+
     def explore_tick(self):
         with self.lock:
             exploring, grid, robot = self.exploring, self.global_grid, self.robot
+            session, swept = self.explore_session, self.swept
         if grid is None:
             return
         info = grid.info
-        cells = np.asarray(grid.data, np.int16).reshape(info.height, info.width)
-        found = frontiers.find(cells, info.resolution, (info.origin.position.x, info.origin.position.y))
+        raw_cells = np.asarray(grid.data, np.int16).reshape(info.height, info.width)
+        origin = (info.origin.position.x, info.origin.position.y)
+        to_map = self.planar(self.map_frame, self.odom_frame)
+        with self.lock:
+            # Snapshot path samples; NumPy rasterization runs outside the lock.
+            trail = frontiers.SweptFootprint(swept.radius)
+            trail.poses = dict(swept.poses)
+        cells = trail.apply(raw_cells, info.resolution, origin, to_map)
+        cells, origin = frontiers.observed_window(cells, info.resolution, origin,
+                                                  margin=self.explore_config.sensor_range)
+        found = frontiers.find(cells, info.resolution, origin)
         to_odom = self.planar(self.odom_frame, self.map_frame)
         with self.lock:
+            if session != self.explore_session:
+                return
             self.frontiers = found
             self.frontiers_odom = [to_odom(*f.goal)[:2] for f in sorted(found, key=lambda f: -f.size_m)[:50]]
         if not exploring or robot is None or not self.ready():
             return
-        robot_map = self.planar(self.map_frame, self.odom_frame)(*robot)
+        robot_map = to_map(*robot)
         now = time.monotonic()
+        support = frontiers.clearance_map(~((cells >= 0) & (cells <= frontiers.FREE_MAX)), info.resolution)
+        # Inflation encodes robot padding, not an observed object inside the
+        # current body disc. Only lethal measured cells veto the physical sweep;
+        # raw live depth below independently vetoes newly arrived objects.
+        obstacles = frontiers.clearance_map(cells >= 100, info.resolution)
         with self.lock:
+            if session != self.explore_session or not self.exploring:
+                return
+            self.local_support = (support, info.resolution, origin, obstacles)
+            if self.explore_finished:
+                return
+            if now - self.pose_at >= 0.5 or now - self.depth_at >= 0.5 or now - self.global_grid_at >= 2.5:
+                return  # server capture-loss interlock owns stopping and explicit rearming
             target = self.explore_target
-            stale = (target is None or (self.goal_handle is None and not self.goal_pending)
-                     or not frontiers.still_frontier(found, target)
-                     or now - self.explore_since > self.explore_goal_timeout_s)
-            if not stale:
+            timed_out = target is not None and now - self.explore_since > self.explore_goal_timeout_s
+            if timed_out:
+                self.blacklist.append(self.explorer.committed or target)
+                self.explorer.release()
+            explorer, blacklist = self.explorer, list(self.blacklist)
+        choice = explorer.choose(found, robot_map, cells, info.resolution, origin,
+                                 now=now, blacklist=blacklist)
+        with self.lock:
+            if (session != self.explore_session or not self.exploring or self.explore_finished
+                    or time.monotonic() - self.pose_at >= 0.5 or time.monotonic() - self.depth_at >= 0.5):
                 return
-            if target is not None and now - self.explore_since > self.explore_goal_timeout_s:
-                self.blacklist.append(target)
-            choice = frontiers.choose(found, robot_map, self.blacklist)
-            if choice is None and found and self.blacklist:
-                self.blacklist = []  # everything left was skipped once: try those again
-                choice = frontiers.choose(found, robot_map)
             if choice is None:
+                if self.no_frontier_since is None:
+                    self.no_frontier_since = now
+                    self.cancel_goal("Looking for a wide frontier")
                 self.explore_target = None
-                if not found and self.goal_handle is None:
-                    self.goal_state, self.goal_message = "arrived", "Exploration complete: no frontier left"
+                self.goal_state, self.goal_message = "planning", "Looking for a sensed wide route"
+                if (self.local_motion.scan_exhausted or now - self.no_frontier_since
+                        >= self.local_motion.scan_budget_s + self.local_motion.budget_s):
+                    self.cancel_goal("no reachable wide frontier")
+                    self.goal_state, self.goal_message = "arrived", "Exploration complete: no reachable wide frontier"
+                    self.explore_finished = True
                 return
+            self.no_frontier_since = None
+            running = self.goal_handle is not None or (
+                self.goal_pending and now - self.goal_sent_at < 5.0)
+            same = target is not None and math.dist(choice.goal, target) < max(0.1, 2 * info.resolution)
+            if same and running and not timed_out:
+                return
+            # Preselect the next broad patch within the goal tolerance, before
+            # Nav2 reports completion. The local policy covers planning gaps.
             self.explore_target, self.explore_since = choice.goal, now
             self.explore_seq += 1
             goal_id = f"explore-{self.explore_seq}"
-        gx, gy, _ = to_odom(*frontiers.beyond(choice, robot_map))
-        self.send_goal(goal_id, dict(x=gx, y=gy, yaw=None))
+        gx, gy, _ = to_odom(*choice.goal)
+        yaw = math.atan2(choice.centroid[1] - robot_map[1], choice.centroid[0] - robot_map[0])
+        _, _, yaw_odom = to_odom(0, 0, yaw)
+        sent = self.send_goal(goal_id, dict(x=gx, y=gy, yaw=yaw_odom), explore_session=session)
         with self.lock:
-            self.goal_message = f"Exploring frontier {choice.size_m:.1f} m wide"
+            if sent and session == self.explore_session:
+                self.goal_message = f"Exploring broad frontier {choice.size_m:.1f} m"
+
+    def motion_tick(self):
+        """One Explore command writer: current Nav2 or fresh local planning fallback."""
+        with self.lock:
+            if not self.exploring:
+                return
+            now = time.monotonic()
+            if self.explore_finished or not self.ready():
+                self.send(protocol.cmd_vel(0, 0, self.goal_id))
+                return
+            support, resolution, origin, obstacles = self.local_support or (None, 1, (0, 0), None)
+            depth, header = self.depth_snapshot or (None, {})
+            robot = self.robot
+            # Support is map-frame; measured depth projection is odom-frame.
+            # Query the support in map using each odom sample point.
+            # Map/odom may rotate under SLAM, so pass that transform explicitly.
+            to_map = self.planar(self.map_frame, self.odom_frame)
+            body_clear = False
+            if robot is not None and obstacles is not None:
+                rx, ry, _ = to_map(*robot)
+                col, row = math.floor((rx - origin[0]) / resolution), math.floor((ry - origin[1]) / resolution)
+                body_clear = (0 <= row < obstacles.shape[0] and 0 <= col < obstacles.shape[1]
+                              and obstacles[row, col] >= self.swept.radius)
+            command = self.local_motion.command(
+                now=now, active=True,
+                planning=self.goal_pending or self.goal_state == "planning" or not self.path,
+                nav_command=self.nav_command, nav_at=self.nav_command_at,
+                robot=robot, pose_at=self.pose_at, depth=depth, header=header, depth_at=self.depth_at,
+                support=support, resolution=resolution, origin=origin, map_at=self.global_grid_at,
+                to_map=to_map, body_clear=body_clear, scan_only=self.no_frontier_since is not None)
+            if command is not None:
+                self.send(protocol.cmd_vel(*command, self.goal_id))
 
     # -- Nav2 ----------------------------------------------------------------------------
 
-    def send_goal(self, goal_id, goal):
+    def send_goal(self, goal_id, goal, explore_session=None):
         if not self.ready():
             with self.lock:
                 self.goal_state, self.goal_message = "planning", "Waiting for Nav2 navigate_to_pose"
@@ -392,12 +533,16 @@ class FarsightBridge(Node):
         request = NavigateToPose.Goal()
         request.pose = pose
         with self.lock:
+            if explore_session is not None and (explore_session != self.explore_session or not self.exploring):
+                return False  # operator released/changed mode while scoring or TF lookup ran
             self.goal_id, self.goal_state, self.goal_message = goal_id, "planning", ""
             self.path, self.recoveries = [], 0
+            self.nav_command, self.nav_command_at = None, -math.inf
             self.goal_seq += 1
             self.goal_pending, self.goal_sent_at, seq = True, time.monotonic(), self.goal_seq
         future = self.navigate.send_goal_async(request, feedback_callback=self.on_feedback)
         future.add_done_callback(lambda done, sent=seq: self.on_accepted(sent, done))
+        return True
 
     def to_frame(self, pose, frame):
         if pose.header.frame_id == frame:
@@ -418,6 +563,11 @@ class FarsightBridge(Node):
             self.goal_pending = False
             if not handle.accepted:
                 self.goal_state, self.goal_message = "failed", "Nav2 rejected the goal"
+                if self.exploring and self.explore_target is not None:
+                    self.explore_session += 1
+                    self.blacklist.append(self.explorer.committed or self.explore_target)
+                    self.explore_target = None
+                    self.explorer.release()
                 return
             self.goal_handle = handle
         handle.get_result_async().add_done_callback(lambda done, sent=seq: self.on_result(sent, done))
@@ -440,12 +590,15 @@ class FarsightBridge(Node):
             self.goal_handle = None
             if self.exploring and str(self.goal_id).startswith("explore-") and result.status != GoalStatus.STATUS_CANCELED:
                 # One frontier done (or unreachable): exploration goes on, so never report arrived here.
+                self.explore_session += 1  # discard a scorer snapshot from before this result
                 if result.status != GoalStatus.STATUS_SUCCEEDED and self.explore_target is not None:
-                    self.blacklist.append(self.explore_target)
+                    self.blacklist.append(self.explorer.committed or self.explore_target)
                 self.goal_state = "driving"
                 self.goal_message = ("Frontier reached; choosing the next" if result.status == GoalStatus.STATUS_SUCCEEDED
                                      else "Frontier unreachable; trying another")
                 self.explore_target, self.path = None, []
+                self.explorer.release()
+                self.nav_command, self.nav_command_at = None, -math.inf
                 return
             if result.status == GoalStatus.STATUS_SUCCEEDED:
                 self.goal_state, self.goal_message = "arrived", "Goal reached"
@@ -480,6 +633,10 @@ class FarsightBridge(Node):
         with self.lock:
             self.cmd_times = [t for t in self.cmd_times if now - t < 2.0] + [now]
             goal_id = self.goal_id
+            if self.exploring:
+                self.nav_command = (float(message.linear.x), float(message.angular.z))
+                self.nav_command_at = now
+                return  # motion_tick arbitrates; never race two command writers
         self.send(protocol.cmd_vel(message.linear.x, message.angular.z, goal_id))
 
     def send_status(self):

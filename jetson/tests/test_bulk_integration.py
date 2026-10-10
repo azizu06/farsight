@@ -187,10 +187,22 @@ class BulkResponseTests(unittest.IsolatedAsyncioTestCase):
             await task
         self.assertEqual(app.state.bulk.pending_requests, 0)
 
-    async def test_mjpeg_framing_survives_chunking_and_disconnect_closes_source(self):
+    async def test_bulk_cap_paces_map_but_never_live_camera(self):
         app = create_app(detector="none", bulk_limit_mbps=.08)
+        state = app.state.mapping
+        state.cloud.integrate(np.random.default_rng(3).uniform(-2, 2, (500, 3)), np.full((500, 3), 9))
+        _, encoded = cv2.imencode(".jpg", np.zeros((12, 16, 3), np.uint8))
+        app.state.camera.phone_rgb = CameraFrame(encoded.tobytes(), time.monotonic(), 3, "PHONE RGB")
+        state.depth_jpeg = encoded.tobytes()
+        self.assertIsInstance(await endpoint(app, "/map/points.bin")(SimpleNamespace(headers={})), PacedStreamingResponse)
+        self.assertIs(type(await endpoint(app, "/camera.jpg")()), Response)
+        self.assertIs(type(await endpoint(app, "/depth.jpg")()), Response)
+        self.assertFalse(app.state.live.enabled)
+
+    async def test_mjpeg_framing_survives_chunking_and_disconnect_closes_source(self):
+        app = create_app(detector="none", video_limit_mbps=.08)
         clock = AutoClock()
-        app.state.bulk._clock, app.state.bulk._sleep = clock, clock.sleep
+        app.state.live._clock, app.state.live._sleep = clock, clock.sleep
         _, encoded = cv2.imencode(".jpg", np.zeros((12, 16, 3), np.uint8))
         app.state.camera.phone_rgb = CameraFrame(encoded.tobytes(), time.monotonic(), 1, "PHONE RGB")
         expected = b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + app.state.camera.preview().jpeg + b"\r\n"
@@ -207,7 +219,7 @@ class BulkResponseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(b"".join(item.get("body", b"") for item in messages), expected)
         self.assertIn(b"boundary=frame", dict(messages[0]["headers"])[b"content-type"])
         self.assertGreater(len(messages), 3)
-        self.assertEqual(app.state.bulk.pending_requests, 0)
+        self.assertEqual(app.state.live.pending_requests, 0)
         self.assertIsNone(response.source.ag_frame)
 
     def test_invalid_bulk_rate_is_rejected_before_startup(self):
@@ -256,9 +268,9 @@ class FakeSocket:
 
 class BulkVideoTests(unittest.IsolatedAsyncioTestCase):
     async def test_video_disconnect_during_initial_admission_releases_shared_budget(self):
-        app = create_app(detector="none", h264=True, bulk_limit_mbps=.08)
+        app = create_app(detector="none", h264=True, video_limit_mbps=.08)
         clock = ManualClock()
-        app.state.bulk._clock, app.state.bulk._sleep = clock, clock.sleep
+        app.state.live._clock, app.state.live._sleep = clock, clock.sleep
         app.state.video.init, app.state.video.mime = b"x" * 1000, "video/mp4"
         ws = FakeSocket()
         disconnected = asyncio.Event()
@@ -268,15 +280,15 @@ class BulkVideoTests(unittest.IsolatedAsyncioTestCase):
         ws.receive_json = receive_json
         with patch.object(VideoService, "ready", new_callable=PropertyMock, return_value=True):
             task = asyncio.create_task(endpoint(app, "/ws/video")(ws))
-            await asyncio.wait_for(until(lambda: app.state.bulk.pending_requests > 0), 1)
+            await asyncio.wait_for(until(lambda: app.state.live.pending_requests > 0), 1)
             disconnected.set()
             await asyncio.wait_for(task, 1)
-        self.assertEqual(app.state.bulk.pending_requests, 0)
+        self.assertEqual(app.state.live.pending_requests, 0)
         self.assertFalse(any(kind == "bytes" for kind, _, _ in ws.events))
         self.assertFalse(app.state.video.subscribers)
 
     async def test_video_packet_boundaries_age_after_admission_and_readiness_wait_are_preserved(self):
-        app = create_app(detector="none", h264=True, bulk_limit_mbps=.08)
+        app = create_app(detector="none", h264=True, video_limit_mbps=.08)
         video = app.state.video
         video.init, video.mime = b"init opaque bytes", "video/mp4; codecs=fixture"
         ws = FakeSocket()
@@ -298,10 +310,10 @@ class BulkVideoTests(unittest.IsolatedAsyncioTestCase):
             task.cancel()
             with suppress(asyncio.CancelledError):
                 await task
-        self.assertEqual(app.state.bulk.pending_requests, 0)
+        self.assertEqual(app.state.live.pending_requests, 0)
 
     async def test_oversized_video_packet_closes_with_useful_reason(self):
-        app = create_app(detector="none", h264=True, bulk_limit_mbps=.08)
+        app = create_app(detector="none", h264=True, video_limit_mbps=.08)
         app.state.video.init, app.state.video.mime = b"x" * 262145, "video/mp4"
         ws = FakeSocket()
         with patch.object(VideoService, "ready", new_callable=PropertyMock, return_value=True):

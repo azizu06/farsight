@@ -55,7 +55,7 @@ def nav_nodes(context):
         Node(package="nav2_lifecycle_manager", executable="lifecycle_manager", name="lifecycle_manager_navigation",
              output="screen", parameters=[{"autostart": True, "bond_timeout": 4.0, "node_names": list(NAV2_NODES)}]),
         Node(package="farsight_nav", executable="bridge", name="farsight_bridge", output="screen",
-             parameters=[{"server": LaunchConfiguration("server"), "publish_map_odom": not slam,
+             parameters=files + [{"server": LaunchConfiguration("server"), "publish_map_odom": not slam,
                           "controller": controller.upper(), "explore": explore,
                           "executor": LaunchConfiguration("bridge_executor")}],
              remappings=remappings),

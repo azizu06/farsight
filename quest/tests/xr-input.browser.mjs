@@ -660,7 +660,7 @@ try {
       right.gamepad.axes[3] = -1;
       right.gamepad.buttons[0].pressed = false; tick();
       right.gamepad.buttons[0].pressed = true; tick();
-      const drove = messages.at(-1).deadman && messages.at(-1).v > 0;
+      const drove = { deadman: messages.at(-1).deadman, v: messages.at(-1).v, w: messages.at(-1).w };
       right.gamepad.axes[3] = 0; // go-to uses a centered stick; an override would cancel before B
       // A drifting right stick inside the deadzone and a fully deflected left stick both keep Explore.
       subject.autonomy.toggleExplore();
@@ -722,7 +722,7 @@ try {
   assert.ok(Math.abs(2 * Math.atan2(interactions.recentered.quaternion[1], interactions.recentered.quaternion[3]) - .8) < 1e-6, "recenter faces the current head yaw");
   assert.equal(interactions.recentered.needsRelease, true);
   assert.deepEqual(interactions.aOverPerson, { view: "3d", mode: "teleop", release: true, viewWhileAHeld: "camera" });
-  assert.equal(interactions.drove, true, "right stick forward drives");
+  assert.deepEqual(interactions.drove, { deadman: true, v: 0.45, w: 0 }, "right stick forward drives");
   assert.deepEqual(interactions.drift, { mode: "explore", v: 0, w: 0 }, "drift inside the deadzone and the left stick never override Explore");
   assert.equal(interactions.override, "teleop", "a real right-stick push takes back control");
   assert.deepEqual(interactions.holdA, { menu: true, view: "camera", viewBeforeHold: "camera" });

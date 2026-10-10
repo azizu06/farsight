@@ -61,15 +61,13 @@ qualification. The scoped redesign measurement is saved in
   browser speech recognition. Listening, processing, the answer and errors show
   on a panel left of the camera. A proposed Seek or scan acts only after a fresh
   left-trigger press (X dismisses), and still needs the held deadman.
-- The right controller must be connected with a fresh grip pose each frame, and the
+- Both controllers must be connected with fresh grip poses each frame, and the
   newest XR sample must be under 150 ms old (`performance.now()` observation
   time, never the predicted display time). Losing tracking, a missing XR frame,
-  a hidden or blurred session, or removing/replacing the right controller stops driving.
+  a hidden or blurred session, or removing/replacing a controller stops driving.
   The trigger and every button then need an observed release before acting
   again, so a button held through tracking loss never fires on recovery. The
   camera and stop reason stay visible when only controller tracking is lost.
-  Left-controller tracking loss cancels voice and latches its action buttons,
-  while a tracked right controller can continue steering.
 - A large source banner sits above the camera in the headset and at the top of
   the desktop page. It reads LIVE only while fresh `/health` reports
   `replay: false`, `control.simulated: false`, a connected rover, a fresh real
@@ -112,6 +110,8 @@ qualification. The scoped redesign measurement is saved in
   deep-linked: `?mount=fixed|servo&h264=0|1&voice=0|1&diag=0|1`. A query value
   beats the saved choice and is saved; a saved choice beats the default. With no
   mount chosen, `/health.camera_pan: false` selects fixed (`src/viewer-settings.js`).
+  With no H.264 choice, `/health.video.enabled: true` selects H.264 for that page
+  (unsaved); if no verified decoded frame arrives within 6 s it reverts to JPEG.
 
 ## Freshness and bandwidth
 
