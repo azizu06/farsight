@@ -6,7 +6,7 @@ depth frames and range to it and tells it what the operator wants (``intent``).
 The bridge runs Nav2 and streams ``cmd_vel`` and navigation status back. A
 velocity command only moves the rover while ControlState sees a live
 held-deadman lease in an autonomy mode; stale commands (> 250 ms) stop it, and
-a missing bridge falls back to the reactive jetson.autonomy policy.
+without the bridge every autonomy mode holds still (no reactive fallback).
 
 Frames (docs/navigation.md): ARKit/voxel-map world is metres with Y up and the
 rover starting toward -Z. ROS odom is X forward, Y left, Z up, so
@@ -312,14 +312,14 @@ class NavService:
         state = remote.get("state")
         return state if state in STATES else "planning"
 
-    def nav_object(self, mode=None, phase=None, active=None):
-        """The viewer contract (docs/interfaces.md); mode/phase come from ControlState."""
+    def nav_object(self, mode=None, active=None):
+        """The viewer contract (docs/interfaces.md); mode and active come from ControlState."""
         fault = self.sensor_fault() if self.available() else None
         with self.lock:
             mode = mode if mode in NAV_MODES else None
             active = self.active if active is None else active
             available = self.available()
-            backend = "nav2" if available and (mode is None or mode in self.backed_modes) else "fallback"
+            backend = "nav2" if available and (mode is None or mode in self.backed_modes) else None
             goal = path = None
             frontiers = []
             if backend == "nav2":
@@ -351,15 +351,13 @@ class NavService:
                 if mode == "seek" and self.seek and self.seek["goal"] is not None:
                     goal = dict(x=round(self.seek["goal"][0], 3), z=round(self.seek["goal"][1], 3))
                 frontiers = self._world_points(self.remote.get("frontiers") or [], 50, 0)
-            elif mode in ("explore", "seek"):
-                mapped = {"arrived": "arrived", "target_lost": "failed"}
-                state = mapped.get(phase, "driving" if active else "idle")
-                message = ("Nav2 bridge not connected; reactive fallback" if not available
-                           else f"{mode} uses the reactive policy")
             else:
-                state, backend = "unavailable", None  # nothing can drive this mode
-                message = ("Nav2 bridge not connected" if self.bridge is None
-                           else "Nav2 bridge silent; commands stopped")
+                # With --nav2, Nav2 is the only navigation: Explore and Seek hold still rather
+                # than run the reactive policy, which has no obstacle sensing of its own.
+                state = "unavailable"
+                message = ("Nav2 bridge not connected; holding still" if self.bridge is None
+                           else "Nav2 bridge silent; holding still" if not available
+                           else f"Nav2 does not run {mode}; holding still")
                 if mode == "goto" and self.goal is not None:
                     goal = dict(x=round(self.goal[0], 3), z=round(self.goal[1], 3))
             arrays = (path or [], frontiers)
@@ -660,7 +658,7 @@ class NavService:
                 self.cmd = None
                 self.remote = dict(self.remote, state="planning", path=[])
             state.stick_override = False
-            return self.nav_object("goto", "goto", True) if held else state.status()["nav"]
+            return self.nav_object("goto", True) if held else state.status()["nav"]
 
     def cancel(self):
         state = self.control

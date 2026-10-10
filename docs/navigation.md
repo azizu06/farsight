@@ -23,7 +23,7 @@ ros2 launch farsight_nav nav.launch.py                 # or the farsight-nav sys
 ```
 
 - **Modes:** with Nav2 up, all three autonomy modes plan with Nav2; `nav.backend`
-  says which one is driving (`nav2` or `fallback`).
+  is `nav2` while Nav2 drives and `null` when nothing can.
   - **Go-to-point:** `POST /nav/goal` arms a voxel-map `x, z`; the operator's held
     `goto` heartbeats drive it. A goal posted while stopped (deadman not held) is
     staged and waits for a new press.
@@ -39,9 +39,11 @@ ros2 launch farsight_nav nav.launch.py                 # or the farsight-nav sys
     person moves more than 0.3 m, so the rover follows a walking person. Within
     0.95 m the rover stops (`arrived`); with the person unseen for 3 s, Seek stops
     with `failed` (`Target lost`).
-- **Fallback:** if the bridge is down, silent for 1.5 s, or Nav2's lifecycle is not
-  active, `nav.backend` is `fallback` (or `null`), go-to goals are refused with `409`,
-  and Explore/Seek drive the reactive policy. Nothing restarts or waits on ROS.
+- **No blind fallback:** if the bridge is down, silent for 1.5 s, or Nav2's lifecycle is
+  not active, `nav.backend` is `null` and `nav.state` is `unavailable`, go-to goals are
+  refused with `409`, and Explore/Seek hold still (zero output) instead of running the
+  reactive policy, which cannot see obstacles without the ultrasonic. Holding the deadman
+  resumes once the bridge is back. Without `--nav2` the reactive policy still runs.
 - **Sensor gate:** Nav2 drives only with a normal-tracking ARKit pose (at most 0.5 s
   old) and LiDAR depth (at most 1 s old) from the current phone session. There is no
   dead reckoning. Losing either stops the rover and needs a new deadman press after
