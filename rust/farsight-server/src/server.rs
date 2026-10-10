@@ -492,11 +492,10 @@ fn packet_response(body: Vec<u8>, coding: &'static str, no_store: bool) -> Respo
     response
 }
 
-async fn map_export(State(s): State<Arc<AppState>>) -> Response {
-    let mut response = Response::new(paced_body(s.mapping.ply()));
-    let h = response.headers_mut();
-    h.insert(header::CONTENT_TYPE, "application/octet-stream".parse().unwrap());
-    h.insert(header::CONTENT_DISPOSITION, "attachment; filename=\"farsight-scan.ply\"".parse().unwrap());
+async fn map_export(State(s): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    let (body, coding) = s.mapping.ply_packet(accept_encoding(&headers));
+    let mut response = packet_response(body, coding, false);
+    response.headers_mut().insert(header::CONTENT_DISPOSITION, "attachment; filename=\"farsight-scan.ply\"".parse().unwrap());
     response
 }
 

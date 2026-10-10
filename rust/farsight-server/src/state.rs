@@ -74,7 +74,7 @@ pub struct MapState {
     pub demo: bool,
     pub inner: Mutex<Inner>,
     /// Encoded packet cache keyed on (generation, frames, keyframe count).
-    /// Compressible variants (br/gzip) are cached per map version like
+    /// Compressible variants (zstd/br/gzip) are cached per map version like
     /// jetson/mapping/compress.py — no re-encoding per request.
     packets: Mutex<Option<PacketCache>>,
 }
@@ -379,39 +379,29 @@ impl MapState {
             let mesh = s.surfaces.encode();
             drop(s);
             let pts = encode_points(&points, &colors);
-            *cache = Some(PacketCache { key, pts, mesh, pts_gz: None, pts_br: None, mesh_gz: None, mesh_br: None });
+            let ply = export_ply(&points, &colors);
+            *cache = Some(PacketCache { key, pts: VariantCache::new(pts), mesh: VariantCache::new(mesh), ply: VariantCache::new(ply) });
         }
         cache
     }
 
     /// Returns (body, content-encoding or "") for one map binary route.
-    /// Mirrors jetson/mapping/compress.py: cached per map version, br > gzip,
-    /// identity below the 1 KiB floor.
+    /// Mirrors jetson/mapping/compress.py: cached per map version,
+    /// zstd > br > gzip, identity below the 1 KiB floor.
     pub fn packet(&self, which: PacketKind, accept_encoding: &str) -> (Vec<u8>, &'static str) {
         let coding = negotiate_encoding(accept_encoding);
         let mut cache = self.packet_cached();
         let c = cache.as_mut().unwrap();
-        let (raw, gz, br) = match which {
-            PacketKind::Points => (&c.pts, &mut c.pts_gz, &mut c.pts_br),
-            PacketKind::Mesh => (&c.mesh, &mut c.mesh_gz, &mut c.mesh_br),
+        let v = match which {
+            PacketKind::Points => &mut c.pts,
+            PacketKind::Mesh => &mut c.mesh,
+            PacketKind::Ply => &mut c.ply,
         };
-        if coding.is_none() || raw.len() < 1024 {
-            return (raw.clone(), "");
+        if coding.is_none() || v.raw.len() < 1024 {
+            return (v.raw.clone(), "");
         }
-        match coding.unwrap() {
-            Coding::Br => {
-                if br.is_none() {
-                    *br = Some(brotli_compress(raw));
-                }
-                (br.clone().unwrap(), "br")
-            }
-            Coding::Gzip => {
-                if gz.is_none() {
-                    *gz = Some(gzip_compress(raw));
-                }
-                (gz.clone().unwrap(), "gzip")
-            }
-        }
+        let coding = coding.unwrap();
+        (v.variant(coding), coding.name())
     }
 
     pub fn point_packet(&self, accept_encoding: &str) -> (Vec<u8>, &'static str) {
@@ -420,6 +410,10 @@ impl MapState {
 
     pub fn mesh_packet(&self, accept_encoding: &str) -> (Vec<u8>, &'static str) {
         self.packet(PacketKind::Mesh, accept_encoding)
+    }
+
+    pub fn ply_packet(&self, accept_encoding: &str) -> (Vec<u8>, &'static str) {
+        self.packet(PacketKind::Ply, accept_encoding)
     }
 
     pub fn ply(&self) -> Vec<u8> {
@@ -453,26 +447,66 @@ pub fn now_monotonic() -> f64 {
 pub enum PacketKind {
     Points,
     Mesh,
+    Ply,
+}
+
+/// Raw bytes plus lazily-built compressed variants, reset per map version.
+struct VariantCache {
+    raw: Vec<u8>,
+    zstd: Option<Vec<u8>>,
+    br: Option<Vec<u8>>,
+    gz: Option<Vec<u8>>,
+}
+
+impl VariantCache {
+    fn new(raw: Vec<u8>) -> Self {
+        Self { raw, zstd: None, br: None, gz: None }
+    }
+
+    fn variant(&mut self, coding: Coding) -> Vec<u8> {
+        let slot = match coding {
+            Coding::Zstd => &mut self.zstd,
+            Coding::Br => &mut self.br,
+            Coding::Gzip => &mut self.gz,
+        };
+        if slot.is_none() {
+            *slot = Some(match coding {
+                Coding::Zstd => zstd_compress(&self.raw),
+                Coding::Br => brotli_compress(&self.raw),
+                Coding::Gzip => gzip_compress(&self.raw),
+            });
+        }
+        slot.clone().unwrap()
+    }
 }
 
 struct PacketCache {
     key: (u64, u64, usize),
-    pts: Vec<u8>,
-    mesh: Vec<u8>,
-    pts_gz: Option<Vec<u8>>,
-    pts_br: Option<Vec<u8>>,
-    mesh_gz: Option<Vec<u8>>,
-    mesh_br: Option<Vec<u8>>,
+    pts: VariantCache,
+    mesh: VariantCache,
+    ply: VariantCache,
 }
 
 #[derive(Clone, Copy)]
 enum Coding {
+    Zstd,
     Br,
     Gzip,
 }
 
-/// br preferred over gzip; any q=0 refusal drops the coding.
+impl Coding {
+    fn name(self) -> &'static str {
+        match self {
+            Coding::Zstd => "zstd",
+            Coding::Br => "br",
+            Coding::Gzip => "gzip",
+        }
+    }
+}
+
+/// zstd preferred over br over gzip; any q=0 refusal drops the coding.
 fn negotiate_encoding(accept: &str) -> Option<Coding> {
+    let mut zstd = false;
     let mut br = false;
     let mut gz = false;
     for part in accept.split(',') {
@@ -480,12 +514,15 @@ fn negotiate_encoding(accept: &str) -> Option<Coding> {
         let name = seg.next().unwrap_or("").trim().to_ascii_lowercase();
         let refused = seg.next().map(|p| p.replace(' ', "").contains("q=0")).unwrap_or(false);
         match name.as_str() {
+            "zstd" if !refused => zstd = true,
             "br" if !refused => br = true,
             "gzip" if !refused => gz = true,
             _ => {}
         }
     }
-    if br {
+    if zstd {
+        Some(Coding::Zstd)
+    } else if br {
         Some(Coding::Br)
     } else if gz {
         Some(Coding::Gzip)
@@ -507,4 +544,85 @@ fn brotli_compress(data: &[u8]) -> Vec<u8> {
     let mut r = brotli::CompressorReader::new(data, 1 << 20, 4, 22);
     let _ = r.read_to_end(&mut out);
     out
+}
+
+/// Level 9: encodes faster than gzip-5 and br-4 while beating both on
+/// points/ply bytes; higher levels cost seconds on the Jetson per version.
+fn zstd_compress(data: &[u8]) -> Vec<u8> {
+    zstd::bulk::compress(data, 9).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Enough well-separated cells to push points.bin past the 1 KiB floor.
+    fn filled_map() -> MapState {
+        let map = MapState::new(true);
+        let points: Vec<[f32; 3]> = (0..300)
+            .map(|i| [(i % 17) as f32, (i / 17) as f32, (i % 5) as f32])
+            .collect();
+        let colors: Vec<[u8; 3]> = (0..300)
+            .map(|i| [(i % 256) as u8, (i % 128) as u8, 42])
+            .collect();
+        map.inner.lock().unwrap().cloud.integrate(&points, &colors);
+        map
+    }
+
+    #[test]
+    fn negotiate_prefers_zstd_then_br_then_gzip() {
+        assert!(matches!(negotiate_encoding("gzip, br, zstd"), Some(Coding::Zstd)));
+        assert!(matches!(negotiate_encoding("zstd"), Some(Coding::Zstd)));
+        assert!(matches!(negotiate_encoding("br, gzip"), Some(Coding::Br)));
+        assert!(matches!(negotiate_encoding("gzip"), Some(Coding::Gzip)));
+        assert!(negotiate_encoding("").is_none());
+        assert!(negotiate_encoding("identity").is_none());
+    }
+
+    #[test]
+    fn negotiate_honors_q0_refusal() {
+        assert!(matches!(negotiate_encoding("zstd;q=0, gzip"), Some(Coding::Gzip)));
+        assert!(matches!(negotiate_encoding("zstd;q=0, br;q=0, gzip;q=0"), None));
+    }
+
+    #[test]
+    fn zstd_variant_served_only_when_advertised() {
+        let map = filled_map();
+        let (_, coding) = map.point_packet("br, gzip");
+        assert_eq!(coding, "br", "zstd must not be served to a client that did not advertise it");
+
+        let (body, coding) = map.point_packet("gzip, br, zstd");
+        assert_eq!(coding, "zstd");
+        let decoded = zstd::decode_all(&body[..]).unwrap();
+        let (identity, _) = map.point_packet("");
+        assert_eq!(decoded, identity, "zstd body must decode to the identity payload");
+    }
+
+    #[test]
+    fn zstd_refused_falls_back_to_next_offered() {
+        let map = filled_map();
+        let (_, coding) = map.point_packet("zstd;q=0, gzip");
+        assert_eq!(coding, "gzip");
+    }
+
+    #[test]
+    fn zstd_variants_cover_mesh_and_ply() {
+        let map = filled_map();
+        let (mesh_body, coding) = map.mesh_packet("zstd");
+        // The demo mesh may sit below the 1 KiB floor; ply is the reliable check.
+        if coding == "zstd" {
+            assert!(!zstd::decode_all(&mesh_body[..]).unwrap().is_empty());
+        }
+        let (ply_body, coding) = map.ply_packet("zstd");
+        assert_eq!(coding, "zstd");
+        let (ply_raw, _) = map.ply_packet("");
+        assert_eq!(zstd::decode_all(&ply_body[..]).unwrap(), ply_raw);
+    }
+
+    #[test]
+    fn small_payloads_stay_identity() {
+        let map = MapState::new(true); // empty cloud -> raw < 1 KiB
+        let (_, coding) = map.point_packet("zstd, br, gzip");
+        assert_eq!(coding, "");
+    }
 }
