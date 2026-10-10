@@ -27,6 +27,19 @@ test("a gap before the newest range is jumped instead of stalling", () => {
   assert.ok(jump.seekTo >= 35.6 && jump.seekTo <= 35.7, "lands inside the newest range");
 });
 
+test("past the newest buffered end is a stall too (Sai's outside-range case)", () => {
+  const jump = chaseLiveEdge(12.4, { start: 10, end: 12 }, { now: 0 });
+  assert.ok(jump.seekTo !== null && jump.seekTo <= 12);
+});
+
+test("a frame due on the next vsync is presented, with that wait in its age", async () => {
+  const { presentationWait } = await import("../src/live-edge.js");
+  assert.equal(presentationWait(1016, 1000), 16, "expectedDisplayTime one refresh ahead counts");
+  assert.equal(presentationWait(990, 1000), 0, "already on screen");
+  assert.equal(presentationWait(1200, 1000), null, "implausibly far ahead is not a presented frame");
+  assert.equal(presentationWait(NaN, 1000), null);
+});
+
 test("nothing buffered or invalid time changes nothing", () => {
   assert.deepEqual(chaseLiveEdge(1, null), { seekTo: null, rate: 1, lead: 0 });
   assert.deepEqual(chaseLiveEdge(NaN, { start: 0, end: 1 }), { seekTo: null, rate: 1, lead: 0 });

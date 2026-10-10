@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { chromium } from '../../quest/node_modules/playwright/index.mjs';
 
 // Actual production renderer + Three.js, synthetic loopback map, no devices.
@@ -121,10 +121,21 @@ try {
   const pose = { tracked: true, receiptAgeMs: 0, receivedMonoMs: 987654321,
     sentMonoMs: 5, sentWallMs: 10, position: [1, 2, 3], quaternion: [0, 0, 0, 1],
     ray: { origin: [1, 2, 3], direction: [0, 0, -1] } };
-  let captured = await page.evaluate(pose => { window.__macPose = pose; return window.__macCapture(); }, pose);
+  const producerScript = execFileSync(process.env.FARSIGHT_PYTHON || new URL('../../.venv/bin/python', import.meta.url).pathname,
+    ['-c', 'from tools.mac_render.server import _CAPTURE_POSE_JS; print(_CAPTURE_POSE_JS)'],
+    { cwd: root, encoding: 'utf8' });
+  const producerPose = { tracked: true, receipt_age_ms: 0, received_mono_ms: pose.receivedMonoMs,
+    sent_mono_ms: pose.sentMonoMs, sent_wall_ms: pose.sentWallMs, position: pose.position,
+    quaternion: pose.quaternion, ray: pose.ray, session_id: first, frame_id: 1, pose_id: 1,
+    fov_y_deg: 85, aspect: 1.7, space: 'ar_map' };
+  const captureFromProducer = value => page.evaluate(({ script, pose }) => (0, eval)(script)(pose),
+    { script: producerScript, pose: value });
+  let captured = await captureFromProducer(producerPose);
   assert.equal(captured.meta.poseValid, true); assert.equal(captured.meta.rayVisible, true);
   assert.equal(captured.meta.poseEcho.received_mono_ms, pose.receivedMonoMs, 'Python epoch is echo only');
   assert.deepEqual(captured.meta.viewPosition, [1, 2, 3]);
+  assert.equal(captured.meta.poseEcho.session_id, first);
+  assert.equal(captured.meta.fovY, 85); assert.equal(captured.meta.aspect, 1.7);
   await page.waitForTimeout(270);
   captured = await page.evaluate(() => window.__macCapture());
   assert.equal(captured.meta.poseEcho, null); assert.equal(captured.meta.rayVisible, false);
@@ -135,17 +146,19 @@ try {
     assert.equal(captured.meta.poseEcho, null); assert.equal(captured.meta.rayVisible, false);
     assert.deepEqual(captured.meta.viewPosition, [1, 2, 3]);
   }
+  captured = await captureFromProducer(null);
+  assert.equal(captured.meta.poseEcho, null, 'atomic producer preserves disconnect clear');
   assert.equal(errors.length, 0, errors.join('\n'));
   // One actual positive-map JPEG through FFmpeg -> H.264 fMP4; a functional
   // format check, not an encoder throughput or headset qualification.
-  const process = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-f', 'image2pipe', '-vcodec', 'mjpeg',
+  const ffmpegProcess = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-f', 'image2pipe', '-vcodec', 'mjpeg',
     '-framerate', '10', '-i', 'pipe:0', '-frames:v', '1', '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
     '-movflags', 'frag_keyframe+empty_moov+default_base_moof', '-f', 'mp4', 'pipe:1']);
   const encoded = [], logs = [];
-  const deadline = setTimeout(() => process.kill('SIGKILL'), 5000);
-  process.stdout.on('data', chunk => encoded.push(chunk)); process.stderr.on('data', chunk => logs.push(chunk));
-  process.stdin.end(Buffer.from(positive.data, 'base64'));
-  const code = await new Promise((resolve, reject) => { process.once('error', reject); process.once('exit', resolve); });
+  const deadline = setTimeout(() => ffmpegProcess.kill('SIGKILL'), 5000);
+  ffmpegProcess.stdout.on('data', chunk => encoded.push(chunk)); ffmpegProcess.stderr.on('data', chunk => logs.push(chunk));
+  ffmpegProcess.stdin.end(Buffer.from(positive.data, 'base64'));
+  const code = await new Promise((resolve, reject) => { ffmpegProcess.once('error', reject); ffmpegProcess.once('exit', resolve); });
   clearTimeout(deadline);
   assert.equal(code, 0, Buffer.concat(logs).toString());
   const mp4 = Buffer.concat(encoded);

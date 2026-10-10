@@ -31,6 +31,37 @@ def fragment_timing(data, fps):
     return first, count, start, (first + count) / fps
 
 
+def is_keyframe(data):
+    """A fragment whose mdat carries an IDR picture, so a viewer can start decoding on it.
+
+    ffmpeg writes MP4 samples as AVCC: 4-byte big-endian NAL lengths, not Annex B
+    start codes, and default-base-is-moof says nothing about sync samples.
+    (Ported from quest-hud's _is_keyframe on aziz/mac-dense-render.)
+    """
+    at = data.find(b"mdat")
+    if at < 4:
+        return False
+    size = struct.unpack_from(">I", data, at - 4)[0]
+    if size == 1:  # 64-bit largesize between kind and payload
+        if at + 12 > len(data):
+            return False
+        size = struct.unpack_from(">Q", data, at + 4)[0]
+        end = min(len(data), at - 4 + size)
+        pos = at + 12
+    else:
+        end = min(len(data), at - 4 + size)
+        pos = at + 4
+    while pos + 4 <= end:
+        length = struct.unpack_from(">I", data, pos)[0]
+        pos += 4
+        if length == 0 or pos + length > end:
+            return False
+        if data[pos] & 0x1F == 5:
+            return True
+        pos += length
+    return False
+
+
 class VideoService:
     def __init__(self, camera, enabled=False, width=640, height=480, fps=10, bitrate=500000):
         if (type(fps) is not int or not 1 <= fps <= 30 or type(bitrate) is not int or not 64000 <= bitrate <= 4000000
@@ -46,6 +77,9 @@ class VideoService:
         self.subscribers = set()
         self.samples = OrderedDict()
         self.sample_id = 0
+        self.encoded = 0
+        self.encode_ms = None
+        self.ingest_ms = None
 
     async def start(self):
         if self.enabled:
@@ -70,12 +104,22 @@ class VideoService:
             await asyncio.sleep(.5)
 
     def subscribe(self):
-        queue = asyncio.Queue(maxsize=8)
+        queue = asyncio.Queue(maxsize=2)
+        queue.waiting_keyframe = True
         self.subscribers.add(queue)
         return queue
 
     def publish(self, fragment):
         for queue in tuple(self.subscribers):
+            if isinstance(fragment, dict):
+                keyframe = fragment.get("keyframe", True)
+                if queue.waiting_keyframe and not keyframe:
+                    continue
+                if keyframe:
+                    # Jump only at an independently decodable picture.
+                    while not queue.empty():
+                        queue.get_nowait()
+                    queue.waiting_keyframe = False
             if queue.full():
                 # Never drop dependent MP4 fragments and keep presenting them.
                 self.subscribers.discard(queue)
@@ -92,13 +136,17 @@ class VideoService:
             if frame and frame.age_ms < 500:
                 image = await asyncio.to_thread(cv2.imdecode, np.frombuffer(frame.jpeg, np.uint8), cv2.IMREAD_COLOR)
                 if image is not None:
-                    image = cv2.resize(image, (self.width, self.height))
-                    self.samples[self.sample_id] = frame
+                    image = await asyncio.to_thread(cv2.resize, image, (self.width, self.height))
+                    # JPEG decode may have overlapped a newer receipt; never queue
+                    # an already stale picture into ffmpeg's input pipe.
+                    if frame.age_ms >= 500:
+                        continue
+                    self.samples[self.sample_id] = (frame, time.monotonic())
                     self.sample_id += 1
                     while len(self.samples) > 600:
                         self.samples.popitem(last=False)
                     self.process.stdin.write(image.tobytes())
-                    await asyncio.wait_for(self.process.stdin.drain(), timeout=2)
+                    await asyncio.wait_for(self.process.stdin.drain(), timeout=.2)
             await asyncio.sleep(max(0, 1 / self.fps - (time.monotonic() - started)))
 
     async def _read(self):
@@ -120,10 +168,19 @@ class VideoService:
                 if kind == b"mdat":
                     data = bytes(fragment)
                     first, count, start, end = fragment_timing(data, self.fps)
-                    captures = [self.samples[index] for index in range(first, first + count) if index in self.samples]
+                    matched = [self.samples.pop(index) for index in range(first, first + count) if index in self.samples]
+                    captures = [item[0] for item in matched]
                     if len(captures) != count or not captures:
                         raise ValueError("Encoded fragment cannot be matched to capture receipt times")
+                    now = time.monotonic()
+                    self.encode_ms = round((now - min(item[1] for item in matched)) * 1000, 2)
+                    last = captures[-1]
+                    self.ingest_ms = (round((last.published - last.socket_received) * 1000, 2)
+                                      if last.published is not None and last.socket_received is not None else None)
+                    self.encoded += count
                     self.publish(dict(payload=data, media_start_s=start, media_end_s=end,
+                                      keyframe=is_keyframe(data), jetson_encode_ms=self.encode_ms,
+                                      camera_ingest_ms=self.ingest_ms,
                                       received=min(frame.received for frame in captures),
                                       frame=captures[-1].frame_id, source=captures[-1].source,
                                       samples=[dict(media_start_s=(first + offset) / self.fps,
@@ -133,18 +190,19 @@ class VideoService:
                     fragment.clear()
 
     async def _run(self):
-        args = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "rawvideo",
+        args = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-probesize", "32",
+                "-analyzeduration", "0", "-f", "rawvideo",
                 "-pix_fmt", "bgr24", "-s", f"{self.width}x{self.height}", "-r", str(self.fps),
                 "-i", "pipe:0", "-an", "-c:v", "libx264", "-preset", "ultrafast",
-                "-tune", "zerolatency", "-profile:v", "baseline", "-level", "3.0",
+                "-tune", "zerolatency", "-threads", "1", "-bf", "0", "-profile:v", "baseline", "-level", "3.0",
                 "-pix_fmt", "yuv420p", "-b:v", str(self.bitrate), "-maxrate", str(self.bitrate),
                 # A full second of VBV allowed 30 KiB keyframe bursts at a
                 # 500 kbps average. Keep 200 ms of rate-control buffer so the
                 # slow link need not transmit a large stale keyframe at once.
-                "-bufsize", str(max(64000, self.bitrate // 5)), "-g", str(self.fps), "-keyint_min", str(self.fps),
+                "-bufsize", str(max(64000, self.bitrate // 5)), "-g", str(max(1, self.fps // 4)), "-keyint_min", str(max(1, self.fps // 4)),
                 "-sc_threshold", "0", "-movflags", "frag_keyframe+empty_moov+default_base_moof",
                 "-video_track_timescale", "1000000",
-                "-frag_duration", "100000", "-f", "mp4", "pipe:1"]
+                "-frag_duration", "1", "-flush_packets", "1", "-f", "mp4", "pipe:1"]
         tasks = []
         try:
             self.process = await asyncio.create_subprocess_exec(*args, stdin=asyncio.subprocess.PIPE,
