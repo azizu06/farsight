@@ -5,10 +5,13 @@ runtime through `ctypes`. It does not require PyTorch, PyCUDA, or CUDA-enabled
 OpenCV. It accepts the application's already letterboxed, normalized RGB NCHW
 blob and returns raw predictions for `yolo_boxes()` to decode and suppress.
 
-**Hardware status:** no Jetson was attached during development. CPU tests verify
-shape policy, checked CUDA bindings, inference ordering, and resource cleanup.
-They do not prove engine compatibility, accuracy, or GPU performance. Complete
-the on-device smoke and camera checks before enabling the demo detector.
+**Hardware status:** CPU tests verify shape policy, checked CUDA bindings, inference
+ordering, and resource cleanup. On the physical Orin Nano, a target-built FP16 pose engine
+(`[1,56,8400]`) ran 20 zero-input smoke runs at median 15.29 ms / p95 18.83 ms, and COCO
+(`[1,84,8400]`) at median 11.66 ms / p95 21.44 ms, under concurrent build load
+([jetson-runtime-results.md](jetson-runtime-results.md)). That is engine execution only: it
+does not prove camera-to-eye latency, accuracy, or sustained fps under the full pipeline.
+Complete the on-device camera checks before enabling the demo detector.
 
 ## Model contract
 

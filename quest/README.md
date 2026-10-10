@@ -90,8 +90,9 @@ Capture age at least 500 ms stops movement. A display loop that does not draw fo
 alive but never renews capture freshness. Switching video formats clears freshness.
 
 Map snapshots and surface downloads pause in live camera view. They resume when
-opening the map or settings. Detections are drawn only on matching JPEG frame IDs;
-boxes are clipped and transformed in digital-crop mode. H.264 boxes require per-sample capture IDs matching the decoder timestamp; older
+opening the map or settings. Detector packets are slower than the camera, so
+`src/detection-match.js` draws the nearest packet from the same source within 8 frames, faded by frame distance,
+and never after 500 ms or across sources (an exact frame ID wins; PR #66). Boxes are clipped and transformed in digital-crop mode. H.264 boxes require per-sample capture IDs matching the decoder timestamp; older
 servers without those IDs still play video but omit uncertain overlays.
 
 Pose and fall overlays (`src/pose-hud.js`) ride the same matched-frame boxes: when a

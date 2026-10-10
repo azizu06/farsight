@@ -5,7 +5,10 @@ every affected owner has seen.
 
 ```
 Quest 2 (WebXR, three.js)
-   |  HTTPS page + WSS over the team LAN (own router/hotspot, NOT UCF Wi-Fi)
+   |  http://localhost:8080 via USB ADB reverse (secure origin on the headset)
+   v
+MacBook operator relay (tools/operator_relay.py, serves the Quest app, proxies HTTP + WebSocket)
+   |  Tailscale over two USB-tethered phones (HTTP inside the tailnet, or HTTPS if the service has TLS)
    v
 Jetson Orin Nano (on the rover)  -- the brain
    camera -> TensorRT YOLO -> detections
@@ -13,7 +16,7 @@ Jetson Orin Nano (on the rover)  -- the brain
    control server: 20 Hz pump, 250 ms lease, ultrasonic e-stop
    |  USB serial 115200
    v
-Arduino Uno (ELEGOO V4 board) -> motors, pan servo, ultrasonic
+Arduino Uno (ELEGOO V4 board) -> motors, ultrasonic (pan servo optional; the phone camera is fixed, look-around is digital)
 ```
 
 The current rover service runs on the Jetson at port `8443` (HTTP inside
@@ -29,7 +32,7 @@ explicit ray-cast camera/map and virtual rover sources. See
 | Path | What |
 |---|---|
 | `GET /` | Quest WebXR app (built `quest/dist`) |
-| `GET /stream.mjpg` | Camera, MJPEG, 640x480, target 30 fps |
+| `GET /stream.mjpg` | Camera, MJPEG, 640x480, 15 fps by default (camera capture loop, `jetson/camera.py`) |
 | `GET /health` | `{"camera": bool, "detector_fps": float, "rover": bool, "estop": bool}` |
 | `GET /camera.jpg` | Latest JPEG; `X-Frame-Id`, `X-Frame-Age-Ms`, `X-Frame-Source`; no-store |
 | `GET /control/status` | Read-only control status; no usable permit |
@@ -85,7 +88,7 @@ Optional pose fields (YOLO11-pose), present when the detector is a pose model:
 ```
 
 - `v` forward speed and `w` turn rate, both -1..1. `pan` camera yaw in degrees, -80..80, 0 = forward.
-- `mode`: `"teleop"` or `"seek"` (seek also sends `"target_id"`).
+- `mode`: `"teleop"`, `"seek"` (also sends `"target_id"`), `"explore"` or `"scan"`; the last two are specified below.
 - No valid message for 250 ms, or `deadman: false` -> motors zero. Always.
 - One socket owns control. A new connection starts stopped. First send an
   ordered release `{"session_id":"...","seq":0,"deadman":false}`; then a new
@@ -179,8 +182,9 @@ An encoder failure clears readiness, closes consumers, and restarts the encoder.
 ## `POST /ask` (Quest -> Jetson), local assistant
 
 Request: `multipart/form-data` with `audio` (webm/wav from the Quest mic) or JSON `{"text": "what do you see?"}`.
-The current implementation supports optional loopback llama-server, local
-whisper-cli and Piper. With no VLM, `model` is `local-observation-summary`;
+The current implementation supports optional loopback llama-server, a running
+whisper-server (`--whisper-url`, the default path: the model stays loaded; `--whisper-bin`/`--whisper-model` run
+local whisper-cli instead) and Piper. With no VLM, `model` is `local-observation-summary`;
 successful VLM answers use `local-vision-model`. Answers never execute motors;
 `action` may contain a confirmation-only proposal, and motion still needs the deadman. Missing audio dependencies return 503 while typed text remains
 available. Uploads are bounded to 8 MiB and local conversion to twenty seconds.

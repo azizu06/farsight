@@ -5,9 +5,10 @@ Every claim below is marked **V** (verified, with scope) or **P** (pending hardw
 Write **P** items in the submission only as "planned/in progress", or leave them out. No prize
 guarantees; the rubric is Originality, Technical Understanding, Functionality, Design, Wow.
 
-Status as of 2026-10-10 (morning): software verified on a Mac and desktop browser. **No Jetson
-inference, Quest session, motor, phone or cellular run has been measured.** The Jetson was still not
-reachable over SSH ([jetson-setup-handoff.md](jetson-setup-handoff.md)). Update this table from
+Status as of 2026-10-10: software verified on a Mac and desktop browser. The Jetson boots, accepts SSH, and
+TensorRT pose measured median 15.29 ms / p95 18.83 ms on the board ([jetson-runtime-results.md](jetson-runtime-results.md);
+engine execution under build load, not camera-to-eye). **No Quest session, motor, phone-capture or cellular run has
+been measured.** Update this table from
 `docs/qualification-results.md` and #42's report before submitting.
 
 ## Submission mechanics
@@ -29,8 +30,8 @@ reachable over SSH ([jetson-setup-handoff.md](jetson-setup-handoff.md)). Update 
 | Claim | Status | Evidence / scope |
 |---|---|---|
 | Perception, safety, logging run on the Jetson, not the headset | **V** (design/tests) | `jetson/` services, [architecture.md](architecture.md). Runs on Mac in tests |
-| TensorRT FP16 engine builder with hash cache; pose backend | **V** builds code, **P** on device | `jetson/build_engine.py`, [inference-setup.md](inference-setup.md); never run on the Jetson |
-| Real-time detection fps on Jetson | **P** | Only Mac numbers exist (ONNX CPU, roughly 3-10 fps on Mac). Do not quote as Jetson |
+| TensorRT FP16 engine builder with hash cache; pose backend | **V** builds code and pose engine on device | `jetson/build_engine.py`, [inference-setup.md](inference-setup.md); target-built FP16 pose engine ran on the Orin Nano (median 15.29 ms / p95 18.83 ms, [jetson-runtime-results.md](jetson-runtime-results.md)) |
+| Real-time detection fps on Jetson | **P** | Engine execution is measured on the Jetson (above); end-to-end detector fps through the live camera path is not. Mac ONNX CPU numbers (roughly 3-10 fps) must not be quoted as Jetson. Detector samples of about 7.5-8.9 fps were observed under native-build load only |
 | Local assistant on Jetson GPU (Whisper + VLM + Piper) | **P** | Mac Metal warm: ~0.7-0.9 s/answer (Qwen2.5-VL-3B), SBAR ~1.0 s ([PR #31](https://github.com/azizu06/farsight/pull/31), [PR #35](https://github.com/azizu06/farsight/pull/35)). Jetson CUDA unmeasured |
 | Safety holds with no Wi-Fi: 250 ms lease, 300 ms Uno watchdog | **V** software, **P** physical | Simulated stops 43-333 ms ([qualification-results.md](qualification-results.md)). Real stop timing pending |
 | One-command boot, service, readiness probe | **V** scripts, **P** timing | `tools/ready.py`, `jetson/farsight.service`; 3 timed cold boots in [demo-checklist.md](demo-checklist.md) are empty |
@@ -82,7 +83,7 @@ reachable over SSH ([jetson-setup-handoff.md](jetson-setup-handoff.md)). Update 
 
 | # | Item | Owner | Unblocks |
 |---|---|---|---|
-| 1 | Jetson boots, SSH, `tools.ready` READY | Sai / human | Every **P** under NVIDIA |
+| 1 | ~~Jetson boots, SSH~~ done; `tools.ready` READY with camera and rover | Sai / human | Every **P** under NVIDIA |
 | 2 | Quest 2 session: controls, texture resize, H.264, mic | #40 agent + human | Functionality, headset claims |
 | 3 | One real recorded run (`--record`) for tier 2 replay | Rig team | Honest fallback, Encompass |
 | 4 | Jetson fps / latency with source and load noted (`python -m tools.measure`) | Aziz's agents / Sai | NVIDIA numbers |

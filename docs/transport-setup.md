@@ -86,13 +86,13 @@ rather than taking control away from the current operator.
 5. Start the relay with the actual Jetson origin:
 
    ```sh
-   python -m tools.demo --upstream https://JETSON_TAILNET_NAME:8443 --quest
+   python -m tools.demo --upstream http://JETSON_TAILNET_IP:8443 --quest
    ```
 
-   HTTPS verifies certificates. For a private CA, add `--ca-file /path/to/ca.pem`.
-   A bare IP will fail validation if it is absent from the certificate. If the
-   Jetson service intentionally uses plain HTTP inside Tailscale, explicitly
-   select `http://JETSON_TAILNET_IP:8443`. HTTP is never an automatic TLS fallback.
+   The board profile is plain HTTP with TLS omitted ([jetson-runtime-results.md](jetson-runtime-results.md)),
+   so select `http://` explicitly; it is never an automatic TLS fallback. If the service was installed
+   with TLS instead, use `https://JETSON_TAILNET_NAME:8443`: HTTPS verifies certificates, a private CA
+   needs `--ca-file /path/to/ca.pem`, and a bare IP fails validation if it is absent from the certificate.
 6. Unlock the Quest, approve USB debugging, and verify `adb devices`. The launcher
    configures `adb reverse tcp:8080 tcp:8080`. Open `http://localhost:8080` in Quest
    Browser. Verify immersive VR and the secure-context indicator on the headset;

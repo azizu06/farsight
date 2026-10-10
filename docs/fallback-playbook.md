@@ -40,11 +40,11 @@ the trigger first in every case.
 
 ### 2. Jetson down (no boot, no SSH, service dead)
 
-- **Detect:** `python -m tools.ready --url https://<jetson>:8443` not `READY`; `journalctl -u farsight -n 50` on the Jetson if reachable.
+- **Detect:** `python -m tools.ready --url http://<jetson>:8443` (board profile is plain HTTP; `https://` with `--ca-file` if TLS was installed) not `READY`; `journalctl -u farsight -n 50` on the Jetson if reachable.
 - **Do (0-15 s):** One `sudo systemctl restart farsight` if you can reach it. Otherwise do not debug on stage.
 - **Do (15-30 s):** Run tier 2 (if a real recording exists) else tier 3 on the MacBook. Both run without the Jetson.
 - **Say:** "The Jetson isn't up, so you are seeing the [recorded rover run | simulator], not the live robot. Here is what the Jetson runs when it is up:" then use [architecture.md](architecture.md) and any measured numbers with their stated source.
-- **Do not:** claim Jetson/TensorRT numbers measured on the Mac. As of this writing no Jetson inference has been measured; every latency in the repo is Mac CPU/Metal or simulated.
+- **Do not:** claim Jetson/TensorRT numbers measured on the Mac. Only the measured TensorRT pose engine time (median 15.29 ms / p95 18.83 ms, [jetson-runtime-results.md](jetson-runtime-results.md)) comes from the Jetson; label every other latency by its actual source (Mac CPU/Metal, simulated, or the board).
 
 ### 3. Camera down (stale or missing frames)
 

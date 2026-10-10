@@ -1,4 +1,4 @@
-# Read-only preflight for the 6:45 AM hardware handoff
+# Read-only preflight for the hardware handoff
 
 Run this on the MacBook and again on the booted Jetson. It inventories the
 current machine; it does not qualify the real demo, configure the rig, or imply

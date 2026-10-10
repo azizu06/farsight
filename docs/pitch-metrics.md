@@ -13,15 +13,18 @@ motors. Close the Quest page first: control has one owner.
 On the Jetson (detector fps and stream fps with no network in the way):
 
 ```sh
-python -m tools.pitch_metrics --url https://127.0.0.1:8443 --ca-file /etc/farsight/tls/ca.pem \
+python -m tools.pitch_metrics --url http://127.0.0.1:8443 \
   --seconds 30 --output pitch-jetson.json --markdown pitch-jetson.md
+# HTTPS profile: --url https://127.0.0.1:8443 --ca-file /etc/farsight/tls/ca.pem
 ```
+
+The board serves plain HTTP (TLS omitted, [jetson-runtime-results.md](jetson-runtime-results.md)), so `http://` is the default here.
 
 On the operator laptop, through the relay the Quest uses (control RTT and stream
 fps as the demo sees them over the real link):
 
 ```sh
-python -m tools.demo --upstream https://<jetson>:8443 --ca-file ~/farsight-ca.pem   # separate terminal
+python -m tools.demo --upstream http://<jetson>:8443   # separate terminal (HTTPS profile: https://<jetson>:8443 --ca-file ~/farsight-ca.pem)
 python -m tools.pitch_metrics --url http://127.0.0.1:8080 --seconds 30 \
   --output pitch-relay.json --markdown pitch-relay.md
 ```

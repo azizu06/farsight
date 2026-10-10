@@ -36,7 +36,7 @@ real search scenarios was the reason to build it.
 Farsight is a ground rover you inhabit from a Quest 2.
 
 - **See.** The rover's phone camera streams to the headset as H.264 video. Turn your head and the
-  pan servo turns the camera with you.
+  view pans with you (digital look-around over the phone's wide frame; the camera is fixed on the chassis).
 - **Drive.** Hold the right trigger and push the stick. Let go and the rover stops. The trigger is a
   deadman: the Jetson issues a short permit that the headset must keep echoing, so a dropped link,
   a stale picture or a lost controller all end in a stop that needs a fresh press to clear.
@@ -74,8 +74,8 @@ The diagram and a written walkthrough are in [architecture.md](architecture.md).
 `tools/operator_relay.py`, which serves the bundled headset app on `127.0.0.1:8080` and proxies
 every HTTP and WebSocket route to the rover; `adb reverse` carries that port to the Quest over USB,
 so Quest Browser sees a local secure origin and can enter WebXR. The rover kit is a Jetson Orin
-Nano, a phone mounted on the chassis as the camera, and an Arduino Uno that drives the motors, the
-pan servo and the ultrasonic sensor. The phone tethers to the Jetson over USB, which gives it both
+Nano, a phone mounted on the chassis as the camera, and an Arduino Uno that drives the motors and
+reads the ultrasonic sensor. The phone tethers to the Jetson over USB, which gives it both
 a local camera link and a cellular uplink. Tailscale on the MacBook and the Jetson joins the two.
 
 **On the Jetson** (`python -m jetson.server`, FastAPI):

@@ -18,8 +18,8 @@ before anything is written. `--ssh user@host` is optional, explicit, BatchMode
 ## Run it
 
 ```sh
-# Mac, while the Quest drives (use --insecure/--ca-file as for tools.ready)
-python -m tools.rehearse_demo record --url https://JETSON:8443 --relay http://127.0.0.1:8080 --out runs-rehearsal/r1 [--ssh USER@JETSON]
+# Mac, while the Quest drives. Board profile is plain HTTP; for an HTTPS service use https://JETSON:8443 with --insecure/--ca-file as for tools.ready
+python -m tools.rehearse_demo record --url http://JETSON:8443 --relay http://127.0.0.1:8080 --out runs-rehearsal/r1 [--ssh USER@JETSON]
 # A human records each physical result as they watch it
 python -m tools.rehearse_demo mark --dir runs-rehearsal/r1 motor_direction pass --by NAME --note "both wheels forward"
 # Rebuild the report any time (also written by record on exit or Ctrl-C)

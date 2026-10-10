@@ -1,5 +1,9 @@
 # Hardware
 
+> **Original plan, partly superseded.** The rover camera is an iPhone mounted on the chassis (not the OBSBOT on a pan head);
+> look-around is digital. The board runs Jetson Linux R39.2.1 / JetPack 7. The Orin Nano has no NVENC, so H.264 is software
+> (libx264). Current state: [jetson-runtime-results.md](jetson-runtime-results.md), [jetson-bringup.md](jetson-bringup.md).
+
 The ELEGOO Smart Robot Car V4 from our previous build, adapted. No code carried over.
 
 ## What stays
@@ -18,7 +22,7 @@ The ELEGOO Smart Robot Car V4 from our previous build, adapted. No code carried 
 | **Remove the ESP32 camera module** (or set its switch to Upload) | It shares the Uno's only UART with USB; the Jetson needs that port. It was reflashed last time and no longer streams video anyway | Uno answers on `/dev/ttyACM0` or `/dev/ttyUSB0` from the Jetson |
 | **Add Jetson Orin Nano dev kit** on the top deck | The brain | Standoffs or velcro; fan not blocked; centre of gravity low and central |
 | **Separate Jetson power** | Motor current dips brown out the Jetson | Dev kit ships with a 19 V barrel adapter. On the car: Anker Zolo 30 W + a USB-C PD to 5.5x2.5 mm barrel **trigger cable set to 20 V** (buy if missing). Confirm the carrier's input range first. 30 W is not enough for MAXN SUPER (25 W plus peaks): **run the 15 W power mode** and check `tegrastats` under load |
-| **Add a camera** | Replaces the phone | USB UVC webcam is easiest. CSI (IMX219) is lighter but the ribbon must flex with the pan |
+| **Add a camera** | Original idea (not the rig; the phone stays) | USB UVC webcam is easiest. CSI (IMX219) is lighter but the ribbon must flex with the pan |
 | **Camera on the pan head** | Head-tracked look-around | The stock SG90-class servo is weak. If it can't hold the camera steady: fixed wide-angle camera and **digital pan** (crop the frame by head yaw). Same VR experience, no servo risk |
 | **Jetson USB-A -> Uno USB-B cable** | Serial link | Short cable, strain relief |
 | **Wi-Fi antennas on the Jetson** | Video to the Quest | Dev kit Wi-Fi card antennas attached; check `nmcli dev wifi` |
@@ -46,7 +50,7 @@ a 300 ms watchdog. The stock protocol is the fallback if time runs out (then the
 is the only stop).
 
 ## Tonight's checks (before writing code)
-1. Jetson boots, `cat /etc/nv_tegra_release` shows JetPack 6.x. Not flashed? Flashing an SD image
+1. Jetson boots, `cat /etc/nv_tegra_release` shows an R39 (JetPack 7) release. Not flashed? Flashing an SD image
    takes about an hour: start now.
 2. Camera shows up: `v4l2-ctl --list-devices`.
 3. Uno shows up over USB with the ESP module removed.
