@@ -74,7 +74,9 @@ function videoProbe() {
       if (!video.requestVideoFrameCallback) continue;
       probe.supported = true;
       const frame = (now, metadata) => {
-        if (probe.callbacks.length < 10000) probe.callbacks.push({ now, mediaTime: metadata.mediaTime, presentedFrames: metadata.presentedFrames, processingDuration: metadata.processingDuration ?? null });
+        if (probe.callbacks.length < 10000) probe.callbacks.push({ now, receivedNow: performance.now(), mediaTime: metadata.mediaTime,
+          expectedDisplayTime: metadata.expectedDisplayTime ?? null, presentationTime: metadata.presentationTime ?? null,
+          presentedFrames: metadata.presentedFrames, processingDuration: metadata.processingDuration ?? null });
         if (video.isConnected) video.requestVideoFrameCallback(frame);
       };
       video.requestVideoFrameCallback(frame);
@@ -197,6 +199,7 @@ export async function qualify(config) {
       // BEFORE invoking the native constructor. There is no traffic forwarding.
       await page.addInitScript(allowed => {
         window.__farsightNativeSocketBlocked = [];
+        window.__farsightNativeSidecarTail = [];
         const Native = window.WebSocket;
         window.WebSocket = class extends Native {
           constructor(value, protocols) {
@@ -206,6 +209,17 @@ export async function qualify(config) {
               throw new DOMException('Out-of-scope qualification WebSocket', 'SecurityError');
             }
             super(value, protocols);
+            if (target.endsWith('/ws/macview')) this.addEventListener('message', event => {
+              if (typeof event.data !== 'string' || event.data.length > 65536) return;
+              try {
+                const packet = JSON.parse(event.data);
+                if (packet.type !== 'video_segment') return;
+                const tail = window.__farsightNativeSidecarTail;
+                tail.push({ receivedNow: performance.now(), mediaStart: packet.media_start_s, mediaEnd: packet.media_end_s,
+                  frameId: packet.frame_id, ageMs: packet.age_ms });
+                if (tail.length > 10) tail.shift();
+              } catch {}
+            });
           }
         };
       }, [...allowedSockets]);
@@ -250,6 +264,7 @@ export async function qualify(config) {
       const elapsed = (after.now - before.now) / 1000;
       const intervals = after.samples.slice(1).map((sample, index) => sample.now - after.samples[index].now);
       report.video = { ...after, samples: undefined, bufferSamples: undefined, callbacks: after.samples.length, measurementSeconds: elapsed,
+        frameTail: after.samples.slice(-10),
         callbackHz: after.samples.length / elapsed, intervalMs: summary(intervals),
         seekingCount: after.seekingEvents.length, seekedCount: after.seekedEvents.length, bufferAheadSeconds: summary(after.bufferSamples.filter(sample => sample.bufferAhead !== null).map(sample => sample.bufferAhead)),
         bufferSeekingSamples: after.bufferSamples.filter(sample => sample.seeking).length, bufferSampleCount: after.bufferSamples.length,
@@ -263,7 +278,10 @@ export async function qualify(config) {
     clearTimeout(watchdog);
     if (page && !page.isClosed()) {
       try { report.finalPage = await page.evaluate(videoSnapshot, false); delete report.finalPage.samples; delete report.finalPage.bufferSamples;
-        if (config.nativeSockets) report.errors.push(...await page.evaluate(() => window.__farsightNativeSocketBlocked ?? [])); } catch {}
+        if (config.nativeSockets) {
+          report.errors.push(...await page.evaluate(() => window.__farsightNativeSocketBlocked ?? []));
+          report.stream.nativeSidecarTail = await page.evaluate(() => window.__farsightNativeSidecarTail ?? []);
+        } } catch {}
       try { await page.screenshot({ path: resolve(config.out, 'screenshot.png'), timeout: 5000 }); report.screenshot = resolve(config.out, 'screenshot.png'); } catch (error) { report.errors.push(`Screenshot failed: ${error.message}`); }
     }
     if (browser) await browser.close();
