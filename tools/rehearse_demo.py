@@ -56,6 +56,11 @@ PHYSICAL = (
     ("starting_pwm", "Starting PWM overcomes stiction on the floor"),
     ("uno_watchdog", "Uno stops on its independent 300 ms watchdog with the Jetson killed"),
     ("displayed_video_age", "Browser/headset displayed video age measured with a physical timer"),
+    ("seek_arrival", "Seek/Explore drives to the target and stops on arrival at the intended standoff"),
+    ("range_stop_25cm", "Forward drive toward an obstacle stops at the 25 cm range limit (tape measure)"),
+    ("tailscale_direct", "Tailscale path is direct, not DERP-relayed (`tailscale status` / `tailscale ping`)"),
+    ("quest_mic_playback", "Quest mic push-to-talk reaches the assistant and the reply/phrase plays audibly"),
+    ("wifi_off_run", "Run with venue Wi-Fi off (cellular/tether only): video, control and stop still work"),
 )
 
 
