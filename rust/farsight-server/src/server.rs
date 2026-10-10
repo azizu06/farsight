@@ -278,19 +278,45 @@ pub fn start_services(state: &Arc<AppState>) {
         });
     }
     if state.demo {
+        // #59 parity: 15 Hz synthetic camera with bounded 5 Hz fusion —
+        // capture cadence is independent of map work; busy fusion skips
+        // candidates so queued geometry never goes stale.
         let mapping = state.mapping.clone();
+        let camera = state.camera.clone();
+        let busy = Arc::new(std::sync::atomic::AtomicBool::new(false));
         std::thread::spawn(move || {
             let started = now_monotonic();
             let mut frame_id = 0i64;
+            let mut next_fusion = 0.0f64;
             loop {
+                let captured = now_monotonic();
                 let frame = crate::demo::simulated_frame(
-                    now_monotonic() - started,
+                    captured - started,
                     frame_id,
                     &("simulated-room".to_string(), 1),
                 );
-                let _ = mapping.process(&frame);
+                camera.set_phone_rgb(Some(crate::camera::CameraFrame {
+                    jpeg: frame.jpeg.clone(),
+                    received: captured,
+                    frame_id,
+                    source: "SIMULATED".into(),
+                }));
+                if captured >= next_fusion
+                    && !busy.swap(true, std::sync::atomic::Ordering::SeqCst)
+                {
+                    let (mapping, busy) = (mapping.clone(), busy.clone());
+                    next_fusion = captured + 0.2;
+                    std::thread::spawn(move || {
+                        let _ = mapping.process(&frame);
+                        busy.store(false, std::sync::atomic::Ordering::SeqCst);
+                    });
+                }
                 frame_id += 1;
-                std::thread::sleep(Duration::from_millis(160));
+                let elapsed = now_monotonic() - captured;
+                let wait = 1.0 / 15.0 - elapsed;
+                if wait > 0.0 {
+                    std::thread::sleep(Duration::from_secs_f64(wait));
+                }
             }
         });
     }

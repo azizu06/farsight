@@ -363,9 +363,12 @@ impl MapState {
                 }
             }
         }
+        // Snapshot under the lock, encode after releasing it — the 16 B/point
+        // byte expansion is the slow part and must not stall frame fusion.
         let (points, colors) = s.cloud.snapshot();
-        let pts = encode_points(&points, &colors);
         let mesh = s.surfaces.encode();
+        drop(s);
+        let pts = encode_points(&points, &colors);
         *self.packets.lock().unwrap() = Some((key.0, key.1, key.2, pts.clone(), mesh.clone()));
         (pts, mesh)
     }
