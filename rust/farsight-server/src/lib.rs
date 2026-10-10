@@ -6,6 +6,8 @@ pub mod autonomy;
 pub mod camera;
 pub mod control;
 pub mod demo;
+#[cfg(feature = "detector")]
+pub mod detector;
 pub mod geometry;
 pub mod mission;
 pub mod perception;

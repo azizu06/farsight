@@ -9,7 +9,7 @@ and the Python servers under `jetson/` remain available as a fallback.
 
 | Binary | Replaces | What it does |
 |---|---|---|
-| `farsight-server` | `jetson/mapping/server.py`, `jetson/{camera,video,perception,mission}.py`, `jetson/control/{state,serial_link,service}.py`, `jetson/autonomy.py` | RGB-D fusion (voxel map + surface mesh), camera/JPEG + H.264/fMP4 video, perception snapshots, mission log, rover control state machine + Uno serial pump, explore/seek autonomy |
+| `farsight-server` | `jetson/mapping/server.py`, `jetson/{camera,video,perception,mission,assistant,tracker}.py`, `jetson/control/{state,serial_link,service}.py`, `jetson/autonomy.py` | RGB-D fusion (voxel map + surface mesh), camera/JPEG + H.264/fMP4 video, person detection tracking, mission log, rover control state machine + Uno serial pump, explore/seek autonomy, `/ask` scene Q&A (Whisper + local vision model + Piper TTS) |
 | `farsight-relay` | `tools/operator_relay.py` | Loopback-only relay on the MacBook: static `quest/dist`, HTTP proxy, WebSocket proxy with the same deadman safety enforcement |
 
 ## Build
@@ -42,6 +42,17 @@ hog|none --detector-model --h264 --mission-dir`.
 
 Binds loopback only. Non-localhost Host headers get 403, matching the Python
 relay.
+
+## Optional ONNX detector
+
+```bash
+cargo build --release -p farsight-server --features detector   # needs libonnxruntime at runtime
+./target/release/farsight-server --detector-model yolo11n.onnx ...
+```
+
+Letterbox/blob/decode/NMS match the cv2.dnn path exactly; `<model>.labels.json`
+is honoured. HOG and TensorRT `.engine` stay Python-side (OpenCV / TensorRT have
+no Rust runtime); `--detector none` works everywhere.
 
 ## Compatibility contract
 

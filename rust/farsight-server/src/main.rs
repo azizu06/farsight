@@ -72,13 +72,13 @@ async fn main() {
     if args.demo && args.camera.is_some() {
         panic!("Choose --demo or a real --camera, not both");
     }
-    let _ = args.detector_model; // ONNX path only used with `detector` feature
     let state = server::build_state(
         args.demo,
         args.camera,
         args.serial_port,
         args.simulate_rover,
         if args.detector_model.is_some() { "onnx" } else { &args.detector },
+        args.detector_model.clone(),
         args.h264,
         args.mission_dir,
         args.max_pwm,

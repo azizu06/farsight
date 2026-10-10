@@ -31,6 +31,8 @@ pub struct PerceptionService {
     pub mode: String,
     pub fps: f64,
     on_detection: Mutex<Option<Box<dyn Fn(&Value, &CameraFrame) + Send + Sync>>>,
+    #[cfg(feature = "detector")]
+    onnx: Mutex<Option<crate::detector::OnnxDetector>>,
     inner: Mutex<Inner>,
     stop: AtomicBool,
 }
@@ -40,12 +42,28 @@ impl PerceptionService {
         camera: Arc<CameraService>,
         mode: &str,
         on_detection: Option<Box<dyn Fn(&Value, &CameraFrame) + Send + Sync>>,
+        model_path: Option<&str>,
     ) -> Self {
+        #[cfg(not(feature = "detector"))]
+        let _ = model_path;
+        #[cfg(feature = "detector")]
+        let onnx = if mode == "onnx" {
+            match model_path {
+                Some(path) => crate::detector::OnnxDetector::new(path)
+                    .map_err(|e| tracing::warn!("Detector unavailable: {e}"))
+                    .ok(),
+                None => None,
+            }
+        } else {
+            None
+        };
         Self {
             camera,
             mode: mode.to_string(),
             fps: 3.0,
             on_detection: Mutex::new(on_detection),
+            #[cfg(feature = "detector")]
+            onnx: Mutex::new(onnx),
             inner: Mutex::new(Inner {
                 packet: json!({"ts": 0, "frame": -1, "fps": 0, "boxes": [], "detector": "disabled", "source": "WAITING"}),
                 tracker: crate::tracker::Tracker::new(),
@@ -59,7 +77,12 @@ impl PerceptionService {
     /// Detect on one frame. Without an ONNX model this always returns no
     /// boxes (the Rust port drops the OpenCV HOG fallback — compile with
     /// `detector` feature + a model file for real inference).
-    fn detect(&self, _jpeg: &[u8]) -> Result<Vec<Value>, String> {
+    fn detect(&self, jpeg: &[u8]) -> Result<Vec<Value>, String> {
+        #[cfg(feature = "detector")]
+        if let Some(det) = self.onnx.lock().unwrap().as_mut() {
+            return det.detect(jpeg);
+        }
+        let _ = jpeg;
         Ok(Vec::new())
     }
 

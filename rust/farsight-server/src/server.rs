@@ -46,6 +46,7 @@ pub fn build_state(
     serial_port: Option<String>,
     simulate_rover: bool,
     detector: &str,
+    detector_model: Option<String>,
     h264: bool,
     mission_dir: Option<PathBuf>,
     max_pwm: i64,
@@ -68,6 +69,7 @@ pub fn build_state(
         camera.clone(),
         detector,
         Some(Box::new(move |packet, frame| m.detect(packet, frame))),
+        detector_model.as_deref(),
     ));
     let cam = camera.clone();
     let perc = perception.clone();
