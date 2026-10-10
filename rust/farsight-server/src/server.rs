@@ -697,6 +697,108 @@ async fn map_export(State(s): State<Arc<AppState>>, headers: HeaderMap) -> Respo
     map_packet_response(&s, crate::state::PacketKind::Ply, &headers, true)
 }
 
+/// `/map/dense.bin` query surface: epoch/after/snapshot/anchor/limit
+/// (jetson/mapping/server.py parity).
+#[derive(Debug)]
+pub struct DenseParams {
+    pub epoch: Option<String>,
+    pub after: i64,
+    pub snapshot: bool,
+    pub anchor: Option<i64>,
+    pub limit: i64,
+}
+
+fn query_i64(q: &std::collections::HashMap<String, String>, key: &str) -> Result<Option<i64>, Response> {
+    match q.get(key) {
+        None => Ok(None),
+        Some(v) => v.trim().parse::<i64>().map(Some).map_err(|_| {
+            (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(json!({"detail": [{"loc": ["query", key], "msg": "value is not a valid integer", "type": "type_error.integer"}]})),
+            )
+                .into_response()
+        }),
+    }
+}
+
+fn query_bool(q: &std::collections::HashMap<String, String>, key: &str) -> Result<Option<bool>, Response> {
+    match q.get(key).map(|v| v.trim().to_ascii_lowercase()) {
+        None => Ok(None),
+        Some(v) => match v.as_str() {
+            "true" | "t" | "yes" | "y" | "on" | "1" => Ok(Some(true)),
+            "false" | "f" | "no" | "n" | "off" | "0" => Ok(Some(false)),
+            _ => Err((
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(json!({"detail": [{"loc": ["query", key], "msg": "value is not a valid boolean", "type": "type_error.bool"}]})),
+            )
+                .into_response()),
+        },
+    }
+}
+
+impl DenseParams {
+    pub fn parse(q: &std::collections::HashMap<String, String>) -> Result<Self, Response> {
+        Ok(Self {
+            epoch: q.get("epoch").cloned(),
+            after: query_i64(q, "after")?.unwrap_or(0),
+            snapshot: query_bool(q, "snapshot")?.unwrap_or(false),
+            anchor: query_i64(q, "anchor")?,
+            limit: query_i64(q, "limit")?.unwrap_or(8192),
+        })
+    }
+}
+
+/// Build the dense delta response. Fresh bytes every call (no packet cache —
+/// the delta/journal moves per request), Cache-Control: no-store, and the
+/// same Accept-Encoding negotiation + Vary as the other .bin routes.
+pub fn dense_response(mapping: &MapState, accept_encoding: &str, q: &DenseParams) -> Response {
+    if q.after < 0 || q.limit < 1 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"detail": "Invalid dense cursor or limit"})),
+        )
+            .into_response();
+    }
+    let body = match mapping
+        .dense()
+        .delta(q.epoch.as_deref(), q.after, q.snapshot, q.limit, q.anchor)
+    {
+        Ok(b) => b,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({"detail": e}))).into_response()
+        }
+    };
+    let mut response = match crate::state::negotiate_encoding(accept_encoding) {
+        Some(coding) => {
+            let encoded = match coding {
+                crate::state::Coding::Zstd => crate::state::zstd_compress(&body),
+                crate::state::Coding::Br => crate::state::brotli_compress(&body),
+                crate::state::Coding::Gzip => crate::state::gzip_compress(&body),
+            };
+            packet_response(encoded, coding.name())
+        }
+        None => packet_response(body, ""),
+    };
+    response.headers_mut().insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+    response
+}
+
+async fn map_dense(
+    State(s): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let params = match DenseParams::parse(&q) {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    let encoding = accept_encoding(&headers).to_string();
+    let mapping = s.mapping.clone();
+    tokio::task::spawn_blocking(move || dense_response(&mapping, &encoding, &params))
+        .await
+        .unwrap_or_else(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response())
+}
+
 /// Read-only map state for geometry relays/renderers (real-backend contract;
 /// Codex's Python state.status mirror).
 async fn map_status(State(s): State<Arc<AppState>>) -> Json<Value> {
@@ -1901,6 +2003,7 @@ pub fn router(state: Arc<AppState>, dist: Option<PathBuf>) -> Router {
         // variants are cached per map version inside MapState.
         .route("/map/status", get(map_status))
         .route("/map/points.bin", get(map_points))
+        .route("/map/dense.bin", get(map_dense))
         .route("/map/mesh.bin", get(map_mesh))
         .route("/map/export.ply", get(map_export))
         .route("/map/reset", post(map_reset))

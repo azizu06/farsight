@@ -405,7 +405,7 @@ fn engine_thumbnail_failure_or_oversize_does_not_break_recognition() {
 
 #[test]
 fn engine_enrollment_candidates_never_include_face_images() {
-    let mut e = engine(vec![face(30.0, 30.0, 100.0, 100.0, 0.95)], vector(0, None));
+    let e = engine(vec![face(30.0, 30.0, 100.0, 100.0, 0.95)], vector(0, None));
     let candidate = e.faces(&jpeg(640, 480), true).unwrap();
     assert!(candidate[0].thumbnail.is_none());
     let gallery = Gallery::new(None).unwrap();
