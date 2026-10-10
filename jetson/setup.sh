@@ -111,7 +111,8 @@ build() {  # build <name> <git url> <cmake target...>: skips when the first targ
   if [ -x "$binary" ]; then echo "$name: $1 already built"; return 0; fi
   if [ ! -d "$dir/.git" ]; then
     run rm -rf "$dir.partial"
-    run git clone --depth 1 "$url" "$dir.partial" && run mv "$dir.partial" "$dir"
+    run git clone --depth 1 "$url" "$dir.partial" || { warn "$name: git clone failed (internet?)"; return 0; }
+    run mv "$dir.partial" "$dir"
   fi
   # Each CUDA translation unit can take 1-2 GB of RAM: 8 GB boards need fewer jobs than cores.
   local cpus; cpus="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)"
