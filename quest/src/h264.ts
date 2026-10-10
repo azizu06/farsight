@@ -30,6 +30,8 @@ export class H264Viewer {
   private decodedFrames = 0;
   private frameCallback = 0;
   private callbackSupported = "requestVideoFrameCallback" in this.video;
+  /** Decoder processing time of the last presented frame, for diagnostics only. */
+  decodeMs: number | null = null;
 
   constructor(private onFrame: () => void, private onReset: () => void) {
     this.video.muted = true; this.video.autoplay = true; this.video.playsInline = true;
@@ -40,6 +42,8 @@ export class H264Viewer {
     if (this.stopped || !this.callbackSupported) return;
     this.frameCallback = this.video.requestVideoFrameCallback((_now, metadata) => {
       this.decodedMediaTime = metadata.mediaTime;
+      // Optional in the spec; reported by Chromium for hardware and software decoders.
+      if (typeof metadata.processingDuration === "number") this.decodeMs = metadata.processingDuration * 1000;
       this.decodedAt = Math.max(performance.now(), metadata.expectedDisplayTime);
       this.decodedFrames++; this.onFrame(); this.watchDecodedFrame();
     });

@@ -4,6 +4,7 @@ import { VRButton } from "three/addons/webxr/VRButton.js";
 import { decodeMesh, decodePoints } from "./protocol.js";
 import "./style.css";
 import { RoverExperience } from "./rover";
+import { DiagnosticsOverlay } from "./diagnostics-overlay";
 
 type Status = {
   type: string;
@@ -266,8 +267,10 @@ new ResizeObserver(() => {
   camera.updateProjectionMatrix();
 }).observe($("scene"));
 let rover: RoverExperience | undefined;
+let diagnostics: DiagnosticsOverlay | undefined;
 renderer.setAnimationLoop((_time, frame) => {
-  rover?.update(performance.now(), frame);
+  const start = performance.now();
+  rover?.update(start, frame);
   const driving = rover?.deadmanHeld ?? false;
   if (driving !== mapDriving) {
     mapDriving = driving;
@@ -277,9 +280,12 @@ renderer.setAnimationLoop((_time, frame) => {
   root.visible = !rover?.vrCameraView;
   if (!renderer.xr.isPresenting) controls.update();
   renderer.render(scene, camera);
+  diagnostics?.frame(start, performance.now() - start, renderer.xr.isPresenting);
 });
 
 rover = new RoverExperience(renderer, scene, camera, () => view, setView);
+diagnostics = new DiagnosticsOverlay(() => rover!.diagnostics());
+rover.addCockpitPanel(diagnostics.panel);
 setView(new URLSearchParams(location.search).get("view") === "map" ? "3d" : "camera");
 
 function replaceGeometry(
@@ -697,5 +703,6 @@ window.addEventListener("beforeunload", () => {
     socket.close();
   }
   rover?.dispose();
+  diagnostics?.dispose();
   renderer.dispose();
 });
