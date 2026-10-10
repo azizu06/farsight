@@ -77,6 +77,7 @@ def main():
     parser.add_argument("--bonded-upstream", help="Opt-in second route to the same Jetson; requires server --bonded-control, JPEG only")
     parser.add_argument("--geometry-upstream", help="Optional loopback Mac geometry assembler; does not launch the assembler")
     parser.add_argument("--render-upstream", help="Optional loopback Mac renderer; does not launch or qualify the renderer")
+    parser.add_argument("--dense-map", action="store_true", help="Retain measured dense RGB-D on this Mac and serve bounded Quest LOD chunks")
     parser.add_argument("--demo-mode", action="store_true", help="Opt in to relay displayed-video bypass; no forged freshness or server configuration")
     parser.add_argument("--check", action="store_true", help="Check prerequisites and exit without starting servers")
     args = parser.parse_args()
@@ -87,7 +88,7 @@ def main():
     try:
         if args.demo_mode and args.bonded_upstream is not None:
             raise RuntimeError("--demo-mode supports single-route control only; cannot combine with --bonded-upstream")
-        packages = ["aiohttp"] + (["numpy", "cv2", "fastapi", "uvicorn"] if args.simulate else [])
+        packages = ["aiohttp"] + (["numpy", "brotli"] if args.dense_map else []) + (["numpy", "cv2", "fastapi", "uvicorn"] if args.simulate else [])
         missing = [name for name in packages if importlib.util.find_spec(name) is None]
         if missing:
             raise RuntimeError("Missing Python packages: " + ", ".join(missing)
@@ -158,7 +159,7 @@ def main():
                 server_command.append("--h264")
             server = start(server_command)
             wait_http(upstream + "/health", server)
-        command = [sys.executable, "-m", "tools.operator_relay", "--upstream", upstream,
+        command = [sys.executable, "-m", "tools.dense_map" if args.dense_map else "tools.operator_relay", "--upstream", upstream,
                    "--port", str(args.port)]
         if args.ca_file:
             command += ["--ca-file", args.ca_file]
