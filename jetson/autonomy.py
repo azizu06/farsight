@@ -38,13 +38,13 @@ class Autonomy:
         if (mode, target_id) != self.request:
             self.request = mode, target_id
             self.mode, self.target_id = mode, target_id
-            self.phase = "forward" if mode == "explore" else "tracking"
+            self.phase = {"explore": "forward", "goto": "goto"}.get(mode, "tracking")
             self.phase_at = now
             self.last_seen = now
 
     def step(self, now, range_cm, snapshot):
-        if self.phase in ("arrived", "target_lost"):
-            return 0, 0
+        if self.phase in ("arrived", "target_lost") or self.mode == "goto":
+            return 0, 0  # go-to-point exists only with the navigation backend
         known = range_cm is not None and math.isfinite(range_cm) and range_cm > 0
         if self.proximity_stop:
             if not known:

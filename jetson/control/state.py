@@ -59,6 +59,10 @@ class ControlState:
         # Permits already issued when the scan began: a zero-stick teleop
         # heartbeat carrying one was sent before POST /scan and may race it.
         self.scan_race_permits = frozenset()
+        # Same race for POST /nav/goal: permits issued before the goal was set may
+        # still carry a zero-stick teleop heartbeat sent before the client switched
+        # to mode "goto".
+        self.goto_race_permits = frozenset()
         # Optional on_output(v, w, forward_blocked) observer of the command actually applied.
         self.on_output = None
 
@@ -197,7 +201,8 @@ class ControlState:
                 if self.scan_token is None:
                     self.stop("scan_not_active")
                     return False
-            elif mode != "teleop" and (not self.autonomy or mode not in ("explore", "seek")):
+            elif mode != "teleop" and (not self.autonomy or mode not in ("explore", "seek", "goto")
+                                       or (mode == "goto" and self.navigator is None)):
                 self.stop("unsupported_mode")
                 return False
             target_id = message.get("target_id") if mode == "seek" else None
@@ -217,6 +222,11 @@ class ControlState:
             if not (-1 <= v <= 1 and -1 <= w <= 1 and -80 <= pan <= 80):
                 self.stop("invalid_command")
                 return False
+            if (self.autonomy and self.autonomy.mode == "goto" and mode == "teleop" and not v and not w
+                    and token in self.goto_race_permits):
+                mode = "goto"  # pre-POST /nav/goal heartbeat; the client switches to goto next
+            elif mode == "goto":
+                self.goto_race_permits = frozenset()
             if (self.scan_token is not None and mode == "teleop" and not v and not w
                     and token in self.scan_race_permits):
                 mode = "scan"  # pre-POST heartbeat: renews like a scan heartbeat, within its own permit
@@ -262,10 +272,17 @@ class ControlState:
                 if w and self.range_unsafe():
                     self.stop("scan_range_stop")
                     v = w = 0.0
-            if self.autonomy and self.autonomy.mode != "teleop" and self.deadline:
+            engaged = bool(self.autonomy and self.autonomy.mode != "teleop" and self.deadline)
+            if self.navigator is not None and self.autonomy:
+                self.navigator.sync(self.autonomy.mode, self.autonomy.target_id, engaged)
+            if engaged and self.navigator is not None and self.navigator.handles(self.autonomy.mode):
+                # Nav2 drives this mode; a missing or stale velocity command stops.
+                command = self.navigator.command()
+                v, w = command if command is not None else (0.0, 0.0)
+            elif engaged:
                 cm = self.range_cm if self.clock() - self.range_at < self.RANGE_TTL else None
                 try:
-                    v, w = self.autonomy.step(self.clock(), cm, self.detections())
+                    v, w = self.autonomy.step(self.clock(), cm, self.detections() if self.detections else {})
                 except Exception:
                     self.stop("autonomy_unavailable")
                     v = w = 0
@@ -310,4 +327,9 @@ class ControlState:
                     "rover": self.connected, "simulated": self.simulated,
                     "requires_release": self.requires_release, "reason": self.reason,
                     "left_pwm": left, "right_pwm": right, "pan_deg": pan,
-                    "max_pwm": self.max_pwm, "min_pwm": self.min_pwm}
+                    "max_pwm": self.max_pwm, "min_pwm": self.min_pwm,
+                    **({"nav": self.navigator.nav_object(
+                        self.autonomy.mode if self.autonomy else None,
+                        self.autonomy.phase if self.autonomy else None,
+                        bool(self.autonomy and self.autonomy.mode != "teleop" and self.deadline))}
+                       if self.navigator is not None else {})}

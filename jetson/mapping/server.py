@@ -28,6 +28,7 @@ from jetson.assistant import SceneAssistant, AssistantError
 from jetson.phrases import PhraseSpeaker, SpeechError
 from jetson.triage import TriageBusy, TriageService
 from jetson.scan import ScanService
+from jetson.nav import NavService, disabled_router
 
 DIST = Path(__file__).resolve().parents[2] / "quest" / "dist"
 
@@ -38,19 +39,28 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                piper_bin=None, piper_model=None, tts_dir=None, face_model=None, whisper_url=None,
                piper_model_es=None, speaker_cmd="auto", triage_interval=3.0,
                depth_model=None, scan_pan=False, scan_fov=70, scan_intrinsics=None, scan_turn_dps=90,
-               record=False, replay=None, proximity_stop=True):
+               record=False, replay=None, proximity_stop=True, nav2=False, nav_speed_mps=0.45,
+               nav_turn_radps=3.0, nav_max_v=0.7, nav_max_w=0.8, nav_camera_height=0.15):
     if replay is not None and (serial_port or camera_device is not None or demo or simulate_rover or record):
         raise ValueError("Replay cannot be combined with serial, live/simulated sources, or recording")
     if (demo or simulate_rover) and serial_port:
         raise ValueError("Simulated sources cannot be combined with a physical motor serial port")
+    if nav2 and replay is not None:
+        raise ValueError("Replay is read-only; navigation cannot be combined with it")
     state = MapState(demo)
     camera_service = CameraService(state, device=camera_device)
     video_service = VideoService(camera_service, enabled=h264, fps=video_fps, bitrate=video_bitrate)
     mission = Mission(mission_dir, record=record)
+    # Opt-in ROS 2 Nav2 backend (ros2/farsight_nav); without --nav2 autonomy is unchanged.
+    nav = NavService(state, speed_mps=nav_speed_mps, turn_radps=nav_turn_radps, max_v=nav_max_v,
+                     max_w=nav_max_w, camera_height=nav_camera_height) if nav2 else None
     perception = ReplayPerception(camera_service) if replay is not None else PerceptionService(camera_service, model=detector_model, mode=detector, on_detection=mission.detect, face_model=face_model)
     control = ReplayControl() if replay is not None else ControlService(serial_port=serial_port, simulate=simulate_rover, max_pwm=max_pwm, min_pwm=min_pwm,
                              camera_ready=lambda: camera_service.status()["camera"],
-                             detections=perception.snapshot, proximity_stop=proximity_stop)
+                             detections=perception.snapshot, proximity_stop=proximity_stop, navigator=nav)
+    if nav is not None:
+        nav.attach(control.state)
+        state.frame_observers.append(nav.offer_frame)
     replay_session = ReplaySession(replay, camera_service, perception, control) if replay is not None else None
     if record:
         control.on_status = lambda packet: mission.record("control", packet)
@@ -80,6 +90,14 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
 
     if hasattr(control, "state"):  # recorded replays have no live control loop
         control.state.on_output = mission.drill_motion
+        if nav is not None:
+            def applied(v, w, blocked):
+                for observer in (mission.drill_motion, nav.on_output):
+                    try:
+                        observer(v, w, blocked)
+                    except Exception:
+                        pass  # telemetry/odometry must never affect motor output
+            control.state.on_output = applied
     assistant = SceneAssistant(camera_service, perception, control, server_url=assistant_url,
                                whisper_bin=whisper_bin, whisper_model=whisper_model,
                                piper_bin=piper_bin, piper_model=piper_model, output_dir=tts_dir,
@@ -139,6 +157,8 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
     app.state.phrases = phrases
     app.state.scanner = scanner
     app.include_router(control.router)
+    app.state.nav = nav
+    app.include_router(nav.router if nav is not None else disabled_router())
 
     class AskBodyLimit:
         def __init__(self, app):
@@ -173,6 +193,8 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                       assistant=dict(vision_model=bool(assistant_url), whisper=bool(whisper_url or (whisper_bin and whisper_model)),
                                      piper=bool(piper_model)),
                       speech=await asyncio.to_thread(phrases.status), triage=triage.status())
+        if nav is not None:  # absent without --nav2, like the Rust server
+            status["nav"] = dict(enabled=True, available=nav.available())
         return status
 
     class ScanRequest(BaseModel):
@@ -596,6 +618,13 @@ def main():
     parser.add_argument("--simulate-rover", action="store_true", help="Explicit virtual rover; never opens serial")
     parser.add_argument("--max-pwm", type=int, default=100, help="Initial motor PWM ceiling, 1..255")
     parser.add_argument("--min-pwm", type=int, default=0, help="Measured wheel starting PWM floor; default 0 until calibrated")
+    parser.add_argument("--nav2", action="store_true",
+                        help="Opt in to the ROS 2 Nav2 backend (ros2/farsight_nav bridge on /ws/nav); default off")
+    parser.add_argument("--nav-speed-mps", type=float, default=0.45, help="Measured forward speed at v=1 (m/s)")
+    parser.add_argument("--nav-turn-radps", type=float, default=3.0, help="Measured yaw rate at w=1 (rad/s)")
+    parser.add_argument("--nav-max-v", type=float, default=0.7, help="Cap on Nav2 forward command, normalized 0..1")
+    parser.add_argument("--nav-max-w", type=float, default=0.8, help="Cap on Nav2 turn command, normalized 0..1")
+    parser.add_argument("--nav-camera-height", type=float, default=0.15, help="Phone optical centre above the floor (m)")
     parser.add_argument("--proximity-stop", type=on_off, default=True, metavar="on|off",
                         help="Ultrasonic stop: range < 25 cm or stale range blocks forward (default on). "
                              "'off' is an explicit opt-in for navigation runs that steer around obstacles")
@@ -646,7 +675,10 @@ def main():
                 speaker_cmd=args.speaker_cmd, triage_interval=args.triage_interval,
                 depth_model=args.depth_model, scan_pan=args.scan_pan, scan_fov=args.scan_fov,
                 scan_intrinsics=args.scan_intrinsics, scan_turn_dps=args.scan_turn_dps,
-                record=args.record, replay=args.replay, proximity_stop=args.proximity_stop), host=args.host, port=args.port,
+                record=args.record, replay=args.replay, proximity_stop=args.proximity_stop,
+                nav2=args.nav2, nav_speed_mps=args.nav_speed_mps, nav_turn_radps=args.nav_turn_radps,
+                nav_max_v=args.nav_max_v, nav_max_w=args.nav_max_w,
+                nav_camera_height=args.nav_camera_height), host=args.host, port=args.port,
                 ssl_certfile=args.ssl_certfile, ssl_keyfile=args.ssl_keyfile,
                 ws_max_size=8 * 1024 * 1024, access_log=False,
                 timeout_graceful_shutdown=5)

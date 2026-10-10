@@ -28,12 +28,17 @@ VALUE_FLAGS = (
     ("FARSIGHT_TRIAGE_INTERVAL", "--triage-interval"), ("FARSIGHT_DEPTH_MODEL", "--depth-model"),
     ("FARSIGHT_SCAN_FOV", "--scan-fov"), ("FARSIGHT_SCAN_TURN_DPS", "--scan-turn-dps"),
     ("FARSIGHT_PROXIMITY_STOP", "--proximity-stop"),
+    ("FARSIGHT_NAV_SPEED_MPS", "--nav-speed-mps"), ("FARSIGHT_NAV_TURN_RADPS", "--nav-turn-radps"),
+    ("FARSIGHT_NAV_MAX_V", "--nav-max-v"), ("FARSIGHT_NAV_MAX_W", "--nav-max-w"),
+    ("FARSIGHT_NAV_CAMERA_HEIGHT", "--nav-camera-height"),
 )
 BOOL_FLAGS = (("FARSIGHT_H264", "--h264"), ("FARSIGHT_SIMULATE_ROVER", "--simulate-rover"),
-              ("FARSIGHT_SCAN_PAN", "--scan-pan"), ("FARSIGHT_RECORD", "--record"))
+              ("FARSIGHT_SCAN_PAN", "--scan-pan"), ("FARSIGHT_RECORD", "--record"), ("FARSIGHT_NAV2", "--nav2"))
 INT_VARS = ("FARSIGHT_PORT", "FARSIGHT_MAX_PWM", "FARSIGHT_MIN_PWM", "FARSIGHT_WAIT_SECONDS",
             "FARSIGHT_VIDEO_FPS", "FARSIGHT_VIDEO_BITRATE")
-FLOAT_VARS = ("FARSIGHT_TRIAGE_INTERVAL", "FARSIGHT_SCAN_FOV", "FARSIGHT_SCAN_TURN_DPS")
+FLOAT_VARS = ("FARSIGHT_TRIAGE_INTERVAL", "FARSIGHT_SCAN_FOV", "FARSIGHT_SCAN_TURN_DPS",
+              "FARSIGHT_NAV_SPEED_MPS", "FARSIGHT_NAV_TURN_RADPS", "FARSIGHT_NAV_MAX_V", "FARSIGHT_NAV_MAX_W",
+              "FARSIGHT_NAV_CAMERA_HEIGHT")
 # Variables whose value is a file that must exist for the feature to work.
 FILE_VARS = ("FARSIGHT_DETECTOR_MODEL", "FARSIGHT_FACE_MODEL", "FARSIGHT_PIPER_MODEL", "FARSIGHT_PIPER_MODEL_ES",
              "FARSIGHT_WHISPER_MODEL", "FARSIGHT_DEPTH_MODEL", "FARSIGHT_SSL_CERTFILE", "FARSIGHT_SSL_KEYFILE")

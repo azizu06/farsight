@@ -97,7 +97,7 @@ Optional pose fields (YOLO11-pose), present when the detector is a pose model:
 ```
 
 - `v` forward speed and `w` turn rate, both -1..1. `pan` camera yaw in degrees, -80..80, 0 = forward.
-- `mode`: `"teleop"`, `"seek"` (also sends `"target_id"`), `"explore"` or `"scan"`; the last two are specified below.
+- `mode`: `"teleop"`, `"seek"` (also sends `"target_id"`), `"explore"`, `"scan"`, or `"goto"` (with `--nav2`); the last three are specified below.
 - No valid message for 250 ms, or `deadman: false` -> motors zero. Always.
 - One socket owns control. A new connection starts stopped. First send an
   ordered release `{"session_id":"...","seq":0,"deadman":false}`; then a new
@@ -151,7 +151,7 @@ Autonomy never renews a permit or lease itself. Example held-deadman heartbeat:
 Status replies add optional `autonomy_state` and `target_id` fields; `mode`
 reports the active mode, including automatic Explore-to-Seek handover. States
 are `idle`, `forward`, `turning`, `tracking`, `target_missing`, `target_lost`,
-`arrived`, `estop`, and `stick_override`. `estop` and `requires_release` retain
+`arrived`, `estop`, `stick_override`, and `goto` (see the navigation extension). `estop` and `requires_release` retain
 their existing safety meanings. Public status never grants a usable permit.
 
 Jetson replies on the same socket, 20 Hz:
@@ -168,6 +168,59 @@ Jetson replies on the same socket, 20 Hz:
 proximity stop is on, the default).
 Camera/link failure stops all motion regardless. `link_ms` is permit age at command arrival; the browser's acknowledged
 sequence RTT is a different measurement. Optional autonomy fields follow below.
+
+### Optional navigation extension: Nav2, go-to-point, `nav` status
+
+Opt-in: the server only navigates with `--nav2` (`FARSIGHT_NAV2=1`) and the ROS 2
+stack from [navigation.md](navigation.md) running on the Jetson. Without the flag,
+Explore/Seek are exactly the reactive policy above, `nav` is absent from status
+and `/health`, `POST /nav/goal` answers 409 and `POST /nav/cancel` returns an
+`idle` nav object with `backend: null` (the Rust server answers the same way).
+
+- **`mode: "goto"`** on `/ws/control`: accepted like `explore`/`seek` (same session,
+  ordered sequence, server-issued permit, held deadman and fresh-video checks; any
+  nonzero `v`/`w` latches stick override). It needs a goal from `POST /nav/goal`.
+  After a 202 the viewer sends held heartbeats with `mode: "goto"`. As with Scan, a
+  zero-stick `teleop` heartbeat whose permit was issued before the goal was set
+  counts as `goto` (the POST and the socket travel separately); a newer `teleop`
+  heartbeat cancels. Release, override, cancel or another mode ends go-to-point.
+- **`POST /nav/goal`** `{"x": m, "z": m}` in voxel-map world coordinates (the same
+  frame as `/map/points.bin`; optional `session_id` + `permit` are checked if sent).
+  Replies **202** with the `nav` object below. **409** `{"nav": <nav object>,
+  "message": reason}` when the Nav2 backend is unavailable, when no live operator
+  permit is held (deadman not held, release required, camera stale), or during a
+  scan. **422** for non-finite values.
+- **`POST /nav/cancel`** stops navigation (back to teleop with zero sticks) and
+  returns the `nav` object.
+- **`GET /nav/status`**: the `nav` object plus a diagnostic `detail` object.
+- **`/ws/nav`** is the ROS bridge's loopback-only socket; other hosts are closed
+  with 1008. The operator relay never needs it.
+
+`control_status` (on `/ws/control` and `GET /control/status`) gains an optional
+`nav` object when `--nav2` is set. Unknown fields must be ignored.
+
+```json
+{"nav": {"state": "driving", "mode": "goto", "goal": {"x": 1.2, "z": -3.4},
+         "path": [[0.0, 0.0], [0.4, -1.1], [1.2, -3.4]], "frontiers": [[2.5, -1.0]],
+         "backend": "nav2", "message": "2.9 m to go"}}
+```
+
+- `state`: `idle` (no goal, deadman not held, or Nav2 ready but idle), `planning`,
+  `driving`, `recovering` (back-up/spin/wait/costmap clearing), `arrived`
+  (latched stopped), `failed` (Nav2 aborted, e.g. no path), `unavailable` (no
+  bridge, or a silent bridge: its commands are ignored and the rover stops).
+- `mode`: `explore`, `seek`, `goto` or `null`.
+- `goal`: `{"x","z"}` metres in voxel-map world coordinates, or `null`.
+- `path`: at most 200 `[x, z]` points (Douglas-Peucker reduced to 3 cm) of the
+  current Nav2 plan in voxel-map world coordinates; empty when not navigating.
+- `frontiers`: at most 50 `[x, z]` exploration frontier targets.
+- `backend`: `nav2` when Nav2 drives the current mode, `fallback` when the
+  reactive policy does (Explore/Seek without a bridge), `null` when nothing can.
+- `message`: short human-readable detail.
+
+Nav2 velocity commands move the rover only through ControlState: a live held
+lease in an autonomy mode, the PWM ceiling, the camera guard and the pan rule
+apply as for every other mode, and a command older than 250 ms stops the motors.
 
 ## H264 over WebSocket `/ws/video`
 

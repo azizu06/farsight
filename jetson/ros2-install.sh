@@ -5,7 +5,7 @@
 # Usage: bash jetson/ros2-install.sh [--dry-run] [--check] [--no-build] [--enable] [--with-slam]
 #   --check     print OS, disk, RAM and the exact apt list, change nothing (no internet needed)
 #   --dry-run   print every command instead of running it
-#   --with-slam also install SLAM Toolbox + robot_localization (ros2/farsight_slam)
+#   --with-slam also install SLAM Toolbox (ros2/farsight_slam)
 # Needs internet for: the ROS apt source (.deb from github.com/ros-infrastructure/ros-apt-source) and
 # packages.ros.org / ports.ubuntu.com downloads. Everything after the apt step works offline.
 set -euo pipefail
@@ -41,7 +41,7 @@ APT_PACKAGES=(
   python3-websockets
   python3-numpy
 )
-SLAM_PACKAGES=(ros-jazzy-slam-toolbox ros-jazzy-robot-localization)
+SLAM_PACKAGES=(ros-jazzy-slam-toolbox)  # docs/navigation.md: no EKF (robot_localization) needed
 if [ "$SLAM" = 1 ]; then APT_PACKAGES+=("${SLAM_PACKAGES[@]}"); fi
 
 step() { printf '\n== %s\n' "$*"; }
