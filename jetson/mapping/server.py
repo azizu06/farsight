@@ -15,7 +15,7 @@ from pydantic import BaseModel, ValidationError
 import uvicorn
 
 from .compress import EncodedCache
-from .demo import simulated_frame
+from .demo import stream_demo
 from .phone import Hello, decode_frame, validate_pose
 from .state import MapState
 from jetson.camera import CameraService
@@ -83,17 +83,9 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                           physical_pan=scan_pan, horizontal_fov=scan_fov,
                           intrinsics=scan_intrinsics, turn_dps=scan_turn_dps)
 
-    async def simulate():
-        started, frame_id = time.monotonic(), 0
-        while True:
-            frame = await asyncio.to_thread(simulated_frame, time.monotonic() - started, frame_id)
-            await asyncio.to_thread(state.process, frame)
-            frame_id += 1
-            await asyncio.sleep(0.16)
-
     @asynccontextmanager
     async def lifespan(app):
-        task = asyncio.create_task(simulate()) if demo else None
+        task = asyncio.create_task(stream_demo(state, camera_service)) if demo else None
         replay_task = asyncio.create_task(replay_session.run.play(replay_session.publish)) if replay_session else None
         record_task = asyncio.create_task(record_run()) if record else None
         control.start()

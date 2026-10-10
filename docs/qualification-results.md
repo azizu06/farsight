@@ -5,7 +5,9 @@ These measurements use localhost simulation on macOS 26.7 ARM64 with Python
 test fixture. The source generates a labelled moving RGB pattern at a nominal
 15 fps, timestamps it before JPEG encoding, and publishes through the production
 CameraService. The alternative `map5` source uses the existing room simulation
-and runs RGB-D fusion at roughly 5 fps.
+and runs RGB-D fusion at roughly 5 fps. The original measurements below coupled
+that camera to fusion; the issue #52 section records the independent 15 Hz
+synthetic camera now used with the same 5 Hz fusion budget.
 
 The fixture uses the real FFmpeg H.264 encoder, application WebSockets, operator
 relay, control policy, and simulated serial pump. The fault proxy applies 50 ms
@@ -235,3 +237,94 @@ The tool starts isolated localhost ports, uses simulated motors only, bounds sta
 Full VLM/audio models, real camera capture, Jetson CUDA/TensorRT, Quest decode/display, physical scan behavior and motor stop timing remain unverified. Keep #12 and the physical rig gates open.
 
 Validation after rebasing onto current main: `pytest jetson/control/tests jetson/mapping/tests jetson/tests tools/tests -q` passed 359 tests and 84 subtests (5 skipped). The actual FFmpeg recovery/freeze/outage and freshness/release regressions passed. Quest tests passed 49/49 and its production build passed. A separate real-ONNX comparison on four shifted bus scenes found four people in each and matching boxes/keypoints (rtol 1e-5, atol 1e-3), confidence (absolute error <1e-5) and down flags with unrestricted versus two-worker sessions. The CPU-budget regression was observed failing before the runtime change and passing afterward.
+
+## Camera/fusion coupling (issue #52, October 10)
+
+On the same Apple M5 Pro / macOS 27.0.1 host, now using Python 3.13.7,
+the original map5 path reproduced 0% and 5.4% settled motion in two 20-second
+quiet trials. The model, 100 ms RTT / shared 2 Mbps link, actual FFmpeg encoder,
+two-fragment window, 20 Hz commands/permits, 250 ms lease and 500 ms view guard
+match #41. These remain software-only observations, with no physical device.
+
+The demonstrated cause is sparse camera publication coupled to fusion, followed
+by an unconditional 160 ms sleep. Fusion was already off the event loop, and
+camera/control readers already avoided its lock. Two instrumented baselines
+measured camera snapshot p95 below 0.020 ms, control lock hold p95 0.032–0.040 ms,
+fusion lock hold p95 15.2–29.7 ms, and fusion executor queue p95 below 0.5 ms.
+Pausing fusion reduced processing p95 to 0.4 ms but still produced 0% motion:
+distinct captures observed at encoder submission were 186 ms apart at p95 and
+held video reached 532 ms. Thus moving fusion to another thread or shortening
+the safety timeouts would not address the minimized failure.
+
+`jetson.mapping.demo.stream_demo` now publishes independently at nominal 15 Hz
+and admits at most one fusion job, capped at 5 Hz. Busy jobs drop candidates;
+the next admitted job uses a newly captured frame. Shutdown drains the current
+fusion job. Camera receipt time includes synthetic ray-casting work, and the
+source stays explicitly `SIMULATED`. Only the `--demo` producer changed;
+physical RGB/RGB-D ingestion, fusion kernels, control policy and wire schemas
+did not change. This is not a live-camera throughput improvement claim.
+
+Each row below is a separate 20-second trial. Before uses the original #41
+profiler at `4bfb044`; after includes the new lock/CPU/age instrumentation.
+The artifact also retains two failing instrumented baselines, the paused-fusion
+probe, and all four intermediate 10 Hz camera trials (one combined failure).
+
+| Build | Load | Repeat | Arrival p95 | Held view peak | Server lag max | Settled moving |
+|---|---|---:|---:|---:|---:|---:|
+| Before | quiet | 1 | 424.6 ms | 559.5 ms | 22.3 ms | 0.0% |
+| Before | quiet | 2 | 414.3 ms | 567.2 ms | 24.9 ms | 5.4% |
+| After | quiet | 1 | 329.7 ms | 452.3 ms | 21.4 ms | 100.0% |
+| After | combined | 1 | 502.5 ms | 1124.2 ms | 40.6 ms | 7.0% |
+| After | quiet | 2 | 321.4 ms | 435.6 ms | 44.2 ms | 100.0% |
+| After | combined | 2 | 336.4 ms | 497.4 ms | 37.1 ms | 100.0% |
+| After rebase | quiet | 1 | 314.9 ms | 451.2 ms | 22.3 ms | 100.0% |
+| After rebase | quiet | 2 | 322.2 ms | 432.1 ms | 26.1 ms | 100.0% |
+
+The first two fixed quiet runs fused 106/106 frames; the rebased runs fused 105/106, so the improvement did not disable
+map work. Quiet process CPU p95 increased from 72.9–73.2% to 95.1–95.9% as the
+synthetic camera generated more frames. The combined failure recorded a 126.8 ms
+client loop pause and a 157.7 ms command gap; the backend lease expired and
+correctly latched a stop. Source/encoder work also slowed in that run. The
+retained trace does not establish the underlying scheduler/GIL cause. The
+passing quiet runs therefore resolve the repeatable camera/fusion coupling,
+but **do not qualify arbitrary combined load or the physical link**.
+
+A separate intrusive six-second probe uses thread-local Python profiling with
+`time.thread_time()`. Fusion p95 was 19.0 ms in Python, 6.9 ms in native calls,
+31.8 ms total thread CPU and 45.8 ms wall time. Python CPU is a GIL-demand proxy;
+native calls may hold or release the GIL, and wall-minus-CPU includes scheduling
+and other waits. This does not directly measure GIL ownership/wait time or prove
+GIL contention caused the residual combined failure. Profiling callback overhead
+is excluded from the Python/native buckets, and this intrusive run is separate
+from the motion comparison. A cProfile/thread-clock prototype failed a CPU
+consistency check and was discarded.
+
+The public camera/control regression was observed failing before the fix
+(camera frame ID stayed at 0 while the real fusion lock was held) and passing
+afterward. A separate producer regression verifies one outstanding fusion job
+and shutdown draining. The CPU probe test verifies simultaneous worker probes
+stay within their own thread CPU budgets. Added tests total 97 lines across
+three files, with shared existing control helpers and no repeated setup blocks.
+
+Repeated results, all stage p95/max/counts, source labels, workload validation,
+burst outcomes and the combined failure's permit trace are in
+[issue52-backend-profile.json](qualification/issue52-backend-profile.json).
+Run one profiler at a time, with the existing ignored pose model:
+
+```sh
+python -m tools.profile_backend --source map5 --detector pose --model models/yolo11n-pose.onnx --duration 20 --repeats 2 --loads quiet combined --report map5.json
+# Diagnosis-only, not a sustained-motion qualification:
+python -m tools.profile_backend --source map5 --detector pose --model models/yolo11n-pose.onnx --duration 6 --repeats 1 --loads quiet --fusion-python-profile --report fusion-cpu.json
+```
+
+To reproduce the original baseline, run the quiet-only command from #41 at
+`4bfb044`; apply only the profiler diff there for the additional lock/CPU probes.
+`--pause-fusion` is a fixture-only diagnostic switch. No profiler routes or
+instrumentation are installed in the production app.
+
+After integrating main through `5b3f087`, all required suites passed:
+`pytest jetson/control/tests jetson/mapping/tests jetson/tests tools/tests -q`
+(380 tests, 94 subtests, 5 skipped), `npm --prefix quest test` (80 tests) and
+`npm --prefix quest run build`. The final packaging-only main change passed its
+13 tests and 10 subtests separately; the camera/control runtime did not change.
+The two additional 20-second quiet map5 repeats above both sustained 100% motion.

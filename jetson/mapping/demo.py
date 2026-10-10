@@ -1,11 +1,44 @@
 """Ray-cast RGB-D room. This goes through the same fusion as a real phone."""
 
+import asyncio
 import time
 import cv2
 import numpy as np
 
 from .geometry import Calibration
 from .phone import RGBDFrame
+from jetson.camera import CameraFrame
+
+
+async def stream_demo(state, camera):
+    """15 Hz synthetic camera, at most one 5 Hz fusion job with no backlog.
+
+    Map work must not set the capture cadence. Busy fusion skips candidates;
+    the next job uses a newly captured frame, never queued old geometry.
+    """
+    started, frame_id, next_fusion = time.monotonic(), 0, 0.0
+    fusion = None
+    try:
+        while True:
+            captured = time.monotonic()
+            frame = await asyncio.to_thread(simulated_frame, captured - started, frame_id)
+            frame.header["_received_monotonic"] = captured
+            # Use the independent RGB input slot, like RGB-only capture. Keep
+            # the explicit source label and receipt time, including ray-cast work.
+            camera.phone_rgb = CameraFrame(frame.jpeg, captured, frame_id, "SIMULATED")
+            if fusion is not None and fusion.done():
+                fusion.result()
+                fusion = None
+            if fusion is None and captured >= next_fusion:
+                fusion = asyncio.create_task(asyncio.to_thread(state.process, frame))
+                next_fusion = captured + .2
+            frame_id += 1
+            await asyncio.sleep(max(0, 1 / 15 - (time.monotonic() - captured)))
+    finally:
+        # Cancelling an asyncio wrapper cannot stop its executor thread. Drain
+        # our single job so it cannot mutate mapping after lifespan shutdown.
+        if fusion is not None:
+            await asyncio.shield(fusion)
 
 
 def simulated_frame(elapsed, frame_id, identity=("simulated-room", 1), *, scan_yaw=None):
