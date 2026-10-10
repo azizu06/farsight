@@ -16,7 +16,7 @@ the rover, the phones or the Jetson. No row here is glass-to-glass headset
 latency or a floor stop distance: those still need the protocol in sections 2
 and 3. Physical motor stop time is not measured.
 
-### Real phones and the Jetson
+### Real hardware
 
 | Metric | Value | Where measured | Conditions | Source |
 |---|---|---|---|---|
@@ -37,6 +37,19 @@ and 3. Physical motor stop time is not measured.
 | Desktop idle power, camera waiting | 4.84–4.96 W input; GPU 18–37%; GPU 44.9–45.2 °C | Real Jetson | 11-sample, 1 s `tegrastats`, 25 W mode, Firefox viewer open, no motors, no native model builds. Not inference or loaded-rig power | [jetson-runtime-results.md](jetson-runtime-results.md) |
 | Control round-trip over Mac internet, not the phone chain | p50 / p95 101 / 157 ms | Real Jetson, operator Mac relay | 20 s read-only probe. Tailscale direct, 43 ms ping. Permit age p95 34 ms. Not the two-phone route | [board, 14:48 UTC](https://github.com/azizu06/farsight/issues/24#issuecomment-6098723251) |
 | Stream fps on that Mac-internet relay | detector 7.75 fps (pose TRT), H.264 9.6 fps, MJPEG 6 fps | Real Jetson, operator Mac relay | Same 20 s probe. Server camera age 125–142 ms. Older than the two-phone rows | [board, 14:48 UTC](https://github.com/azizu06/farsight/issues/24#issuecomment-6098723251) |
+| Motor direction, all four ways | left/right × forward/reverse all correct | Real rig, wheels up | ELEGOO V4 chassis propped on a box, rover battery ON, Uno on `/dev/ttyUSB0` running sensorless `farsight_uno`. `M ±80` per side per direction via `rover/wheel_bench.py`. No lead swap or firmware change needed | [drive-calibration.md](drive-calibration.md) |
+| Chosen min PWM, lifted wheels | min PWM 70 (both sides) | Real rig, wheels up | 2 s pulses at 30–80 driving both sides together; captain chose 70 (pulse 5) to leave margin for the Jetson, phone and power bank. Loaded floor starting PWM is still unmeasured | [drive-calibration.md](drive-calibration.md) |
+| Full-speed motor commands | `M 255 255` and `M -255 -255`, 40/40 replies `OK` | Real rig, wheels up | 2 s pulses with a 4 s stop. No Uno reset, no USB disconnect in `dmesg`. Chosen limits `--min-pwm 70 --max-pwm 255` | [drive-calibration.md](drive-calibration.md) |
+| Power bank under worst-case load | VDD_IN peak 15.3 W, mean 12.9 W; PASS | Real rig: Jetson on the bank, wheels up | Anker Zolo 20K 45 W over a 15 V barrel cable, 25 W mode. 200 s of back-to-back VLM queries with 120-token answers (31/31 ok, median 6.41 s), whisper transcriptions of a 25 s speech clip (92/92 ok, median 2.165 s) and CPU busy loops, plus 180 s of ±255 motor pulses at 10 Hz (0 non-OK). `farsight.service` (camera stream + YOLO) was STOPPED during the motor pulses to free the serial port, so this was not the full rig load. GPU peak 99%, tj max 59.4 °C, 5 V rail min 4.984 V; no under-voltage, brownout, throttle or reset. VDD_IN is module input only — total bank draw and motor current (rover battery) are outside it | [qualification/power-bank-load-2026-10-10.json](qualification/power-bank-load-2026-10-10.json); [jetson-bringup.md](jetson-bringup.md) |
+| Wall-power baseline, same rig | VDD_IN peak 16.0 W; 5 V rail min 4.936 V; tj max 49.6 °C | Real rig on wall supply | 15 s baseline from the same power-bank qualification run | [jetson-bringup.md](jetson-bringup.md); [qualification/power-bank-load-2026-10-10.json](qualification/power-bank-load-2026-10-10.json) |
+| Assistant VLM, Qwen3-VL-2B (default) | TTFT 0.24–0.78 s; full answer 1.3–3.1 s; RSS 2.77 GB | Real Jetson CUDA | Orin Nano 8 GB, CUDA llama.cpp (`sm_87`), `-c 2048 -ngl 99 --parallel 1 --image-max-tokens 256`, `farsight.service` running, saved camera frame, `max_tokens` 80. Runs with the desktop on or off | [assistant-setup.md](assistant-setup.md) |
+| Assistant VLM, Qwen2.5-VL-3B | TTFT 0.5–1.2 s; full answer 1.2–2.7 s (terse); RSS 3.75 GB | Real Jetson CUDA | Same profile as the row above, but loads only with the desktop off and alone | [assistant-setup.md](assistant-setup.md) |
+| Assistant VLM, Qwen3-VL-4B | TTFT 0.4–1.5 s; full answer 2.6–6.3 s; RSS 4.29 GB | Real Jetson CUDA | Same profile, desktop off and alone only; misses the 4 s target. 4B plus small.en plus `farsight.service` thrashed the Jetson until it needed a power cycle | [assistant-setup.md](assistant-setup.md) |
+| Whisper `base.en` (default) | short clip 0.24 s warm / 0.76 s cold; RSS 0.6–0.8 GB | Real Jetson CUDA | Same run, whisper.cpp CUDA build | [assistant-setup.md](assistant-setup.md) |
+| Whisper `small.en` | short clip 0.42 s warm / 0.52 s cold; RSS 1.0–1.2 GB | Real Jetson CUDA | Same run; the `headless` profile's transcription model | [assistant-setup.md](assistant-setup.md) |
+| End-to-end `/ask` (STT + vision + Piper) | total 2.0–3.4 s warm | Real Jetson CUDA | Qwen3-VL-2B + base.en + Piper lessac-low, desktop on. STT 0.22–0.35 s, vision 1.3–2.0 s, Piper 0.3–1.1 s | [assistant-setup.md](assistant-setup.md) |
+| `farsight.service` RSS | about 0.9 GB | Real Jetson | The live rover server process during the assistant memory runs | [assistant-setup.md](assistant-setup.md) |
+| Free RAM, assistant memory math (7.49 GB total) | 4.9 GB with no assistant; 2.8 GB with default 2B + base.en; `headless` profile 0.4 GB lower | Real Jetson | `free -m` "available" after dropping caches, desktop off, `farsight.service` and ROS tooling idle. With the desktop on, free RAM is 0.7–1.6 GB instead. With the default pair Nav2 (about 1 GB) and nvblox (about 1 GB) fit with roughly 0.8 GB spare; with the desktop on they do not fit | [assistant-setup.md](assistant-setup.md) |
 
 ### Not measured yet
 
@@ -45,17 +58,19 @@ and 3. Physical motor stop time is not measured.
 | Glass-to-glass latency | not measured | — | Protocol is in section 2. Software arrival age is not display age | this file; [qualification-results.md](qualification-results.md) |
 | Stop distance after deadman release | not measured | — | Protocol is in section 3. Five floor trials, not run | this file |
 | Physical stop time (lease, Uno watchdog) | not measured | — | Design limits are 250 ms server lease and 300 ms Uno watchdog. No scope or video timing on the rig | [rig-rehearsal.md](rig-rehearsal.md); [jetson-runtime-results.md](jetson-runtime-results.md) |
-| Assistant latency on the Jetson | not measured beside pose and H.264 | Mac only, below | Voice services were left off on the board. A Mac model comparison is in the emulation table and is not a rig number | [jetson-runtime-results.md](jetson-runtime-results.md); [board, 15:09 UTC](https://github.com/azizu06/farsight/issues/24#issuecomment-6098920089) |
+| Loaded floor drive profile | not measured | — | Wheels-up run only so far: loaded starting PWM, PWM→m/s, PWM→rad/s and per-side trim all need the floor calibration run in [drive-calibration.md](drive-calibration.md) | [drive-calibration.md](drive-calibration.md) |
+| Assistant latency next to full load | not measured | — | The model numbers above had `farsight.service` running but used a saved frame (phone unplugged) and the desktop off for the 3B/4B runs; ask latency and pose fps while the rover streams and drives are not measured | [assistant-setup.md](assistant-setup.md) |
+| Total power-bank draw and runtime | not measured | — | VDD_IN covers the module only; carrier, fan and the USB-attached iPhone are outside it (read the Anker display). Sustained runtime and bank state of charge not run. Camera streaming and YOLO inference during the motor pulses are also not measured (`farsight.service` was stopped) | [qualification/power-bank-load-2026-10-10.json](qualification/power-bank-load-2026-10-10.json) |
 
 ### Emulation and laptop simulation
 
 | Metric | Value | Where measured | Conditions | Source |
 |---|---|---|---|---|
-| Control round-trip p50 / p95 | 23.9 / 52.6 ms | Laptop sim | `tools.pitch_metrics`, 20 s, real FFmpeg, HOG fallback, simulated camera and rover. Not a rig number | [README.md](../README.md) |
-| Detector fps | 3.0 fps (HOG fallback) | Laptop sim | Same pitch-metrics run | [README.md](../README.md) |
-| Stream fps, MJPEG | 14.7 fps | Laptop sim | Same run, frames parsed from `/stream.mjpg` over 20 s | [README.md](../README.md) |
-| Stream fps, H.264 | 9.8 fps | Laptop sim | Same run, `/ws/video` segments over 20 s | [README.md](../README.md) |
-| Permit age at send p50 / p95 | 31.2 / 51.0 ms | Laptop sim | Same run. Limit is 250 ms | [README.md](../README.md) |
+| Control round-trip p50 / p95 (superseded by the real row above) | 23.9 / 52.6 ms | Laptop sim | `tools.pitch_metrics`, 20 s, real FFmpeg, HOG fallback, simulated camera and rover. Not a rig number | [README.md](../README.md) |
+| Detector fps (superseded by the real row above) | 3.0 fps (HOG fallback) | Laptop sim | Same pitch-metrics run | [README.md](../README.md) |
+| Stream fps, MJPEG (superseded by the real row above) | 14.7 fps | Laptop sim | Same run, frames parsed from `/stream.mjpg` over 20 s | [README.md](../README.md) |
+| Stream fps, H.264 (superseded by the real row above) | 9.8 fps | Laptop sim | Same run, `/ws/video` segments over 20 s | [README.md](../README.md) |
+| Permit age at send p50 / p95 (superseded by the real permit-age p95 values in the real rows above: 11 ms on the two-phone chain, 34 ms on the Mac relay) | 31.2 / 51.0 ms | Laptop sim | Same run. Limit is 250 ms | [README.md](../README.md) |
 | Control acknowledgement p95, fault fixture | 156 ms (stop-only qualifier p95 205 ms on a separate run) | Laptop sim | macOS ARM64, synthetic RGB, 50 ms each way, shared 2 Mbps, 10 fps / 500 kbps. Not a phone or Jetson | [qualification-results.md](qualification-results.md) |
 | Video arrival age p95 / held view peak | 285 ms / 416 ms | Laptop sim | Eight-second RGB trial after the VBV fix, same 100 ms RTT / 2 Mbps profile. Capture-receipt bound, before display | [qualification-results.md](qualification-results.md) |
 | Simulated stop after injected fault | FFmpeg killed 169 ms; video paused 333 ms; connections aborted 43 ms | Laptop sim | Includes detection and polling. Not Uno watchdog or physical stop time | [qualification-results.md](qualification-results.md) |
@@ -66,7 +81,7 @@ and 3. Physical motor stop time is not measured.
 | Bandwidth while driving, optimized map policy | about 635–636 kbps proxy at a 2 Mbps cap | Laptop sim | Two 20 s repeats, 50 ms each way, 0.1% modeled retries. Held deadman, map paused. H.264 payload about 471 kbps. Not a phone or carrier measurement | [qualification-results.md](qualification-results.md) |
 | Control-status RTT, Rust server, paced bulk | p50 / p95 / max 204 / 256 / 279 ms (unpaced p95 501 ms, max 1261 ms) | Laptop sim | `tools.fault_proxy`, 2 Mbps, 100 ms, Rust server. Not the Python board runtime | [board, 12:57 UTC](https://github.com/azizu06/farsight/issues/24#issuecomment-6097741999); [rust/README.md](../rust/README.md) |
 | Scan, real depth model, synthetic frames | 596.5 ms, 89,967 points (view latencies 71.08–87.15 ms) | Laptop sim | Mac arm64, ONNX Runtime CPU, two threads, synthetic 160×120 room. No physical turn or settle. A desktop Chrome rehearsal of the same scan was 613 ms | [scan.md](scan.md) |
-| Assistant image latency, Mac comparison | Qwen3-VL-2B 548 ms; Qwen2.5-VL-3B 537 ms; SmolVLM-500M 231 ms | Mac only | Image cap 256 applies to Qwen3-VL-2B. Not installed on the Jetson. Not measured beside pose and H.264. Piper keep-warm (machine not stated) was about 50 ms per answer versus 700 ms cold; that is also not a Jetson figure | [board, 15:09 UTC](https://github.com/azizu06/farsight/issues/24#issuecomment-6098920089); [board, 09:59 UTC](https://github.com/azizu06/farsight/issues/24#issuecomment-6096353293) |
+| Assistant image latency, Mac comparison (partly superseded by the real rows above) | Qwen3-VL-2B 548 ms; Qwen2.5-VL-3B 537 ms; SmolVLM-500M 231 ms | Mac only | Image cap 256 applies to Qwen3-VL-2B. The Qwen rows are superseded by the Jetson CUDA VLM rows; SmolVLM-500M has no Jetson number yet, so 231 ms stays Mac-only. Piper keep-warm (machine not stated) was about 50 ms per answer versus 700 ms cold; that is also not a Jetson figure | [board, 15:09 UTC](https://github.com/azizu06/farsight/issues/24#issuecomment-6098920089); [board, 09:59 UTC](https://github.com/azizu06/farsight/issues/24#issuecomment-6096353293) |
 
 ## 1. Automatic metrics (about 1 minute)
 
