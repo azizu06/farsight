@@ -36,6 +36,8 @@ Step 5 prints seconds since boot when run on the Jetson (`ssh farsight.local`); 
 2. Rover dead but Jetson alive: start with `FARSIGHT_SERIAL_PORT` blank for live camera + detections with motion disabled.
 3. Everything dead: play the recorded run video. Never present simulation as live.
 
+Passive 15-minute rehearsal log and go/no-go report: [rig-rehearsal.md](rig-rehearsal.md).
+
 ## Timing log (needs real hardware; issue #11 stays open until filled)
 
 | Run | Power on to READY | READY to VR video | Total |
