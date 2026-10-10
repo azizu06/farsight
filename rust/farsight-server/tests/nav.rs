@@ -228,3 +228,113 @@ fn hello_carries_protocol_and_scaling() {
     assert!(hello["drive_profile"].is_null());
     assert!(hello["generation"].is_number());
 }
+
+#[test]
+fn goal_stages_while_stopped_and_drives_only_on_a_new_press() {
+    // #105: deadman never held — POST /nav/goal stages instead of 409, and only
+    // a fresh deadman press carrying "goto" may drive it.
+    use farsight_server::control::{Clock, ControlState};
+    use std::sync::Mutex;
+    let (service, _mapping) = nav();
+    let now = Arc::new(Mutex::new(10.0f64));
+    let n = now.clone();
+    let clock: Clock = Arc::new(move || *n.lock().unwrap());
+    let control = Arc::new(
+        ControlState::new(
+            false, 0, 100, None, None, Some(clock), None, false, true, "servo", None,
+            Some(service.clone()),
+        )
+        .unwrap(),
+    );
+    service.attach(&control);
+    control.set_connected(true, None);
+    let session = control.begin().unwrap();
+    control.update_range(100.0);
+    // Fresh measured sensors: a normal-tracking frame fused into the map,
+    // then offered to the NavService depth observer.
+    _mapping.start_session(("test".to_string(), 1), "synthetic fixture".into());
+    let f = frame(8, 6);
+    let mut f = f.clone();
+    f.header = json!({
+        "version": 1, "type": "frame", "session_id": "test", "map_epoch": 1,
+        "frame_id": 1, "t_capture": 1.0, "tracking": "normal",
+        "transform": farsight_server::geometry::flatten_f(&IDENTITY).to_vec(),
+    });
+    _mapping.process(&f).unwrap();
+    service.offer_frame(&f);
+    service.connect_bridge_for_test();
+    service
+        .receive(&json!({"type": "status", "state": "idle", "goal_id": null}))
+        .unwrap();
+    let nav = match service.set_goal(1.0, -2.0, Some(&session), None) {
+        Ok(nav) => nav,
+        Err(GoalError::Refused { message, .. }) => panic!("staged goal refused: {message}"),
+        Err(_) => panic!("unexpected set_goal error"),
+    };
+    assert!(nav["mode"].is_null());
+    assert_eq!(nav["goal"], json!({"x": 1.0, "z": -2.0}));
+    assert_eq!(service.intent()["active"], json!(false));
+    service
+        .receive(&json!({"type": "cmd_vel", "linear": 0.3, "angular": 0.0, "goal_id": 1}))
+        .unwrap();
+    assert_eq!(control.output().0, 0); // staged: nothing moves without a press
+    let status = control.status(true);
+    let hb = |seq: i64, deadman: bool, mode: &str| {
+        json!({
+            "session_id": session, "permit": status["permit"], "seq": seq,
+            "deadman": deadman, "v": 0.0, "w": 0.0, "pan": 0,
+            "mode": mode, "video_fresh": true, "video_age_ms": 0,
+        })
+    };
+    control.accept(&hb(1, false, "teleop"), &session); // ordered release
+    assert!(control.accept(&hb(2, true, "goto"), &session));
+    assert_eq!(control.output().0, 0); // pre-press cmd_vel is discarded
+    service
+        .receive(&json!({"type": "cmd_vel", "linear": 0.2, "angular": 0.0, "goal_id": 1}))
+        .unwrap();
+    assert!(control.output().0 > 0);
+}
+
+#[test]
+fn goal_refused_for_foreign_session_even_while_stopped() {
+    // #105: a session_id naming another controller is 409 even without a lease.
+    use farsight_server::control::{Clock, ControlState};
+    use std::sync::Mutex;
+    let (service, _mapping) = nav();
+    let now = Arc::new(Mutex::new(10.0f64));
+    let n = now.clone();
+    let clock: Clock = Arc::new(move || *n.lock().unwrap());
+    let control = Arc::new(
+        ControlState::new(
+            false, 0, 100, None, None, Some(clock), None, false, true, "servo", None,
+            Some(service.clone()),
+        )
+        .unwrap(),
+    );
+    service.attach(&control);
+    control.set_connected(true, None);
+    let _session = control.begin().unwrap();
+    control.update_range(100.0);
+    // Fresh measured sensors: a normal-tracking frame fused into the map,
+    // then offered to the NavService depth observer.
+    _mapping.start_session(("test".to_string(), 1), "synthetic fixture".into());
+    let f = frame(8, 6);
+    let mut f = f.clone();
+    f.header = json!({
+        "version": 1, "type": "frame", "session_id": "test", "map_epoch": 1,
+        "frame_id": 1, "t_capture": 1.0, "tracking": "normal",
+        "transform": farsight_server::geometry::flatten_f(&IDENTITY).to_vec(),
+    });
+    _mapping.process(&f).unwrap();
+    service.offer_frame(&f);
+    service.connect_bridge_for_test();
+    service
+        .receive(&json!({"type": "status", "state": "idle", "goal_id": null}))
+        .unwrap();
+    match service.set_goal(1.0, -2.0, Some("another-session"), None) {
+        Err(GoalError::Refused { message, .. }) => {
+            assert!(message.contains("session"), "{message}")
+        }
+        _ => panic!("expected refusal"),
+    }
+}

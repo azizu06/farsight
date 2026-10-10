@@ -459,6 +459,15 @@ impl NavService {
         s.bridge.is_some() && (self.clock)() - s.bridge_seen < BRIDGE_TTL
     }
 
+    /// Test seam: mark a bridge as connected without a WebSocket (Python
+    /// tests assign `nav.bridge = object()` directly).
+    #[doc(hidden)]
+    pub fn connect_bridge_for_test(&self) {
+        let mut s = self.inner.lock().unwrap();
+        s.bridge = Some(u64::MAX);
+        s.bridge_seen = (self.clock)();
+    }
+
     pub fn handles(&self, mode: &str) -> bool {
         self.backed_modes.contains(mode) && self.available()
     }
@@ -1361,22 +1370,19 @@ impl NavService {
         let mut s = control.inner.lock().unwrap();
         let now = control.now();
         control.output_locked(&mut s); // apply expiry before judging the lease
-        let mut live = s.session_id.is_some()
-            && s.connected
-            && !s.requires_release
-            && s.deadline > now
-            && control.camera_is_ready();
-        if permit.is_some() || session_id.is_some() {
-            let permit_expires = permit
-                .and_then(|t| s.permits.iter().find(|(k, _)| k == t).map(|(_, e)| *e))
-                .unwrap_or(0.0);
-            live = live && session_id.map(str::to_string) == s.session_id && permit_expires > now;
-        }
-        if !live || s.autonomy.is_none() {
+        if s.session_id.is_none() || s.autonomy.is_none() {
             return Err(GoalError::Refused {
                 nav: control.status_locked(&mut s, false)["nav"].clone(),
-                message: "Go-to-point needs a live operator permit: hold the deadman".into(),
+                message: "Go-to-point needs a connected operator controller".into(),
             });
+        }
+        if let Some(sid) = session_id {
+            if Some(sid.to_string()) != s.session_id {
+                return Err(GoalError::Refused {
+                    nav: control.status_locked(&mut s, false)["nav"].clone(),
+                    message: "Goal is for another controller session".into(),
+                });
+            }
         }
         if s.scan_token.is_some() {
             return Err(GoalError::Refused {
@@ -1384,7 +1390,27 @@ impl NavService {
                 message: "A scan is running".into(),
             });
         }
-        // Arm only: the operator's own held "goto" heartbeats start motion.
+        // The operator is pressing right now.
+        let held = s.deadline > now;
+        if held {
+            let mut live = s.connected && !s.requires_release && control.camera_is_ready();
+            if permit.is_some() || session_id.is_some() {
+                let permit_expires = permit
+                    .and_then(|t| s.permits.iter().find(|(k, _)| k == t).map(|(_, e)| *e))
+                    .unwrap_or(0.0);
+                live = live && permit_expires > now;
+            }
+            if !live {
+                return Err(GoalError::Refused {
+                    nav: control.status_locked(&mut s, false)["nav"].clone(),
+                    message: "Go-to-point needs a live operator permit: hold the deadman".into(),
+                });
+            }
+        }
+        // Arm only: the operator's own held "goto" heartbeats start motion. A POST
+        // never changes the drive mode, so no other client can make the rover move.
+        // Without a held lease the goal is staged and waits for a new deadman press
+        // that passes every heartbeat gate (#105).
         {
             let mut n = self.inner.lock().unwrap();
             n.goal_id += 1;
@@ -1394,8 +1420,16 @@ impl NavService {
             n.remote.insert("path".into(), json!([]));
         }
         s.stick_override = false;
+        let staged_nav = if held {
+            None
+        } else {
+            Some(control.status_locked(&mut s, false)["nav"].clone())
+        };
         drop(s);
-        Ok(self.nav_object(Some("goto"), Some("goto"), Some(true)))
+        Ok(match staged_nav {
+            Some(nav) => nav,
+            None => self.nav_object(Some("goto"), Some("goto"), Some(true)),
+        })
     }
 
     pub fn cancel(&self) -> Value {
