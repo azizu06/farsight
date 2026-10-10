@@ -65,7 +65,7 @@ def main() -> None:
     root = str(Path(__file__).resolve().parents[2])
     if root not in sys.path:
         sys.path.insert(0, root)
-    from jetson.mapping.server import main as run_demo
+    from jetson.server import main as run_demo
     run_demo()
 
 

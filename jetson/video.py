@@ -32,7 +32,10 @@ def fragment_timing(data, fps):
 
 
 class VideoService:
-    def __init__(self, camera, enabled=False, width=640, height=480, fps=15, bitrate=1000000):
+    def __init__(self, camera, enabled=False, width=640, height=480, fps=10, bitrate=500000):
+        if (type(fps) is not int or not 1 <= fps <= 30 or type(bitrate) is not int or not 64000 <= bitrate <= 4000000
+                or any(type(size) is not int or size % 2 or not 16 <= size <= 1920 for size in (width, height))):
+            raise ValueError("Video needs even dimensions 16..1920, fps 1..30, bitrate 64000..4000000")
         self.camera, self.enabled = camera, enabled
         self.width, self.height, self.fps, self.bitrate = width, height, fps, bitrate
         self.process = None
@@ -106,7 +109,11 @@ class VideoService:
                         raise ValueError("Encoded fragment cannot be matched to capture receipt times")
                     self.publish(dict(payload=data, media_start_s=start, media_end_s=end,
                                       received=min(frame.received for frame in captures),
-                                      frame=captures[-1].frame_id, source=captures[-1].source))
+                                      frame=captures[-1].frame_id, source=captures[-1].source,
+                                      samples=[dict(media_start_s=(first + offset) / self.fps,
+                                                    media_end_s=(first + offset + 1) / self.fps,
+                                                    frame=frame.frame_id)
+                                               for offset, frame in enumerate(captures)]))
                     fragment.clear()
 
     async def _run(self):

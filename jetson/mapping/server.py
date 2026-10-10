@@ -7,7 +7,8 @@ import json
 from pathlib import Path
 import time
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from starlette.datastructures import UploadFile
 from fastapi.responses import Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ValidationError
@@ -21,21 +22,27 @@ from jetson.video import VideoService
 from jetson.perception import PerceptionService
 from jetson.mission import Mission
 from jetson.control import ControlService
+from jetson.assistant import SceneAssistant, AssistantError
 
 DIST = Path(__file__).resolve().parents[2] / "quest" / "dist"
 
 
 def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=False,
-               detector="hog", detector_model=None, h264=False, mission_dir=None, max_pwm=100, min_pwm=0):
+               detector="hog", detector_model=None, h264=False, mission_dir=None, max_pwm=100, min_pwm=0,
+               video_fps=10, video_bitrate=500000, assistant_url=None, whisper_bin=None, whisper_model=None,
+               piper_bin=None, piper_model=None, tts_dir=None):
     if (demo or simulate_rover) and serial_port:
         raise ValueError("Simulated sources cannot be combined with a physical motor serial port")
     state = MapState(demo)
     camera_service = CameraService(state, device=camera_device)
-    video_service = VideoService(camera_service, enabled=h264)
+    video_service = VideoService(camera_service, enabled=h264, fps=video_fps, bitrate=video_bitrate)
     mission = Mission(mission_dir)
     perception = PerceptionService(camera_service, model=detector_model, mode=detector, on_detection=mission.detect)
     control = ControlService(serial_port=serial_port, simulate=simulate_rover, max_pwm=max_pwm, min_pwm=min_pwm,
                              camera_ready=lambda: camera_service.status()["camera"])
+    assistant = SceneAssistant(camera_service, perception, control, server_url=assistant_url,
+                               whisper_bin=whisper_bin, whisper_model=whisper_model,
+                               piper_bin=piper_bin, piper_model=piper_model, output_dir=tts_dir)
 
     async def simulate():
         started, frame_id = time.monotonic(), 0
@@ -56,6 +63,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
             yield
         finally:
             await asyncio.to_thread(control.close)
+            await assistant.close()
             await perception.close()
             await video_service.close()
             await camera_service.close()
@@ -72,7 +80,25 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
     app.state.control = control
     app.state.perception = perception
     app.state.mission = mission
+    app.state.assistant = assistant
     app.include_router(control.router)
+
+    class AskBodyLimit:
+        def __init__(self, app):
+            self.app = app
+
+        async def __call__(self, scope, receive, send):
+            count = 0
+            async def bounded_receive():
+                nonlocal count
+                message = await receive()
+                count += len(message.get("body", b""))
+                if count > SceneAssistant.MAX_AUDIO + 65536:
+                    raise HTTPException(413, "Audio upload exceeds 8 MiB plus framing")
+                return message
+            await self.app(scope, bounded_receive if scope["type"] == "http" and scope.get("path") == "/ask" else receive, send)
+
+    app.add_middleware(AskBodyLimit)
 
     @app.get("/health")
     async def health():
@@ -82,7 +108,10 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
         status.update(rover=rover["rover"], estop=rover["estop"], control=rover,
                       detector=perception.mode, detector_error=perception.error,
                       detector_fps=perception.snapshot()["fps"] if perception.snapshot()["fresh"] else 0,
-                      video=dict(enabled=h264, ready=video_service.init is not None, error=video_service.error))
+                      video=dict(enabled=h264, ready=video_service.init is not None, error=video_service.error,
+                                 fps=video_fps, bitrate=video_bitrate),
+                      assistant=dict(vision_model=bool(assistant_url), whisper=bool(whisper_bin and whisper_model),
+                                     piper=bool(piper_bin and piper_model)))
         return status
 
     @app.get("/map/points.bin")
@@ -168,12 +197,15 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                         or type(request_id) is not int or not 0 <= request_id <= 2**53 - 1):
                     await ws.close(code=1008, reason="Expected next video fragment request")
                     return
+                waiting_at = time.monotonic()
                 fragment = await asyncio.wait_for(queue.get(), 2)
+                wait_ms = (time.monotonic() - waiting_at) * 1000
                 if fragment is None:
                     await ws.close(code=1013, reason="Video consumer fell behind; reconnect for fresh video")
                     return
                 metadata = {key: value for key, value in fragment.items() if key not in ("payload", "received")}
                 metadata.update(type="video_segment", request_id=request_id,
+                                server_wait_ms=wait_ms,
                                 age_ms=max(0, round((time.monotonic() - fragment["received"]) * 1000)))
                 await asyncio.wait_for(ws.send_json(metadata), .5)
                 await asyncio.wait_for(ws.send_bytes(fragment["payload"]), .5)
@@ -186,10 +218,16 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
     @app.websocket("/ws/detections")
     async def detections(ws: WebSocket):
         await ws.accept()
+        previous = None
+        last_sent = 0.0
         try:
             while True:
-                await asyncio.wait_for(ws.send_json(perception.snapshot()), .5)
-                await asyncio.sleep(.3)
+                packet = perception.snapshot()
+                identity = (packet["frame"], packet["source"], packet["fresh"], packet["error"])
+                if identity != previous or time.monotonic() - last_sent > 2:
+                    await asyncio.wait_for(ws.send_json(packet), .5)
+                    previous, last_sent = identity, time.monotonic()
+                await asyncio.sleep(.08)
         except (WebSocketDisconnect, RuntimeError, OSError, asyncio.TimeoutError):
             pass
 
@@ -219,24 +257,35 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
     async def drill_status():
         return mission.drill()
 
-    class AskRequest(BaseModel):
-        text: str
-
     @app.post("/ask")
-    async def ask(body: AskRequest):
-        if not body.text.strip() or len(body.text) > 2000:
-            raise HTTPException(422, "Ask a question of at most 2000 characters")
-        detected = perception.snapshot()
-        live = camera_service.status()
-        rover = control.status()
-        people = sum(box["cls"] == "person" for box in detected["boxes"])
-        answer = (f"The {live['camera_source'].lower()} view is {'live' if live['camera'] else 'stale or unavailable'}. "
-                  + (f"The {detected['detector']} detector currently reports {people} person detections. "
-                     if detected["fresh"] and not detected["error"] else "No fresh person detection result is available. ")
-                  + (f"The ultrasonic range is {rover['range_cm']} centimetres. " if rover["range_cm"] is not None else "Ultrasonic range is unavailable. ")
-                  + "Motion is controlled only by the held deadman; this answer does not move the rover.")
-        return dict(question=body.text, answer=answer, action=None, model="local-observation-summary", ms=0,
-                    source=live["camera_source"], simulated=demo or simulate_rover)
+    async def ask(request: Request):
+        try:
+            content_type = request.headers.get("content-type", "").split(";")[0]
+            if content_type == "application/json":
+                body = await request.json()
+                if not isinstance(body, dict):
+                    raise HTTPException(400, "Expected a text question object")
+                return await assistant.ask(text=body.get("text"))
+            if content_type == "multipart/form-data":
+                async with request.form(max_files=1, max_fields=1) as form:
+                    uploaded = form.get("audio")
+                    if not isinstance(uploaded, UploadFile):
+                        raise HTTPException(400, "Expected an audio file")
+                    return await assistant.ask(audio=await uploaded.read(SceneAssistant.MAX_AUDIO + 1))
+            raise HTTPException(415, "Use JSON text or multipart audio")
+        except AssistantError as exc:
+            raise HTTPException(exc.status_code, str(exc)) from exc
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise HTTPException(400, "Invalid question request") from exc
+
+    @app.get("/tts/{name}")
+    async def speech(name: str):
+        if not assistant.output_dir or not name.startswith("reply-") or not name.endswith(".wav") or "/" in name or "\\" in name:
+            raise HTTPException(404, "Speech reply unavailable")
+        path = assistant.output_dir / name
+        if not path.is_file():
+            raise HTTPException(404, "Speech reply unavailable")
+        return Response(await asyncio.to_thread(path.read_bytes), media_type="audio/wav")
 
     @app.websocket("/ws/map")
     async def viewer(ws: WebSocket):
@@ -392,7 +441,15 @@ def main():
     parser.add_argument("--detector", choices=("hog", "none"), default="hog", help="Bundled CPU person detector")
     parser.add_argument("--detector-model", help="YOLOv8/11 ONNX or TensorRT engine path; overrides bundled HOG")
     parser.add_argument("--h264", action="store_true", help="Enable ffmpeg H264 fragmented MP4 WebSocket")
+    parser.add_argument("--video-fps", type=int, default=10)
+    parser.add_argument("--video-bitrate", type=int, default=500000, help="H264 bit/s; start low for cellular headroom")
     parser.add_argument("--mission-dir", help="Persist detection evidence beneath this directory")
+    parser.add_argument("--assistant-url", help="Local llama-server origin, e.g. http://127.0.0.1:8082")
+    parser.add_argument("--whisper-bin")
+    parser.add_argument("--whisper-model")
+    parser.add_argument("--piper-bin")
+    parser.add_argument("--piper-model")
+    parser.add_argument("--tts-dir", default="/tmp/farsight-tts", help="Bounded locally generated speech replies")
     args = parser.parse_args()
     if args.simulate_rover and args.serial_port:
         parser.error("--simulate-rover cannot be combined with --serial-port")
@@ -402,7 +459,10 @@ def main():
         parser.error("Choose --demo or a real --camera, not both")
     uvicorn.run(create_app(args.demo, camera_device=args.camera, serial_port=args.serial_port,
                 simulate_rover=args.simulate_rover, detector=args.detector, detector_model=args.detector_model,
-                h264=args.h264, mission_dir=args.mission_dir, max_pwm=args.max_pwm, min_pwm=args.min_pwm), host=args.host, port=args.port,
+                h264=args.h264, mission_dir=args.mission_dir, max_pwm=args.max_pwm, min_pwm=args.min_pwm,
+                video_fps=args.video_fps, video_bitrate=args.video_bitrate, assistant_url=args.assistant_url,
+                whisper_bin=args.whisper_bin, whisper_model=args.whisper_model, piper_bin=args.piper_bin,
+                piper_model=args.piper_model, tts_dir=args.tts_dir), host=args.host, port=args.port,
                 ssl_certfile=args.ssl_certfile, ssl_keyfile=args.ssl_keyfile,
                 ws_max_size=8 * 1024 * 1024, access_log=False,
                 timeout_graceful_shutdown=5)

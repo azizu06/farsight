@@ -117,7 +117,7 @@ def main():
         upstream = args.upstream
         if args.simulate:
             upstream = f"http://127.0.0.1:{args.jetson_port}"
-            server_command = [sys.executable, "-m", "jetson.mapping.server", "--demo",
+            server_command = [sys.executable, "-m", "jetson.server", "--demo",
                               "--simulate-rover", "--host", "127.0.0.1", "--port", str(args.jetson_port)]
             if args.h264:
                 server_command.append("--h264")

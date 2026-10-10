@@ -16,6 +16,14 @@ from jetson.perception import PerceptionService, yolo_boxes
 
 
 class ServicesTests(unittest.TestCase):
+    def test_assistant_http_audio_dependency_and_upload_limits(self):
+        with TestClient(create_app(detector="none")) as client:
+            self.assertEqual(client.post("/ask", json={"text": ""}).status_code, 400)
+            self.assertEqual(client.post("/ask", data="bad", headers={"Content-Type": "application/json"}).status_code, 400)
+            self.assertEqual(client.post("/ask", files={"audio": ("sample.wav", b"RIFF1234WAVE", "audio/wav")}).status_code, 503)
+            oversized = b"RIFF1234WAVE" + b"0" * (9 * 1024 * 1024)
+            self.assertEqual(client.post("/ask", files={"audio": ("sample.wav", oversized, "audio/wav")}).status_code, 413)
+            self.assertEqual(client.get("/tts/reply-missing.wav").status_code, 404)
     def test_simulated_video_cannot_drive_physical_motors(self):
         with self.assertRaises(ValueError):
             create_app(demo=True, serial_port="/dev/ttyACM0")
