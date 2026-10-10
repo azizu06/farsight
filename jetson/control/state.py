@@ -67,6 +67,7 @@ class ControlState:
         self.stick_override = False
         self.lock = threading.RLock()
         self.session_id = None
+        self.last_message_at = -math.inf  # last message from the current controller session
         self.permits = OrderedDict()
         self.seq = -1
         self.connected = False
@@ -157,11 +158,19 @@ class ControlState:
             if reason:
                 self.reason = reason
 
+    # A live controller (Quest, relay, tools) sends at least every 50 ms, held or not. A session
+    # silent this long is a dead socket the server has not noticed yet: a new one replaces it
+    # instead of being refused with 1008 for the 7-8 s it took to reap on the rig.
+    STALE_SESSION = 1.0
+
     def begin(self):
         with self.lock:
             if self.session_id is not None:
-                return None
+                if self.clock() - self.last_message_at < self.STALE_SESSION:
+                    return None
+                self.end(self.session_id)  # stops; the old handler sees the change and closes
             self.session_id = str(uuid.uuid4())
+            self.last_message_at = self.clock()
             self.seq = -1
             self.permits.clear()
             self.stop("release_required")
@@ -205,6 +214,7 @@ class ControlState:
         with self.lock:
             if not isinstance(message, dict) or self.session_id != session_id:
                 return False
+            self.last_message_at = self.clock()
             if message.get("session_id") != session_id:
                 self.stop("wrong_session")
                 return False

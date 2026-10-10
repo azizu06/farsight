@@ -140,6 +140,9 @@ Optional pose fields (YOLO11-pose), present when the detector is a pose model:
  "video_fresh":true,"video_age_ms":120}
 ```
 
+- One controller at a time: a second socket is closed with 1008 "Another controller owns the rover",
+  unless the current session has sent nothing for 1 s. A silent session is a dead socket not yet
+  reaped, so the new socket replaces it (stop, then `release_required` as on any new session).
 - `v` forward speed and `w` turn rate, both -1..1. `pan` camera yaw in degrees, -80..80, 0 = forward.
   With `--pan-mount none` (`FARSIGHT_PAN_MOUNT=none`, a rover with no pan servo; the headset
   pans digitally) the server still validates `pan` but then ignores it: it never blocks forward

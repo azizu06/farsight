@@ -133,6 +133,8 @@ class ControlService:
         async def send_status():
             recorded = -float("inf")
             while True:
+                if self.state.session_id != session_id:
+                    return  # replaced by a newer controller after this socket went silent
                 started = asyncio.get_running_loop().time()
                 # A congested downstream status path makes continued control
                 # unsafe; closing causes a stop instead of queued status tokens.
