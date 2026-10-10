@@ -71,8 +71,8 @@ pub struct Inner {
     pub scan: Option<Value>,
 }
 
-/// Exact Python reason when --map-fusion off (state.py FUSION_OFF).
-const FUSION_OFF: &str = "Jetson map fusion off (--map-fusion off): no Jetson 3D map";
+/// Exact Python reason when --fusion-bypass is set (state.py FUSION_BYPASSED).
+const FUSION_BYPASSED: &str = "Geometry lane external; fusion bypassed";
 
 pub struct MapState {
     pub demo: bool,
@@ -92,7 +92,8 @@ pub struct MapState {
     /// depth/occupancy and labels keep full resolution. 0 = uncapped.
     pub points_cap: usize,
     pub triangles_cap: usize,
-    /// Opt-in Jetson fusion off (--map-fusion off, #107): keep /phone pose +
+    /// Opt-in Jetson fusion bypass (--fusion-bypass / FARSIGHT_FUSION_BYPASS,
+    /// #109): keep /phone pose +
     /// depth (Nav2) and the camera feed (inference/control), but skip RGB-D
     /// point/mesh fusion — geometry arrives via the phone ARKit lane
     /// assembled on the Mac instead. Status stays honest about map source.
@@ -312,7 +313,7 @@ impl MapState {
                 && frame.header["tracking"].as_str() == Some("normal")
                 && s.tracking == "normal";
             s.reason = if self.fusion_bypass {
-                Some(FUSION_OFF.into())
+                Some(FUSION_BYPASSED.into())
             } else if s.paused {
                 Some("Fusion paused".into())
             } else if !may_fuse {
@@ -326,18 +327,9 @@ impl MapState {
         for observer in self.frame_observers.lock().unwrap().iter() {
             observer(frame);
         }
-        // #107: with fusion off the frame still counts as ingested and
-        // updates ingest timing; the map itself stays empty (state.py).
-        if self.fusion_bypass {
-            let mut s = self.inner.lock().unwrap();
-            if generation == s.processing_generation {
-                s.frames += 1;
-                let duration = started.elapsed().as_secs_f64();
-                s.processing_ms = (duration * 1000.0 * 10.0).round() / 10.0;
-                s.fps = (1.0 / duration.max(1e-4) * 10.0).round() / 10.0;
-            }
-            return Ok(());
-        }
+        // #109: bypassed frames keep the pose/depth/camera lanes live but are
+        // not fused and not counted — frames/processing_ms stay frozen at the
+        // last fused values (state.py parity).
         if !may_fuse {
             return Ok(());
         }
@@ -400,7 +392,7 @@ impl MapState {
             "triangles": s.surfaces.count,
             "capped": (self.points_cap > 0 && s.cloud.cells.len() > self.points_cap)
                 || (self.triangles_cap > 0 && s.surfaces.count > self.triangles_cap),
-            "map_fusion": !self.fusion_bypass,
+            "fusion_bypass": self.fusion_bypass,
             "keyframes": s.surfaces.keyframes.len(),
             "frames": s.frames,
             "rejected": s.rejected,

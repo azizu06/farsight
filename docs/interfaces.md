@@ -281,6 +281,16 @@ every `/ws/control` status. Coordinates are voxel-map world metres: map `x, z`
   frontier goal points (widest first) that Explore chooses from. `goal`: the
   go-to point, or in a Nav2 Seek the standoff point 0.8 m short of the person
   (it moves with them); `null` in Explore.
+- `revision`: integer, bumped whenever `path` or `frontiers` change (additive; the Rust server
+  does not send it yet). **Nav lane (opt-in, for cellular):** a `/ws/control` client (direct or
+  bonded) that adds `"nav_lane": "revision"` to its command messages (any heartbeat or release;
+  latched for that socket, or for the bonded session) then gets `nav.path` and `nav.frontiers` only
+  in statuses where `revision` changed, at most every 0.5 s (changes are coalesced to the newest),
+  plus a refresh every 2 s and in the first status after opting in or after a bonded path attaches.
+  Every other status omits both keys: absent means unchanged, so keep the last arrays (an empty
+  array clears them). All other status and lease fields are unchanged and still arrive at 40 Hz.
+  Clients that never opt in keep full arrays in every status. `GET /control/status` and
+  `GET /nav/status` always carry the full arrays and `revision`.
 - `POST /nav/goal` with `{"x": 2.0, "z": -1.5}` (metres, millimetre
   precision; optional `session_id` from the `/ws/control` status binds it to that
   controller) returns `202` with the nav object, or `409` `{"nav": <nav object>,
@@ -428,13 +438,14 @@ Each `encounters[]` entry also gains `key` and `sbar` (the same object or `null`
 `--mission-dir`, notes append to `triage.jsonl` and `report.json` is rewritten on every note.
 `/health` gains `triage: {"enabled", "pending", "generated", "last_ms", "min_interval_s"}`.
 
-## `/health.map_fusion` and `/ws/map` status (Jetson -> Quest)
+## `/health.fusion_bypass` and `/ws/map` status (Jetson -> Quest)
 
-Optional `map_fusion: bool`, default `true`. With `--map-fusion off` (`FARSIGHT_MAP_FUSION=off`) the
-Jetson builds no 3D map: `points`, `triangles` and `keyframes` stay `0`, `revision` does not
-advance, the map packets are empty and `reason` says fusion is off. Camera, depth view, pose and
-Nav2 sensing are unaffected. `source` still names the sensor (`IPHONE LIDAR`). Python server only
-so far.
+Optional `fusion_bypass: bool`, default `false`, in both the Python and Rust servers. With
+`--fusion-bypass` (`FARSIGHT_FUSION_BYPASS=1`) the Jetson builds no 3D map. `points`,
+`triangles`, `keyframes` and `frames` (fused frames) stay `0`, `revision` does not advance and
+the map packets are empty. `reason` is `"Geometry lane external; fusion bypassed"`. The camera,
+the depth view, `depth_range`, the pose and Nav2 sensing are unaffected, and `source` still
+names the sensor (`IPHONE LIDAR`).
 
 ## `/health.camera_pan` (Jetson -> Quest), default camera mount
 
@@ -514,6 +525,17 @@ preferred, then `gzip`; `q=0` refuses a coding. Bodies under 1 KiB and requests 
 supported coding stay identity. Responses always carry `Vary: Accept-Encoding`. The Python server
 encodes once per map version (generation, revision, mesh revision) and reuses it across clients.
 Decoded bytes are identical to the uncompressed body; no other route is compressed.
+
+### Visual map wire cap (additive)
+
+`/map/points.bin`, `/map/mesh.bin`, `/map/export.ply` and the legacy `/ws/map` binary push are
+bounded for display: `FARSIGHT_MAP_POINTS_CAP` (`--map-points-cap`, default 30000) and
+`FARSIGHT_MAP_TRIANGLES_CAP` (`--map-triangles-cap`, default 40000); `0` disables. Python and
+Rust decimate identically at encode time: points keep records `i*N/cap`; the mesh keeps
+triangles `i*T/cap`, then sends only their vertices in first-use order with remapped indices.
+Binary layouts are unchanged; the PLY follows the capped points. Map status (`/health`,
+`/ws/map`) gains `capped: true` while either cap is decimating; `points` and `triangles` still
+count the full map. Fusion, Nav2 depth/occupancy and scan results keep full resolution.
 
 ### Cellular map subscription (additive)
 

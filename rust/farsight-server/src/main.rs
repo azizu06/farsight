@@ -158,11 +158,12 @@ struct Args {
     /// FARSIGHT_MAP_TRIANGLES_CAP, default 40000). 0 disables.
     #[arg(long)]
     map_triangles_cap: Option<usize>,
-    /// Build the voxel/mesh map from /phone RGB-D on the Jetson (default
-    /// on). 'off' skips fusion only; pose, depth for Nav2, camera and
-    /// inference keep running (env FARSIGHT_MAP_FUSION=off, #107).
-    #[arg(long, default_value = "on", value_parser = ["on", "off"])]
-    map_fusion: String,
+    /// Skip the Jetson voxel/mesh fusion of /phone RGB-D — the mesh is
+    /// built elsewhere (phone ARKit lane). Pose, depth for Nav2, camera
+    /// and inference keep running. Env FARSIGHT_FUSION_BYPASS=1 also
+    /// enables it (#109 contract).
+    #[arg(long)]
+    fusion_bypass: bool,
 }
 
 #[global_allocator]
@@ -274,8 +275,8 @@ async fn main() {
             args.map_points_cap.unwrap_or_else(|| env_usize("FARSIGHT_MAP_POINTS_CAP", 30_000)),
             args.map_triangles_cap.unwrap_or_else(|| env_usize("FARSIGHT_MAP_TRIANGLES_CAP", 40_000)),
         ),
-        args.map_fusion == "off"
-            || matches!(std::env::var("FARSIGHT_MAP_FUSION").ok().as_deref(), Some("off")),
+        args.fusion_bypass
+            || matches!(std::env::var("FARSIGHT_FUSION_BYPASS").ok().as_deref(), Some("1") | Some("true") | Some("on")),
     );
     server::start_services(&state);
     let dist = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../quest/dist");

@@ -225,6 +225,31 @@ class BondedPublicationTests(unittest.IsolatedAsyncioTestCase):
                 await hub.close()
                 await asyncio.gather(*readers)
 
+    async def test_nav_lane_is_decided_once_per_status_for_both_paths(self):
+        from jetson.mapping.state import MapState
+        from jetson.nav import NavService
+        nav = NavService(MapState())
+        state = ControlState(navigator=nav)
+        nav.attach(state)
+        state.set_connected(True)
+        hub = BondedControlHub(state)
+        a = await hub.attach()
+        b = await hub.attach(a.secret)
+        seen = [[], []]
+        readers = [asyncio.create_task(drain(path, values)) for path, values in zip((a, b), seen)]
+        try:
+            await asyncio.wait_for(until(lambda: len(seen[0]) >= 2), .3)
+            self.assertIn("path", seen[0][-1]["nav"])  # legacy until a command opts in
+            self.assertTrue(hub.accept(dict(session_id=a.session_id, seq=0, deadman=False, nav_lane="revision"),
+                                       a.path_id))
+            start = len(seen[0])
+            await asyncio.wait_for(until(lambda: len(seen[0]) >= start + 6 and len(seen[1]) >= start + 6), .5)
+            self.assertTrue(all(x is y for x, y in zip(seen[0], seen[1])))  # identical copies per status_seq
+            self.assertTrue(all("path" not in status["nav"] for status in seen[0][start + 1:start + 6]))
+        finally:
+            await hub.close()
+            await asyncio.gather(*readers)
+
     async def test_full_queue_faults_only_stalled_path_and_terminates_it(self):
         state = self.state()
         hub = BondedControlHub(state)

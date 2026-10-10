@@ -122,6 +122,13 @@ if [ "$DRY" = 1 ]; then echo "  [dry-run] $REPO/jetson/.venv/bin/python -m jetso
 else (cd "$REPO" && jetson/.venv/bin/python -m jetson.launch --check --env-file "$ENV_FILE") || echo "WARN: fix the lines above in $ENV_FILE, then: sudo systemctl restart farsight"; fi
 
 step "Start"
+# With NetworkManager managing every link, systemd-networkd-wait-online runs to its 2-minute timeout
+# on each boot and holds network-online.target (docker, nvargus, ...). Disable it only when networkd
+# manages nothing.
+if systemctl is-enabled --quiet systemd-networkd-wait-online.service 2>/dev/null \
+    && ! networkctl list --no-legend 2>/dev/null | awk '$5 != "unmanaged" {found = 1} END {exit !found}'; then
+  run sudo systemctl disable systemd-networkd-wait-online.service
+fi
 run sudo systemctl daemon-reload
 [ "$LLM" = 0 ] || run sudo systemctl enable --now farsight-llm.service
 [ "$WHISPER" = 0 ] || run sudo systemctl enable --now farsight-whisper.service

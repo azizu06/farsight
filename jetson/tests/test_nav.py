@@ -11,9 +11,9 @@ from jetson.control.state import ControlState
 from jetson.mapping.demo import simulated_frame
 from jetson.mapping.server import create_app
 from jetson.mapping.state import MapState
-from jetson.nav import NavService, Refused, decode_depth, encode_depth, odom_to_world, simplify, world_to_odom
+from jetson.nav import NavLane, NavService, Refused, decode_depth, encode_depth, odom_to_world, simplify, world_to_odom
 
-NAV_KEYS = {"state", "mode", "goal", "path", "frontiers", "backend", "message"}
+NAV_KEYS = {"state", "mode", "goal", "path", "frontiers", "backend", "message", "revision"}
 PHONE = ("phone-session", 1)
 
 
@@ -210,6 +210,22 @@ class LeaseTests(unittest.TestCase):
         self.assertEqual(self.nav.intent()["goal_id"], intent["goal_id"])
         self.assertTrue(self.send(mode="goto", v=0.3))  # stick input disarms
         self.assertIsNone(self.nav.goal)
+
+    def test_revision_changes_only_with_path_or_frontiers(self):
+        self.bridge(type="status", state="idle", goal_id=None)
+        self.assertTrue(self.send())
+        self.nav.set_goal(1.0, -2.0)
+        self.assertTrue(self.send(mode="goto"))
+        self.state.output()
+        before = self.state.status()["nav"]["revision"]
+        self.assertEqual(self.state.status()["nav"]["revision"], before)
+        goal_id = self.nav.intent()["goal_id"]
+        self.bridge(type="status", state="driving", goal_id=goal_id, path=[[0, 0], [1, 0], [2, -1]])
+        self.assertEqual(self.state.status()["nav"]["revision"], before + 1)
+        self.bridge(type="status", state="driving", goal_id=goal_id, path=[[0, 0], [1, 0], [2, -1]], message="1 m")
+        self.assertEqual(self.state.status()["nav"]["revision"], before + 1)  # same arrays, new message
+        self.bridge(type="status", state="driving", goal_id=goal_id, path=[[0, 0], [2, -1]])
+        self.assertEqual(self.state.status()["nav"]["revision"], before + 2)
 
     def test_drive_profile_maps_nav2_si_command_straight_to_wheel_pwm(self):
         from jetson.control.tests.test_drive_profile import make_profile
@@ -463,7 +479,47 @@ class LeaseTests(unittest.TestCase):
             self.nav.receive(dict(type="teleport"))
 
 
+class NavLaneTests(unittest.TestCase):
+    def test_arrays_only_on_change_at_most_twice_a_second_with_a_refresh(self):
+        clock = Clock()
+        lane = NavLane(clock=clock)
+
+        def status(revision, path):
+            return dict(type="control_status", permit="p", nav=dict(state="driving", goal=None, path=path,
+                                                                    frontiers=[[1.0, 1.0]], revision=revision))
+        self.assertEqual(lane.apply(status(1, [[0, 0]]))["nav"]["path"], [[0, 0]])  # the first status carries them
+        clock.now += 0.025
+        lean = lane.apply(status(1, [[0, 0]]))
+        self.assertEqual(set(lean["nav"]), {"state", "goal", "revision"})
+        self.assertEqual((lean["permit"], lean["nav"]["revision"]), ("p", 1))
+        clock.now += 0.1
+        self.assertNotIn("path", lane.apply(status(2, [[0, 1]]))["nav"])  # changed, but within 0.5 s
+        clock.now += 0.4
+        changed = lane.apply(status(3, [[0, 2]]))["nav"]  # coalesced: the newest arrays
+        self.assertEqual((changed["path"], changed["frontiers"], changed["revision"]), ([[0, 2]], [[1.0, 1.0]], 3))
+        clock.now += 1.9
+        self.assertNotIn("path", lane.apply(status(3, [[0, 2]]))["nav"])
+        clock.now += 0.2
+        self.assertIn("path", lane.apply(status(3, [[0, 2]]))["nav"])  # 2 s refresh
+        plain = dict(type="control_status")
+        self.assertIs(lane.apply(plain), plain)
+
+
 class ServerTests(unittest.TestCase):
+    def test_control_socket_nav_lane_is_opt_in(self):
+        app = create_app(demo=True, simulate_rover=True, detector="none", nav2=True, proximity_stop=False)
+        with TestClient(app) as client:
+            with client.websocket_connect("/ws/control") as ws:
+                status = ws.receive_json()
+                self.assertTrue(all("path" in ws.receive_json()["nav"] for _ in range(4)))  # legacy: every status
+                ws.send_json(dict(session_id=status["session_id"], seq=0, deadman=False, nav_lane="revision"))
+                statuses = [ws.receive_json() for _ in range(16)]
+                tail = statuses[-6:]
+                self.assertTrue(all("path" not in s["nav"] and "frontiers" not in s["nav"] for s in tail))
+                self.assertTrue(all(isinstance(s["nav"]["revision"], int) and s["permit"] for s in tail))
+            self.assertIn("path", client.get("/nav/status").json())  # the HTTP snapshot stays complete
+            self.assertIn("revision", client.get("/control/status").json()["nav"])
+
     def test_disabled_by_default_contract_answers_without_navigation(self):
         app = create_app(demo=True, simulate_rover=True, detector="none")
         with TestClient(app) as client:
