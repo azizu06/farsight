@@ -16,10 +16,12 @@ class ControlState:
     LEASE = 0.250
     RANGE_TTL = 0.350
 
-    def __init__(self, simulated=False, max_pwm=100, clock=time.monotonic, camera_ready=None):
-        if not 1 <= max_pwm <= 255:
-            raise ValueError("max_pwm must be 1..255")
+    def __init__(self, simulated=False, max_pwm=100, clock=time.monotonic, camera_ready=None, min_pwm=0):
+        if (type(min_pwm) is not int or type(max_pwm) is not int
+                or not 0 <= min_pwm < max_pwm <= 255):
+            raise ValueError("PWM bounds must satisfy 0 <= min_pwm < max_pwm <= 255")
         self.clock, self.simulated, self.max_pwm = clock, simulated, max_pwm
+        self.min_pwm = min_pwm
         self.camera_ready = camera_ready
         self.lock = threading.RLock()
         self.session_id = None
@@ -163,7 +165,12 @@ class ControlState:
                 self.reason = "forward_blocked"
             left, right = v + w, v - w  # positive w turns right
             scale = max(1.0, abs(left), abs(right))
-            return round(left / scale * self.max_pwm), round(right / scale * self.max_pwm), self.pan + 90
+            def pwm(value):
+                if value == 0:
+                    return 0
+                magnitude = round(self.min_pwm + (self.max_pwm - self.min_pwm) * abs(value / scale))
+                return magnitude if value > 0 else -magnitude
+            return pwm(left), pwm(right), self.pan + 90
 
     def status(self, issue_permit=False):
         with self.lock:
@@ -183,4 +190,4 @@ class ControlState:
                     "rover": self.connected, "simulated": self.simulated,
                     "requires_release": self.requires_release, "reason": self.reason,
                     "left_pwm": left, "right_pwm": right, "pan_deg": pan,
-                    "max_pwm": self.max_pwm}
+                    "max_pwm": self.max_pwm, "min_pwm": self.min_pwm}

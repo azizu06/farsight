@@ -4,10 +4,11 @@ version = "0.1.0"
 description = "Farsight rover server: camera, perception, control. Runs on the Jetson; falls back to mocks elsewhere."
 requires-python = ">=3.10"
 dependencies = [
-  "fastapi>=0.110",
-  "uvicorn[standard]>=0.29",
-  "opencv-python-headless>=4.9",
-  "numpy>=1.26",
+  "fastapi>=0.115,<1",
+  "uvicorn[standard]>=0.30,<1",
+  "opencv-python-headless>=4.10,<5",
+  "numpy>=1.26,<3",
+  "pyserial>=3.5,<4",
 ]
 
 [project.optional-dependencies]

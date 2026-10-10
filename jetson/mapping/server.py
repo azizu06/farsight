@@ -26,7 +26,7 @@ DIST = Path(__file__).resolve().parents[2] / "quest" / "dist"
 
 
 def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=False,
-               detector="hog", detector_model=None, h264=False, mission_dir=None, max_pwm=100):
+               detector="hog", detector_model=None, h264=False, mission_dir=None, max_pwm=100, min_pwm=0):
     if (demo or simulate_rover) and serial_port:
         raise ValueError("Simulated sources cannot be combined with a physical motor serial port")
     state = MapState(demo)
@@ -34,7 +34,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
     video_service = VideoService(camera_service, enabled=h264)
     mission = Mission(mission_dir)
     perception = PerceptionService(camera_service, model=detector_model, mode=detector, on_detection=mission.detect)
-    control = ControlService(serial_port=serial_port, simulate=simulate_rover, max_pwm=max_pwm,
+    control = ControlService(serial_port=serial_port, simulate=simulate_rover, max_pwm=max_pwm, min_pwm=min_pwm,
                              camera_ready=lambda: camera_service.status()["camera"])
 
     async def simulate():
@@ -81,7 +81,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
         rover = control.status()
         status.update(rover=rover["rover"], estop=rover["estop"], control=rover,
                       detector=perception.mode, detector_error=perception.error,
-                      detector_fps=perception.snapshot()["fps"],
+                      detector_fps=perception.snapshot()["fps"] if perception.snapshot()["fresh"] else 0,
                       video=dict(enabled=h264, ready=video_service.init is not None, error=video_service.error))
         return status
 
@@ -386,8 +386,9 @@ def main():
     parser.add_argument("--serial-port", help="Uno serial path; omitted means physical motors disabled")
     parser.add_argument("--simulate-rover", action="store_true", help="Explicit virtual rover; never opens serial")
     parser.add_argument("--max-pwm", type=int, default=100, help="Initial motor PWM ceiling, 1..255")
+    parser.add_argument("--min-pwm", type=int, default=0, help="Measured wheel starting PWM floor; default 0 until calibrated")
     parser.add_argument("--detector", choices=("hog", "none"), default="hog", help="Bundled CPU person detector")
-    parser.add_argument("--detector-model", help="YOLOv8/11 detection ONNX path; overrides bundled HOG")
+    parser.add_argument("--detector-model", help="YOLOv8/11 ONNX or TensorRT engine path; overrides bundled HOG")
     parser.add_argument("--h264", action="store_true", help="Enable ffmpeg H264 fragmented MP4 WebSocket")
     parser.add_argument("--mission-dir", help="Persist detection evidence beneath this directory")
     args = parser.parse_args()
@@ -399,7 +400,7 @@ def main():
         parser.error("Choose --demo or a real --camera, not both")
     uvicorn.run(create_app(args.demo, camera_device=args.camera, serial_port=args.serial_port,
                 simulate_rover=args.simulate_rover, detector=args.detector, detector_model=args.detector_model,
-                h264=args.h264, mission_dir=args.mission_dir, max_pwm=args.max_pwm), host=args.host, port=args.port,
+                h264=args.h264, mission_dir=args.mission_dir, max_pwm=args.max_pwm, min_pwm=args.min_pwm), host=args.host, port=args.port,
                 ssl_certfile=args.ssl_certfile, ssl_keyfile=args.ssl_keyfile,
                 ws_max_size=8 * 1024 * 1024, access_log=False,
                 timeout_graceful_shutdown=5)

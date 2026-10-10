@@ -8,6 +8,7 @@ There is no stock firmware fallback: flash the fail-stopped sketch in `rover/`.
 from jetson.control import ControlService
 
 control = ControlService(serial_port="/dev/ttyACM0", max_pwm=100,
+                         min_pwm=0,
                          camera_ready=lambda: camera.status()["camera"])
 app.include_router(control.router)
 # In the app lifespan: control.start(); ...; control.close()
@@ -59,6 +60,14 @@ Uncertain or stale (>350 ms) range data and a pan head outside ±10 degrees
 block forward translation; turns and reverse remain usable. Motion defaults
 to maximum PWM 100 for a small demo area. This does not replace hardware tests
 or a person ready to power off the rover.
+
+An optional `min_pwm` motor floor defaults to zero. After mixing and normalizing
+the left/right wheel commands, each nonzero wheel maps to
+`sign * (min_pwm + (max_pwm - min_pwm) * abs(value))`; an exact zero stays zero.
+This can overcome motor stiction, but a nonzero floor changes the response near
+zero and also affects turns and reverse. Bounds must satisfy
+`0 <= min_pwm < max_pwm <= 255`. Calibrate the real rover as described in
+`rover/README.md`; no minimum is assumed to work on your motor/battery setup.
 
 Run deterministic policy and WebSocket integration tests with:
 

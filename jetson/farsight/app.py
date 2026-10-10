@@ -58,12 +58,15 @@ def create_app(camera: Camera) -> FastAPI:
 
 
 def main() -> None:
-    import uvicorn
-
-    cfg = Config.from_env()
-    app = create_app(open_camera(cfg))
-    ssl = {"ssl_certfile": cfg.certfile, "ssl_keyfile": cfg.keyfile} if cfg.certfile else {}
-    uvicorn.run(app, host=cfg.host, port=cfg.port, **ssl)
+    # Keep the original camera harness importable for its tests, but launch the
+    # assembled rover service from this installed command as well.
+    import sys
+    from pathlib import Path
+    root = str(Path(__file__).resolve().parents[2])
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    from jetson.mapping.server import main as run_demo
+    run_demo()
 
 
 if __name__ == "__main__":
