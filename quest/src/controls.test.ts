@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ControlLink } from "./controls";
-import type { ControlCommand, ControlReply } from "./protocol";
+import type { ControlCommand, ControlReply } from "./roverProtocol";
 
 class Socket extends EventTarget {
   readyState = 0;
@@ -33,7 +33,7 @@ class Socket extends EventTarget {
   }
 }
 
-function setup(open = true) {
+function setup(open = true, now: () => number = () => Date.now()) {
   const sockets: Socket[] = [];
   const commands: { command: ControlCommand; at: number }[] = [];
   const replies: ControlReply[] = [];
@@ -49,7 +49,7 @@ function setup(open = true) {
         sockets.push(socket);
         return socket;
       },
-      now: () => Date.now(),
+      now,
     },
   );
   link.connect();
@@ -148,6 +148,27 @@ describe("ControlLink", () => {
       { seq: 5, deadman: true, v: 1, w: 1, pan: 0, mode: "teleop" },
     ]);
     expect(commands.slice(1).map(({ at }) => at)).toEqual([50, 100, 150, 200]);
+  });
+
+  it("keeps each nominal 50 ms drive tick when the fractional clock has submillisecond scheduler jitter", () => {
+    let now = 0;
+    const { link, socket, commands } = setup(true, () => now);
+    armKeyboard(link, socket);
+    link.setKeyboard(new Set(["Space", "KeyW"]));
+    now = 25;
+    link.tick();
+    expect(socket.sent).toHaveLength(1);
+    const sampledTimes = [49.8, 100.1, 149.9, 200, 249.8, 300.1];
+    for (const at of sampledTimes) {
+      now = at;
+      vi.advanceTimersByTime(50);
+      socket.reply();
+    }
+    expect(socket.sent).toHaveLength(7);
+    expect(commands.slice(1).map(({ at }) => at)).toEqual(sampledTimes);
+    expect(
+      socket.sent.slice(1).every(({ deadman, v }) => deadman && v === 1),
+    ).toBe(true);
   });
 
   it("sends zero immediately when Space is released between ticks", () => {

@@ -1,4 +1,8 @@
-import type { ControlReply, DetectionBox, DetectionPacket } from "./protocol";
+import type {
+  ControlReply,
+  DetectionBox,
+  DetectionPacket,
+} from "./roverProtocol";
 import type { DrillSnapshot } from "./drill";
 
 export interface HudState {
@@ -209,7 +213,7 @@ export function drawHud(
   ctx.fillStyle = "#e6eff6";
   ctx.fillText(`DETECTOR ${summary.detectorFpsText}`, 180 * scale, 43 * scale);
   ctx.fillText(`LINK ${summary.linkMsText}`, 430 * scale, 43 * scale);
-  if (state.drill) {
+  if (state.drill && state.drill.status !== "idle") {
     const drill = state.drill;
     const y = height - 106 * scale;
     const time =
@@ -227,7 +231,7 @@ export function drawHud(
     );
     ctx.font = `600 ${Math.max(11, 14 * scale)}px system-ui, sans-serif`;
     ctx.fillText(
-      `SAFETY STOPS ${drill.safetyStops}  |  Approximate command trail`,
+      `SAFETY STOPS ${drill.safetyStops}`,
       12 * scale,
       y + 32 * scale,
     );
@@ -235,7 +239,7 @@ export function drawHud(
     ctx.fillText(
       drill.faceSupport === "ready"
         ? "FACE CLASS READY: reported stable IDs only"
-        : "FACE CLASS PENDING: Jetson owner approval needed",
+        : "FACE CLASS PENDING: face detection unavailable",
       12 * scale,
       y + 56 * scale,
     );
@@ -244,10 +248,7 @@ export function drawHud(
   ctx.fillRect(0, height - 26 * scale, width, 26 * scale);
   ctx.font = `${Math.max(11, 13 * scale)}px system-ui, sans-serif`;
   ctx.fillStyle = "#e6eff6";
-  ctx.fillText(
-    "Latest detections; independent video timing",
-    12 * scale,
-    height - 21 * scale,
-  );
+  ctx.textAlign = "center";
+  ctx.fillText("Boxes may lag the image", width / 2, height - 21 * scale);
   ctx.restore();
 }

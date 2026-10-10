@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { RescueDrill } from "./drill";
-import type { ControlCommand, DetectionPacket } from "./protocol";
+import type { ControlCommand, DetectionPacket } from "./roverProtocol";
 
 function fixture(
   options: { faceClassApproved?: boolean; expectedTotal?: number } = {

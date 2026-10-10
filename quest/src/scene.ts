@@ -59,6 +59,7 @@ export class RoverScene {
   private quaternion = new THREE.Quaternion();
   private euler = new THREE.Euler(0, 0, 0, "YXZ");
   private needRecenter = false;
+  private disposed = false;
   private resizeObserver: ResizeObserver;
   private ended = () => {
     this.camera.position.set(0, 1.6, 0);
@@ -97,10 +98,7 @@ export class RoverScene {
     this.camera.position.set(0, 1.6, 0);
     this.content.position.y = 1.6;
     this.scene.add(this.content);
-    this.texture = new THREE.CanvasTexture(this.imageCanvas);
-    this.texture.colorSpace = THREE.SRGBColorSpace;
-    this.texture.minFilter = THREE.LinearFilter;
-    this.texture.generateMipmaps = false;
+    this.texture = this.createVideoTexture();
     this.material = new THREE.MeshBasicMaterial({
       map: this.texture,
       toneMapped: false,
@@ -203,14 +201,36 @@ export class RoverScene {
   setFrame(bitmap: ImageBitmap) {
     this.bitmap?.close();
     this.bitmap = bitmap;
+    const scale = Math.min(
+      1280 / bitmap.width,
+      1280 / bitmap.height,
+      Math.max(1, 640 / bitmap.width, 480 / bitmap.height),
+    );
+    const width = Math.max(1, Math.round(bitmap.width * scale));
+    const height = Math.max(1, Math.round(bitmap.height * scale));
     if (
-      this.imageCanvas.width !== bitmap.width ||
-      this.imageCanvas.height !== bitmap.height
+      this.imageCanvas.width !== width ||
+      this.imageCanvas.height !== height
     ) {
-      this.imageCanvas.width = bitmap.width;
-      this.imageCanvas.height = bitmap.height;
+      this.imageCanvas.width = width;
+      this.imageCanvas.height = height;
       this.panel.scale.y = 4 / 3 / (bitmap.width / bitmap.height);
+      // WebGL uses immutable texture storage: a resized canvas needs a fresh
+      // texture allocation, otherwise only a corner updates or uploads fail.
+      this.texture.dispose();
+      this.texture = this.createVideoTexture();
+      this.material.map = this.texture;
+      this.material.needsUpdate = true;
+      this.resize();
     }
+  }
+
+  private createVideoTexture() {
+    const texture = new THREE.CanvasTexture(this.imageCanvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.minFilter = THREE.LinearFilter;
+    texture.generateMipmaps = false;
+    return texture;
   }
 
   draw(
@@ -254,9 +274,15 @@ export class RoverScene {
   }
   recenter() {
     if (this.renderer.xr.isPresenting) this.needRecenter = true;
-    else this.placeContent(this.camera);
+    else {
+      this.content.position.set(0, 1.6, 0);
+      this.content.rotation.set(0, 0, 0);
+      this.camera.quaternion.identity();
+      this.resize();
+    }
   }
   async enterVR() {
+    if (this.disposed) throw new Error("Viewer has closed.");
     if (!navigator.xr || !window.isSecureContext)
       throw new Error(
         "Open this page over trusted HTTPS in the Quest browser to enter VR.",
@@ -264,8 +290,15 @@ export class RoverScene {
     const session = await navigator.xr.requestSession("immersive-vr", {
       optionalFeatures: ["local-floor"],
     });
+    if (this.disposed) {
+      await session.end().catch(() => undefined);
+      throw new Error("Viewer closed while VR was starting.");
+    }
+    this.camera.position.set(0, 1.6, 0);
     try {
       await this.renderer.xr.setSession(session);
+      if (this.disposed)
+        throw new Error("Viewer closed while VR was starting.");
       this.needRecenter = true;
     } catch (error) {
       await session.end().catch(() => undefined);
@@ -281,9 +314,34 @@ export class RoverScene {
       height = Math.max(1, this.canvas.clientHeight);
     this.renderer.setSize(width, height, false);
     this.camera.aspect = width / height;
+    // Fit the full curved image and menu in a tall desktop preview without
+    // changing the fixed world-space viewing distance in an XR session.
+    this.panel.geometry.computeBoundingBox();
+    const bounds = this.panel.geometry.boundingBox!;
+    const tangent = Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2));
+    const halfWidth = Math.max(
+      Math.abs(bounds.min.x),
+      Math.abs(bounds.max.x),
+      1.77,
+    );
+    const halfHeight = Math.max(
+      Math.abs(bounds.min.y) * this.panel.scale.y,
+      Math.abs(bounds.max.y) * this.panel.scale.y,
+      1.94,
+    );
+    const nearestDepth = Math.max(0.1, -bounds.max.z);
+    const distance =
+      Math.max(
+        0,
+        halfWidth / (tangent * this.camera.aspect) - nearestDepth,
+        halfHeight / tangent - nearestDepth,
+      ) + 0.35;
+    this.camera.position.set(0, 1.6, distance);
     this.camera.updateProjectionMatrix();
   }
   dispose() {
+    if (this.disposed) return;
+    this.disposed = true;
     this.resizeObserver.disconnect();
     this.renderer.setAnimationLoop(null);
     this.renderer.xr.removeEventListener("sessionend", this.ended);

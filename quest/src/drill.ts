@@ -1,4 +1,8 @@
-import type { ControlCommand, ControlReply, DetectionPacket } from "./protocol";
+import type {
+  ControlCommand,
+  ControlReply,
+  DetectionPacket,
+} from "./roverProtocol";
 
 export interface CommandBreadcrumb {
   forward: number;

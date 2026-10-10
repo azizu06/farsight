@@ -6,7 +6,7 @@ import {
   summarizeHud,
   type HudState,
 } from "./hud";
-import type { DetectionPacket } from "./protocol";
+import type { DetectionPacket } from "./roverProtocol";
 import { RescueDrill } from "./drill";
 
 const detections: DetectionPacket = {

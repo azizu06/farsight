@@ -7,7 +7,9 @@
     "strict": true,
     "noEmit": true,
     "skipLibCheck": true,
-    "types": ["vite/client", "webxr"]
+    "types": ["vite/client", "webxr"],
+    "allowJs": true,
+    "checkJs": false
   },
   "include": ["src"]
 }

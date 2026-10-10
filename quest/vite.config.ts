@@ -11,7 +11,7 @@ export default defineConfig(({ mode }) => {
     cert && key
       ? { cert: readFileSync(cert), key: readFileSync(key) }
       : undefined;
-  const origin = env.FARSIGHT_JETSON_ORIGIN;
+  const origin = env.FARSIGHT_JETSON_ORIGIN || "http://127.0.0.1:8443";
   if (origin) {
     const url = new URL(origin);
     if (
@@ -28,17 +28,23 @@ export default defineConfig(({ mode }) => {
   }
   const proxy = origin
     ? Object.fromEntries(
-        ["/stream.mjpg", "/health", "/ws/control", "/ws/detections"].map(
-          (path) => [
-            path,
-            {
-              target: origin,
-              changeOrigin: true,
-              ws: path.startsWith("/ws/"),
-              secure: env.FARSIGHT_ALLOW_SELF_SIGNED !== "1",
-            },
-          ],
-        ),
+        [
+          "/stream.mjpg",
+          "/health",
+          "/ws",
+          "/phone",
+          "/map",
+          "/camera.jpg",
+          "/depth.jpg",
+        ].map((path) => [
+          path,
+          {
+            target: origin,
+            changeOrigin: true,
+            ws: path === "/ws" || path === "/phone",
+            secure: env.FARSIGHT_ALLOW_SELF_SIGNED !== "1",
+          },
+        ]),
       )
     : undefined;
   return {

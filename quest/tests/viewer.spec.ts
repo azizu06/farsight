@@ -3,7 +3,13 @@ import { createServer, type ServerResponse } from "node:http";
 import { readFileSync } from "node:fs";
 import { WebSocketServer } from "ws";
 
-const jpeg = readFileSync(new URL("./fixtures/camera.jpg", import.meta.url));
+const normalJpeg = readFileSync(
+  new URL("./fixtures/camera.jpg", import.meta.url),
+);
+const largerJpeg = readFileSync(
+  new URL("./fixtures/camera-large.jpg", import.meta.url),
+);
+let jpeg = normalJpeg;
 const commands: {
   seq: number;
   deadman: boolean;
@@ -98,6 +104,7 @@ test.afterAll(async () => {
   await new Promise<void>((resolve) => fixture.close(() => resolve()));
 });
 test.beforeEach(() => {
+  jpeg = normalJpeg;
   cameraOn = true;
   repliesOn = true;
   estop = false;
@@ -147,7 +154,7 @@ test("renders externally streamed JPEG pixels, HUD, and labelled desktop fallbac
 }) => {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  await page.goto("/?source=mock");
+  await page.goto("/?view=vr&source=mock");
   await expect(page.locator("#video-status")).toHaveText("VIDEO RECEIVING");
   await expect(page.locator("#boxes")).toHaveText("1");
   await expect(page.locator("#range")).toHaveText("64 cm");
@@ -176,7 +183,7 @@ test("renders externally streamed JPEG pixels, HUD, and labelled desktop fallbac
 test("keyboard drive releases immediately and stale replies cannot resume held driving", async ({
   page,
 }) => {
-  await page.goto("/?source=mock");
+  await page.goto("/?view=vr&source=mock");
   await expect(page.locator("#link")).toHaveText("LINK LIVE");
   await expect(page.locator("#video-status")).toHaveText("VIDEO RECEIVING");
   await page.locator("#drive-enabled").check();
@@ -212,7 +219,7 @@ test("keyboard drive releases immediately and stale replies cannot resume held d
 test("clears stalled pixels and boxes and stops driving on camera loss", async ({
   page,
 }) => {
-  await page.goto("/?source=mock");
+  await page.goto("/?view=vr&source=mock");
   await expect(page.locator("#video-status")).toHaveText("VIDEO RECEIVING");
   await page.locator("#drive-enabled").check();
   await page.locator("#view").click();
@@ -234,7 +241,7 @@ test("clears stalled pixels and boxes and stops driving on camera loss", async (
 test("drill reports pending face support and counts safety-stop transitions honestly", async ({
   page,
 }) => {
-  await page.goto("/?source=mock");
+  await page.goto("/?view=vr&source=mock");
   await expect(page.locator("#link")).toHaveText("LINK LIVE");
   await page.locator("#total").fill("2");
   await page.locator("#start-drill").click();
@@ -253,7 +260,7 @@ test("drill reports pending face support and counts safety-stop transitions hone
 test("lost WebGL output stops driving and requires explicit re-enable", async ({
   page,
 }) => {
-  await page.goto("/?source=mock");
+  await page.goto("/?view=vr&source=mock");
   await expect(page.locator("#video-status")).toHaveText("VIDEO RECEIVING");
   await page.locator("#drive-enabled").check();
   await page.locator("#view").click();
@@ -280,7 +287,7 @@ test("lost WebGL output stops driving and requires explicit re-enable", async ({
 test("slow decode clears stale output and reconnects instead of discarding future frames forever", async ({
   page,
 }) => {
-  await page.goto("/?source=mock");
+  await page.goto("/?view=vr&source=mock");
   await expect(page.locator("#video-status")).toHaveText("VIDEO RECEIVING");
   await page.evaluate(() => {
     const original = window.createImageBitmap.bind(window);
@@ -302,4 +309,81 @@ test("slow decode clears stale output and reconnects instead of discarding futur
   await expect(page.locator("#video-status")).toHaveText("VIDEO RECEIVING", {
     timeout: 7000,
   });
+});
+
+test("preserves the default mapping viewer and its link to rover VR", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await expect(page.locator(".viewport")).toBeVisible();
+  await page.locator("#settings-toggle").click();
+  await expect(page.locator("#settings")).toBeVisible();
+  await page.locator("#rover-view").click();
+  await expect(page).toHaveURL(/view=vr/);
+  await expect(page.locator("#video-status")).toHaveText("VIDEO RECEIVING");
+  await expect(page.locator(".viewport")).toHaveCount(0);
+  await expect(page.locator("#drive-enabled")).not.toBeChecked();
+});
+
+test("replaces the whole GPU texture when the camera resolution changes", async ({
+  page,
+}) => {
+  await page.goto("/?view=vr&source=mock");
+  await expect(page.locator("#video-status")).toHaveText("VIDEO RECEIVING");
+  await expect
+    .poll(async () => (await centerPixel(page))[0])
+    .toBeGreaterThan(180);
+  jpeg = largerJpeg;
+  await expect
+    .poll(async () => (await centerPixel(page))[2])
+    .toBeGreaterThan(170);
+  await expect.poll(async () => (await centerPixel(page))[0]).toBeLessThan(100);
+});
+
+test("ends a late XR grant instead of attaching it to a disposed viewer", async ({
+  page,
+}) => {
+  await page.goto("/?view=vr&source=mock");
+  await expect(page.locator("#video-status")).toHaveText("VIDEO RECEIVING");
+  const result = await page.evaluate(async () => {
+    const path = "/src/scene.ts";
+    const { RoverScene } = await import(path);
+    let grant!: (session: object) => void;
+    Object.defineProperty(navigator, "xr", {
+      configurable: true,
+      value: {
+        requestSession: () =>
+          new Promise((resolve) => {
+            grant = resolve;
+          }),
+      },
+    });
+    const canvas = document.createElement("canvas");
+    canvas.style.cssText = "width:640px;height:480px";
+    document.body.append(canvas);
+    const subject = new RoverScene(canvas, {
+      onFrame() {},
+      onAction() {},
+      onSessionEnd() {},
+    });
+    let attached = 0,
+      ended = 0;
+    subject.renderer.xr.setSession = async () => {
+      attached++;
+    };
+    const outcome = subject.enterVR().then(
+      () => "attached",
+      () => "closed",
+    );
+    subject.dispose();
+    grant({
+      end: async () => {
+        ended++;
+      },
+    });
+    const state = await outcome;
+    canvas.remove();
+    return { attached, ended, state };
+  });
+  expect(result).toEqual({ attached: 0, ended: 1, state: "closed" });
 });

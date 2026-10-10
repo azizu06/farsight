@@ -12,9 +12,9 @@ npm ci
 FARSIGHT_JETSON_ORIGIN=https://YOUR-JETSON:8443 npm run dev
 ```
 
-Open `http://localhost:5174`. The app proxies `/stream.mjpg`, `/health`, `/ws/control` and `/ws/detections` through this origin; the headset never contacts a different host. An explicitly known self-signed upstream can be allowed with `FARSIGHT_ALLOW_SELF_SIGNED=1`. This affects the relay's upstream connection only, and does not make the browser-facing certificate trusted.
+Open `http://localhost:5174/?view=vr` for the rover/VR screen. The existing mapping viewer remains at `/` and links here from its settings. The app proxies the camera, control/detection WebSockets and existing mapping/phone endpoints through this origin; the headset never contacts a different host. An explicitly known self-signed upstream can be allowed with `FARSIGHT_ALLOW_SELF_SIGNED=1`. This affects the relay's upstream connection only, and does not make the browser-facing certificate trusted.
 
-For a mock, open `/?source=mock`; recorded runs use `/?source=replay`. These show visible badges in both the browser and headset. They do not generate images, detections or a synthetic substitute when a live feed fails.
+For a mock, open `/?view=vr&source=mock`; recorded runs use `/?view=vr&source=replay`. These show visible badges in both the browser and headset. They do not generate images, detections or a synthetic substitute when a live feed fails.
 
 ```sh
 npm run build       # outputs quest/dist for the Jetson/relay to serve
@@ -29,7 +29,7 @@ The current team connection plan is [docs/demo-connectivity.md](../docs/demo-con
 adb reverse tcp:5174 tcp:5174
 ```
 
-Open `http://localhost:5174` in Quest Browser and check `window.isSecureContext` and VR availability on the physical headset. For a trusted HTTPS origin instead, supply both certificate paths:
+Open `http://localhost:5174/?view=vr` in Quest Browser and check `window.isSecureContext` and VR availability on the physical headset. For a trusted HTTPS origin instead, supply both certificate paths:
 
 ```sh
 FARSIGHT_TLS_CERT=/absolute/path/cert.pem \
@@ -67,6 +67,6 @@ npx playwright install chromium
 npm run test:browser
 ```
 
-The browser suite runs a labelled external MJPEG/WebSocket fixture on 18900 and an isolated Vite relay on 5214. It checks actual rendered JPEG pixels, telemetry, keyboard release, lost link, stale image clearing, graphics loss and delayed decoding recovery. It never connects to a real rover. The suite requires Chromium's normal system libraries.
+The browser suite runs a labelled external MJPEG/WebSocket fixture on 18900 and an isolated Vite relay on 5214. It checks actual rendered JPEG pixels, telemetry, keyboard release, lost link, stale image clearing, graphics loss, delayed decoding recovery, changing image resolution and a late XR grant after viewer disposal. It also checks that the default mapping screen still links to the rover view. It never connects to a real rover. The suite requires Chromium's normal system libraries.
 
 Before closing the assigned issues, check on real hardware: trusted-origin/ADB entry, legible placement, left-menu/right-drive interaction, head pan sign/range, visual latency, deadman release, Wi-Fi loss, graphics/tracking loss, and the Jetson/Uno stop lease. Record measurements rather than assuming target fps or stop times.

@@ -1,4 +1,7 @@
-import type { ControlCommand, ControlReply } from "./protocol";
+import type { ControlCommand, ControlReply } from "./roverProtocol";
+
+const COMMAND_PERIOD_MS = 50;
+const CADENCE_JITTER_MS = 0.5;
 
 export type ControlState =
   "disconnected" | "connecting" | "waiting" | "healthy" | "stale" | "disposed";
@@ -111,7 +114,7 @@ export class ControlLink {
     this.listen("close", () => this.disconnect("socket closed"));
     this.listen("error", () => this.disconnect("socket error"));
     if (this.timer === null)
-      this.timer = this.startTimer(() => this.tick(), 50);
+      this.timer = this.startTimer(() => this.tick(), COMMAND_PERIOD_MS);
   }
 
   dispose(): void {
@@ -222,7 +225,12 @@ export class ControlLink {
   }
 
   tick(now = this.now()): void {
-    if (this.linkState === "disposed" || !this.socket || this.socket.readyState !== 1) return;
+    if (
+      this.linkState === "disposed" ||
+      !this.socket ||
+      this.socket.readyState !== 1
+    )
+      return;
     const healthy = this.healthy(now);
     if (!this.socket) return;
     if (
@@ -232,9 +240,10 @@ export class ControlLink {
       this.stop("XR input stale");
       return;
     }
-    if (now - this.lastSentAt < 50) return;
+    if (now - this.lastSentAt + CADENCE_JITTER_MS < COMMAND_PERIOD_MS) return;
     // Open/release can occur between interval deadlines. Let that send drain
-    // for a full command period before inspecting the socket's pending bytes.
+    // for a command period before inspecting pending bytes, allowing only
+    // 0.5 ms of clock jitter so an early scheduled tick cannot halve drive Hz.
     if (!this.writable() || !healthy) return;
     if (this.armed && this.intent.deadman) this.send(true, now);
     else if (
