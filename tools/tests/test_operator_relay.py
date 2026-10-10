@@ -15,6 +15,7 @@ import unittest
 import aiohttp
 from aiohttp import web
 
+from jetson.mapping.compress import encode, negotiate
 from tools.operator_relay import local_url, upstream_origin
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -31,9 +32,22 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         self.video_disconnect = asyncio.Event()
         self.upstream = web.Application()
 
+        self.map_body = bytes(range(256)) * 400
+        self.seen_encoding = {}
+
         async def health(request):
+            self.seen_encoding["health"] = request.headers.get("Accept-Encoding")
             return web.json_response({"camera": True, "audio_url": self.origin + "/tts/42.wav",
                                       "reference": "https://example.com/independent"})
+
+        async def points(request):
+            self.seen_encoding["points"] = request.headers.get("Accept-Encoding")
+            coding = negotiate(request.headers.get("Accept-Encoding"))
+            headers = {"Vary": "Accept-Encoding"}
+            body = self.map_body
+            if coding:
+                body, headers["Content-Encoding"] = encode(coding, body), coding
+            return web.Response(body=body, headers=headers, content_type="application/octet-stream")
 
         async def ask(request):
             body = await request.json()
@@ -89,6 +103,7 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         self.upstream.router.add_get("/health", health)
         self.upstream.router.add_get("/control/status", health)
         self.upstream.router.add_post("/ask", ask)
+        self.upstream.router.add_get("/map/points.bin", points)
         self.upstream.router.add_get("/camera.jpg", image)
         self.upstream.router.add_get("/stream.mjpg", stream)
         self.upstream.router.add_get("/ws/control", control)
@@ -145,6 +160,30 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.headers["X-Frame-Id"], "42")
             self.assertEqual(response.headers["Cache-Control"], "no-store")
             self.assertEqual(await response.read(), b"jpeg")
+
+    async def test_map_compression_passes_through_byte_identical(self):
+        # Raw client: no auto-decompress, so the bytes seen are the bytes relayed.
+        async with aiohttp.ClientSession(auto_decompress=False) as raw:
+            async with raw.get(self.base + "/map/points.bin", headers={"Accept-Encoding": "gzip"}) as response:
+                body = await response.read()
+                self.assertEqual(response.headers["Content-Encoding"], "gzip")
+                self.assertEqual(response.headers["Vary"], "Accept-Encoding")
+            self.assertEqual(self.seen_encoding["points"], "gzip")
+            self.assertEqual(body, encode("gzip", self.map_body))
+            self.assertLess(len(body), len(self.map_body) / 4)
+            async with raw.get(self.base + "/map/points.bin", headers={"Accept-Encoding": "identity"}) as response:
+                self.assertNotIn("Content-Encoding", response.headers)
+                self.assertEqual(await response.read(), self.map_body)
+        # Decoding client (aiohttp default) still gets the original map.
+        async with self.client.get(self.base + "/map/points.bin") as response:
+            self.assertIn(response.headers["Content-Encoding"], ("gzip", "br"))
+            self.assertEqual(await response.read(), self.map_body)
+
+    async def test_json_stays_identity_upstream_even_if_client_accepts_gzip(self):
+        async with self.client.get(self.base + "/health", headers={"Accept-Encoding": "br, gzip"}) as response:
+            self.assertEqual((await response.json())["audio_url"], "/tts/42.wav")
+            self.assertNotIn("Content-Encoding", response.headers)
+        self.assertEqual(self.seen_encoding["health"], "identity")
 
     async def test_mjpeg_streams_without_waiting_for_end(self):
         async with self.client.get(self.base + "/stream.mjpg") as response:
