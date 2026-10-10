@@ -33,11 +33,31 @@ const width = Number(params.get("width") || 1280);
 const height = Number(params.get("height") || 720);
 
 const style = params.get("style") === "unlit" ? "unlit" : "lit";
+// Cinematic is the default look; ?quality=flat reproduces the pre-cine
+// baseline (no splats, no fill light, no grade, hard-snapped camera). Each
+// addition also has its own override: ?camera=snap|smooth, ?jq=0-1, ?aa=0|1.
+const cine = params.get("quality") !== "flat";
+const cameraEase = params.has("camera") ? params.get("camera") !== "snap" : cine;
+// MSAA stays opt-in: measured ~2x capture cost on the capture-driven path,
+// and the top LOD rung's 1.5x supersample already gives the stream better
+// anti-aliasing than 4x MSAA. ?aa=1 enables it where the resolve is cheap.
+const antialias = params.get("aa") === "1";
+const jqParam = Number(params.get("jq"));
+const jpegQuality = Number.isFinite(jqParam) && jqParam > 0
+  ? Math.min(0.98, jqParam)
+  : (cine ? 0.9 : 0.8);
 const GRAPHITE = 0x1c2228;
 const FOG = 0x242b31;
 const ACCENT = 0xc4a574;
 
-const renderer = new THREE.WebGLRenderer({ antialias: false, alpha: false });
+const renderer = new THREE.WebGLRenderer({
+  antialias, alpha: false,
+  // Captures can read the canvas outside the render task; a preserved
+  // backbuffer means those reads can never hit a cleared buffer even if a
+  // path (raw screencast) skips the same-task draw guarantee.
+  preserveDrawingBuffer: true,
+  powerPreference: "high-performance",
+});
 renderer.setSize(width, height, false);
 renderer.setPixelRatio(1);
 renderer.setClearColor(GRAPHITE);
@@ -50,7 +70,10 @@ document.body.prepend(renderer.domElement);
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(GRAPHITE);
-scene.fog = new THREE.Fog(FOG, 12, 42);
+// Aerial perspective: fog color sits just above the clear color so distant
+// map falls off gently instead of clipping into the background.
+const sceneFog = new THREE.Fog(FOG, 12, 48);
+scene.fog = sceneFog;
 const camera = new THREE.PerspectiveCamera(50, width / height, 0.01, 2000);
 camera.position.set(9, 6, 9);
 camera.lookAt(0, 0, 0);
@@ -72,9 +95,39 @@ key.shadow.camera.left = key.shadow.camera.bottom = -12;
 key.shadow.camera.right = key.shadow.camera.top = 12;
 key.shadow.bias = -0.0004;
 scene.add(hemi, key);
+// Cool fill opposite the warm key keeps shadowed faces legible without
+// flattening the two-light ratio.
+const fill = new THREE.DirectionalLight(0x8fa8c8, style === "lit" && cine ? 0.32 : 0);
+fill.position.set(-9, 5, -8);
+scene.add(fill);
 if (style !== "lit") scene.add(new THREE.AmbientLight(0xffffff, 1));
 
-const pointsMaterial = new THREE.PointsMaterial({ size: style === "lit" ? 0.014 : 0.025, vertexColors: true, toneMapped: style === "lit" });
+// Round splats in cine: a radial-gradient sprite cut by alphaTest keeps the
+// points in the opaque pass (depth write, no sorting) but reads as discs
+// instead of squares, so dense regions shade like surfaces. One material
+// shared by the sparse cloud and every dense chunk.
+function makeSplatTexture() {
+  const size = 64, half = size / 2;
+  const sprite = document.createElement("canvas");
+  sprite.width = sprite.height = size;
+  const g = sprite.getContext("2d");
+  const grad = g.createRadialGradient(half, half, 0, half, half, half);
+  grad.addColorStop(0, "rgba(255,255,255,1)");
+  grad.addColorStop(0.6, "rgba(255,255,255,1)");
+  grad.addColorStop(1, "rgba(255,255,255,0)");
+  g.fillStyle = grad;
+  g.fillRect(0, 0, size, size);
+  const texture = new THREE.CanvasTexture(sprite);
+  texture.generateMipmaps = false;
+  texture.minFilter = THREE.LinearFilter;
+  return texture;
+}
+const splatTexture = cine ? makeSplatTexture() : null;
+const pointsMaterial = new THREE.PointsMaterial({
+  size: (style === "lit" ? 0.014 : 0.025) * (splatTexture ? 1.45 : 1),
+  vertexColors: true, toneMapped: style === "lit",
+  map: splatTexture, alphaTest: splatTexture ? 0.5 : 0,
+});
 const cloudGeometry = new THREE.BufferGeometry();
 const cloud = new THREE.Points(cloudGeometry, pointsMaterial);
 root.add(cloud);
@@ -263,11 +316,15 @@ const LADDER = [
   // down. The supersampled rung costs more by design, so it gets the most
   // headroom; otherwise it would drop the moment it engaged and thrash
   // against the native rung.
-  { pixelRatio: 1.5, fraction: 1, dropMs: 26 },
-  { pixelRatio: 1.0, fraction: 1, dropMs: 14 },
-  { pixelRatio: 1.0, fraction: 0.5, dropMs: 14 },
-  { pixelRatio: 0.75, fraction: 0.5, dropMs: 16 },
-  { pixelRatio: 0.75, fraction: 0.25, dropMs: Infinity },
+  // fx is the cinematic budget gate: it sheds the extras that cost real
+  // raster time before the last geometry does — 2 keeps the shadow pass
+  // (a second raster of the whole mesh), 1 drops shadows but keeps fog, 0
+  // drops both. The flat path never touches these (pre-cine baseline).
+  { pixelRatio: 1.5, fraction: 1, dropMs: 26, fx: 2 },
+  { pixelRatio: 1.0, fraction: 1, dropMs: 14, fx: 2 },
+  { pixelRatio: 1.0, fraction: 0.5, dropMs: 14, fx: 1 },
+  { pixelRatio: 0.75, fraction: 0.5, dropMs: 16, fx: 1 },
+  { pixelRatio: 0.75, fraction: 0.25, dropMs: Infinity, fx: 0 },
 ];
 const LOD_CLIMB_MS = 9;      // sustained cost below this -> next rung up
 const LOD_DROP_DWELL = 12;   // frames between drops
@@ -288,7 +345,23 @@ function meshDrawCount() {
 }
 
 let frameDirty = true;
-const lodView = { index: lodIndex, pixelRatio: 1, fraction: 1, adaptive: !lodPinned };
+const lodView = { index: lodIndex, pixelRatio: 1, fraction: 1, fx: 2, adaptive: !lodPinned };
+let fxTier = -1;
+function applyFxTier(fx) {
+  if (!cine || fx === fxTier) return;
+  fxTier = fx;
+  const shadows = style === "lit" && fx >= 2;
+  if (renderer.shadowMap.enabled !== shadows) {
+    renderer.shadowMap.enabled = shadows;
+    key.castShadow = shadows;
+    // The shader variant switch is automatic (enabled is part of the
+    // program cache key); needsUpdate just makes it land this frame.
+    surfaceMaterial.needsUpdate = true;
+    pointsMaterial.needsUpdate = true;
+  }
+  const fog = fx >= 1 ? sceneFog : null;
+  if (scene.fog !== fog) scene.fog = fog;
+}
 function applyLod() {
   const level = LADDER[lodIndex];
   if (renderer.getPixelRatio() !== level.pixelRatio) {
@@ -297,9 +370,11 @@ function applyLod() {
   }
   cloudGeometry.setDrawRange(0, cloudDrawCount());
   surfaceGeometry.setDrawRange(0, meshDrawCount());
+  applyFxTier(level.fx);
   lodView.index = lodIndex;
   lodView.pixelRatio = level.pixelRatio;
   lodView.fraction = level.fraction;
+  lodView.fx = cine ? level.fx : 2;
   for (const layer of layers) layer.quality?.(layerContext, lodView);
   frameDirty = true;
 }
@@ -336,14 +411,71 @@ rayLine.geometry.attributes.position.needsUpdate = true;
 rayLine.visible = false;
 scene.add(rayLine);
 
+// In-framebuffer vignette: one fullscreen quad in NDC space, transparent so
+// it composites after every opaque object in the same render call. Living
+// inside the framebuffer means __macCapture JPEGs, CDP screencast and layer
+// post() output all carry the grade — no post pass, no extra render call.
+let gradeTris = 0;
+if (cine) {
+  const gradeMaterial = new THREE.ShaderMaterial({
+    transparent: true, depthTest: false, depthWrite: false,
+    vertexShader: "varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }",
+    fragmentShader: [
+      "varying vec2 vUv;",
+      "void main() {",
+      "  vec2 p = (vUv - vec2(0.5, 0.46)) * vec2(1.15, 1.0);",
+      "  float v = smoothstep(0.40, 0.85, length(p));",
+      "  gl_FragColor = vec4(0.018, 0.026, 0.036, v * 0.4);",
+      "}",
+    ].join("\n"),
+  });
+  const gradeQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), gradeMaterial);
+  gradeQuad.frustumCulled = false;
+  gradeQuad.renderOrder = 999;
+  scene.add(gradeQuad);
+  gradeTris = 2;
+}
+
 const banner = document.getElementById("banner");
 let status = null;
 let appliedPoints = -1;
 let appliedMesh = -1;
 let lastSnapshotKind = null;
 let pose = null;
-const tmp = new THREE.Quaternion();
 const viewPosition = [0, 0, 0];
+
+// Eased camera follow. Pose echoes arrive ~30 Hz; between updates the render
+// camera glides toward the newest received pose with an exponential approach
+// (~95% in ~180 ms), which removes the per-update judder in the video. The
+// pose itself stays the source of truth — __mac.poseEcho reports the
+// received pose verbatim, never the eased camera state. First fixes and
+// discontinuities (tracking reset, teleport) snap instead of gliding in
+// from a stale view.
+const camTargetPos = new THREE.Vector3();
+const camTargetQuat = new THREE.Quaternion();
+const EASE_TAU_MS = 60;
+const EASE_SNAP_M = 0.5;
+const EASE_SNAP_COS = Math.cos(37.5 * Math.PI / 180); // >75 deg turn = snap
+const EASE_SETTLE_M = 0.002;
+const EASE_SETTLE_COS_EPS = 1e-5;
+let camPrimed = false;
+let camSettled = true;
+let lastEaseAt = -1;
+function easeCamera(now) {
+  if (!camPrimed || camSettled) return;
+  const dt = lastEaseAt >= 0 ? Math.min(250, now - lastEaseAt) : 16;
+  lastEaseAt = now;
+  const k = 1 - Math.exp(-dt / EASE_TAU_MS);
+  camera.position.lerp(camTargetPos, k);
+  camera.quaternion.slerp(camTargetQuat, k);
+  if (camera.position.distanceToSquared(camTargetPos) < EASE_SETTLE_M * EASE_SETTLE_M &&
+      1 - Math.abs(camera.quaternion.dot(camTargetQuat)) < EASE_SETTLE_COS_EPS) {
+    camera.position.copy(camTargetPos);
+    camera.quaternion.copy(camTargetQuat);
+    camSettled = true;
+  }
+  frameDirty = true;
+}
 
 // Plug-in layer seam. A layer registers once and hooks every tick without
 // editing this loop: init(ctx) once; poll(ctx, now) every tick — return
@@ -415,7 +547,7 @@ function exposeMap() {
       retained !== retainedShown || mapError !== errorShown) {
     cloudShown = points; trisShown = triangles; sourceShown = source;
     retainedShown = retained; errorShown = mapError;
-    bannerText = `MAC RENDER · FLAT · ${source} · ${points} pts · ${triangles} tris${retained ? " · RETAINED" : ""}${mapError ? " · map unavailable" : ""} · NOT STEREO · GRID: DISPLAY GUIDE`;
+    bannerText = `MAC RENDER · ${cine ? "CINE" : "FLAT"} · ${source} · ${points} pts · ${triangles} tris${retained ? " · RETAINED" : ""}${mapError ? " · map unavailable" : ""} · NOT STEREO · GRID: DISPLAY GUIDE`;
     banner.textContent = bannerText;
   }
 }
@@ -565,13 +697,20 @@ function applyPose() {
   if (next !== pose) {
     pose = next;
     const p = next.position;
-    camera.position.set(p[0], p[1], p[2]);
+    camTargetPos.set(p[0], p[1], p[2]);
     const q = next.quaternion;
-    tmp.set(q[0], q[1], q[2], q[3]).normalize();
-    camera.quaternion.copy(tmp);
+    camTargetQuat.set(q[0], q[1], q[2], q[3]).normalize();
     if (Number.isFinite(next.fov_y_deg) && next.fov_y_deg >= 1 && next.fov_y_deg <= 170) camera.fov = next.fov_y_deg;
     if (Number.isFinite(next.aspect) && next.aspect >= .1 && next.aspect <= 5) camera.aspect = next.aspect;
     camera.updateProjectionMatrix();
+    if (!cameraEase || !camPrimed ||
+        camTargetPos.distanceTo(camera.position) > EASE_SNAP_M ||
+        Math.abs(camTargetQuat.dot(camera.quaternion)) < EASE_SNAP_COS) {
+      camera.position.copy(camTargetPos);
+      camera.quaternion.copy(camTargetQuat);
+      camSettled = true;
+    } else camSettled = false;
+    camPrimed = true;
     if (next.ray) {
       const o = next.ray.origin, d = next.ray.direction;
       const scale = 8 / Math.sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
@@ -616,8 +755,9 @@ function drawScene(measure) {
     surfacesVisibleSeen = surfaces.visible;
     frameDirty = true;
   }
-  applyPose();
   const now = performance.now();
+  applyPose();
+  if (cameraEase) easeCamera(now);
   for (const layer of layers) {
     if (layer.poll?.(layerContext, now)) frameDirty = true;
   }
@@ -629,7 +769,9 @@ function drawScene(measure) {
     denseGpu.endFrame();
     frameDirty = false;
     window.__mac.drawnPoints = renderer.info.render.points;
-    window.__mac.drawnTriangles = renderer.info.render.triangles;
+    // drawnTriangles means map geometry; the in-framebuffer grade quad is
+    // overlay, not counted data.
+    window.__mac.drawnTriangles = renderer.info.render.triangles - gradeTris;
   }
   Object.assign(denseMetricsView, denseReceiver.metrics(), denseGpu.metrics());
   window.__mac.dense = denseMetricsView;
@@ -657,7 +799,7 @@ window.__macCapture = () => {
   // "capture" forces a draw in this same task, so toDataURL never reads a cleared buffer.
   drawScene("capture");
   const captureStarted = performance.now();
-  const data = renderer.domElement.toDataURL("image/jpeg", 0.8).split(",")[1];
+  const data = renderer.domElement.toDataURL("image/jpeg", jpegQuality).split(",")[1];
   window.__mac.captureMs = performance.now() - captureStarted;
   // The readback is where rasterization actually bills: render+capture is the
   // real per-frame cost in the server-driven pipeline.

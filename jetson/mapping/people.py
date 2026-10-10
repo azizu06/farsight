@@ -10,6 +10,8 @@ import threading
 
 import numpy as np
 
+from .orientation import upright_view
+
 HELD_FRAMES = 12  # ~2 s of phone RGB-D at 6 fps
 
 
@@ -51,11 +53,14 @@ class PersonLocator:
         """Add `world` to tracked person boxes detected on a held RGB-D frame."""
         with self.lock:
             held = self.frames.get(camera_frame.frame_id)
-        if held is None or held.jpeg is not camera_frame.jpeg:
+        same_picture = held is not None and (held.jpeg is camera_frame.jpeg or (
+            camera_frame.source == "IPHONE LIDAR" and (camera_frame.mirrored or held.jpeg == camera_frame.jpeg)))
+        if not same_picture:
             return boxes  # RGB-only or estimated-depth sources never get a 3D position
         for box in boxes:
             if box.get("cls") == "person" and isinstance(box.get("id"), int):
-                world = torso_point(box, held)
+                # Boxes live on the upright picture; sensor-native depth is viewed rotated to match.
+                world = torso_point(box, upright_view(held) if camera_frame.mirrored else held)
                 if world is not None:
                     box["world"] = world
         return boxes

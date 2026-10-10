@@ -4,11 +4,12 @@
 //! JSON URL rewrite are byte-compatible with the Python relay.
 
 
+use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use axum::body::Body;
 mod closures;
@@ -103,6 +104,19 @@ struct Args {
     demo_mode: bool,
 }
 
+/// /ws/video last-hop diagnostics (48bb941 / operator_relay.py video_stats):
+/// request round-trip, bounded network estimate, relay residence, send
+/// duration, completed picture fragments, and stale closes.
+#[derive(Default)]
+pub(crate) struct VideoStats {
+    pub fragments: u64,
+    pub stale_disconnects: u64,
+    pub request_ms: Option<f64>,
+    pub network_bound_ms: Option<f64>,
+    pub residence_ms: Option<f64>,
+    pub send_ms: Option<f64>,
+}
+
 struct AppState {
     origin: Url,
     /// farsight-geometry origin for assembled-mesh routes (None = Jetson).
@@ -110,6 +124,9 @@ struct AppState {
     dist: PathBuf,
     http: reqwest::Client,     // general pool (limit ~16)
     control: reqwest::Client,  // control pool (limit ~4)
+    /// Camera never waits for the map/bulk connection slots (#157).
+    video: reqwest::Client,    // camera pool (limit ~4)
+    video_stats: Arc<Mutex<VideoStats>>,
     tls: Arc<rustls::ClientConfig>,
     /// Opt-in bonded two-path mode (tools/bonded_relay.py parity).
     bonded: Option<Arc<bonded::BondedRelay>>,
@@ -211,6 +228,12 @@ async fn local_only(req: Request, next: Next) -> Result<Response, StatusCode> {
 }
 
 async fn relay_health(State(s): State<Arc<AppState>>) -> Response {
+    let video = {
+        let st = s.video_stats.lock().unwrap();
+        json!({"fragments": st.fragments, "stale_disconnects": st.stale_disconnects,
+               "request_ms": st.request_ms, "network_bound_ms": st.network_bound_ms,
+               "residence_ms": st.residence_ms, "send_ms": st.send_ms})
+    };
     let mut packet = json!({
         "relay": true,
         "upstream": s.origin.as_str().trim_end_matches('/'),
@@ -220,6 +243,7 @@ async fn relay_health(State(s): State<Arc<AppState>>) -> Response {
         // bonded-control is excluded from these counters by contract.
         "control_closures": s.closures.status(s.bonded.is_none()),
         "demo_mode": s.demo_mode,
+        "video": video,
     });
     if let Some(bond) = &s.bonded {
         packet["transport"] = bond.status().await;
@@ -289,6 +313,7 @@ async fn ws_upgrade(
         }
     }
     let control = path == "/ws/control";
+    let camera_video = path == "/ws/video";
     // Non-control sockets still ride the surviving validated route.
     let target = match &s.bonded {
         Some(bond) => match bond.preferred_origin().await {
@@ -305,7 +330,7 @@ async fn ws_upgrade(
     let target = target.replacen("http", "ws", 1);
     let send_timeout = s.send_timeout;
     ws.on_upgrade(move |socket| async move {
-        relay_ws(socket, s, &target, control, send_timeout).await;
+        relay_ws(socket, s, &target, control, camera_video, send_timeout).await;
     })
 }
 
@@ -323,7 +348,7 @@ fn exc_name(e: &tokio_tungstenite::tungstenite::Error) -> &'static str {
     }
 }
 
-async fn relay_ws(local: WebSocket, s: Arc<AppState>, target: &str, control: bool, send_timeout: Duration) {
+async fn relay_ws(local: WebSocket, s: Arc<AppState>, target: &str, control: bool, camera_video: bool, send_timeout: Duration) {
     // Do not accept the Quest socket until the upstream socket exists.
     let max_msg = if control { 16 * 1024 } else { 8 * 1024 * 1024 };
     // control_closures parity: only the single-route /ws/control proxy is
@@ -369,7 +394,19 @@ async fn relay_ws(local: WebSocket, s: Arc<AppState>, target: &str, control: boo
     // healthy link stays alive while a blackholed one is reaped.
     let remote_seen = Arc::new(AtomicU64::new(now_ms()));
     let local_seen = Arc::new(AtomicU64::new(now_ms()));
-    let deadline = if control { send_timeout.min(Duration::from_millis(100)) } else { send_timeout };
+    // Camera sends carry a 150 ms backpressure deadline: a slow consumer is
+    // reset rather than accumulating seconds of video (#157).
+    let deadline = if control {
+        send_timeout.min(Duration::from_millis(100))
+    } else if camera_video {
+        send_timeout.min(Duration::from_millis(150))
+    } else {
+        send_timeout
+    };
+    // Per-connection `next` request ledger (operator_relay.py: bounded 4,
+    // oldest evicted) shared between the two pipe directions.
+    let video_requests: Arc<Mutex<(HashMap<i64, Instant>, VecDeque<i64>)>> =
+        Arc::new(Mutex::new((HashMap::new(), VecDeque::new())));
     let origin = s.origin.clone();
 
     // Quest -> rover. On control sockets the deadman is never relayed with a
@@ -382,12 +419,33 @@ async fn relay_ws(local: WebSocket, s: Arc<AppState>, target: &str, control: boo
         // Explicit demo mode leaves reported video freshness untouched
         // (operator_relay.py --demo-mode); default still zeros it.
         let demo_mode = s.demo_mode;
+        let video_requests_c2r = video_requests.clone();
         tokio::spawn(async move {
             while let Some(Ok(message)) = local_rx.next().await {
                 local_seen.store(now_ms(), Ordering::Relaxed);
                 match message {
                     Message::Text(text) => {
                         let mut data = text.to_string();
+                        if camera_video {
+                            if let Ok(packet) = serde_json::from_str::<Value>(&data) {
+                                if packet.is_object()
+                                    && packet.get("type").and_then(|v| v.as_str()) == Some("next")
+                                    && packet.get("request_id").map(|v| v.is_i64()).unwrap_or(false)
+                                {
+                                    let rid = packet["request_id"].as_i64().unwrap();
+                                    let mut reqs = video_requests_c2r.lock().unwrap();
+                                    reqs.0.insert(rid, Instant::now());
+                                    reqs.1.push_back(rid);
+                                    while reqs.0.len() > 4 {
+                                        if let Some(old) = reqs.1.pop_front() {
+                                            reqs.0.remove(&old);
+                                        } else {
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         if control {
                             match serde_json::from_str::<Value>(&data) {
                                 Ok(mut command) if command.is_object() => {
@@ -482,13 +540,66 @@ async fn relay_ws(local: WebSocket, s: Arc<AppState>, target: &str, control: boo
         let local_tx = local_tx.clone();
         let remote_seen = remote_seen.clone();
         let attempt = attempt.clone();
+        let video_stats = s.video_stats.clone();
+        let video_requests_r2c = video_requests.clone();
+        let mut pending_picture = false;
         tokio::spawn(async move {
             while let Some(Ok(message)) = remote_rx.next().await {
                 remote_seen.store(now_ms(), Ordering::Relaxed);
+                let arrived = Instant::now();
                 match message {
                     tokio_tungstenite::tungstenite::Message::Text(text) => {
                         let mut data = text.to_string();
-                        if let Ok(v) = serde_json::from_str::<Value>(&data) {
+                        if camera_video {
+                            match serde_json::from_str::<Value>(&data) {
+                                Ok(mut packet) if packet.is_object()
+                                    && packet.get("type").and_then(|v| v.as_str()) == Some("video_segment") =>
+                                {
+                                    pending_picture = true;
+                                    let began = packet
+                                        .get("request_id")
+                                        .and_then(|v| v.as_i64())
+                                        .and_then(|rid| video_requests_r2c.lock().unwrap().0.remove(&rid));
+                                    let elapsed = began.map(|b| arrived.duration_since(b).as_secs_f64() * 1000.0);
+                                    let wait = packet
+                                        .get("server_wait_ms")
+                                        .and_then(|v| v.as_f64())
+                                        .filter(|w| w.is_finite() && *w >= 0.0)
+                                        .unwrap_or(0.0);
+                                    // Round-trip bound minus the server's own
+                                    // measured wait — never a claimed one-way
+                                    // transit or cross-host clock subtraction.
+                                    let bound = elapsed.map(|e| (e - wait.min(e)).max(0.0));
+                                    let residence = arrived.elapsed().as_secs_f64() * 1000.0;
+                                    packet["relay_request_ms"] = elapsed.map_or(Value::Null, |v| json!(v));
+                                    packet["relay_network_bound_ms"] = bound.map_or(Value::Null, |v| json!(v));
+                                    packet["relay_residence_ms"] = json!(residence);
+                                    {
+                                        let mut st = video_stats.lock().unwrap();
+                                        st.request_ms = elapsed;
+                                        st.network_bound_ms = bound;
+                                        st.residence_ms = Some(residence);
+                                    }
+                                    data = packet.to_string();
+                                    let age = packet
+                                        .get("age_ms")
+                                        .and_then(|v| v.as_f64())
+                                        .filter(|a| a.is_finite() && *a >= 500.0);
+                                    if age.is_some() {
+                                        video_stats.lock().unwrap().stale_disconnects += 1;
+                                        let ltx = local_tx.clone();
+                                        let _ = ltx.lock().await.send(Message::Text(data.into())).await;
+                                        local_close(&ltx, 1013, "Stale camera; reconnect for latest keyframe").await;
+                                        return;
+                                    }
+                                }
+                                _ => {
+                                    if let Ok(v) = serde_json::from_str::<Value>(&data) {
+                                        data = rewrite_json(&v, &origin).to_string();
+                                    }
+                                }
+                            }
+                        } else if let Ok(v) = serde_json::from_str::<Value>(&data) {
                             data = rewrite_json(&v, &origin).to_string();
                         }
                         let ltx = local_tx.clone();
@@ -506,6 +617,7 @@ async fn relay_ws(local: WebSocket, s: Arc<AppState>, target: &str, control: boo
                     }
                     tokio_tungstenite::tungstenite::Message::Binary(bytes) => {
                         let ltx = local_tx.clone();
+                        let send_began = Instant::now();
                         if tokio::time::timeout(deadline, async move {
                             ltx.lock().await.send(Message::Binary(bytes.to_vec().into())).await
                         })
@@ -516,6 +628,16 @@ async fn relay_ws(local: WebSocket, s: Arc<AppState>, target: &str, control: boo
                                 a.end("upstream", "send_timeout", None, None, None, "send");
                             }
                             return;
+                        }
+                        if camera_video {
+                            let mut st = video_stats.lock().unwrap();
+                            st.send_ms = Some(send_began.elapsed().as_secs_f64() * 1000.0);
+                            // Initialization is not a picture; only matched
+                            // requests count as completed fragments.
+                            if pending_picture {
+                                st.fragments += 1;
+                                pending_picture = false;
+                            }
                         }
                     }
                     tokio_tungstenite::tungstenite::Message::Close(frame) => {
@@ -718,7 +840,16 @@ async fn proxy_http(s: Arc<AppState>, req: Request, route: Url) -> Response {
         Ok(b) => b,
         Err(_) => return (StatusCode::BAD_GATEWAY, "Rover unavailable").into_response(),
     };
-    let client = if CONTROL_PATHS.contains(&path.as_str()) { &s.control } else { &s.http };
+    // Camera paths get their own four-slot pool so bulk downloads can never
+    // starve the camera feed (48bb941 / operator_relay.py).
+    let camera_path = path == "/camera.jpg" || path == "/stream.mjpg" || path.starts_with("/video/");
+    let client = if camera_path {
+        &s.video
+    } else if CONTROL_PATHS.contains(&path.as_str()) {
+        &s.control
+    } else {
+        &s.http
+    };
     let remote = match client
         .request(method, &target)
         .headers(headers)
@@ -836,6 +967,7 @@ async fn main() {
     };
     let http_client = make_client(&extra_certs, 16);
     let control_client = make_client(&extra_certs, 4);
+    let video_client = make_client(&extra_certs, 4);
     let geometry = match args.geometry_upstream.as_deref().map(upstream_origin) {
         Some(Ok(u)) => Some(u),
         Some(Err(e)) => {
@@ -866,6 +998,8 @@ async fn main() {
         dist,
         http: http_client,
         control: control_client,
+        video: video_client,
+        video_stats: Arc::new(Mutex::new(VideoStats::default())),
         tls,
         bonded,
         send_timeout: Duration::from_millis(500),
@@ -1045,7 +1179,7 @@ mod recovery_tests {
     use tokio_tungstenite::accept_async;
     use tokio_tungstenite::tungstenite::Message as TMsg;
 
-    fn test_state(upstream_port: u16, ping_ms: u64, stale_ms: u64) -> Arc<AppState> {
+    pub(crate) fn test_state(upstream_port: u16, ping_ms: u64, stale_ms: u64) -> Arc<AppState> {
         rustls::crypto::CryptoProvider::install_default(
             rustls::crypto::aws_lc_rs::default_provider(),
         )
@@ -1061,6 +1195,8 @@ mod recovery_tests {
             dist: PathBuf::from("/nonexistent-dist"),
             http: reqwest::Client::new(),
             control: reqwest::Client::new(),
+            video: reqwest::Client::new(),
+            video_stats: Arc::new(Mutex::new(VideoStats::default())),
             tls,
             bonded: None,
             send_timeout: Duration::from_millis(300),
@@ -1071,7 +1207,7 @@ mod recovery_tests {
         })
     }
 
-    async fn start_relay(state: Arc<AppState>) -> (u16, tokio::task::JoinHandle<()>) {
+    pub(crate) async fn start_relay(state: Arc<AppState>) -> (u16, tokio::task::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let h = tokio::spawn(async move {
@@ -1232,5 +1368,120 @@ mod recovery_tests {
             "reconnect replayed stale commands: {:?}",
             second.1
         );
+    }
+}
+
+#[cfg(test)]
+mod video_lane_tests {
+    //! Port of tools/tests/test_camera_fastlane.py (#157): /ws/video segments
+    //! get relay hop diagnostics, stale segments close the socket, and
+    //! /relay/health reports the video counters.
+    use super::*;
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::accept_async;
+    use tokio_tungstenite::tungstenite::Message as TMsg;
+
+    /// Fake rover /ws/video: init + binary, then for each "next" request a
+    /// video_segment + binary fragment. `age` controls the segment's age_ms.
+    async fn video_upstream(age_ms: i64) -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((sock, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let ws = accept_async(sock).await.unwrap();
+                    let (mut tx, mut rx) = ws.split();
+                    tx.send(TMsg::Text(r#"{"type":"video_init","mime":"fixture"}"#.into())).await.ok();
+                    tx.send(TMsg::Binary(b"init".to_vec().into())).await.ok();
+                    while let Some(Ok(TMsg::Text(t))) = rx.next().await {
+                        if let Ok(v) = serde_json::from_str::<Value>(&t) {
+                            if v.get("type").and_then(|x| x.as_str()) == Some("next") {
+                                tokio::time::sleep(Duration::from_millis(20)).await;
+                                let seg = json!({"type":"video_segment","request_id":v["request_id"],
+                                    "server_wait_ms":10,"age_ms":age_ms,"jetson_encode_ms":8,
+                                    "camera_ingest_ms":2});
+                                tx.send(TMsg::Text(seg.to_string().into())).await.ok();
+                                tx.send(TMsg::Binary(b"fragment".to_vec().into())).await.ok();
+                            }
+                        }
+                    }
+                });
+            }
+        });
+        port
+    }
+
+    #[tokio::test]
+    async fn video_segment_gets_relay_hops_and_health_counts() {
+        let up_port = video_upstream(30).await;
+        let state = recovery_tests::test_state(up_port, 100, 5000);
+        let (port, _h) = recovery_tests::start_relay(state.clone()).await;
+        let url = format!("ws://127.0.0.1:{port}/ws/video");
+        let (ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        let (mut tx, mut rx) = ws.split();
+        assert_eq!(
+            serde_json::from_str::<Value>(&rx.next().await.unwrap().unwrap().into_text().unwrap()).unwrap()["type"],
+            "video_init"
+        );
+        assert_eq!(rx.next().await.unwrap().unwrap().into_data(), b"init".to_vec());
+        tx.send(TMsg::Text(r#"{"type":"next","request_id":1}"#.into())).await.unwrap();
+        let packet: Value =
+            serde_json::from_str(&rx.next().await.unwrap().unwrap().into_text().unwrap()).unwrap();
+        assert_eq!(packet["age_ms"], 30);
+        // ~20 ms upstream sleep minus the reported 10 ms server wait.
+        assert!(packet["relay_request_ms"].as_f64().unwrap() >= 15.0, "{}", packet);
+        assert!(packet["relay_network_bound_ms"].as_f64().unwrap() >= 5.0, "{}", packet);
+        assert!(packet["relay_residence_ms"].as_f64().unwrap() >= 0.0);
+        assert_eq!(rx.next().await.unwrap().unwrap().into_data(), b"fragment".to_vec());
+        let health: Value = serde_json::from_str(
+            &reqwest::get(format!("http://127.0.0.1:{port}/relay/health"))
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let stats = &health["video"];
+        assert_eq!(stats["fragments"], 1, "{stats}");
+        assert!(stats["send_ms"].is_number());
+        assert!(stats["request_ms"].is_number());
+        drop(tx);
+        drop(rx);
+        drop(state);
+    }
+
+    #[tokio::test]
+    async fn stale_video_segment_closes_socket() {
+        let up_port = video_upstream(900).await;
+        let state = recovery_tests::test_state(up_port, 100, 5000);
+        let (port, _h) = recovery_tests::start_relay(state.clone()).await;
+        let url = format!("ws://127.0.0.1:{port}/ws/video");
+        let (ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        let (mut tx, mut rx) = ws.split();
+        let _ = rx.next().await;
+        let _ = rx.next().await;
+        tx.send(TMsg::Text(r#"{"type":"next","request_id":1}"#.into())).await.unwrap();
+        let mut closed = false;
+        while let Some(Ok(m)) = rx.next().await {
+            if let TMsg::Close(frame) = m {
+                assert_eq!(u16::from(frame.unwrap().code), 1013);
+                closed = true;
+                break;
+            }
+        }
+        assert!(closed, "stale segment did not close the socket");
+        let health: Value = serde_json::from_str(
+            &reqwest::get(format!("http://127.0.0.1:{port}/relay/health"))
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(health["video"]["stale_disconnects"], 1);
+        drop(tx);
+        drop(state);
     }
 }
