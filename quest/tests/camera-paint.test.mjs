@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import ts from "typescript";
 import * as cameraView from "../src/camera-view.js";
+import * as poseHud from "../src/pose-hud.js";
 import { ControlSafety } from "../src/control-safety.js";
 
 // Exercise the production method without constructing DOM/WebGL resources.
@@ -19,7 +20,7 @@ class CanvasTexture { constructor(image) { this.image = image; this.needsUpdate 
 const three = { CanvasTexture, SRGBColorSpace: "srgb" };
 vm.runInNewContext(compiled.outputText, {
   exports: module.exports,
-  require: name => name === "./camera-view.js" ? cameraView : name === "three" ? three : {},
+  require: name => name === "./camera-view.js" ? cameraView : name === "./pose-hud.js" ? poseHud : name === "three" ? three : {},
 });
 
 function fixture() {
