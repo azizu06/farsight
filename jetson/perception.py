@@ -26,13 +26,15 @@ def yolo_boxes(prediction, original_shape, side=640, confidence=.35, labels=None
     scale = min(side / width, side / height)
     pad_x, pad_y = (side - round(width * scale)) // 2, (side - round(height * scale)) // 2
     boxes, scores, classes = [], [], []
-    for row in rows:
-        if not np.isfinite(row).all():
-            continue
-        cls = int(np.argmax(row[4:]))
-        score = float(row[4 + cls])
-        if score < confidence:
-            continue
+    # Select candidates in NumPy before entering Python: iterating all 8400
+    # anchors held the GIL long enough to interfere with control deadlines.
+    classes_raw = np.argmax(rows[:, 4:], axis=1)
+    scores_raw = rows[np.arange(len(rows)), classes_raw + 4]
+    selected = np.flatnonzero(np.isfinite(rows).all(axis=1) & (scores_raw >= confidence))
+    for index in selected:
+        row = rows[index]
+        cls = int(classes_raw[index])
+        score = float(scores_raw[index])
         cx, cy, w, h = row[:4]
         x1 = float(np.clip((cx - w / 2 - pad_x) / scale, 0, width))
         y1 = float(np.clip((cy - h / 2 - pad_y) / scale, 0, height))
@@ -208,3 +210,5 @@ class PerceptionService:
                 await self.task
         if self.engine:
             await asyncio.to_thread(self.engine.close)
+        if self.pose and hasattr(self.pose, "close"):
+            await asyncio.to_thread(self.pose.close)

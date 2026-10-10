@@ -140,6 +140,8 @@ class FullServerTests(unittest.TestCase):
                 self.wait_status(ws, lambda value: value["left_pwm"] == -50)
                 with mapping.lock:
                     mapping.last_frame_received = time.monotonic() - 1
+                    jpeg, _, identifier, source = mapping.camera_snapshot()
+                    mapping.latest_camera = (jpeg, mapping.last_frame_received, identifier, source)
                 pose_header = dict(frame.header, t_capture=1, frame_id=100)
                 mapping.observe_pose(pose_header, frame.transform)
                 health = client.get("/health").json()

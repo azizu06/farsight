@@ -37,6 +37,7 @@ class MapState:
         self.fps = self.processing_ms = 0.0
         self.reason = "Waiting for iPhone RGB-D stream"
         self.jpeg = self.depth_jpeg = None
+        self.latest_camera = (None, 0.0, -1, "SIMULATED" if demo else "IPHONE LIDAR")
         self.depth_range = None
         self.pose_history = OrderedDict()
 
@@ -47,6 +48,7 @@ class MapState:
                 self.identity = identity
                 self.pose = np.eye(4)
                 self.jpeg = self.depth_jpeg = None
+                self.latest_camera = (None, 0.0, -1, "SIMULATED" if self.demo else "IPHONE LIDAR")
                 self.depth_range = None
                 self.last_received = 0.0
                 self.last_frame_received = 0.0
@@ -98,6 +100,10 @@ class MapState:
             self.jpeg = frame.jpeg
             self.last_frame_received = camera_receipt
             self.frame_id = frame.header["frame_id"]
+            # Publish one immutable value. Safety/video readers must never wait
+            # for the map lock while voxel or surface fusion is running.
+            self.latest_camera = (self.jpeg, camera_receipt, self.frame_id,
+                                  "SIMULATED" if self.demo else "IPHONE LIDAR")
             valid = np.isfinite(frame.depth) & (frame.depth > 0.15) & (frame.depth <= 8)
             scaled = np.where(valid, np.clip(frame.depth / 8 * 255, 0, 255), 0).astype(np.uint8)
             heat = cv2.applyColorMap(255 - scaled, cv2.COLORMAP_TURBO)
@@ -149,8 +155,7 @@ class MapState:
 
     def camera_snapshot(self):
         """Pose heartbeats never refresh the camera's capture receipt time."""
-        with self.lock:
-            return self.jpeg, self.last_frame_received, self.frame_id, ("SIMULATED" if self.demo else "IPHONE LIDAR")
+        return self.latest_camera
 
     def point_packet(self):
         with self.lock:

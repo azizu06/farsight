@@ -103,7 +103,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
 
     @app.get("/health")
     async def health():
-        status = state.status()
+        status = await asyncio.to_thread(state.status)
         status.update(camera_service.status())
         rover = control.status()
         status.update(rover=rover["rover"], estop=rover["estop"], control=rover,
@@ -131,17 +131,19 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
 
     @app.post("/map/reset")
     async def reset():
-        state.clear()
-        return state.status()
+        await asyncio.to_thread(state.clear)
+        return await asyncio.to_thread(state.status)
 
     class Pause(BaseModel):
         paused: bool
 
     @app.post("/map/pause")
     async def pause(body: Pause):
-        with state.lock:
-            state.paused = body.paused
-        return state.status()
+        def change():
+            with state.lock:
+                state.paused = body.paused
+            return state.status()
+        return await asyncio.to_thread(change)
 
     @app.get("/camera.jpg")
     async def camera():
@@ -296,7 +298,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
             revision = -1
             try:
                 while True:
-                    status = state.status()
+                    status = await asyncio.to_thread(state.status)
                     # Capture data and revision together; every reconnect gets
                     # a complete authoritative snapshot, including an empty map.
                     if status["revision"] != revision:
@@ -343,7 +345,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                 raise ValueError("This mapper requires measured scene depth")
             identity = hello.session_id, hello.map_epoch
             camera_service.phone_rgb = None
-            state.start_session(identity, hello.device)
+            await asyncio.to_thread(state.start_session, identity, hello.device)
 
             async def consume():
                 while True:
@@ -371,7 +373,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                     header = json.loads(message["text"])
                     if header.get("type") != "pose":
                         raise ValueError("Expected a pose message or binary RGB-D frame")
-                    state.observe_pose(header, validate_pose(header, identity))
+                    await asyncio.to_thread(state.observe_pose, header, validate_pose(header, identity))
         except (ValueError, TypeError, KeyError, ValidationError, asyncio.TimeoutError) as exc:
             with suppress(RuntimeError, WebSocketDisconnect):
                 await ws.close(code=1008, reason=str(exc)[:100])
@@ -384,10 +386,12 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                     await worker
             if app.state.phone_owner is owner:
                 app.state.phone_owner = None
-                with state.lock:
-                    state.connected = False
-                    # Invalidate any CPU worker still finishing after disconnect.
-                    state.processing_generation += 1
+                def disconnect_sensor():
+                    with state.lock:
+                        state.connected = False
+                        # Invalidate any CPU worker still finishing after disconnect.
+                        state.processing_generation += 1
+                await asyncio.to_thread(disconnect_sensor)
 
     @app.websocket("/phone/rgb")
     async def phone_rgb(ws: WebSocket):

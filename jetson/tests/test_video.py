@@ -2,6 +2,7 @@ import asyncio
 import shutil
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 
 from jetson.camera import CameraFrame, CameraService, adjusted_receipt
 from jetson.mapping.demo import simulated_frame
@@ -22,12 +23,25 @@ class FreshnessTests(unittest.TestCase):
     def test_pose_heartbeat_does_not_refresh_camera(self):
         state = MapState(demo=True)
         frame = simulated_frame(0, 0)
+        frame.header["_received_monotonic"] = time.monotonic() - 1
         state.process(frame)
         camera = CameraService(state)
-        state.last_frame_received = time.monotonic() - 1
         state.observe_pose(dict(frame.header, frame_id=1, t_capture=1), frame.transform)
         self.assertGreater(camera.snapshot().age_ms, 900)
         self.assertFalse(camera.status()["camera"])
+
+    def test_camera_readiness_does_not_wait_for_map_fusion_lock(self):
+        state = MapState(demo=True)
+        state.process(simulated_frame(0, 0))
+        camera = CameraService(state)
+        with ThreadPoolExecutor(max_workers=1) as workers:
+            with state.lock:
+                future = workers.submit(camera.snapshot)
+                # Another thread must be able to read the camera while this
+                # thread owns the map lock, not only after fusion releases it.
+                frame = future.result(timeout=.2)
+                self.assertEqual(frame.source, "SIMULATED")
+                self.assertIsNotNone(frame.jpeg)
 
     def test_preview_preserves_source_frame_and_receipt(self):
         state = MapState(demo=True)

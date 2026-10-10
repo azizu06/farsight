@@ -72,6 +72,7 @@ class VideoService:
 
     async def _feed(self):
         while True:
+            started = time.monotonic()
             frame = self.camera.snapshot()
             if frame and frame.age_ms < 500:
                 image = await asyncio.to_thread(cv2.imdecode, np.frombuffer(frame.jpeg, np.uint8), cv2.IMREAD_COLOR)
@@ -83,7 +84,7 @@ class VideoService:
                         self.samples.popitem(last=False)
                     self.process.stdin.write(image.tobytes())
                     await asyncio.wait_for(self.process.stdin.drain(), timeout=2)
-            await asyncio.sleep(1 / self.fps)
+            await asyncio.sleep(max(0, 1 / self.fps - (time.monotonic() - started)))
 
     async def _read(self):
         initialization = bytearray()
