@@ -96,6 +96,12 @@ Memory math (7.49 GB total):
   (about 7 GB) pushed the Jetson into swap-less thrash until it stopped answering ssh and
   needed a power cycle. Do not run them next to Whisper, the server, or ROS.
 
+- llama.cpp's host prompt cache defaults to 8 GiB (`--cache-ram 8192`). With triage sending a
+  new image every few seconds it grew 200 to 300 MB/min, the likely cause of an unclean Jetson reset on 2026-10-10, so
+  `farsight-llm.service` passes `--cache-ram 0` and caps itself at `MemoryHigh=4096M` /
+  `MemoryMax=4608M`. That is about 3.6 GB at baseline: 2.2 GB of CUDA/nvmap kernel memory, 1 GB
+  of model page cache and 0.4 GB anon. More growth kills and restarts the LLM, not the Jetson.
+
 `bash jetson/assistant_profile.sh default|headless|status` switches the Whisper model with a
 systemd drop-in and restarts only `farsight-whisper`/`farsight-llm`. `headless` refuses to
 run while the desktop is up. Turn the desktop off with `sudo systemctl isolate multi-user.target`
