@@ -18,6 +18,7 @@ pub mod geometry;
 pub mod mission;
 pub mod nav;
 pub mod pacer;
+pub mod people;
 pub mod perception;
 pub mod phone;
 pub mod phrases;
