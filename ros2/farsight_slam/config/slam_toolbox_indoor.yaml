@@ -1,0 +1,68 @@
+# SLAM Toolbox online async mapping, tuned for the Farsight rover:
+# small (~0.3 m) indoor rover, ARKit VIO odometry, a 62 degree iPhone LiDAR cone
+# flattened to a scan by pointcloud_to_laserscan, trusted to ~5 m.
+# Defaults are the Jazzy mapper_params_online_async.yaml; every change is commented.
+slam_toolbox:
+  ros__parameters:
+    solver_plugin: solver_plugins::CeresSolver
+    ceres_linear_solver: SPARSE_NORMAL_CHOLESKY
+    ceres_preconditioner: SCHUR_JACOBI
+    ceres_trust_strategy: LEVENBERG_MARQUARDT
+    ceres_dogleg_type: TRADITIONAL_DOGLEG
+    ceres_loss_function: HuberLoss        # default None; a bad narrow-cone match must not drag the graph
+
+    odom_frame: odom
+    map_frame: map
+    base_frame: base_link                 # Farsight frames: map -> odom (ARKit world) -> base_link
+    scan_topic: /scan
+    use_map_saver: true
+    mode: mapping
+
+    debug_logging: false
+    throttle_scans: 1
+    transform_publish_period: 0.05        # 20 Hz map -> odom is plenty for Nav2; default 50 Hz
+    map_update_interval: 2.0              # default 5 s; go-to-point clicks want a fresher /map
+    resolution: 0.05
+    restamp_tf: false
+    min_laser_range: 0.15                 # iPhone LiDAR minimum
+    max_laser_range: 5.0                  # iPhone LiDAR is unreliable past ~5 m
+    minimum_time_interval: 0.2            # default 0.5 s; rover is slow, keep scans dense
+    transform_timeout: 0.2
+    tf_buffer_duration: 30.0
+    stack_size_to_use: 40000000
+    enable_interactive_mode: false        # no RViz editing on the rover; saves memory
+
+    use_scan_matching: true
+    use_scan_barycenter: true
+    minimum_travel_distance: 0.15         # default 0.5 m; a 62 degree cone sees little per scan
+    minimum_travel_heading: 0.15          # default 0.5 rad; add scans through turns
+    check_min_dist_and_heading_precisely: false
+    scan_buffer_size: 20                  # default 10; more short scans in the running buffer
+    scan_buffer_maximum_scan_distance: 5.0
+    link_match_minimum_response_fine: 0.1
+    link_scan_maximum_distance: 1.5
+    loop_search_maximum_distance: 3.0
+    do_loop_closing: true
+    loop_match_minimum_chain_size: 6      # default 10; narrow scans give shorter usable chains
+    loop_match_maximum_variance_coarse: 3.0
+    loop_match_minimum_response_coarse: 0.35
+    loop_match_minimum_response_fine: 0.45
+
+    correlation_search_space_dimension: 0.3
+    correlation_search_space_resolution: 0.01
+    correlation_search_space_smear_deviation: 0.1
+
+    loop_search_space_dimension: 4.0      # default 8 m; rooms are small, halve the search cost
+    loop_search_space_resolution: 0.05
+    loop_search_space_smear_deviation: 0.03
+
+    distance_variance_penalty: 0.05
+    angle_variance_penalty: 0.05
+    fine_search_angle_offset: 0.00349
+    coarse_search_angle_offset: 0.349
+    coarse_angle_resolution: 0.0349
+    minimum_angle_penalty: 0.5
+    minimum_distance_penalty: 0.5
+    use_response_expansion: true
+    min_pass_through: 2
+    occupancy_threshold: 0.1
