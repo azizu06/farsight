@@ -259,14 +259,17 @@ function clearGeometry() {
 // under load. Top rung supersamples (a 1.5x backing store downsampled into
 // the same canvas = free anti-aliasing for the stream) at full geometry.
 const LADDER = [
-  { pixelRatio: 1.5, fraction: 1 },
-  { pixelRatio: 1.0, fraction: 1 },
-  { pixelRatio: 1.0, fraction: 0.5 },
-  { pixelRatio: 0.75, fraction: 0.5 },
-  { pixelRatio: 0.75, fraction: 0.25 },
+  // dropMs is the sustained frame cost a rung tolerates before stepping
+  // down. The supersampled rung costs more by design, so it gets the most
+  // headroom; otherwise it would drop the moment it engaged and thrash
+  // against the native rung.
+  { pixelRatio: 1.5, fraction: 1, dropMs: 26 },
+  { pixelRatio: 1.0, fraction: 1, dropMs: 14 },
+  { pixelRatio: 1.0, fraction: 0.5, dropMs: 14 },
+  { pixelRatio: 0.75, fraction: 0.5, dropMs: 16 },
+  { pixelRatio: 0.75, fraction: 0.25, dropMs: Infinity },
 ];
-const LOD_DROP_MS = 14;      // sustained cost above this -> next rung down
-const LOD_CLIMB_MS = 6;      // sustained cost below this -> next rung up
+const LOD_CLIMB_MS = 9;      // sustained cost below this -> next rung up
 const LOD_DROP_DWELL = 12;   // frames between drops
 const LOD_CLIMB_DWELL = 150; // frames of headroom before climbing
 const lodParam = params.get("lod");
@@ -308,7 +311,7 @@ function observeFrame(cost) {
   costEma = costEma === 0 ? cost : costEma * 0.85 + cost * 0.15;
   framesSinceChange++;
   if (lodPinned) return;
-  if (costEma > LOD_DROP_MS && framesSinceChange >= LOD_DROP_DWELL && lodIndex < LADDER.length - 1) {
+  if (costEma > LADDER[lodIndex].dropMs && framesSinceChange >= LOD_DROP_DWELL && lodIndex < LADDER.length - 1) {
     lodIndex++;
     applyLod();
     framesSinceChange = 0;
