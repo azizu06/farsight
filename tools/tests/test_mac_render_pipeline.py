@@ -10,7 +10,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from tools.mac_render.server import (
-    RenderEncoder, ViewerQueue, _is_keyframe, create_app, parse_args,
+    App, RenderEncoder, ViewerQueue, _is_keyframe, create_app, parse_args,
 )
 
 
@@ -82,6 +82,39 @@ class FakePage:
 
 
 class PoseEchoTest(unittest.IsolatedAsyncioTestCase):
+    async def test_disconnect_clear_follows_inflight_and_replaces_queued_pose(self):
+        from unittest.mock import patch
+        entered, release = asyncio.Event(), asyncio.Event()
+        class HeldPage(FakePage):
+            async def evaluate(self, script, arg=None):
+                if arg is not None and not entered.is_set():
+                    entered.set()
+                    await release.wait()
+                self.calls.append((script, arg))
+        class Socket:
+            async def prepare(self, request): pass
+            async def close(self): pass
+        page = HeldPage()
+        app = App(parse_args([]), page=page)
+        app.encoder = RenderEncoder(page, 320, 240, 30, 100000, False)
+        async def owner():
+            async with app.owned_socket("pose_socket", None):
+                app.encoder.echo_pose({"received_mono_ms": 1})
+                await entered.wait()
+                app.encoder.echo_pose({"received_mono_ms": 2})
+        with patch("tools.mac_render.server.web.WebSocketResponse", return_value=Socket()):
+            task = asyncio.create_task(owner())
+            await entered.wait()
+            await asyncio.sleep(.01)
+            self.assertIsNotNone(app.pose_socket, "ownership stays reserved during clear")
+            release.set()
+            await task
+        self.assertIsNone(app.pose_socket)
+        self.assertEqual(len(page.calls), 2, "queued old pose is replaced by the clear")
+        self.assertEqual(page.calls[0][1]["received_mono_ms"], 1)
+        self.assertIsNone(page.calls[-1][1])
+        self.assertIn("__macPose = null", page.calls[-1][0])
+
     async def test_a_pose_burst_coalesces_to_the_newest_page_write(self):
         page = FakePage()
         encoder = RenderEncoder(page, 320, 240, 30, 100000, False)

@@ -307,7 +307,7 @@ class App:
     @asynccontextmanager
     async def owned_socket(self, attribute, request):
         existing = getattr(self, attribute)
-        if existing is not None and not existing.closed:
+        if existing is not None:
             raise web.HTTPServiceUnavailable(text="Visual stream already has an owner")
         socket = web.WebSocketResponse(max_msg_size=16384, heartbeat=30)
         setattr(self, attribute, socket)
@@ -315,15 +315,16 @@ class App:
             await socket.prepare(request)
             yield socket
         finally:
-            if getattr(self, attribute) is socket:
-                setattr(self, attribute, None)
             with suppress(Exception):
                 await asyncio.wait_for(socket.close(), .25)
             if attribute == "pose_socket" and self.encoder:
                 self.encoder.latest_pose = None
-                if self.page:
+                self.encoder.echo_pose(None)
+                if self.encoder._pose_pump:
                     with suppress(Exception):
-                        await asyncio.wait_for(self.page.evaluate("() => { window.__macPose = null; }"), .5)
+                        await asyncio.wait_for(asyncio.shield(self.encoder._pose_pump), .5)
+            if getattr(self, attribute) is socket:
+                setattr(self, attribute, None)
 
     async def macview(self, request):
         # Multiple viewers share the one encoder; each gets its own freshness
