@@ -20,7 +20,9 @@ struct Args {
     #[arg(long)]
     upstream: Vec<String>,
     /// Assembled triangle budget (least-recently-written anchors evict first).
-    #[arg(long, default_value_t = 200_000)]
+    /// Default 100k faces: under the Quest decodeMesh ceiling (480k scalar
+    /// indices = 160k faces) with headroom — board-agreed bound.
+    #[arg(long, default_value_t = 100_000)]
     budget: usize,
     /// Reconnect backoff bounds (seconds) when the lane drops.
     #[arg(long, default_value_t = 0.5)]

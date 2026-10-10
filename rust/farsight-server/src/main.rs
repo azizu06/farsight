@@ -158,19 +158,15 @@ struct Args {
     /// FARSIGHT_MAP_TRIANGLES_CAP, default 40000). 0 disables.
     #[arg(long)]
     map_triangles_cap: Option<usize>,
-    /// Opt-in fusion bypass: keep /phone pose+depth and the camera feed but
-    /// skip RGB-D fusion; geometry arrives via the phone ARKit lane
-    /// assembled on the Mac (env FARSIGHT_FUSION_BYPASS).
-    #[arg(long)]
-    fusion_bypass: bool,
+    /// Build the voxel/mesh map from /phone RGB-D on the Jetson (default
+    /// on). 'off' skips fusion only; pose, depth for Nav2, camera and
+    /// inference keep running (env FARSIGHT_MAP_FUSION=off, #107).
+    #[arg(long, default_value = "on", value_parser = ["on", "off"])]
+    map_fusion: String,
 }
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
-
-fn env_flag(name: &str) -> bool {
-    matches!(std::env::var(name).ok().as_deref(), Some("1") | Some("true") | Some("on") | Some("yes"))
-}
 
 fn env_usize(name: &str, default: usize) -> usize {
     std::env::var(name)
@@ -278,7 +274,8 @@ async fn main() {
             args.map_points_cap.unwrap_or_else(|| env_usize("FARSIGHT_MAP_POINTS_CAP", 30_000)),
             args.map_triangles_cap.unwrap_or_else(|| env_usize("FARSIGHT_MAP_TRIANGLES_CAP", 40_000)),
         ),
-        args.fusion_bypass || env_flag("FARSIGHT_FUSION_BYPASS"),
+        args.map_fusion == "off"
+            || matches!(std::env::var("FARSIGHT_MAP_FUSION").ok().as_deref(), Some("off")),
     );
     server::start_services(&state);
     let dist = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../quest/dist");

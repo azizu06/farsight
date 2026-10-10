@@ -45,7 +45,7 @@ async fn pull_assemble_serve() {
             upd(4, geom::Op::SnapshotEnd, None),
         ] {
             ws.send(tokio_tungstenite::tungstenite::Message::Binary(
-                geom::encode(&u, false).into(),
+                geom::encode(&u, geom::RecordCoding::Zlib).into(),
             ))
             .await
             .unwrap();

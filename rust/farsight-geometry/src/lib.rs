@@ -26,6 +26,13 @@ pub const PROTOCOL_VERSION: u8 = 1;
 pub const MAX_UPDATE_BYTES: usize = 256 * 1024;
 pub const MAX_VERTICES: usize = 64 * 1024;
 pub const MAX_INDICES: usize = 64 * 1024;
+/// Quest decodeMesh ceiling: 600k vertices. Board-agreed published bound.
+pub const MAX_PUBLISHED_VERTICES: usize = 600 * 1024;
+/// Quest decodeMesh ceiling: 480k scalar indices = 160k faces. The default
+/// lane budget stays under it (100k faces) for headroom.
+pub const MAX_PUBLISHED_TRIANGLES: usize = 160 * 1024;
+/// Bound on anchors buffered between Reset and SnapshotEnd.
+pub const MAX_PENDING_ANCHORS: usize = 4096;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Op {
@@ -49,12 +56,21 @@ pub struct Update {
     pub mesh: Option<ChunkMesh>,
 }
 
+/// Record payload compression. Flag bits 0-1 are an enum, not bit flags:
+/// 0=raw, 1=zlib-deflate, 2=iOS-native Brotli; 3 and any other flag bit
+/// are rejected (board-agreed after Codex adopted this header).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RecordCoding {
+    Raw,
+    Zlib,
+    Brotli,
+}
+
 /// Decode one v1 record. Layout (little-endian):
-///   u8 version | u8 op | u16 flags (bit0: deflate payload; bit1 reserved
-///   for iOS-native Brotli pending tools/qualify_geometry.py codec numbers)
+///   u8 version | u8 op | u16 flags (bits0-1: payload coding enum)
 ///   u64 seq | u64 epoch | 16B session | 16B anchor
 ///   f32 transform[16] | u32 vertex_count | u32 index_count
-///   payload: vertices f32 xyz | indices u32 (deflated when flag set)
+///   payload: vertices f32 xyz | indices u32 (compressed per flags)
 /// Padding is not allowed — trailing bytes make the record malformed.
 pub fn decode(packet: &[u8]) -> Result<Update, String> {
     const HEAD: usize = 1 + 1 + 2 + 8 + 8 + 16 + 16 + 16 * 4 + 4 + 4;
@@ -78,8 +94,13 @@ pub fn decode(packet: &[u8]) -> Result<Update, String> {
         other => return Err(format!("unknown geometry op {other}")),
     };
     let flags = u16::from_le_bytes(take(2).try_into().unwrap());
-    let compressed = flags & 1 != 0;
-    if flags & !1 != 0 {
+    let coding = match flags & 3 {
+        0 => RecordCoding::Raw,
+        1 => RecordCoding::Zlib,
+        2 => RecordCoding::Brotli,
+        _ => return Err(format!("unknown geometry payload coding in flags {flags:#x}")),
+    };
+    if flags & !3 != 0 {
         return Err(format!("unknown geometry flags {flags:#x}"));
     }
     let seq = u64::from_le_bytes(take(8).try_into().unwrap());
@@ -95,24 +116,40 @@ pub fn decode(packet: &[u8]) -> Result<Update, String> {
     if vcount > MAX_VERTICES || icount > MAX_INDICES {
         return Err("update exceeds per-chunk vertex/index bounds".into());
     }
+    if !transform.iter().all(|v| v.is_finite()) {
+        return Err("non-finite anchor transform".into());
+    }
     if op == Op::Replace && (vcount == 0 || icount == 0 || !icount.is_multiple_of(3)) {
         return Err("replace needs a non-empty triangle mesh".into());
     }
     if op != Op::Replace && (vcount != 0 || icount != 0) {
         return Err("non-replace op must carry an empty payload".into());
     }
-    let payload = packet[off..].to_vec();
-    let payload = if compressed {
-        use std::io::Read;
-        let mut out = Vec::new();
-        flate2::read::ZlibDecoder::new(&payload[..])
-            .read_to_end(&mut out)
-            .map_err(|e| format!("deflate payload invalid: {e}"))?;
-        out
-    } else {
-        payload
-    };
+    // Decompress bounded at declared size + 1 — a malformed compressed body
+    // can never allocate beyond the declared geometry (Codex receiver fix).
     let want = vcount * 12 + icount * 4;
+    let payload = packet[off..].to_vec();
+    let payload = match coding {
+        RecordCoding::Raw => payload,
+        RecordCoding::Zlib => {
+            use std::io::Read;
+            let mut out = Vec::with_capacity(want);
+            flate2::read::ZlibDecoder::new(&payload[..])
+                .take((want + 1) as u64)
+                .read_to_end(&mut out)
+                .map_err(|e| format!("deflate payload invalid: {e}"))?;
+            out
+        }
+        RecordCoding::Brotli => {
+            use std::io::Read;
+            let mut out = Vec::with_capacity(want);
+            brotli::Decompressor::new(&payload[..], 4096)
+                .take((want + 1) as u64)
+                .read_to_end(&mut out)
+                .map_err(|e| format!("brotli payload invalid: {e}"))?;
+            out
+        }
+    };
     if payload.len() != want {
         return Err(format!("payload length {} != declared {want}", payload.len()));
     }
@@ -121,11 +158,15 @@ pub fn decode(packet: &[u8]) -> Result<Update, String> {
         let mut colors = Vec::with_capacity(vcount);
         let mut indices = Vec::with_capacity(icount / 3);
         for b in payload[..vcount * 12].chunks_exact(12) {
-            positions.push([
+            let v = [
                 f32::from_le_bytes(b[0..4].try_into().unwrap()),
                 f32::from_le_bytes(b[4..8].try_into().unwrap()),
                 f32::from_le_bytes(b[8..12].try_into().unwrap()),
-            ]);
+            ];
+            if !v.iter().all(|x| x.is_finite()) {
+                return Err("non-finite vertex".into());
+            }
+            positions.push(v);
             // v1 carries no color: neutral grey until a calibrated field lands.
             colors.push([160, 160, 160]);
         }
@@ -147,7 +188,7 @@ pub fn decode(packet: &[u8]) -> Result<Update, String> {
 }
 
 /// Encode one v1 record (test + forwarder use; the phone is the real producer).
-pub fn encode(update: &Update, compress: bool) -> Vec<u8> {
+pub fn encode(update: &Update, coding: RecordCoding) -> Vec<u8> {
     let (vcount, icount) = update
         .mesh
         .as_ref()
@@ -166,13 +207,25 @@ pub fn encode(update: &Update, compress: bool) -> Vec<u8> {
             }
         }
     }
-    let payload = if compress {
-        use std::io::Write;
-        let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::new(1));
-        e.write_all(&payload).unwrap();
-        e.finish().unwrap()
-    } else {
-        payload
+    let payload = match coding {
+        RecordCoding::Raw => payload,
+        RecordCoding::Zlib => {
+            use std::io::Write;
+            let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::new(1));
+            e.write_all(&payload).unwrap();
+            e.finish().unwrap()
+        }
+        RecordCoding::Brotli => {
+            // Apple COMPRESSION_BROTLI encodes at fixed level 2; the decoder
+            // accepts any level, so match the phone's emitted profile.
+            let mut out = Vec::new();
+            {
+                let mut w = brotli::CompressorWriter::new(&mut out, 4096, 2, 22);
+                use std::io::Write;
+                w.write_all(&payload).unwrap();
+            }
+            out
+        }
     };
     let mut out = Vec::with_capacity(124 + payload.len());
     out.push(PROTOCOL_VERSION);
@@ -182,7 +235,7 @@ pub fn encode(update: &Update, compress: bool) -> Vec<u8> {
         Op::Reset => 2,
         Op::SnapshotEnd => 3,
     });
-    out.extend_from_slice(&(compress as u16).to_le_bytes());
+    out.extend_from_slice(&(match coding { RecordCoding::Raw => 0u16, RecordCoding::Zlib => 1, RecordCoding::Brotli => 2 }).to_le_bytes());
     out.extend_from_slice(&update.seq.to_le_bytes());
     out.extend_from_slice(&update.epoch.to_le_bytes());
     out.extend_from_slice(&update.session);
@@ -206,12 +259,16 @@ pub struct AnchorGeometry {
     budget: usize,
     chunks: IndexMap<[u8; 16], ChunkMesh, FxBuildHasher>,
     count: usize,
+    verts: usize,
     revision: u64,
     session: [u8; 16],
     epoch: u64,
     last_seq: u64,
     /// Buffered ops between Reset and SnapshotEnd — published atomically.
+    /// Bounded so a hostile/buggy snapshot can't grow unboundedly.
     pending: Option<IndexMap<[u8; 16], ChunkMesh, FxBuildHasher>>,
+    pending_tri: usize,
+    pending_vert: usize,
     /// Revision seen by consumers (bumps only on publishable changes).
     pub_lane: LaneStats,
 }
@@ -230,11 +287,14 @@ impl AnchorGeometry {
             budget: triangle_budget,
             chunks: IndexMap::with_hasher(FxBuildHasher),
             count: 0,
+            verts: 0,
             revision: 0,
             session: [0; 16],
             epoch: 0,
             last_seq: 0,
             pending: None,
+            pending_tri: 0,
+            pending_vert: 0,
             pub_lane: LaneStats::default(),
         }
     }
@@ -279,7 +339,10 @@ impl AnchorGeometry {
             self.last_seq = 0;
             self.chunks.clear();
             self.count = 0;
+            self.verts = 0;
             self.pending = Some(IndexMap::with_hasher(FxBuildHasher));
+            self.pending_tri = 0;
+            self.pending_vert = 0;
             self.pub_lane.reconnects += 1;
             self.revision += 1;
         }
@@ -292,18 +355,25 @@ impl AnchorGeometry {
             Op::Reset => {
                 self.chunks.clear();
                 self.count = 0;
+                self.verts = 0;
                 self.pending = Some(IndexMap::with_hasher(FxBuildHasher));
+                self.pending_tri = 0;
+                self.pending_vert = 0;
                 self.revision += 1;
             }
             Op::SnapshotEnd => {
                 if let Some(pending) = self.pending.take() {
+                    self.pending_tri = 0;
+                    self.pending_vert = 0;
                     for (id, mesh) in pending {
                         self.count += mesh.indices.len();
+                        self.verts += mesh.positions.len();
                         self.chunks.insert(id, mesh);
                     }
-                    while self.count > self.budget {
+                    while self.count > self.budget || self.verts > MAX_PUBLISHED_VERTICES {
                         if let Some((_, evicted)) = self.chunks.shift_remove_index(0) {
                             self.count -= evicted.indices.len();
+                            self.verts -= evicted.positions.len();
                         } else {
                             break;
                         }
@@ -317,6 +387,24 @@ impl AnchorGeometry {
                     return false;
                 };
                 if let Some(pending) = &mut self.pending {
+                    let tri = mesh.indices.len();
+                    let vert = mesh.positions.len();
+                    // Pending snapshot is bounded before insert — anchors,
+                    // triangles, vertices each capped so a bad producer can't
+                    // grow the buffer unboundedly.
+                    if pending.len() >= MAX_PENDING_ANCHORS
+                        || self.pending_tri + tri > self.budget
+                        || self.pending_vert + vert > MAX_PUBLISHED_VERTICES
+                    {
+                        self.pub_lane.dropped_malformed += 1;
+                        return false;
+                    }
+                    if let Some(old) = pending.get(&u.anchor) {
+                        self.pending_tri -= old.indices.len();
+                        self.pending_vert -= old.positions.len();
+                    }
+                    self.pending_tri += tri;
+                    self.pending_vert += vert;
                     pending.insert(u.anchor, mesh);
                 } else {
                     self.upsert(u.anchor, mesh);
@@ -335,17 +423,23 @@ impl AnchorGeometry {
     }
 
     fn upsert(&mut self, anchor_id: [u8; 16], mesh: ChunkMesh) -> bool {
-        if mesh.indices.is_empty() || mesh.indices.len() > self.budget {
+        if mesh.indices.is_empty()
+            || mesh.indices.len() > self.budget
+            || mesh.positions.len() > MAX_PUBLISHED_VERTICES
+        {
             return false;
         }
         if let Some(old) = self.chunks.shift_remove(&anchor_id) {
             self.count -= old.indices.len();
+            self.verts -= old.positions.len();
         }
         self.count += mesh.indices.len();
+        self.verts += mesh.positions.len();
         self.chunks.insert(anchor_id, mesh);
-        while self.count > self.budget {
+        while self.count > self.budget || self.verts > MAX_PUBLISHED_VERTICES {
             if let Some((_, evicted)) = self.chunks.shift_remove_index(0) {
                 self.count -= evicted.indices.len();
+                self.verts -= evicted.positions.len();
             } else {
                 break;
             }
@@ -357,6 +451,7 @@ impl AnchorGeometry {
     fn remove(&mut self, anchor_id: [u8; 16]) -> bool {
         if let Some(old) = self.chunks.shift_remove(&anchor_id) {
             self.count -= old.indices.len();
+            self.verts -= old.positions.len();
             self.revision += 1;
             true
         } else {
@@ -531,9 +626,9 @@ mod tests {
 
     #[test]
     fn record_roundtrip_plain_and_deflate() {
-        for compress in [false, true] {
+        for coding in [RecordCoding::Raw, RecordCoding::Zlib, RecordCoding::Brotli] {
             let u = upd(9, Op::Replace, Some(mesh(2)));
-            let bytes = encode(&u, compress);
+            let bytes = encode(&u, coding);
             let d = decode(&bytes).unwrap();
             assert_eq!((d.seq, d.epoch, d.op, d.anchor), (9, 3, Op::Replace, [1; 16]));
             let m = d.mesh.unwrap();
@@ -545,15 +640,53 @@ mod tests {
     fn decode_rejects_garbage_and_oversized() {
         assert!(decode(&[]).is_err());
         assert!(decode(&[0u8; 8]).is_err());
-        let mut bad = encode(&upd(1, Op::Replace, Some(mesh(1))), false);
+        let mut bad = encode(&upd(1, Op::Replace, Some(mesh(1))), RecordCoding::Raw);
         bad[0] = 99; // version
         assert!(decode(&bad).is_err());
-        let mut bad = encode(&upd(1, Op::Replace, Some(mesh(1))), false);
+        let mut bad = encode(&upd(1, Op::Replace, Some(mesh(1))), RecordCoding::Raw);
         bad[1] = 9; // op
         assert!(decode(&bad).is_err());
         assert!(decode(&vec![0u8; MAX_UPDATE_BYTES + 1]).is_err());
         // remove must not carry a payload
-        assert!(decode(&encode(&upd(1, Op::Remove, Some(mesh(1))), false)).is_err());
+        assert!(decode(&encode(&upd(1, Op::Remove, Some(mesh(1))), RecordCoding::Raw)).is_err());
+        // flags 1+2 together (enum value 3) and any higher bits reject
+        let mut bad = encode(&upd(1, Op::Replace, Some(mesh(1))), RecordCoding::Raw);
+        bad[2] = 3;
+        assert!(decode(&bad).is_err());
+        bad[2] = 4;
+        assert!(decode(&bad).is_err());
+        // compressed body that inflates past declared length rejects
+        let mut oversized = encode(&upd(1, Op::Replace, Some(mesh(1))), RecordCoding::Zlib);
+        // lie: declare more vertices than the payload actually carries, but
+        // keep the compressed body — decode must not allocate unboundedly.
+        // vcount field offset: 1+1+2+8+8+16+16+64 = 116
+        let honest = mesh(1).positions.len() as u32 * 12 + mesh(1).indices.len() as u32 * 4;
+        let _ = honest;
+        oversized[116..120].copy_from_slice(&(1u32).to_le_bytes());
+        assert!(decode(&oversized).is_err());
+        // non-finite transform / vertex reject
+        let mut nan = encode(&upd(1, Op::Replace, Some(mesh(1))), RecordCoding::Raw);
+        nan[84] = 0xFF; nan[85] = 0xFF; nan[86] = 0xFF; nan[87] = 0x7F; // NaN into first transform f32
+        assert!(decode(&nan).is_err());
+    }
+
+    #[test]
+    fn pending_snapshot_is_bounded() {
+        let at = |seq: u64, op: Op, m: Option<ChunkMesh>, anchor: [u8; 16]| {
+            let mut u = upd(seq, op, m);
+            u.anchor = anchor;
+            u
+        };
+        // A snapshot that never ends must not grow unboundedly.
+        let mut geo = AnchorGeometry::new(2);
+        geo.apply_owned(at(1, Op::Reset, None, [7; 16]));
+        // budget 2 faces: the third pending replace drops as malformed.
+        assert!(geo.apply_owned(at(2, Op::Replace, Some(mesh(1)), [8; 16])));
+        assert!(geo.apply_owned(at(3, Op::Replace, Some(mesh(1)), [9; 16])));
+        assert!(!geo.apply_owned(at(4, Op::Replace, Some(mesh(1)), [10; 16])));
+        // lane is still usable — snapshot_end publishes the bounded snapshot.
+        assert!(geo.apply_owned(at(5, Op::SnapshotEnd, None, [11; 16])));
+        assert_eq!(geo.triangles(), 2);
     }
 
     #[test]

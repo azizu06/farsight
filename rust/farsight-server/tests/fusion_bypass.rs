@@ -38,13 +38,13 @@ fn bypass_keeps_pose_and_depth_but_never_fuses() {
     // The depth lane still recorded (Nav2 keeps working); "frames" counts
     // fused frames only, so bypass leaves it at 0.
     assert_eq!(s["depth_range"], json!([2.0, 2.0]));
-    assert_eq!(s["fusion_bypass"], true);
-    assert_eq!(s["reason"], "Geometry lane external; fusion bypassed");
+    assert_eq!(s["map_fusion"], false);
+    assert_eq!(s["reason"], "Jetson map fusion off (--map-fusion off): no Jetson 3D map");
     // Fusion skipped: no voxels, no surfaces.
     assert_eq!(s["points"], 0);
     assert_eq!(s["triangles"], 0);
     assert_eq!(s["keyframes"], 0);
-    assert_eq!(s["frames"], 0);
+    assert_eq!(s["frames"], 1); // ingested frames count; map stays empty
 }
 
 #[test]
@@ -53,6 +53,6 @@ fn default_still_fuses() {
     mapping.start_session(("test".to_string(), 1), "synthetic fixture".into());
     mapping.process(&frame()).unwrap();
     let s = mapping.status();
-    assert_eq!(s["fusion_bypass"], false);
+    assert_eq!(s["map_fusion"], true);
     assert!(s["points"].as_u64().unwrap() > 0);
 }
