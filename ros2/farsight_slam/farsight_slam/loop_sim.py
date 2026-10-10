@@ -4,8 +4,10 @@ Drives a unicycle around `world.loop_route()` and publishes what the Farsight
 bridge publishes on the rover, so the SLAM launch runs unchanged:
 
 - `odom -> base_link` TF and `/odom` from ARKit-like *drifting* odometry,
-- a static `base_link -> camera_link` TF,
-- `PointCloud2` in `camera_link` from a 62 x 48 degree iPhone-like LiDAR cone,
+- static `base_link -> camera_link` and `camera_link -> camera_optical` TFs,
+- `PointCloud2` in `camera_optical` (z forward, x right, y down) on
+  `/farsight/depth/points` with sensor-data QoS, from a 62 x 48 degree
+  iPhone-like LiDAR cone, like farsight_nav's bridge,
 - `/sim/ground_truth` (nav_msgs/Odometry, frame `world`) for evaluation,
 - `/sim/done` (std_msgs/Bool) after the requested number of laps.
 
@@ -20,7 +22,7 @@ import rclpy
 from geometry_msgs.msg import TransformStamped
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
-from rclpy.qos import DurabilityPolicy, QoSProfile
+from rclpy.qos import DurabilityPolicy, QoSProfile, qos_profile_sensor_data
 from sensor_msgs.msg import PointCloud2, PointField
 from std_msgs.msg import Bool, Header
 from tf2_ros import StaticTransformBroadcaster, TransformBroadcaster
@@ -43,13 +45,14 @@ class LoopSim(Node):
         self.speed = p("speed", 0.35).value
         self.rate = p("rate_hz", 50.0).value
         self.cloud_rate = p("cloud_rate_hz", 10.0).value
-        self.cloud_topic = p("cloud_topic", "/farsight/lidar/points").value
+        self.cloud_topic = p("cloud_topic", "/farsight/depth/points").value
         self.cols = p("lidar_cols", 160).value
         self.rows = p("lidar_rows", 12).value
         self.range_noise = p("range_noise", 0.01).value
         self.odom_frame = p("odom_frame", "odom").value
         self.base_frame = p("base_frame", "base_link").value
         self.camera_frame = p("camera_frame", "camera_link").value
+        self.optical_frame = p("optical_frame", "camera_optical").value
         self.startup_delay = p("startup_delay_s", 3.0).value
         # A fresh ARKit session starts its world (our odom) at the phone, not at the map origin.
         odom_at_origin = p("odom_at_origin", False).value
@@ -78,7 +81,7 @@ class LoopSim(Node):
         self.static_tf = StaticTransformBroadcaster(self)
         self.odom_pub = self.create_publisher(Odometry, "/odom", 20)
         self.truth_pub = self.create_publisher(Odometry, "/sim/ground_truth", 20)
-        self.cloud_pub = self.create_publisher(PointCloud2, self.cloud_topic, 5)
+        self.cloud_pub = self.create_publisher(PointCloud2, self.cloud_topic, qos_profile_sensor_data)
         latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.done_pub = self.create_publisher(Bool, "/sim/done", latched)
 
@@ -89,7 +92,14 @@ class LoopSim(Node):
         cam.transform.translation.x = CAMERA_FORWARD
         cam.transform.translation.z = CAMERA_HEIGHT
         cam.transform.rotation.w = 1.0
-        self.static_tf.sendTransform(cam)
+        optical = TransformStamped()
+        optical.header.stamp = cam.header.stamp
+        optical.header.frame_id = self.camera_frame
+        optical.child_frame_id = self.optical_frame
+        # REP-103 optical convention: z forward, x right, y down.
+        (optical.transform.rotation.x, optical.transform.rotation.y,
+         optical.transform.rotation.z, optical.transform.rotation.w) = (-0.5, 0.5, -0.5, 0.5)
+        self.static_tf.sendTransform([cam, optical])
 
         self.start = self.get_clock().now()
         self.ticks = 0
@@ -169,11 +179,13 @@ class LoopSim(Node):
         r = ranges[ok]
         r = r + self.rng.normal(0.0, self.range_noise + 0.01 * r)
         az, el = self.ray_az[ok], self.ray_el[ok]
-        # Points in camera_link (x forward, y left, z up).
-        pts = np.stack([r * np.cos(el) * np.cos(az), r * np.cos(el) * np.sin(az), r * np.sin(el)],
-                       axis=1).astype(np.float32)
+        # Body-frame ray (x forward, y left, z up) -> optical (x right, y down, z forward).
+        forward = r * np.cos(el) * np.cos(az)
+        left = r * np.cos(el) * np.sin(az)
+        up = r * np.sin(el)
+        pts = np.stack([-left, -up, forward], axis=1).astype(np.float32)
         msg = PointCloud2()
-        msg.header = Header(stamp=stamp, frame_id=self.camera_frame)
+        msg.header = Header(stamp=stamp, frame_id=self.optical_frame)
         msg.height = 1
         msg.width = len(pts)
         msg.fields = [PointField(name=n, offset=4 * i, datatype=PointField.FLOAT32, count=1)

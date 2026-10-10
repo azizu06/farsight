@@ -4,7 +4,7 @@ LiDAR PointCloud2 -> pointcloud_to_laserscan -> /scan -> SLAM Toolbox, which
 publishes map -> odom (correcting ARKit drift) and a persistent /map.
 
 Arguments:
-  cloud_topic      PointCloud2 from the bridge (default /farsight/lidar/points)
+  cloud_topic      PointCloud2 from farsight_nav's bridge (default /farsight/depth/points)
   scan_topic       flattened scan (default /scan)
   scan_from_cloud  run pointcloud_to_laserscan here; false if the caller already publishes scan_topic
   slam_mode        mapping (online async) or localization (needs map_file)
@@ -101,7 +101,7 @@ def slam_nodes(context):
 def generate_launch_description():
     share = FindPackageShare("farsight_slam")
     return LaunchDescription([
-        DeclareLaunchArgument("cloud_topic", default_value="/farsight/lidar/points"),
+        DeclareLaunchArgument("cloud_topic", default_value="/farsight/depth/points"),
         DeclareLaunchArgument("scan_topic", default_value="/scan"),
         DeclareLaunchArgument("scan_from_cloud", default_value="true"),
         DeclareLaunchArgument("slam_mode", default_value="mapping", choices=list(EXECUTABLE)),

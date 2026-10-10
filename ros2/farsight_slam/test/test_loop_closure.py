@@ -71,8 +71,8 @@ def test_heavy_drift_is_corrected(mapping):
     odom, slam = r["odom_err_m"], r["slam_err_m"]
     # Two laps with 3 % scale and 0.9 deg/m heading drift end > 1 m off.
     assert odom["final"] > 1.0
-    assert slam["final"] < 0.25
-    assert slam["mean"] < 0.5 * odom["mean"]
+    assert slam["final"] < 0.20
+    assert slam["mean"] < 0.4 * odom["mean"]
     assert r["slam_yaw_err_rad"]["final"] < 0.06
 
 
@@ -86,15 +86,15 @@ def test_loop_closes(mapping):
 
 def test_arkit_level_drift_improves(mapping):
     r = mapping["arkit"]
-    assert r["slam_err_m"]["mean"] < r["odom_err_m"]["mean"]
-    assert r["slam_err_m"]["final"] < r["odom_err_m"]["final"]
+    assert r["slam_err_m"]["mean"] < 0.75 * r["odom_err_m"]["mean"]
+    assert r["slam_err_m"]["final"] < 0.5 * r["odom_err_m"]["final"]
 
 
 def test_perfect_odometry_is_not_badly_degraded(mapping):
     # With exact odometry SLAM can only add scan-matching noise; bound it.
     r = mapping["none"]
-    assert r["slam_err_m"]["mean"] < 0.15
-    assert r["slam_err_m"]["max"] < 0.35
+    assert r["slam_err_m"]["mean"] < 0.10
+    assert r["slam_err_m"]["max"] < 0.25
 
 
 def test_map_is_built(mapping):

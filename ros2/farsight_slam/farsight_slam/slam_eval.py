@@ -7,7 +7,7 @@ composes the odometry with the newest `map -> odom` from TF, and records:
 - SLAM error (`map -> base_link`, i.e. odometry corrected by SLAM),
 - the size of the `map -> odom` correction over time (jumps are loop closures
   or scan-match corrections),
-- CPU and RSS of the SLAM processes, sampled once a second,
+- CPU and RSS of the SLAM processes started by the same launch, sampled once a second,
 - the pose graph from `/slam_toolbox/graph_visualization`: an edge joining two
   scans more than `revisit_gap` apart in sequence is a revisit constraint, the
   loop-closure evidence (sequential and running-buffer edges join nearby scans).
@@ -168,7 +168,11 @@ class SlamEval(Node):
             self.get_logger().info(f"sim done; settling {self.settle_s} s before report")
 
     def sample_resources(self):
-        for proc in psutil.process_iter(["name", "cmdline"]):
+        # Only this launch's nodes: siblings of this process (same `ros2 launch` parent).
+        launcher = os.getppid()
+        for proc in psutil.process_iter(["name", "cmdline", "ppid"]):
+            if proc.info["ppid"] != launcher:
+                continue
             name = proc.info["name"] or ""
             cmd = " ".join(proc.info["cmdline"] or [])
             match = next((n for n in WATCHED if n in name or n in cmd), None)

@@ -34,8 +34,8 @@ slam_toolbox:
 
     use_scan_matching: true
     use_scan_barycenter: true
-    minimum_travel_distance: 0.15         # default 0.5 m; a 62 degree cone sees little per scan
-    minimum_travel_heading: 0.15          # default 0.5 rad; add scans through turns
+    minimum_travel_distance: 0.25         # default 0.5 m; a 62 degree cone sees little per scan
+    minimum_travel_heading: 0.25          # default 0.5 rad; keep scans through turns (0.15 added match noise)
     check_min_dist_and_heading_precisely: false
     scan_buffer_size: 20                  # default 10; more short scans in the running buffer
     scan_buffer_maximum_scan_distance: 5.0
@@ -48,7 +48,7 @@ slam_toolbox:
     loop_match_minimum_response_coarse: 0.35
     loop_match_minimum_response_fine: 0.45
 
-    correlation_search_space_dimension: 0.3
+    correlation_search_space_dimension: 0.3   # default 0.5 m; ARKit is never 15 cm off between scans
     correlation_search_space_resolution: 0.01
     correlation_search_space_smear_deviation: 0.1
 
@@ -56,12 +56,17 @@ slam_toolbox:
     loop_search_space_resolution: 0.05
     loop_search_space_smear_deviation: 0.03
 
-    distance_variance_penalty: 0.05
-    angle_variance_penalty: 0.05
+    # Trust ARKit between scans. Karto scales a match by 1 - 0.2 * offset^2 / variance, so the
+    # defaults (0.5 m^2, 1.0 rad^2) barely penalize a 30 cm or 0.3 rad jump and a narrow, noisy
+    # scan slides along walls. 0.03 penalizes a 10 cm offset by 7 % and 30 cm by 60 %; loop
+    # closure is unaffected. In the loop sim this cut SLAM error with perfect odometry from
+    # 0.27 m to 0.04 m mean (docs/navigation.md).
+    distance_variance_penalty: 0.03
+    angle_variance_penalty: 0.03
     fine_search_angle_offset: 0.00349
     coarse_search_angle_offset: 0.349
     coarse_angle_resolution: 0.0349
-    minimum_angle_penalty: 0.5
+    minimum_angle_penalty: 0.5            # default 0.9 capped the angle penalty at 10 %
     minimum_distance_penalty: 0.5
     use_response_expansion: true
     min_pass_through: 2
