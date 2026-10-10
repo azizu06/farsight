@@ -290,7 +290,10 @@ class ControlState:
         if self.connected:
             left, right = (values if kind == "calibrate"
                            else self.profile.wheel_pwm(*values, max_pwm=self.max_pwm))
-        blocked = left + right > 0 and self.forward_blocked()
+        # Translation intent decides the range stop: a spin with slightly
+        # unequal trimmed wheels must not be blocked by its own bias.
+        translating = values[0] > 0 if kind == "velocity" else left + right > 0
+        blocked = translating and (left > 0 or right > 0) and self.forward_blocked()
         if blocked:
             left = right = 0
             self.reason = "forward_blocked"

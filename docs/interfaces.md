@@ -143,6 +143,29 @@ Optional pose fields (YOLO11-pose), present when the detector is a pose model:
   The server independently requires a fresh camera. Source loss stops all
   motion. Client decoded/drawn freshness also stops when the display stalls.
 
+### Optional drive-profile modes (`velocity`, `calibrate`)
+
+Both are **off by default**; an unconfigured server answers them with
+`reason: "unsupported_mode"` and teleop/Explore/Seek are untouched. They use the
+same session, ordered `seq`, server permit, held deadman, fresh-video, camera,
+lease and forward-range gates as every other mode. `/control/status` and
+`/ws/control` status gain `drive_profile`, `calibration_allowed` and
+`drive_mode` (`normalized`, `velocity` or `calibrate`).
+
+- `mode: "velocity"` needs `python -m jetson.server --drive-profile FILE`
+  (written by `tools/calibrate_drive.py`). Send `v_mps` (forward, |v| <= 5) and
+  `w_radps` (**counter-clockwise positive, ROS `cmd_vel` sign**, |w| <= 10) in
+  place of `v`/`w`. The profile maps them to left/right PWM (per-side floor, trim,
+  measured curves) and saturates keeping curvature; `--max-pwm` still caps. Only
+  `v_mps > 0` is held by the ultrasonic range stop. This is the entry for the
+  ROS 2 bridge's Nav2 `cmd_vel`.
+- `mode: "calibrate"` needs `--allow-calibration`. Send integer `left_pwm` and
+  `right_pwm` (|x| <= `max_pwm`), applied raw. Used only by the calibration tool;
+  a stationary spin or reverse is not range-stopped, any positive net forward
+  command is. `camera_yaw_offset_rad` in the profile is the angle from the camera
+  forward axis to the rover's travel direction (+ counter-clockwise), for the
+  bridge's `base_link`->`camera_link` yaw. See [drive calibration](drive-calibration.md).
+
 ### Optional Explore / Seek extension
 
 The composed rover server also accepts `mode: "explore"`. Existing teleop and

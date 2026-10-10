@@ -4,6 +4,7 @@ import argparse
 import asyncio
 from contextlib import asynccontextmanager, suppress
 import json
+import logging
 from pathlib import Path
 import time
 
@@ -45,6 +46,8 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                record=False, replay=None, bulk_limit_mbps=0, drive_profile=None, allow_calibration=False):
     if isinstance(drive_profile, (str, Path)):
         drive_profile = DriveProfile.load(drive_profile)
+        if drive_profile.meta.get("source") == "simulated":
+            logging.getLogger(__name__).warning("Drive profile came from a SIMULATED rover; it does not describe real motors")
     bulk = BulkPacer(bulk_limit_mbps)
     if replay is not None and (serial_port or camera_device is not None or demo or simulate_rover or record):
         raise ValueError("Replay cannot be combined with serial, live/simulated sources, or recording")

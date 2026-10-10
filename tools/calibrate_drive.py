@@ -36,7 +36,7 @@ from jetson.drive_profile import (DriveProfile, SpinRun, StraightRun, circular_m
 
 TICK = 0.05
 MIN_TRAVEL_M = 0.03
-MIN_TURN_RAD = 0.06
+MIN_TURN_RAD = 0.04
 
 
 class CalibrationError(RuntimeError):
@@ -86,7 +86,7 @@ def window(samples, settle):
     return [s for s in samples if s.t >= start]
 
 
-def moved(samples, settle=0.3):
+def moved(samples, settle=0.15):
     """True if the rover visibly translated or turned over the run."""
     use = window(samples, settle) or samples
     if len(use) < 2:
@@ -284,7 +284,7 @@ class LiveRover(Rover):
             self.log("WARNING: server reports a SIMULATED rover; the profile will describe no real motors")
         self.max_pwm = int(public["max_pwm"])
         self.tasks.append(asyncio.create_task(self._poll_pose()))
-        self.ws = await self.client.ws_connect(self.origin + "/ws/control", ssl=self.ssl, heartbeat=None)
+        self.ws = await self.client.ws_connect(self.origin + "/ws/control", ssl=self.ssl or True, heartbeat=None)
         first = await asyncio.wait_for(self.ws.receive_json(), 2)
         self.status = first
         self.session_id = first.get("session_id")
@@ -310,7 +310,7 @@ class LiveRover(Rover):
             await self.client.close()
 
     async def _get(self, path):
-        async with self.client.get(self.origin + path, ssl=self.ssl) as response:
+        async with self.client.get(self.origin + path, ssl=self.ssl or True) as response:
             response.raise_for_status()
             return await response.json()
 
