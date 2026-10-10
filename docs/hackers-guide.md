@@ -36,19 +36,18 @@ Source: https://knight-hacks.notion.site/334e290ccffe80e39ec7ee1e20a33bae (embed
 - Most "Useful" Hack — Roomba + mop
 - Most Involved Hacker (individual, points) — Ninja Creami
 
-## Sponsor challenges (prizes per team member, 1st place)
-- Hugging Face: Best Use of Open Source AI — $500 credits
-- Full Sail: Pathways & Perception, Serious Games & Simulation — MSI Vector
-- NVIDIA: Best Use of Jetson Nano — Jetson Orin Nano + swag
-- Encompass: Data Capturing Hardware — $300 AI credits + swag bag
-- BNY: Financial Services Challenge — Lululemon backpack + Stanley + JBL headphones
-- NextEra Energy: SPOT Management Dashboard — internship interview
-- OneEthos: Innovation for Good — in-person interview with CEO + $50 gift card + headphones
-- Figma: Best Design — Figma long sleeves + hats
-- Adobe: Prettiest Hack — Wacom tablet + 1 yr Creative Cloud
-- AMD: Best Use of AMD Technologies — ROG Xbox Ally X
-- Databricks: Best Use of Databricks — backpack + water bottle
-- Neon: Best Use of Neon — $1,000 Neon credits
+## Sponsor challenges (prizes per team member)
+Judged in each sponsor's own room; opt in on Devpost. Text below is the sponsor brief, condensed.
+
+- **NVIDIA: Best Use of Jetson Nano** (1st-3rd: Jetson Orin Nano + swag). Make Jetson capabilities *central*: real-time computer vision, robotics, local AI assistant, cameras + sensors together.
+- **Full Sail: Pathways & Perception** (1st: MSI Vector). A serious game or training simulation that uses pathfinding, face detection, or both to help someone reach a goal, practice a skill, or respond to a scenario. The intelligent system must matter; explain who it helps; show it works. 2D/3D, any engine.
+- **Encompass: Data Capturing Hardware** (1st $300 / 2nd $150 / 3rd $75 AI credits). Hardware that captures meaningful real-world data (sensors, cameras, embedded) and turns it into something useful. Judged on creativity, execution, how well the hardware captures and uses data.
+- **Hugging Face: Best Use of Open Source AI** (1st $500 / 2nd $300 / 3rd $200 credits; $20 credits per hacker). Text, vision, audio, multimodal, agents or robotics with open-source AI from Hugging Face. Judged on creativity, execution, meaningful use of the HF ecosystem.
+- NextEra Energy: SPOT Management Dashboard (internship interview). Turn Boston Dynamics SPOT mission data (their kit zips) into a readable live and post-mission view: locations, timestamps, readings, anomaly flags.
+- OneEthos: Innovation for Good. Local environmental problem, measurable impact.
+- BNY: Financial Services. Improve a financial-industry process.
+- Figma: Best Design (UI/UX, accessibility). Adobe: Prettiest Hack (visual style).
+- AMD: Best Use of AMD (FSR4 or ROCm, Radeon Cloud). Databricks: Best Use of Databricks. Neon: Best Use of Neon (Postgres backend).
 
 ## Points (Bloom vs. Blight)
 - Dashboard QR scanned at events (even meals) earns points for your side, Most Involved Hacker, and the Merch Market.
