@@ -344,6 +344,28 @@ fn drive_velocity_spin_not_blocked_by_missing_range() {
 }
 
 #[test]
+fn proximity_stop_off_lets_forward_run_without_range() {
+    // --proximity-stop off: the ultrasonic gate never fires (nav runs steer
+    // around obstacles); the pan mount rule still applies.
+    let now = Arc::new(Mutex::new(10.0f64));
+    let n = now.clone();
+    let clock: Clock = Arc::new(move || *n.lock().unwrap());
+    let state = ControlState::new(false, 0, 100, None, None, Some(clock), None, false, false).unwrap();
+    state.set_connected(true, None);
+    let session = state.begin().unwrap();
+    let f = Fixture { state, session, seq: std::cell::Cell::new(0), now };
+    f.send(json!({"deadman": false}));
+    // No range at all: forward drives, estop is false.
+    assert!(f.send(json!({})));
+    assert_eq!(f.state.status(false)["estop"], false);
+    assert_eq!(f.output(), (50, 50));
+    // A pan beyond the mount limit still blocks.
+    f.send(json!({"pan": 20}));
+    assert_eq!(f.state.status(false)["estop"], true);
+    assert_eq!(f.output(), (0, 0));
+}
+
+#[test]
 fn drive_calibrate_raw_pwm_and_bounds() {
     let f = mode_fixture(None, true, 20);
     assert!(f.send(json!({"mode": "calibrate", "left_pwm": 33, "right_pwm": 0})));
