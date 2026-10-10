@@ -231,6 +231,8 @@ pub fn decode_frame(packet: &[u8], identity: &Identity) -> Result<RgbdFrame, Str
 }
 
 /// A compacted triangle mesh: world positions, colors, triangle corner indices.
+
+#[derive(Clone)]
 pub struct Mesh {
     pub positions: Vec<[f32; 3]>,
     pub colors: Vec<[u8; 3]>,

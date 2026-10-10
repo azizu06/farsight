@@ -62,13 +62,20 @@ pub fn build_state(
         Some(Box::new(move |packet, frame| m.detect(packet, frame))),
     ));
     let cam = camera.clone();
-    let control = Arc::new(ControlState::new(
-        simulate_rover,
-        max_pwm,
-        Some(Arc::new(move || {
-            cam.status()["camera"].as_bool().unwrap_or(false)
-        })),
-    ));
+    let perc = perception.clone();
+    let control = Arc::new(
+        ControlState::new(
+            simulate_rover,
+            0,
+            max_pwm,
+            Some(Arc::new(move || {
+                cam.status()["camera"].as_bool().unwrap_or(false)
+            })),
+            Some(Arc::new(move || perc.snapshot())),
+            None,
+        )
+        .expect("PWM bounds"),
+    );
     let pump = Arc::new(SerialPump::new(control.clone(), serial_port, simulate_rover));
     Arc::new(AppState {
         mapping,

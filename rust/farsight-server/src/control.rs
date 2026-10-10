@@ -1,6 +1,6 @@
 //! Control policy, serial pump, and service glue.
 //! Ports of jetson/control/{state,serial_link,service}.py — same permits,
-//! lease, e-stop, and Uno wire protocol.
+//! lease, e-stop, autonomy modes, and Uno wire protocol.
 
 use std::collections::VecDeque;
 use std::io::{Read, Write};
@@ -11,12 +11,15 @@ use base64::Engine;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
+use crate::autonomy::Autonomy;
 use crate::state::now_monotonic;
 
 pub const LEASE: f64 = 0.250;
 pub const RANGE_TTL: f64 = 0.350;
 
 pub type CameraReady = Arc<dyn Fn() -> bool + Send + Sync>;
+pub type Clock = Arc<dyn Fn() -> f64 + Send + Sync>;
+pub type Detections = Arc<dyn Fn() -> Value + Send + Sync>;
 
 pub struct ControlInner {
     pub session_id: Option<String>,
@@ -32,12 +35,17 @@ pub struct ControlInner {
     pub requires_release: bool,
     pub reason: String,
     pub link_ms: Option<f64>,
+    pub stick_override: bool,
+    pub autonomy: Option<Autonomy>,
 }
 
 pub struct ControlState {
     pub simulated: bool,
     pub max_pwm: i64,
+    pub min_pwm: i64,
     pub camera_ready: Option<CameraReady>,
+    pub detections: Option<Detections>,
+    pub clock: Clock,
     pub inner: Mutex<ControlInner>,
 }
 
@@ -52,12 +60,24 @@ fn token() -> String {
 }
 
 impl ControlState {
-    pub fn new(simulated: bool, max_pwm: i64, camera_ready: Option<CameraReady>) -> Self {
-        assert!((1..=255).contains(&max_pwm), "max_pwm must be 1..255");
-        Self {
+    pub fn new(
+        simulated: bool,
+        min_pwm: i64,
+        max_pwm: i64,
+        camera_ready: Option<CameraReady>,
+        detections: Option<Detections>,
+        clock: Option<Clock>,
+    ) -> Result<Self, String> {
+        if !(0 <= min_pwm && min_pwm < max_pwm && max_pwm <= 255) {
+            return Err("PWM bounds must satisfy 0 <= min_pwm < max_pwm <= 255".into());
+        }
+        Ok(Self {
             simulated,
             max_pwm,
+            min_pwm,
             camera_ready,
+            detections: detections.clone(),
+            clock: clock.unwrap_or_else(|| Arc::new(now_monotonic)),
             inner: Mutex::new(ControlInner {
                 session_id: None,
                 permits: VecDeque::new(),
@@ -72,13 +92,18 @@ impl ControlState {
                 requires_release: true,
                 reason: "rover_disabled".into(),
                 link_ms: None,
+                stick_override: false,
+                autonomy: if detections.is_some() { Some(Autonomy::new()) } else { None },
             }),
-        }
+        })
+    }
+
+    fn now(&self) -> f64 {
+        (self.clock)()
     }
 
     pub fn stop(&self, reason: &str, require_release: bool) {
-        let mut s = self.inner.lock().unwrap();
-        Self::stop_locked(&mut s, reason, require_release);
+        Self::stop_locked(&mut self.inner.lock().unwrap(), reason, require_release);
     }
 
     fn stop_locked(s: &mut ControlInner, reason: &str, require_release: bool) {
@@ -86,6 +111,10 @@ impl ControlState {
         s.w = 0.0;
         s.deadline = 0.0;
         s.reason = reason.into();
+        if let Some(a) = s.autonomy.as_mut() {
+            a.reset();
+        }
+        s.stick_override = false;
         if require_release {
             s.requires_release = true;
         }
@@ -131,18 +160,32 @@ impl ControlState {
     pub fn update_range(&self, cm: f64) {
         let mut s = self.inner.lock().unwrap();
         s.range_cm = if cm.is_finite() && cm > 0.0 && cm <= 500.0 { Some(cm) } else { None };
-        s.range_at = now_monotonic();
+        s.range_at = self.now();
     }
 
-    fn forward_blocked(s: &ControlInner) -> bool {
+    fn forward_blocked(&self, s: &ControlInner) -> bool {
         s.range_cm.is_none()
-            || now_monotonic() - s.range_at >= RANGE_TTL
+            || self.now() - s.range_at >= RANGE_TTL
             || s.range_cm.unwrap() < 25.0
             || s.pan.abs() > 10
     }
 
     fn camera_is_ready(&self) -> bool {
         self.camera_ready.as_ref().map(|f| f()).unwrap_or(true)
+    }
+
+    fn json_int(v: &Value) -> Option<i64> {
+        match v {
+            Value::Number(n) => n.as_i64(),
+            _ => None,
+        }
+    }
+
+    fn json_num(v: &Value) -> Option<f64> {
+        match v {
+            Value::Number(n) => n.as_f64().filter(|x| x.is_finite()),
+            _ => None,
+        }
     }
 
     pub fn accept(&self, message: &Value, session_id: &str) -> bool {
@@ -155,20 +198,8 @@ impl ControlState {
             return false;
         }
         // JSON integer in 0..2^53-1; booleans and floats rejected.
-        let seq = match message.get("seq") {
-            Some(Value::Number(n)) => {
-                if let Some(u) = n.as_u64() {
-                    if u <= (1u64 << 53) - 1 {
-                        u as i64
-                    } else {
-                        Self::stop_locked(&mut s, "invalid_sequence", true);
-                        return false;
-                    }
-                } else {
-                    Self::stop_locked(&mut s, "invalid_sequence", true);
-                    return false;
-                }
-            }
+        let seq = match message.get("seq").and_then(Self::json_int) {
+            Some(seq) if (0..=(1i64 << 53) - 1).contains(&seq) => seq,
             _ => {
                 Self::stop_locked(&mut s, "invalid_sequence", true);
                 return false;
@@ -192,7 +223,7 @@ impl ControlState {
         let expires = token
             .and_then(|t| s.permits.iter().find(|(k, _)| k == t).map(|(_, e)| *e))
             .unwrap_or(0.0);
-        let now = now_monotonic();
+        let now = self.now();
         if expires <= now {
             Self::stop_locked(&mut s, "expired_permit", true);
             return false;
@@ -206,28 +237,53 @@ impl ControlState {
             Self::stop_locked(&mut s, "camera_stale", true);
             return false;
         }
-        if message.get("mode").and_then(Value::as_str).unwrap_or("teleop") != "teleop" {
+        let mode = message.get("mode").and_then(Value::as_str).unwrap_or("teleop");
+        if mode != "teleop" && (s.autonomy.is_none() || !(mode == "explore" || mode == "seek")) {
             Self::stop_locked(&mut s, "unsupported_mode", true);
             return false;
         }
-        let video_age = message.get("video_age_ms").and_then(Value::as_f64);
+        let target_id = if mode == "seek" {
+            match message.get("target_id").and_then(Self::json_int) {
+                Some(t) if (0..=(1i64 << 53) - 1).contains(&t) => Some(t),
+                _ => {
+                    Self::stop_locked(&mut s, "invalid_target", true);
+                    return false;
+                }
+            }
+        } else {
+            None
+        };
+        let video_age = message.get("video_age_ms").and_then(Self::json_num);
         if message.get("video_fresh") != Some(&Value::Bool(true))
-            || !video_age.map(|a| a.is_finite() && (0.0..=500.0).contains(&a)).unwrap_or(false)
+            || !video_age.map(|a| (0.0..=500.0).contains(&a)).unwrap_or(false)
         {
             Self::stop_locked(&mut s, "video_stale", true);
             return false;
         }
-        let v = message.get("v").and_then(Value::as_f64);
-        let w = message.get("w").and_then(Value::as_f64);
-        let pan = message.get("pan").and_then(Value::as_f64).unwrap_or(0.0);
-        if [v, w, Some(pan)].iter().flatten().any(|x| !x.is_finite()) {
+        let v = message.get("v").and_then(Self::json_num);
+        let w = message.get("w").and_then(Self::json_num);
+        let pan = message.get("pan").map(Self::json_num).unwrap_or(Some(0.0));
+        let (Some(v), Some(w), Some(pan)) = (v, w, pan) else {
             Self::stop_locked(&mut s, "invalid_command", true);
             return false;
-        }
-        let (v, w) = (v.unwrap(), w.unwrap());
+        };
         if !(-1.0..=1.0).contains(&v) || !(-1.0..=1.0).contains(&w) || !(-80.0..=80.0).contains(&pan) {
             Self::stop_locked(&mut s, "invalid_command", true);
             return false;
+        }
+        let mut pan = pan;
+        let stick_override = s.stick_override;
+        if let Some(autonomy) = s.autonomy.as_mut() {
+            if mode == "teleop" {
+                autonomy.reset();
+                s.stick_override = false;
+            } else if v != 0.0 || w != 0.0 || stick_override {
+                autonomy.reset();
+                s.stick_override = true;
+            } else {
+                autonomy.select(mode, target_id, now);
+                pan = 0.0; // autonomy needs a forward-facing ultrasonic/camera
+            }
         }
         let pan_i = pan.round_ties_even() as i64;
         if pan_i != s.pan {
@@ -252,38 +308,65 @@ impl ControlState {
     }
 
     fn output_locked(&self, s: &mut ControlInner) -> (i64, i64, i64) {
-        if s.deadline != 0.0 && now_monotonic() >= s.deadline {
+        if s.deadline != 0.0 && self.now() >= s.deadline {
             Self::stop_locked(s, "lease_expired", true);
         }
-        if (s.v != 0.0 || s.w != 0.0) && !self.camera_is_ready() {
+        let autonomous = s.autonomy.as_ref().map(|a| a.mode != "teleop").unwrap_or(false);
+        if (s.v != 0.0 || s.w != 0.0 || autonomous) && !self.camera_is_ready() {
             Self::stop_locked(s, "camera_stale", true);
         }
-        let (mut v, w) = (s.v, s.w);
+        let (mut v, mut w) = (s.v, s.w);
+        if s.autonomy.is_some() && autonomous && s.deadline != 0.0 {
+            let cm = if self.now() - s.range_at < RANGE_TTL { s.range_cm } else { None };
+            let snapshot = self.detections.as_ref().map(|d| d()).unwrap_or(json!({}));
+            if let Some(a) = s.autonomy.as_mut() {
+                // detections() never does I/O; a fault still stops motion.
+                let (av, aw) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    a.step(self.now(), cm, &snapshot)
+                }))
+                .unwrap_or_else(|_| {
+                    (f64::NAN, f64::NAN)
+                });
+                if av.is_nan() {
+                    Self::stop_locked(s, "autonomy_unavailable", true);
+                    v = 0.0;
+                    w = 0.0;
+                } else {
+                    v = av;
+                    w = aw;
+                }
+            }
+        }
         if !s.connected {
             v = 0.0;
-            // w is still used below; Python zeroes both.
+            w = 0.0;
         }
-        if !s.connected {
-            // mirror `v = w = 0`
-        }
-        let w = if s.connected { w } else { 0.0 };
-        if v > 0.0 && Self::forward_blocked(s) {
+        if v > 0.0 && self.forward_blocked(s) {
             v = 0.0;
             s.reason = "forward_blocked".into();
         }
         let (left, right) = (v + w, v - w); // positive w turns right
         let scale = 1.0f64.max(left.abs()).max(right.abs());
-        (
-            (left / scale * self.max_pwm as f64).round_ties_even() as i64,
-            (right / scale * self.max_pwm as f64).round_ties_even() as i64,
-            s.pan + 90,
-        )
+        let pwm = |value: f64| -> i64 {
+            if value == 0.0 {
+                return 0;
+            }
+            let magnitude = (self.min_pwm as f64
+                + (self.max_pwm - self.min_pwm) as f64 * (value / scale).abs())
+            .round_ties_even() as i64;
+            if value > 0.0 {
+                magnitude
+            } else {
+                -magnitude
+            }
+        };
+        (pwm(left), pwm(right), s.pan + 90)
     }
 
     pub fn status(&self, issue_permit: bool) -> Value {
         let mut s = self.inner.lock().unwrap();
         let (left, right, pan) = self.output_locked(&mut s);
-        let now = now_monotonic();
+        let now = self.now();
         s.permits.retain(|(_, expiry)| *expiry > now);
         let permit = if issue_permit && s.session_id.is_some() {
             let t = token();
@@ -299,9 +382,15 @@ impl ControlState {
             "permit_ms": 250,
             "seq": s.seq,
             "range_cm": s.range_cm,
-            "estop": Self::forward_blocked(&s),
-            "mode": "teleop",
+            "estop": self.forward_blocked(&s),
+            "mode": s.autonomy.as_ref().map(|a| a.mode.clone()).unwrap_or_else(|| "teleop".into()),
             "link_ms": s.link_ms,
+            "autonomy_state": if s.stick_override {
+                "stick_override"
+            } else {
+                s.autonomy.as_ref().map(|a| a.phase.as_str()).unwrap_or("idle")
+            },
+            "target_id": s.autonomy.as_ref().and_then(|a| a.target_id),
             "rover": s.connected,
             "simulated": self.simulated,
             "requires_release": s.requires_release,
@@ -310,6 +399,7 @@ impl ControlState {
             "right_pwm": right,
             "pan_deg": pan,
             "max_pwm": self.max_pwm,
+            "min_pwm": self.min_pwm,
         })
     }
 
@@ -412,7 +502,7 @@ impl SerialPump {
         let _ = device.clear(serialport::ClearBuffer::All);
         device.write_all(b"M 0 0\nP 90\nR\n").map_err(|e| e.to_string())?;
         let mut pending: Vec<u8> = Vec::new();
-        let started = now_monotonic();
+        let started = self.state.now();
         let mut last_response = started;
         let mut next_tick = started;
         let mut next_range = started;
@@ -420,13 +510,12 @@ impl SerialPump {
         let mut settle_at = started;
         let mut ready = false;
         while !self.quitting() {
-            let now = now_monotonic();
+            let now = self.state.now();
             let waiting = device.bytes_to_read().unwrap_or(0).min(256) as usize;
             if waiting > 0 {
                 let mut chunk = vec![0u8; waiting];
-                match device.read(&mut chunk) {
-                    Ok(n) => pending.extend_from_slice(&chunk[..n]),
-                    Err(_) => {}
+                if let Ok(n) = device.read(&mut chunk) {
+                    pending.extend_from_slice(&chunk[..n]);
                 }
             }
             if pending.len() > 1024 {

@@ -1,6 +1,7 @@
 //! Rust port of the Farsight Jetson services (jetson/mapping + jetson core).
 //! Wire formats and safety policy are byte-compatible with the Python implementation.
 
+pub mod autonomy;
 pub mod camera;
 pub mod control;
 pub mod demo;

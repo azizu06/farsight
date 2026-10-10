@@ -460,3 +460,70 @@ async fn main() {
     tracing::info!("farsight-relay listening on http://{addr} -> {}", args.upstream);
     axum::serve(listener, app).await.unwrap();
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn upstream() -> Url {
+        upstream_origin("https://rover.tailnet.ts.net").unwrap()
+    }
+
+    #[test]
+    fn upstream_validation() {
+        for bad in [
+            "https://rover/path",
+            "https://u:pw@rover",
+            "ftp://rover",
+            "rover",
+            "https://rover?q=1",
+        ] {
+            assert!(upstream_origin(bad).is_err(), "{bad}");
+        }
+        assert_eq!(upstream().as_str(), "https://rover.tailnet.ts.net/");
+    }
+
+    #[test]
+    fn local_url_rewrites_same_origin_only() {
+        let u = upstream();
+        assert_eq!(
+            local_url(&Value::from("https://rover.tailnet.ts.net/tts/42.wav?x=1"), &u),
+            Value::from("/tts/42.wav?x=1")
+        );
+        assert_eq!(
+            local_url(&Value::from("https://evil.com/tts/42.wav"), &u),
+            Value::from("https://evil.com/tts/42.wav")
+        );
+        assert_eq!(local_url(&Value::from(5), &u), Value::from(5));
+        assert_eq!(local_url(&Value::from("/already/relative"), &u), Value::from("/already/relative"));
+    }
+
+    #[test]
+    fn rewrite_json_nested() {
+        let u = upstream();
+        let input = serde_json::json!({
+            "speech": {"url": "https://rover.tailnet.ts.net/tts/7.wav"},
+            "list": ["https://rover.tailnet.ts.net/a", "other"],
+        });
+        let out = rewrite_json(&input, &u);
+        assert_eq!(out["speech"]["url"], "/tts/7.wav");
+        assert_eq!(out["list"][0], "/a");
+        assert_eq!(out["list"][1], "other");
+    }
+
+    #[test]
+    fn forward_headers_drops_hops() {
+        let mut h = HeaderMap::new();
+        h.insert("host", "relay".parse().unwrap());
+        h.insert("connection", "keep-alive, x-junk".parse().unwrap());
+        h.insert("x-junk", "1".parse().unwrap());
+        h.insert("te", "trailers".parse().unwrap());
+        h.insert("keep-alive", "timeout=5".parse().unwrap());
+        h.insert("x-custom", "yes".parse().unwrap());
+        let out = forward_headers(&h);
+        assert!(out.get("x-custom").is_some());
+        for dropped in ["host", "connection", "x-junk", "te", "keep-alive"] {
+            assert!(out.get(dropped).is_none(), "{dropped} leaked");
+        }
+    }
+}
