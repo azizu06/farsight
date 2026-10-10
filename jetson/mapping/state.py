@@ -40,6 +40,7 @@ class MapState:
         self.latest_camera = (None, 0.0, -1, "SIMULATED" if demo else "IPHONE LIDAR")
         self.depth_range = None
         self.pose_history = OrderedDict()
+        self.scan = None
 
     def start_session(self, identity, device):
         with self.lock:
@@ -63,11 +64,23 @@ class MapState:
     def clear(self):
         with self.lock:
             self.cloud.clear()
+            if self.scan:
+                self.cloud = VoxelMap()  # restore phone fusion's voxel size/budget
             self.surfaces.clear()
             self.generation += 1
             self.processing_generation += 1
             self.revision += 1
             self.frames = 0
+            self.scan = None
+
+    def install_scan(self, cloud, metadata):
+        """Replace, never stitch separate rover origins or mix with ARKit geometry."""
+        with self.lock:
+            self.clear()
+            self.cloud = cloud
+            self.scan = metadata
+            self.paused = True
+            self.reason = "Camera-only snapshot retained; estimated metric depth"
 
     def observe_pose(self, header, transform):
         with self.lock:
@@ -136,8 +149,10 @@ class MapState:
         with self.lock:
             age = time.monotonic() - self.last_received if self.last_received else None
             fresh = self.connected and age is not None and age < 2
-            reason = self.reason if fresh else "Sensor disconnected" if not self.connected else "Waiting for fresh sensor frames"
-            return dict(type="status", source="SIMULATED" if self.demo else "IPHONE LIDAR",
+            reason = ("Camera-only snapshot retained; estimated metric depth" if self.scan else
+                      self.reason if fresh else "Sensor disconnected" if not self.connected else "Waiting for fresh sensor frames")
+            pose = np.eye(4) if self.scan else self.pose
+            return dict(type="status", source="SIMULATED" if self.demo else "CAMERA SCAN" if self.scan else "IPHONE LIDAR",
                         connected=self.connected, fresh=fresh, device=self.device,
                         session_id=self.identity[0] if self.identity else None,
                         map_epoch=self.identity[1] if self.identity else None,
@@ -149,7 +164,7 @@ class MapState:
                         rejected=self.rejected, dropped=self.dropped,
                         processing_ms=self.processing_ms, processing_fps=self.fps,
                         age_ms=round(age * 1000) if age is not None else None,
-                        position=self.pose[:3, 3].tolist(), transform=self.pose.flatten(order="F").tolist(),
+                        position=pose[:3, 3].tolist(), transform=pose.flatten(order="F").tolist(), scan=self.scan,
                         voxel_m=self.cloud.size, depth_range=self.depth_range, reason=reason,
                         camera=fresh, detector_fps=0, rover=False, estop=True)
 

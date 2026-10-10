@@ -43,11 +43,46 @@ class ControlState:
         self.requires_release = True
         self.reason = "rover_disabled"
         self.link_ms = None
+        self.scan_token = None
+        self.scan_w = 0.0
+
+    def begin_scan(self, session_id, permit):
+        """Reserve stopped control; never issue/renew an operator lease here."""
+        with self.lock:
+            left, right, _ = self.output()
+            if (self.scan_token is not None or not self.session_id or session_id != self.session_id
+                    or not isinstance(permit, str) or self.permits.get(permit, 0) <= self.clock()
+                    or not self.connected or self.requires_release or self.deadline <= self.clock()
+                    or not self.camera_is_ready() or left or right or self.v or self.w
+                    or (self.autonomy and self.autonomy.mode != "teleop")):
+                raise ValueError("Scan requires a stopped rover and a live operator-held permit")
+            self.scan_token = object()
+            self.scan_w = 0.0
+            return self.scan_token
+
+    def scan_command(self, token, *, w=0, pan=0):
+        with self.lock:
+            self.output()  # enforce expiry, camera and range gates
+            if token is None or token is not self.scan_token:
+                raise ValueError("Scan cancelled: operator lease, override, or safety stop")
+            if not math.isfinite(w) or not -.35 <= w <= .35 or not -80 <= pan <= 80:
+                raise ValueError("Scan command outside bounded sweep")
+            self.scan_w, self.pan = w, round(pan)
+            self.output()
+            if token is not self.scan_token:
+                raise ValueError("Scan cancelled: camera or range unavailable")
+
+    def end_scan(self, token):
+        with self.lock:
+            if token is self.scan_token:
+                self.stop("scan_finished")
 
     def stop(self, reason, require_release=True):
         with self.lock:
             self.v = self.w = 0.0
             self.deadline = 0.0
+            self.scan_token = None
+            self.scan_w = 0.0
             self.reason = reason
             if self.autonomy:
                 self.autonomy.reset()
@@ -135,7 +170,11 @@ class ControlState:
                 self.stop("camera_stale")
                 return False
             mode = message.get("mode", "teleop")
-            if mode != "teleop" and (not self.autonomy or mode not in ("explore", "seek")):
+            if mode == "scan":
+                if self.scan_token is None:
+                    self.stop("scan_not_active")
+                    return False
+            elif mode != "teleop" and (not self.autonomy or mode not in ("explore", "seek")):
                 self.stop("unsupported_mode")
                 return False
             target_id = message.get("target_id") if mode == "seek" else None
@@ -155,8 +194,14 @@ class ControlState:
             if not (-1 <= v <= 1 and -1 <= w <= 1 and -80 <= pan <= 80):
                 self.stop("invalid_command")
                 return False
+            if self.scan_token is not None:
+                if mode != "scan" or v or w:
+                    self.stop("scan_override", require_release=False)
+                    mode = "teleop"
+                else:
+                    pan = self.pan
             if self.autonomy:
-                if mode == "teleop":
+                if mode in ("teleop", "scan"):
                     self.autonomy.reset()
                     self.stick_override = False
                 elif v or w or self.stick_override:
@@ -181,9 +226,15 @@ class ControlState:
             if self.deadline and self.clock() >= self.deadline:
                 self.stop("lease_expired")
             autonomous = self.autonomy is not None and self.autonomy.mode != "teleop"
-            if (self.v or self.w or autonomous) and not self.camera_is_ready():
+            if (self.v or self.w or autonomous or self.scan_token is not None) and not self.camera_is_ready():
                 self.stop("camera_stale")
             v, w = self.v, self.w
+            if self.scan_token is not None:
+                v, w = 0.0, self.scan_w
+                if w and (self.range_cm is None or self.clock() - self.range_at >= self.RANGE_TTL
+                          or self.range_cm < 25):
+                    self.stop("scan_range_stop")
+                    v = w = 0.0
             if self.autonomy and self.autonomy.mode != "teleop" and self.deadline:
                 cm = self.range_cm if self.clock() - self.range_at < self.RANGE_TTL else None
                 try:
@@ -219,7 +270,7 @@ class ControlState:
             return {"type": "control_status", "session_id": self.session_id,
                     "permit": permit, "permit_ms": 250, "seq": self.seq,
                     "range_cm": self.range_cm, "estop": self.forward_blocked(),
-                    "mode": self.autonomy.mode if self.autonomy else "teleop", "link_ms": self.link_ms,
+                    "mode": "scan" if self.scan_token is not None else self.autonomy.mode if self.autonomy else "teleop", "link_ms": self.link_ms,
                     "autonomy_state": ("stick_override" if self.stick_override else
                                        self.autonomy.phase if self.autonomy else "idle"),
                     "target_id": self.autonomy.target_id if self.autonomy else None,

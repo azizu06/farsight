@@ -25,6 +25,7 @@ from jetson.control import ControlService
 from jetson.assistant import SceneAssistant, AssistantError
 from jetson.phrases import PhraseSpeaker, SpeechError
 from jetson.triage import TriageBusy, TriageService
+from jetson.scan import ScanService
 
 DIST = Path(__file__).resolve().parents[2] / "quest" / "dist"
 
@@ -33,7 +34,8 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                detector="hog", detector_model=None, h264=False, mission_dir=None, max_pwm=100, min_pwm=0,
                video_fps=10, video_bitrate=500000, assistant_url=None, whisper_bin=None, whisper_model=None,
                piper_bin=None, piper_model=None, tts_dir=None, face_model=None, whisper_url=None,
-               piper_model_es=None, speaker_cmd="auto", triage_interval=3.0):
+               piper_model_es=None, speaker_cmd="auto", triage_interval=3.0,
+               depth_model=None, scan_pan=False, scan_fov=70, scan_intrinsics=None, scan_turn_dps=90):
     if (demo or simulate_rover) and serial_port:
         raise ValueError("Simulated sources cannot be combined with a physical motor serial port")
     state = MapState(demo)
@@ -52,6 +54,9 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                            range_cm=lambda: control.status().get("range_cm"))
     phrases = PhraseSpeaker(tts_dir, voices=dict(en=piper_model, es=piper_model_es), piper_bin=piper_bin,
                             speaker_cmd=speaker_cmd)
+    scanner = ScanService(state, camera_service, control, perception, model=depth_model,
+                          physical_pan=scan_pan, horizontal_fov=scan_fov,
+                          intrinsics=scan_intrinsics, turn_dps=scan_turn_dps)
 
     async def simulate():
         started, frame_id = time.monotonic(), 0
@@ -72,6 +77,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
         try:
             yield
         finally:
+            await scanner.close()
             await asyncio.to_thread(control.close)
             await assistant.close()
             await phrases.close()
@@ -95,6 +101,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
     app.state.assistant = assistant
     app.state.triage = triage
     app.state.phrases = phrases
+    app.state.scanner = scanner
     app.include_router(control.router)
 
     class AskBodyLimit:
@@ -118,6 +125,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
     async def health():
         status = await asyncio.to_thread(state.status)
         status.update(camera_service.status())
+        status["scan"] = scanner.result
         rover = control.status()
         status.update(perception.health())
         status.update(rover=rover["rover"], estop=rover["estop"], control=rover,
@@ -129,6 +137,21 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                                      piper=bool(piper_model)),
                       speech=await asyncio.to_thread(phrases.status), triage=triage.status())
         return status
+
+    class ScanRequest(BaseModel):
+        session_id: str
+        permit: str
+
+    @app.get("/scan")
+    async def scan_status():
+        return scanner.result
+
+    @app.post("/scan", status_code=202)
+    async def scan(body: ScanRequest):
+        try:
+            return scanner.start(body.session_id, body.permit)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
 
     @app.get("/map/points.bin")
     async def points():
@@ -156,6 +179,8 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
     async def pause(body: Pause):
         def change():
             with state.lock:
+                if not body.paused and state.scan:
+                    state.clear()
                 state.paused = body.paused
             return state.status()
         return await asyncio.to_thread(change)
@@ -501,6 +526,11 @@ def main():
                         help="hog: bundled CPU detector; pose: YOLO11-pose (needs --detector-model); none")
     parser.add_argument("--detector-model", help="YOLOv8/11 ONNX or TensorRT engine path; overrides bundled HOG. With --detector pose: YOLO11-pose model")
     parser.add_argument("--face-model", help="Enable extra UltraFace RFB-320 ONNX pass; omitted means off")
+    parser.add_argument("--depth-model", help="Metric Indoor Small 308x406 ONNX or target-built TensorRT engine")
+    parser.add_argument("--scan-pan", action="store_true", help="Physical camera pan installed; default is approximate rover turn")
+    parser.add_argument("--scan-fov", type=float, default=70, help="Camera horizontal FOV degrees; ignored with calibrated intrinsics")
+    parser.add_argument("--scan-intrinsics", type=float, nargs=4, metavar=("FX", "FY", "CX", "CY"), help="Calibrated intrinsics for the transmitted RGB pixel grid")
+    parser.add_argument("--scan-turn-dps", type=float, default=90, help="Measured turn degrees/sec at w=.3; approximate open-loop fallback")
     parser.add_argument("--h264", action="store_true", help="Enable ffmpeg H264 fragmented MP4 WebSocket")
     parser.add_argument("--video-fps", type=int, default=10)
     parser.add_argument("--video-bitrate", type=int, default=500000, help="H264 bit/s; start low for cellular headroom")
@@ -530,7 +560,9 @@ def main():
                 whisper_bin=args.whisper_bin, whisper_model=args.whisper_model, piper_bin=args.piper_bin,
                 piper_model=args.piper_model, tts_dir=args.tts_dir, face_model=args.face_model,
                 whisper_url=args.whisper_url, piper_model_es=args.piper_model_es,
-                speaker_cmd=args.speaker_cmd, triage_interval=args.triage_interval), host=args.host, port=args.port,
+                speaker_cmd=args.speaker_cmd, triage_interval=args.triage_interval,
+                depth_model=args.depth_model, scan_pan=args.scan_pan, scan_fov=args.scan_fov,
+                scan_intrinsics=args.scan_intrinsics, scan_turn_dps=args.scan_turn_dps), host=args.host, port=args.port,
                 ssl_certfile=args.ssl_certfile, ssl_keyfile=args.ssl_keyfile,
                 ws_max_size=8 * 1024 * 1024, access_log=False,
                 timeout_graceful_shutdown=5)

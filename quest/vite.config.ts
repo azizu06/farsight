@@ -9,6 +9,7 @@ export default defineConfig({
         "/phone",
         "/health",
         "/ask",
+        "/scan",
         "/mission",
         "/map",
         "/camera.jpg",

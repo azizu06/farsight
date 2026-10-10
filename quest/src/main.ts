@@ -29,6 +29,7 @@ type Status = {
   transform: number[];
   reason: string | null;
   depth_range: number[] | null;
+  scan?: { approximate: boolean; scan_ms: number; markers: { cls: string; position: number[] }[] } | null;
 };
 const $ = <T extends HTMLElement = HTMLElement>(id: string) =>
   document.getElementById(id) as T;
@@ -83,6 +84,7 @@ const text = (id: string, value: string) => {
   $(id).textContent = value;
 };
 const settings = $<HTMLDialogElement>("settings");
+const scanMarkers = new THREE.Points(new THREE.BufferGeometry(), new THREE.PointsMaterial({ color: 0xffbb44, size: .12 }));
 let status: Status | undefined;
 let view = "3d",
   pointsOnly = false,
@@ -294,6 +296,7 @@ function emptyGeometry() {
   };
 }
 function visibility() {
+  scanMarkers.visible = view !== "camera";
   cloud.visible = view !== "camera";
   surfaces.visible = !pointsOnly && view === "3d";
 }
@@ -409,6 +412,16 @@ function acceptStatus(next: Status) {
     replaceGeometry(surfaces, emptyGeometry());
   }
   status = next;
+  if (!scanMarkers.parent) scene.add(scanMarkers);
+  const markers = (next.scan?.markers ?? []).slice(0, 500);
+  if (scanMarkers.userData.revision !== next.revision) {
+    scanMarkers.geometry.dispose();
+    scanMarkers.geometry = new THREE.BufferGeometry();
+    scanMarkers.geometry.setAttribute("position", new THREE.Float32BufferAttribute(markers.flatMap(marker => marker.position), 3));
+    scanMarkers.geometry.computeBoundingSphere();
+    scanMarkers.userData.revision = next.revision;
+  }
+  text("panel-note", next.scan ? `Camera-only estimated metric snapshot · ${(next.scan.scan_ms / 1000).toFixed(1)} s${next.scan.approximate ? " · approximate timed rover rotation" : " · commanded physical pan"} · ${markers.length} detection markers` : "Observed RGB-D geometry. Unobserved space stays empty.");
   statusLine(next);
   text(
     "connection",

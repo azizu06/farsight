@@ -21,6 +21,8 @@ import numpy as np
 INPUT_SHAPE = (1, 3, 640, 640)
 OUTPUT_SHAPE = (1, 84, 8400)
 POSE_OUTPUT_SHAPE = (1, 56, 8400)
+DEPTH_INPUT_SHAPE = (1, 3, 308, 406)
+DEPTH_OUTPUT_SHAPE = (1, 308, 406)
 MAX_BUFFER_BYTES = 64 * 1024 * 1024
 MAX_ENGINE_BYTES = 512 * 1024 * 1024
 
@@ -139,7 +141,7 @@ class CudaRuntime:
 
 class TensorRTDetector:
     def __init__(self, engine_path, *, device=0, warmup=2, cuda=None, trt_module=None,
-                 output_shape=OUTPUT_SHAPE, score_channels=80):
+                 output_shape=OUTPUT_SHAPE, score_channels=80, input_shape=INPUT_SHAPE):
         self.lock = threading.RLock()
         self.device, self.cuda, self.stream = device, cuda, None
         self.device_buffers, self.host_buffers = [], []
@@ -149,9 +151,12 @@ class TensorRTDetector:
             raise ValueError("Device must be nonnegative; warmup must be 1..20")
         if (not isinstance(output_shape, tuple) or any(type(value) is not int for value in output_shape)
                 or type(score_channels) is not int
-                or (output_shape, score_channels) not in ((OUTPUT_SHAPE, 80), (POSE_OUTPUT_SHAPE, 1))):
-            raise ValueError("Output contract must be COCO detection (1,84,8400)/80 scores or pose (1,56,8400)/1 score")
+                or (input_shape, output_shape, score_channels) not in
+                ((INPUT_SHAPE, OUTPUT_SHAPE, 80), (INPUT_SHAPE, POSE_OUTPUT_SHAPE, 1),
+                 (DEPTH_INPUT_SHAPE, DEPTH_OUTPUT_SHAPE, 0))):
+            raise ValueError("Output contract must be COCO, pose, or fixed metric-depth with matching input")
         self.output_shape, self.score_channels = output_shape, score_channels
+        self.input_shape = input_shape
         path = Path(engine_path)
         if not path.is_file() or not 0 < path.stat().st_size <= MAX_ENGINE_BYTES:
             raise TensorRTError("Engine missing, empty, or exceeds the 512 MiB size limit")
@@ -191,31 +196,31 @@ class TensorRTDetector:
             if self.context is None:
                 raise TensorRTError("TensorRT execution context allocation failed")
             declared_shape = tuple(self.engine.get_tensor_shape(self.input_name))
-            if declared_shape != INPUT_SHAPE:
+            if declared_shape != self.input_shape:
                 if (len(declared_shape) != 4
-                        or any(value != -1 and value != target for value, target in zip(declared_shape, INPUT_SHAPE))):
-                    raise TensorRTError(f"Expected input shape {INPUT_SHAPE}, got {declared_shape}")
-                if not self.context.set_input_shape(self.input_name, INPUT_SHAPE):
-                    raise TensorRTError("Engine optimization profile does not allow 640x640 input")
+                        or any(value != -1 and value != target for value, target in zip(declared_shape, self.input_shape))):
+                    raise TensorRTError(f"Expected input shape {self.input_shape}, got {declared_shape}")
+                if not self.context.set_input_shape(self.input_name, self.input_shape):
+                    raise TensorRTError("Engine optimization profile does not allow the selected input shape")
             missing = self.context.infer_shapes()
             if missing:
                 raise TensorRTError(f"Engine shapes could not be resolved: {missing}")
-            if tuple(self.context.get_tensor_shape(self.input_name)) != INPUT_SHAPE:
+            if tuple(self.context.get_tensor_shape(self.input_name)) != self.input_shape:
                 raise TensorRTError("Engine input shape differs after shape inference")
             if tuple(self.context.get_tensor_shape(self.output_name)) != self.output_shape:
-                raise TensorRTError(f"Expected raw YOLO output {self.output_shape}; export the selected model without NMS/objectness")
-            for name, shape, dtype in ((self.input_name, INPUT_SHAPE, self.input_dtype),
+                raise TensorRTError(f"Expected selected output shape {self.output_shape}; export the selected model contract")
+            for name, shape, dtype in ((self.input_name, self.input_shape, self.input_dtype),
                                        (self.output_name, self.output_shape, self.output_dtype)):
                 pointer = self.cuda.malloc(allocation_size(shape, dtype))
                 self.device_buffers.append(pointer)
                 if not self.context.set_tensor_address(name, pointer):
                     raise TensorRTError(f"TensorRT rejected tensor address: {name}")
-            self.host_input, pointer = self.cuda.host_array(INPUT_SHAPE, self.input_dtype)
+            self.host_input, pointer = self.cuda.host_array(self.input_shape, self.input_dtype)
             self.host_buffers.append(pointer)
             self.host_output, pointer = self.cuda.host_array(self.output_shape, self.output_dtype)
             self.host_buffers.append(pointer)
             for _ in range(warmup):
-                self.predict(np.zeros(INPUT_SHAPE, dtype=np.float32))
+                self.predict(np.zeros(self.input_shape, dtype=np.float32))
         except ImportError as exc:
             with suppress(Exception):
                 self.close()
@@ -227,9 +232,10 @@ class TensorRTDetector:
 
     def predict(self, blob):
         array = np.asarray(blob)
-        if (array.shape != INPUT_SHAPE or array.dtype not in (np.dtype("float32"), np.dtype("float16"))
-                or not np.isfinite(array).all() or array.min() < 0 or array.max() > 1):
-            raise ValueError("Expected normalized RGB NCHW FP32/FP16 array [1,3,640,640] in [0,1]")
+        lower, upper = (-3, 3) if self.score_channels == 0 else (0, 1)
+        if (array.shape != self.input_shape or array.dtype not in (np.dtype("float32"), np.dtype("float16"))
+                or not np.isfinite(array).all() or array.min() < lower or array.max() > upper):
+            raise ValueError("Expected finite RGB NCHW FP32/FP16 array matching the selected shape and normalization")
         with self.lock:
             if self.closed:
                 raise TensorRTError("TensorRT detector is closed")
@@ -250,7 +256,7 @@ class TensorRTDetector:
                 # Pose channels after the person score contain x/y pixel
                 # coordinates. They are not COCO class probabilities.
                 scores = output[:, 4:4 + self.score_channels, :]
-                if scores.min() < -0.001 or scores.max() > 1.001:
+                if self.score_channels and (scores.min() < -0.001 or scores.max() > 1.001):
                     raise TensorRTError("YOLO output class scores must be probabilities in [0,1]")
                 return output
             except Exception:
