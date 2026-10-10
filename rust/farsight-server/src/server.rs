@@ -442,14 +442,57 @@ async fn map_reset(State(s): State<Arc<AppState>>) -> Json<Value> {
     Json(s.mapping.status())
 }
 
-async fn map_pause(State(s): State<Arc<AppState>>, Json(body): Json<Value>) -> Json<Value> {
-    let paused = body["paused"].as_bool().unwrap_or(false);
+/// Pydantic-style coercion: bool fields accept true/false, 0/1 and the usual
+/// truthy/falsey strings; int fields accept ints, integral floats and numeric
+/// strings. Anything else (including a missing bool) is a 422, matching
+/// FastAPI's request validation.
+fn pydantic_bool(v: &Value) -> Option<bool> {
+    match v {
+        Value::Bool(b) => Some(*b),
+        Value::Number(n) => n.as_i64().and_then(|i| match i {
+            0 => Some(false),
+            1 => Some(true),
+            _ => None,
+        }),
+        Value::String(s) => match s.to_ascii_lowercase().as_str() {
+            "true" | "t" | "yes" | "y" | "on" | "1" => Some(true),
+            "false" | "f" | "no" | "n" | "off" | "0" => Some(false),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn pydantic_int(v: &Value) -> Option<i64> {
+    match v {
+        Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Some(i)
+            } else {
+                n.as_f64().and_then(|f| {
+                    if f.fract() == 0.0 && f.abs() <= i64::MAX as f64 {
+                        Some(f as i64)
+                    } else {
+                        None
+                    }
+                })
+            }
+        }
+        Value::String(s) => s.trim().parse::<i64>().ok(),
+        _ => None,
+    }
+}
+
+async fn map_pause(State(s): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
+    let Some(paused) = pydantic_bool(&body["paused"]) else {
+        return (StatusCode::UNPROCESSABLE_ENTITY, "paused must be a boolean").into_response();
+    };
     // Resuming replaces a camera-only scan snapshot with live fusion.
     if !paused && s.mapping.inner.lock().unwrap().scan.is_some() {
         s.mapping.clear();
     }
     s.mapping.set_paused(paused);
-    Json(s.mapping.status())
+    Json(s.mapping.status()).into_response()
 }
 
 async fn camera_jpg(State(s): State<Arc<AppState>>) -> Response {
@@ -522,15 +565,31 @@ async fn mission_snapshot(State(s): State<Arc<AppState>>, Path(name): Path<Strin
 }
 
 async fn mission_drill_start(State(s): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
-    let duration = body["duration_s"].as_f64().unwrap_or(90.0);
-    if !(10.0..=300.0).contains(&duration) {
+    let duration = match &body["duration_s"] {
+        Value::Null => 90,
+        v => match pydantic_int(v) {
+            Some(i) => i,
+            None => {
+                return (StatusCode::UNPROCESSABLE_ENTITY, "duration_s must be an integer").into_response();
+            }
+        },
+    };
+    if !(10..=300).contains(&duration) {
         return (StatusCode::UNPROCESSABLE_ENTITY, "Drill duration must be 10..300 seconds").into_response();
     }
-    let victims = body["victims"].as_i64().unwrap_or(3);
+    let victims = match &body["victims"] {
+        Value::Null => 3,
+        v => match pydantic_int(v) {
+            Some(i) => i,
+            None => {
+                return (StatusCode::UNPROCESSABLE_ENTITY, "victims must be an integer").into_response();
+            }
+        },
+    };
     if !(1..=20).contains(&victims) {
         return (StatusCode::UNPROCESSABLE_ENTITY, "Drill victims must be 1..20").into_response();
     }
-    Json(s.mission.start_drill(duration, victims)).into_response()
+    Json(s.mission.start_drill(duration as f64, victims)).into_response()
 }
 
 async fn mission_drill_status(State(s): State<Arc<AppState>>) -> Json<Value> {
