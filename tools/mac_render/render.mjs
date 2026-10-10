@@ -10,6 +10,7 @@ window.addEventListener("error", (event) => {
 import * as THREE from "/quest/node_modules/three/build/three.module.js";
 import { decodeMesh, decodePoints } from "/quest/src/protocol.js";
 import { mapResponseRevision } from "/quest/src/map-response.js";
+import { DenseLayer, shadePass, splatMaterial } from "./dense-splats.mjs";
 
 const params = new URLSearchParams(location.search);
 const upstream = (params.get("upstream") || "").replace(/\/$/, "");
@@ -41,6 +42,52 @@ camera.lookAt(0, 0, 0);
 
 const root = new THREE.Group();
 scene.add(root);
+
+// Dense measured map (relay /dense/delta.bin, docs/dense-map.md): RGB-D first, the gray
+// native ARKit cloud only while RGB-D is empty. When present it replaces the coarse
+// preview and is drawn as lit surfaces (dense-splats.mjs). ?dense=0 is the before shot.
+const denseOn = params.get("dense") !== "0";
+const splatSize = Number(params.get("splat") || 0.03);
+const dense = new DenseLayer("rgbd");
+const denseGray = new DenseLayer("geometry", 2_000_000, true);
+const denseSplats = new THREE.Points(dense.geometry, splatMaterial(splatSize));
+const graySplats = new THREE.Points(denseGray.geometry, splatMaterial(splatSize * 1.4));
+denseSplats.frustumCulled = graySplats.frustumCulled = false;
+root.add(denseSplats, graySplats);
+const denseTarget = new THREE.WebGLRenderTarget(width, height, { depthTexture: new THREE.DepthTexture(width, height, THREE.FloatType) });
+// The shade pass writes sRGB directly, so it takes the background's sRGB components unconverted.
+const denseShade = shadePass(denseTarget, camera, new THREE.Color().setHex(0x1c2228, THREE.LinearSRGBColorSpace));
+let denseAvailable = denseOn;
+async function fetchDense(query) {
+  const response = await fetch(`${upstream}/dense/delta.bin?${query}`, { cache: "no-store" });
+  if (response.status === 404 || response.status === 502 || response.status === 503) {
+    const error = new Error(`dense lane off (${response.status})`); error.off = true; throw error;
+  }
+  if (!response.ok) throw new Error(`dense ${response.status}`);
+  return response.arrayBuffer();
+}
+async function pollDense() {
+  if (!denseOn) return;
+  try {
+    await dense.poll(fetchDense);
+    if (!dense.count) await denseGray.poll(fetchDense);
+    denseAvailable = true;
+  } catch (error) {
+    denseAvailable = !error.off;
+    if (!error.off) console.warn(String(error));
+  }
+  window.setTimeout(pollDense, denseAvailable ? 250 : 5000);
+}
+/** True when this frame draws dense surfaces instead of the coarse preview. */
+function prepareDense() {
+  const solid = dense.count > 0 || denseGray.count > 0;
+  denseSplats.visible = dense.count > 0;
+  graySplats.visible = !dense.count && denseGray.count > 0;
+  const scale = height / (2 * Math.tan((camera.fov * Math.PI) / 360));
+  denseSplats.material.uniforms.scale.value = graySplats.material.uniforms.scale.value = scale;
+  window.__mac.dense = { points: dense.count, gray: denseGray.count, shown: solid, available: denseAvailable };
+  return solid;
+}
 const grid = new THREE.GridHelper(40, 40, 0x3a424a, 0x2c343c);
 grid.position.y = -0.002;
 root.add(grid);
@@ -296,7 +343,16 @@ window.__mac = { ready: true, stereo: false, renderMs: 0, draws: 0, points: 0, s
 function drawScene() {
   const started = performance.now();
   applyPose();
-  renderer.render(scene, camera);
+  const solid = prepareDense();
+  // Dense cells replace the coarse preview cloud/mesh and the grid guide for this frame.
+  const coarse = [cloud.visible, surfaces.visible, grid.visible];
+  if (solid) {
+    cloud.visible = surfaces.visible = grid.visible = false;
+    renderer.setRenderTarget(denseTarget);
+    renderer.render(scene, camera);
+    denseShade.render(renderer);
+    [cloud.visible, surfaces.visible, grid.visible] = coarse;
+  } else renderer.render(scene, camera);
   window.__mac.renderMs = performance.now() - started;
   window.__mac.drawnPoints = renderer.info.render.points;
   window.__mac.drawnTriangles = renderer.info.render.triangles;
@@ -317,5 +373,6 @@ window.__macCapture = () => {
 renderer.setAnimationLoop(() => { if (!window.__macCaptureDriven) drawScene(); });
 window.__macRefreshMap = refresh;
 refresh();
+pollDense();
 const refreshTimer = window.setInterval(refresh, 2000);
 window.addEventListener("pagehide", () => { window.clearInterval(refreshTimer); incomingPose = null; clearPose(); });

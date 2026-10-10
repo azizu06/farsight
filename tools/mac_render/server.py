@@ -10,11 +10,13 @@ import base64
 import json
 import shutil
 import signal
+import struct
 import subprocess
 import time
 from contextlib import suppress, asynccontextmanager
 from pathlib import Path
 
+import aiohttp
 from aiohttp import ClientSession, ClientTimeout, TCPConnector, WSMsgType, web
 from tools.operator_relay import upstream_origin
 
@@ -43,7 +45,7 @@ class RenderEncoder:
         self.encoder = None
         self.error = None
         self.frame_id = 0
-        self.fragments = asyncio.Queue(maxsize=4)
+        self.fragments = ViewerQueue()
         self.latest_pose = None
         self.samples = []
         self._tasks = []
@@ -168,11 +170,8 @@ class RenderEncoder:
                 sidecar["timing_scope"] = "Mac atomic render request through encoded fragment; not camera or headset age"
                 sidecar["bytes"] = len(data)
                 sidecar["pose_to_frame_ms"] = pose_to_frame_ms(newest.get("pose"), newest["capture_mono_ms"])
-                item = {"sidecar": sidecar, "payload": data}
-                if self.fragments.full():
-                    with suppress(asyncio.QueueEmpty):
-                        self.fragments.get_nowait()
-                self.fragments.put_nowait(item)
+                item = {"sidecar": sidecar, "payload": data, "keyframe": _is_keyframe(data)}
+                self.fragments.offer(item)
 
     async def _stderr(self):
         while line := await self.process.stderr.readline():
@@ -225,6 +224,9 @@ class App:
             "drawn_points": encoder.last_snapshot.get("drawnPoints", 0) if encoder else 0,
             "drawn_triangles": encoder.last_snapshot.get("drawnTriangles", 0) if encoder else 0,
             "map": encoder.last_snapshot.get("mapStatus") if encoder else None,
+            # Retained measured dense cells on the render page (relay /dense lane), and whether drawn as surfaces.
+            "dense": encoder.last_snapshot.get("dense") if encoder else None,
+            "skipped_fragments": encoder.fragments.skipped if encoder else 0,
         })
 
     @asynccontextmanager
@@ -262,6 +264,8 @@ class App:
                 "fps": self.args.fps, "stereo": False,
             })
             await socket.send_bytes(encoder.init)
+            # A new owner decodes from the next keyframe, never a fragment whose references it missed.
+            encoder.fragments.restart()
             async for message in socket:
                 if message.type != WSMsgType.TEXT:
                     continue
@@ -272,7 +276,7 @@ class App:
                 if not isinstance(body, dict) or body.get("type") != "next" or type(body.get("request_id")) is not int:
                     continue
                 try:
-                    item = await asyncio.wait_for(encoder.fragments.get(), timeout=2)
+                    item = await asyncio.wait_for(encoder.fragments.latest(), timeout=2)
                 except asyncio.TimeoutError:
                     await socket.send_json({"type": "macview_error", "reason": "no fragment"})
                     continue
@@ -355,7 +359,107 @@ def create_app(args, browser=None, page=None):
     if args.upstream:
         web_app.router.add_get("/map/{tail:.*}", proxy(args.upstream))
         web_app.router.add_get("/health/map", proxy_one(args.upstream, "/map/status"))
+        web_app.router.add_get("/dense/{tail:.*}", dense_proxy(args.upstream))
     return web_app
+
+
+class ViewerQueue:
+    """Latest-only fragments for the stream owner.
+
+    Nothing is handed out until a keyframe, so the viewer never decodes a fragment
+    whose reference frames it missed. When the viewer asks for the next fragment
+    and a backlog has built up (a slow start, a stall), everything before the
+    newest queued keyframe is dropped: the picture jumps forward instead of the
+    backlog becoming standing latency. Dropping an arbitrary older fragment would
+    corrupt every picture until the next keyframe, so a full queue instead waits
+    for the next keyframe.
+    """
+
+    def __init__(self, limit=12):
+        self.items = []
+        self.limit = limit
+        self.synced = False
+        self.skipped = 0
+        self._ready = asyncio.Event()
+
+    def restart(self):
+        self.items.clear(); self.synced = False; self._ready.clear()
+
+    def offer(self, item):
+        if item["keyframe"]:
+            self.synced = True
+        if not self.synced:
+            return
+        if len(self.items) >= self.limit:
+            self.skipped += len(self.items)
+            self.items.clear()
+            self.synced = bool(item["keyframe"])
+            if not self.synced:
+                return
+        self.items.append(item)
+        self._ready.set()
+
+    def take(self):
+        """The next decodable fragment, skipping any backlog to its newest keyframe."""
+        keys = [index for index, item in enumerate(self.items) if item["keyframe"]]
+        if keys and keys[-1] > 0:
+            self.skipped += keys[-1]
+            del self.items[:keys[-1]]
+        item = self.items.pop(0)
+        if not self.items:
+            self._ready.clear()
+        return item
+
+    async def latest(self):
+        while not self.items:
+            self._ready.clear()
+            await self._ready.wait()
+        return self.take()
+
+
+def _is_keyframe(data):
+    """A fragment whose mdat carries an IDR picture, so a viewer can start decoding on it.
+
+    ffmpeg writes MP4 samples as AVCC: 4-byte big-endian NAL lengths, not Annex B
+    start codes, and the tfhd default-base-is-moof flag says nothing about sync samples.
+    """
+    at = data.find(b"mdat")
+    if at < 4:
+        return False
+    end = min(len(data), at - 4 + struct.unpack_from(">I", data, at - 4)[0])
+    pos = at + 4
+    while pos + 4 <= end:
+        length = struct.unpack_from(">I", data, pos)[0]
+        pos += 4
+        if length == 0 or pos + length > end:
+            return False
+        if data[pos] & 0x1F == 5:
+            return True
+        pos += length
+    return False
+
+
+def dense_proxy(upstream):
+    """Relay /dense/* (docs/dense-map.md) for the render page, keeping query and status.
+
+    404/503 pass through so the page can tell the dense lane is off and back off.
+    """
+    async def send(request):
+        url = f"{str(upstream_origin(upstream)).rstrip('/')}/dense/{request.match_info['tail']}"
+        if request.query_string:
+            url += "?" + request.query_string
+        try:
+            async with request.app["map_client"].get(url, headers={"Accept-Encoding": "identity"},
+                                                     allow_redirects=False) as response:
+                body = await response.content.read(16 * 1024 * 1024 + 1)
+                if len(body) > 16 * 1024 * 1024:
+                    raise web.HTTPBadGateway(text="Dense response exceeds bound")
+                return web.Response(status=response.status, body=body, headers={
+                    "Content-Type": response.headers.get("Content-Type", "application/octet-stream"),
+                    "Cache-Control": "no-store"})
+        except aiohttp.ClientError as exc:
+            raise web.HTTPServiceUnavailable(text=f"Dense source unavailable: {exc}") from exc
+    return send
 
 
 def proxy(upstream):
@@ -404,7 +508,8 @@ async def open_page(args):
               "--disable-renderer-backgrounding", f"--window-size={args.width},{args.height}"],
     )
     page = await browser.new_page(viewport={"width": args.width, "height": args.height})
-    query = f"upstream=http://127.0.0.1:{args.port}&width={args.width}&height={args.height}"
+    query = (f"upstream=http://127.0.0.1:{args.port}&width={args.width}&height={args.height}"
+             f"&dense={0 if args.no_dense else 1}")
     page.on("pageerror", lambda error: print(f"render page: {error}", flush=True))
     page.on("console", lambda message: print(f"render console: {message.text}", flush=True))
     await page.goto(f"http://127.0.0.1:{args.port}/render/render.html?{query}")
@@ -432,6 +537,8 @@ def parse_args(argv=None):
     parser.add_argument("--hardware", choices=("auto", "videotoolbox", "libx264"), default="auto")
     parser.add_argument("--no-browser", action="store_true", help="Serve sockets only; tests use this")
     parser.add_argument("--headed", action="store_true")
+    parser.add_argument("--no-dense", action="store_true",
+                        help="Ignore the relay /dense lane and draw only the coarse preview (before shot)")
     parser.add_argument("--browser", help="Chromium binary, if Playwright has not downloaded its own")
     args = parser.parse_args(argv)
     if not 1 <= args.port <= 65535 or not 1 <= args.sim_port <= 65535:
