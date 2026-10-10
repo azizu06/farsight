@@ -483,13 +483,17 @@ export class RoverExperience {
   private drawCamera(now: number) {
     const context = this.ctx;
     if (this.h264Enabled && this.h264.video.readyState >= 2) {
+      const decoded = this.h264.displayedFrame;
+      // Metadata can be ahead of presentation. Retain the validated canvas
+      // and its boxes until the decoder confirms the next displayed identity.
+      // Keep dirty so the next RAF retries; retained pixels never renew age.
+      if (!decoded) return;
       const video = this.h264.video;
       if (this.canvas.width !== video.videoWidth || this.canvas.height !== video.videoHeight) {
         this.canvas.width = video.videoWidth; this.canvas.height = video.videoHeight;
       }
       const crop = cameraCrop(video.videoWidth, video.videoHeight, this.input.pan, this.digitalPan);
       context.drawImage(video, crop.x, crop.y, crop.width, crop.height, 0, 0, this.canvas.width, this.canvas.height);
-      const decoded = this.h264.displayedFrame;
       if (decoded) {
         this.gate.acceptFrame(decoded.id, decoded.age, now);
         this.frameSource = decoded.source; this.frameId = decoded.frame === null ? "" : String(decoded.frame);
