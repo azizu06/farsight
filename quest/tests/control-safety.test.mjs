@@ -58,3 +58,30 @@ test("stick ignores invalid values and drift, scales bounded travel", () => {
   assert.equal(stick(2), 1);
   assert.ok(stick(0.5) > 0 && stick(0.5) < 0.5);
 });
+
+test("explicit stop preserves physical deadman across timer/render ordering", () => {
+  const gate = ready();
+  const physicalInput = { held: true, v: 0.4, w: 0.2, pan: 10 };
+  assert.equal(gate.decide(physicalInput.held, 110), true);
+  // Fault/STOP runs between input sampling and the next 20 Hz command pump.
+  const stoppedInput = gate.stop(physicalInput, "STOP pressed");
+  assert.equal(stoppedInput.held, true);
+  assert.equal(stoppedInput.v, 0);
+  assert.equal(stoppedInput.w, 0);
+  assert.equal(gate.decide(stoppedInput.held, 120), false);
+  // Rendering samples the still-held trigger again; it cannot resume motion.
+  assert.equal(gate.decide(physicalInput.held, 130), false);
+  gate.decide(false, 140);
+  assert.equal(gate.decide(true, 150), true);
+});
+
+test("server release requirement overrides a locally fresh connection", () => {
+  const gate = ready();
+  assert.equal(gate.decide(true, 110), true);
+  gate.acceptStatus({ ...status, requires_release: true, reason: "expired_permit" }, 120);
+  assert.equal(gate.decide(true, 121), false);
+  gate.acceptStatus({ ...status, requires_release: false }, 130);
+  assert.equal(gate.decide(true, 131), false);
+  gate.decide(false, 140);
+  assert.equal(gate.decide(true, 150), true);
+});

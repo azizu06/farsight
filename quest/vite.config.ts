@@ -8,6 +8,8 @@ export default defineConfig({
         "/ws",
         "/phone",
         "/health",
+        "/ask",
+        "/mission",
         "/map",
         "/camera.jpg",
         "/depth.jpg",

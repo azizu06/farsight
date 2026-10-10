@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { ControlSafety, stick } from "./control-safety.js";
+import { H264Viewer } from "./h264";
 
 type Box = { id?: number; cls: string; conf: number; x: number; y: number; w: number; h: number };
 type Detections = { frame: number | string; boxes: Box[]; fps?: number; source?: string; simulated?: boolean };
@@ -25,6 +26,8 @@ export class RoverExperience {
   private detectionsAt = -Infinity;
   private status: ControlStatus | null = null;
   private seq = 0;
+  private sent = new Map<number, number>();
+  private ackMs: number | null = null;
   private lastSendAt = 0;
   private input = { held: false, v: 0, w: 0, pan: 0 };
   private keys = new Set<string>();
@@ -45,6 +48,10 @@ export class RoverExperience {
   private message: HTMLElement;
   private details: HTMLElement;
   private holdButton: HTMLButtonElement;
+  private h264: H264Viewer;
+  private h264Enabled = false;
+  private cameraScreen: THREE.Mesh;
+  private lastVideoAt = 0;
   private dirty = true;
   private lastHudAt = 0;
   private quat = new THREE.Quaternion();
@@ -100,10 +107,24 @@ export class RoverExperience {
     const hud = new THREE.Mesh(new THREE.PlaneGeometry(2.8, 0.60), new THREE.MeshBasicMaterial({ map: this.hudTexture, transparent: true, toneMapped: false, depthTest: false }));
     hud.position.set(0, -1.10, -2.30); hud.renderOrder = 11;
     this.cockpit.add(screen, hud); this.cockpit.visible = false;
+    this.cameraScreen = screen;
     this.scene.add(this.cockpit);
+    this.h264 = new H264Viewer(() => {
+      if (performance.now() - this.lastVideoAt > 60) { this.dirty = true; this.lastVideoAt = performance.now(); }
+    }, () => this.stop("H.264 restarted: motion disabled"));
+    const videoOption = document.createElement("label"); videoOption.className = "check";
+    videoOption.innerHTML = '<input type="checkbox"/> H.264 video (experimental; requires decoded freshness)';
+    document.querySelector("#settings")!.append(videoOption);
+    videoOption.querySelector("input")!.onchange = event => {
+      this.h264Enabled = (event.target as HTMLInputElement).checked;
+      this.stop("Video format changed: release deadman");
+      this.gate.frameAt = -Infinity; this.gate.frameAge = Infinity;
+      if (this.h264Enabled) this.h264.start(); else this.h264.stop();
+      this.dirty = true;
+    };
     this.renderer.xr.addEventListener("sessionstart", () => {
       this.stop("VR session started: release trigger");
-      this.recenter = true; this.xrLive = true;
+      this.recenter = true; this.xrLive = true; this.setView("camera");
       this.renderer.xr.getSession()?.addEventListener("visibilitychange", () => {
         this.suspended = this.renderer.xr.getSession()?.visibilityState !== "visible";
         if (this.suspended) this.stop("Headset inactive: release trigger");
@@ -133,8 +154,7 @@ export class RoverExperience {
   private escapeStop = (event: KeyboardEvent) => { if (event.key === "Escape") this.stop("Stopped: release deadman"); };
 
   stop(reason: string) {
-    this.gate.invalidate(reason);
-    this.input.held = false;
+    this.input = this.gate.stop(this.input, reason);
     this.send(false);
   }
   private endpoint(path: string) { return new URL(path, location.origin).href.replace(/^http/, "ws"); }
@@ -148,6 +168,7 @@ export class RoverExperience {
         const next = JSON.parse(event.data) as ControlStatus;
         if (this.gate.acceptStatus(next, performance.now())) {
           this.status = next;
+          if (typeof next.seq === "number" && this.sent.has(next.seq)) this.ackMs = performance.now() - this.sent.get(next.seq)!;
           if (next.requires_release) this.gate.invalidate(next.reason ?? "Release deadman to continue");
         }
       } catch { this.stop("Invalid control status"); socket.close(); }
@@ -180,7 +201,7 @@ export class RoverExperience {
   }
 
   private async fetchFrame() {
-    if (this.frameBusy || document.hidden || this.stopped ||
+    if (this.h264Enabled || this.frameBusy || document.hidden || this.stopped ||
         (!this.renderer.xr.isPresenting && this.getView() !== "camera")) return;
     this.frameBusy = true;
     const start = performance.now();
@@ -200,7 +221,7 @@ export class RoverExperience {
       const image = new Image(); image.src = url;
       await image.decode();
       const now = performance.now();
-      if (this.stopped || controller.signal.aborted) return;
+      if (this.stopped || controller.signal.aborted || this.h264Enabled) return;
       this.frame = image; this.frameSource = source;
       this.frameId = id ?? "";
       // Server capture age + full request/decode time bounds transit age without synchronized clocks.
@@ -226,7 +247,7 @@ export class RoverExperience {
       const held = !!right?.gamepad?.buttons[0]?.pressed;
       const toggle = !!right?.gamepad?.buttons[4]?.pressed;
       const center = !!right?.gamepad?.buttons[5]?.pressed;
-      if (toggle && !this.toggleDown) { this.xrLive = !this.xrLive; this.stop("View changed: release trigger"); }
+      if (toggle && !this.toggleDown) { this.xrLive = !this.xrLive; this.stop("View changed: release trigger"); this.setView(this.xrLive ? "camera" : "3d"); }
       if (center && !this.recenterDown) this.recenter = true;
       this.toggleDown = toggle; this.recenterDown = center;
       const xrCamera = this.renderer.xr.getCamera();
@@ -247,7 +268,17 @@ export class RoverExperience {
         pan: 0,
       };
     }
-    this.cockpit.visible = xr && this.xrLive;
+    this.cockpit.visible = xr;
+    this.cameraScreen.visible = this.xrLive;
+    if (this.h264Enabled) {
+      this.h264.update();
+      const decoded = this.h264.displayedFrame;
+      if (decoded) {
+        this.gate.acceptFrame(decoded.id, decoded.age, now);
+        this.frameSource = decoded.source;
+        this.frameId = String(decoded.frame);
+      }
+    }
     if (this.dirty) this.drawCamera(now);
     if (now - this.lastHudAt > 100) { this.drawHUD(now); this.lastHudAt = now; }
   }
@@ -268,8 +299,11 @@ export class RoverExperience {
   private send(deadman: boolean) {
     if (this.socket?.readyState !== WebSocket.OPEN || this.socket.bufferedAmount > 0) return;
     const age = this.gate.videoAge(performance.now());
+    const seq = this.seq++;
+    this.sent.set(seq, performance.now());
+    if (this.sent.size > 100) this.sent.delete(this.sent.keys().next().value!);
     this.socket.send(JSON.stringify({
-      seq: this.seq++, session_id: this.status?.session_id ?? null, permit: this.status?.permit ?? null,
+      seq, session_id: this.status?.session_id ?? null, permit: this.status?.permit ?? null,
       deadman, v: deadman ? this.input.v : 0, w: deadman ? this.input.w : 0,
       pan: this.input.pan, mode: "teleop", video_fresh: age < 500,
       video_age_ms: Number.isFinite(age) ? Math.ceil(age) : 999999,
@@ -278,7 +312,13 @@ export class RoverExperience {
   }
   private drawCamera(now: number) {
     const context = this.ctx;
-    if (this.frame) {
+    if (this.h264Enabled && this.h264.video.readyState >= 2) {
+      const video = this.h264.video;
+      if (this.canvas.width !== video.videoWidth || this.canvas.height !== video.videoHeight) {
+        this.canvas.width = video.videoWidth; this.canvas.height = video.videoHeight;
+      }
+      context.drawImage(video, 0, 0, this.canvas.width, this.canvas.height);
+    } else if (!this.h264Enabled && this.frame) {
       if (this.canvas.width !== this.frame.naturalWidth || this.canvas.height !== this.frame.naturalHeight) {
         this.canvas.width = this.frame.naturalWidth; this.canvas.height = this.frame.naturalHeight;
       }
@@ -309,9 +349,10 @@ export class RoverExperience {
     const simulation = this.status?.simulated || this.frameSource === "SIMULATED";
     const moving = this.input.held && !this.gate.needsRelease && !ready;
     const headline = `${simulation ? "SIMULATED · " : ""}${ready ?? this.gate.reason}`;
+    const ack = this.ackMs === null ? "ack pending" : `control ack ${Math.round(this.ackMs)} ms`;
     const range = this.status?.range_cm == null ? "range unknown" : `${Math.round(this.status.range_cm)} cm`;
     const detection = !this.detections ? "detector unavailable" : now - this.detectionsAt > 500 ? "detections stale" : String(this.detections.frame) !== this.frameId ? "detections awaiting matching frame" : `${this.detections.boxes.length} detections`;
-    const detail = `${this.frameSource} · video ${age} · ${range} · ${detection}`;
+    const detail = `${this.frameSource} · ${this.h264Enabled ? "H.264" : "JPEG"} video ${age} · ${ack} · ${range} · ${detection}${this.h264Enabled && !this.h264.displayedFrame ? " · " + this.h264.state : ""}`;
     this.message.textContent = headline;
     this.message.dataset.state = moving ? "moving" : ready ? "unsafe" : "ready";
     this.details.textContent = `${detail}${this.status?.estop ? " · FORWARD BLOCKED" : ""}`;
@@ -321,8 +362,8 @@ export class RoverExperience {
     c.fillStyle = simulation ? "#ffc779" : ready ? "#ffb3a8" : "#a6edc4";
     c.font = "bold 32px system-ui"; c.fillText(headline.slice(0, 58), 28, 46);
     c.font = "24px system-ui"; c.fillStyle = "#dce5ee";
-    c.fillText(`${this.frameSource} · Video ${age} · ${range}`, 28, 90);
-    c.fillText(`${detection}${this.status?.estop ? " · FORWARD BLOCKED" : ""}`, 28, 126);
+    c.fillText(`${this.frameSource} · ${this.h264Enabled ? "H.264" : "JPEG"} video ${age} · ${range}`, 28, 90);
+    c.fillText(`${ack} · ${detection}${this.status?.estop ? " · FORWARD BLOCKED" : ""}`, 28, 126);
     c.font = "22px system-ui";
     c.fillText("Right trigger: deadman · Left stick: drive · A: map · B: center pan", 28, 170);
     c.fillText("Release trigger after a stop or reconnect", 28, 202);
@@ -351,7 +392,7 @@ export class RoverExperience {
   dispose() {
     this.stop("Viewer closed"); this.stopped = true;
     this.timers.forEach(timer => { window.clearInterval(timer); window.clearTimeout(timer); });
-    this.socket?.close(); this.detectionsSocket?.close(); this.request?.abort();
+    this.socket?.close(); this.detectionsSocket?.close(); this.request?.abort(); this.h264.stop();
     window.removeEventListener("keydown", this.keyDown); window.removeEventListener("keyup", this.keyUp);
     window.removeEventListener("blur", this.blur); document.removeEventListener("visibilitychange", this.visibility);
     document.removeEventListener("keydown", this.escapeStop);

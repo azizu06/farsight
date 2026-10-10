@@ -14,6 +14,11 @@ export class ControlSafety {
     this.needsRelease = true;
     this.reason = reason;
   }
+  stop(input, reason) {
+    // Zero commands without inventing a release of the physical trigger/key.
+    this.invalidate(reason);
+    return { ...input, v: 0, w: 0 };
+  }
   acceptStatus(status, now) {
     if (!status || typeof status.session_id !== "string" ||
         typeof status.permit !== "string" || !Number.isFinite(status.permit_ms)) return false;
@@ -22,6 +27,7 @@ export class ControlSafety {
       this.session = status.session_id;
     }
     if (this.status?.rover && !status.rover) this.invalidate("Rover unavailable");
+    if (status.requires_release) this.invalidate(status.reason ?? "Release deadman to continue");
     this.status = status;
     this.receivedAt = now;
     return true;
