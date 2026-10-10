@@ -16,7 +16,9 @@ collapse, hazardous plant areas), and trainees who need to practice that search 
 5. Drive at a wall: the rover refuses to hit it (e-stop on the Jetson, not the headset).
 6. **Rescue drill**: 90 s timer, find the "victims" (faces); score and route back shown.
 7. Take the headset off: the mission report lists every detection with time, snapshot, range.
-8. Point at a person, press A: rover drives to them on its own (Seek, stretch).
+8. "What do you see?" The Jetson answers out loud, offline (#19).
+9. Press Scan: the rover sweeps its head and you stand inside a 3D snapshot of the room (#14).
+10. Explore: the rover wanders on its own until it finds a person, then Seek drives to them (stretch).
 
 ## Why the Jetson is central (NVIDIA)
 | On the Jetson | Why it can't be the headset or an Arduino |
@@ -25,7 +27,8 @@ collapse, hazardous plant areas), and trainees who need to practice that search 
 | Hardware JPEG/H.264 encode | Streams video with little CPU |
 | 20 Hz control pump, 250 ms lease, ultrasonic e-stop | Safety holds even if Wi-Fi drops |
 | Mission logger | Data captured where the sensors are |
-| Depth Anything V2 (stretch) | Live 3D from one camera |
+| Depth Anything V2 3D scan (#14) | Metric 3D from one camera, stitched by servo angle |
+| Local voice + vision assistant (#19) | Answers with no internet: Whisper + small VLM on the Jetson GPU |
 
 ## Challenge map
 | Challenge | What earns it | Issues |
@@ -33,7 +36,7 @@ collapse, hazardous plant areas), and trainees who need to practice that search 
 | NVIDIA Jetson | Perception, encode, safety, logging all on Jetson; fps/latency numbers | #1 #7 #9 #12 |
 | Full Sail Pathways & Perception | Rescue drill: training scenario with face detection, score, route back | #16 |
 | Encompass Data Capturing Hardware | Rover captures camera + range + detections into a mission report | #17 |
-| Hugging Face | Models pulled from the HF Hub (detector, Depth Anything V2) | #9 #14 |
+| Hugging Face | Models pulled from the HF Hub (detector, Depth Anything V2, Whisper, VLM) | #9 #14 #19 |
 | General: Embedded, Most Useful, Overall | End-to-end reliable demo, clear story | all P0 |
 
 Rubric (General): Originality, Technical Understanding (diagrams help), Functionality (90% working,
@@ -64,7 +67,7 @@ Load is weighted on purpose: hardest and most work first.
 
 | Owner | Tier | Issues |
 |---|---|---|
-| @azizu06 | 1 | #1 Jetson bring-up, #9 TensorRT detection, #7 control + safety, #11 launcher, #13 Seek, #14 depth |
-| @GodlyDonuts | 2 | #3 Uno firmware, #6 power + mount, #5 network + HTTPS, #17 mission log |
+| @azizu06 | 1 | #1 Jetson bring-up, #9 TensorRT pose/detection, #19 local AI assistant, #14 3D scan, #13 Explore/Seek, #11 launcher |
+| @GodlyDonuts | 2 | #3 Uno firmware, #7 control + safety, #6 power + mount, #5 network + HTTPS, #17 mission log |
 | @mchdich | 3 | #4 WebXR shell, #8 controls, #10 HUD, #16 rescue drill |
 | @chang-pro | 3 | #2 mock server, #18 recorded-run replay, #12 measurements, #15 video + Devpost + diagram |

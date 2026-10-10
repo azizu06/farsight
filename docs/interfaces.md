@@ -54,7 +54,20 @@ Jetson replies on the same socket, 10 Hz:
 
 `estop` is true when `range_cm < 25`; forward motion is blocked, reverse and turning are allowed.
 
-## WebSocket `/ws/points` (Jetson -> Quest), binary, stretch
+## `POST /ask` (Quest -> Jetson), local assistant
+
+Request: `multipart/form-data` with `audio` (webm/wav from the Quest mic) or JSON `{"text": "what do you see?"}`.
+Response:
+
+```json
+{"question": "what do you see?", "answer": "One person sitting near the door, no obstacles ahead.",
+ "action": null, "model": "moondream", "ms": 2140}
+```
+
+`action` is `null` or a proposal like `{"type": "seek", "target_id": 3}` that the Quest shows as a
+confirmation prompt. The Jetson never executes it without that confirmation.
+
+## WebSocket `/ws/points` (Jetson -> Quest), binary, 3D scan
 
 Little-endian: `uint32 n`, then `n * (float32 x, y, z, uint8 r, g, b, pad)`, metres, camera frame
 (x right, y up, z forward).
