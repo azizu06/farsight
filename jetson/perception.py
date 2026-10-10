@@ -70,9 +70,11 @@ def yolo_boxes(prediction, original_shape, side=640, confidence=.35, labels=None
 class PerceptionService:
     REBUILD_INTERVAL = 5.0  # seconds between GPU engine re-creations after a CUDA fault
 
-    def __init__(self, camera, model=None, mode="hog", fps=3, on_detection=None, face_model=None):
+    def __init__(self, camera, model=None, mode="hog", fps=3, on_detection=None, face_model=None, annotate=None):
         self.camera, self.mode, self.model, self.fps = camera, mode, model, fps
         self.on_detection = on_detection
+        # annotate(boxes, camera_frame) -> boxes, e.g. depth-backed 3D person positions.
+        self.annotate = annotate
         self.task = None
         self.net = None
         self.engine = None
@@ -232,9 +234,15 @@ class PerceptionService:
                     duration = time.monotonic() - started
                     completed = time.monotonic()
                     rate = self.windowed_rate(completed)
+                    boxes = self.track(boxes, time.monotonic())
+                    if self.annotate:
+                        try:
+                            boxes = self.annotate(boxes, frame)
+                        except Exception:
+                            pass  # optional 3D positions must never cost the detection itself
                     # Inference results retain the input timestamp, not completion freshness.
                     self.packet = dict(ts=time.time(), frame=frame.frame_id, fps=round(rate, 1), inference_ms=round(duration * 1000, 1),
-                           boxes=self.track(boxes, time.monotonic()), detector=self.mode,
+                           boxes=boxes, detector=self.mode,
                            source=frame.source, received=frame.received, age_ms=frame.age_ms)
                     self.error = None
                     if self.on_detection:

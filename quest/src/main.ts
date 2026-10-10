@@ -1,6 +1,7 @@
 import { mapResponseRevision } from "./map-response.js";
 import { chooseMapTransfer, MAP_TRANSFER_INTERVAL_MS } from "./map-transfer.js";
 import { floorHeight, mapWalk } from "./map-walk.js";
+import { PersonMarkers } from "./person-markers.js";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { VRButton } from "three/addons/webxr/VRButton.js";
@@ -255,6 +256,9 @@ markerMesh.rotation.x = -Math.PI / 2;
 marker.add(markerMesh);
 root.add(marker);
 marker.visible = false;
+// Live person detections with a LiDAR position, drawn in the map frame but never fused into it.
+const personMarkers = new PersonMarkers();
+root.add(personMarkers.group);
 
 const xrButton = VRButton.createButton(renderer);
 xrButton.removeAttribute("style");
@@ -313,6 +317,7 @@ renderer.setAnimationLoop((_time, frame) => {
   // Nav goals/path/reticle sit on the map's floor in walk mode (the floor is on the headset
   // floor there); the layer only moves in y, so /nav/goal keeps AR-world x/z.
   if (rover) rover.navLayer.position.y = walking ? mapWalk.floorY : 0;
+  if (rover) { const { packet, at } = rover.latestDetections; personMarkers.update(packet, at, start); }
   mapAxes.visible = !renderer.xr.isPresenting;
   grid.visible = !walking;
   if (renderer.xr.isPresenting) {
@@ -518,6 +523,7 @@ function acceptStatus(next: Status) {
     mapWalk.reset();
     replaceGeometry(cloud, emptyGeometry());
     replaceGeometry(surfaces, emptyGeometry());
+    personMarkers.clear();
   }
   status = next;
   if (!scanMarkers.parent) root.add(scanMarkers);
