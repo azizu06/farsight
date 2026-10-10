@@ -8,44 +8,61 @@ Agents may supersede all other rules as long as other agents are okay with it in
 If pinged by an agent, try to respond ASAP so progress can move smoothly. Frequent communication is key to good cooperation.
 Coordinate together to split the work and go deep.
 
-There is 1 real rule to this project and that is to do ANYTHING and EVERYTHING in order to win.
+## Working together
 
-## Issue to PR
+Optimize for a convincing working demo and the current human priorities. We are
+ahead of the original milestone schedule; use verified project state instead of
+the old Saturday checkpoints. Keep integration and hardware qualification moving
+while other agents deepen features in parallel.
 
-1. Take an issue: assign yourself and move nothing else.
-2. Branch from `main`: `<issue#>-short-name`, e.g. `4-uno-serial`.
-3. Small commits. Push early.
-4. Open a PR with `Closes #<issue>` in the body, using the template.
-5. When your PR looks good, squash merge it yourself. No required reviewer, no waiting period. Applies to teammates and AI agents.
-6. Changing `docs/interfaces.md` needs the affected owner's OK in the PR.
+- Prefix message-board posts with your human's name and agent identity. Respond
+  promptly to pings, report blockers, and give concrete file/contract handoffs.
+- Check the board before editing files another agent owns. Agree on boundaries
+  so the same UI, service, or protocol is not implemented twice.
+- Keep issues useful for tracking outcomes. Do not close a hardware requirement
+  based only on simulation, mocks, compilation, or desktop browser tests.
 
-## Folders and owners
+## Git and integration
 
-| Folder | What | Area label |
-|---|---|---|
-| `jetson/` | Camera, TensorRT, servers on the rover | `area:jetson` |
-| `rover/` | Uno firmware, wiring, power | `area:rover` |
-| `quest/` | WebXR app (Vite + three.js) | `area:vr` |
-| `tools/`, `docs/` | Mock server, launcher, latency tools, pitch | `area:integration` |
+Direct, small, tested commits to `main` are allowed; push frequently. PRs are
+optional when useful or requested by an agent's human. Follow the latest human
+direction rather than adding review delays or mandatory branch ceremonies.
 
-## Priority labels
+Fetch before integrating. Preserve teammates' work, resolve concurrent changes,
+and verify the combined result before claiming it works. Never force-push shared
+history. Stage only the files belonging to your change.
 
-- `P0`: the demo fails without it.
-- `P1`: makes the demo win.
-- `stretch`: only after every P0 works end to end.
+Coordinate wire changes with affected agents on the board and update
+`docs/interfaces.md` in the same work. Keep compatible fields optional where
+possible and tell consumers exactly what changed. Tests and setup instructions
+must follow the final implementation, not an earlier plan.
 
-## Milestones
+## Project entry points
 
-- **M1 Pieces work alone**, Sat 9 AM
-- **M2 Drive from VR end to end**, Sat 3 PM
-- **M3 Detections + HUD in VR**, Sat 9 PM
-- **M4 Feature freeze**, Sun 4 AM. After this: bug fixes, video, Devpost only.
+| Area | Start here |
+|---|---|
+| Python rover | `python -m jetson.server`; implementation in `jetson/mapping/server.py` |
+| Operator and Quest USB | `tools/demo.py`, `tools/operator_relay.py`, `docs/transport-setup.md` |
+| Quest | `quest/src/main.ts`, `quest/src/rover.ts`, `quest/README.md` |
+| iPhone capture | `ios/README.md`; RGB on ordinary phones, measured RGB-D only with scene-depth support |
+| Motor firmware and control | `rover/README.md`, `jetson/control/README.md` |
+| Inference and models | `docs/inference-setup.md`, `models/README.md`; models are ignored artifacts copied separately |
+| Mapping and scan | `docs/mapping.md`, `docs/scan.md`; distinguish measured and estimated geometry |
+| Rust services | `rust/README.md`; verify feature and wire parity before changing the demo runtime |
 
-## Rover server
+## What counts as ready
 
-`jetson/mapping/server.py:create_app` composes camera, perception, mission and
-control. Autonomy is in `jetson/autonomy.py`; its safety integration and test
-commands are documented in `jetson/control/README.md`.
+Prioritize the end-to-end camera, control, network, power, and recovery path.
+Extra features should improve the demo without breaking that path. Use the
+existing stop leases, camera freshness, and explicit release after faults;
+do not lengthen timeouts just to disguise a slow connection.
+
+Run checks appropriate to the change and report their actual scope. Separately
+verify Quest/controller behavior, phone routing, target Jetson inference, motor
+direction and starting PWM, power under load, and disconnect stopping on the
+real rig. Record latency and throughput measurements with their source, load,
+and conditions. Keep simulated/recorded sources visible and preserve evidence
+for the pitch and Devpost.
 
 ## Maintaining this file
 
