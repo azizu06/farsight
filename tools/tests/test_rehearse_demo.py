@@ -67,9 +67,11 @@ class CollectTests(unittest.TestCase):
             result = base(*args, **kwargs)
             if args[1] == "/relay/health":
                 result["control_closures"] = packet
+                result["demo_mode"] = True
             return result
         sample = rh.collect_sample("u", relay="r", fetch=fetch)
         clean = sample["relay"]["control_closures"]
+        self.assertIs(sample["relay"]["demo_mode"], True)
         self.assertEqual(clean["ended"], 1)
         self.assertEqual(clean["history"][0]["operation"], "send")
         self.assertEqual(clean["history"][0]["upstream_close_code"], 1006)

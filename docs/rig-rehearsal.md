@@ -65,6 +65,9 @@ Jetson serial/kernel logs to diagnose held-driving interruptions. Older relay
 versions without this field remain supported; bonded control is explicitly
 excluded. These diagnostic observations do not change the GO checks or prove
 why a connection ended. Log rotation still bounds total retained data.
+Samples also retain the relay's boolean `demo_mode` selection when reported;
+this records the relay configuration alone, without inferring the viewer or
+Jetson configuration.
 
 ## Latency kinds are not interchangeable
 

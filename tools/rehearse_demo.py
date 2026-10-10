@@ -157,6 +157,8 @@ def collect_sample(url, relay=None, context=None, ssh=None, fetch=passive_get, s
         try:
             relay_health = fetch(relay, "/relay/health", ALLOWED_RELAY, None)
             sample["relay"] = pick(relay_health, ("relay", "quest_built"))
+            if isinstance(relay_health, dict) and type(relay_health.get("demo_mode")) is bool:
+                sample["relay"]["demo_mode"] = relay_health["demo_mode"]
             diagnostics = closure_evidence(relay_health.get("control_closures")) if isinstance(relay_health, dict) else None
             if diagnostics is not None:
                 sample["relay"]["control_closures"] = diagnostics
