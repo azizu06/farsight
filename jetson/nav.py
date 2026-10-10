@@ -604,23 +604,31 @@ class NavService:
         with state.lock:
             now = state.clock()
             state.output()  # apply expiry before judging the lease
-            live = (state.session_id and state.connected and not state.requires_release
-                    and state.deadline > now and state.camera_is_ready())
-            if permit is not None or session_id is not None:
-                live = live and session_id == state.session_id and state.permits.get(permit, 0) > now
-            if not live or state.autonomy is None:
-                raise Refused(state.status()["nav"], "Go-to-point needs a live operator permit: hold the deadman")
+            if not state.session_id or state.autonomy is None:
+                raise Refused(state.status()["nav"], "Go-to-point needs a connected operator controller")
+            if session_id is not None and session_id != state.session_id:
+                raise Refused(state.status()["nav"], "Goal is for another controller session")
             if state.scan_token is not None:
                 raise Refused(state.status()["nav"], "A scan is running")
+            held = state.deadline > now  # the operator is pressing right now
+            if held:
+                live = state.connected and not state.requires_release and state.camera_is_ready()
+                if permit is not None or session_id is not None:
+                    live = live and state.permits.get(permit, 0) > now
+                if not live:
+                    raise Refused(state.status()["nav"], "Go-to-point needs a live operator permit: hold the deadman")
             # Arm only: the operator's own held "goto" heartbeats start motion. A POST
             # never changes the drive mode, so no other client can make the rover move.
+            # Without a lease the goal is staged: no lease means no motion, so it waits
+            # for a new deadman press that passes every heartbeat gate (permit, release,
+            # drive-ready camera) and carries "goto".
             with self.lock:
                 self.goal_id += 1
                 self.goal = (float(x), float(z))
                 self.cmd = None
                 self.remote = dict(self.remote, state="planning", path=[])
             state.stick_override = False
-            return self.nav_object("goto", "goto", True)
+            return self.nav_object("goto", "goto", True) if held else state.status()["nav"]
 
     def cancel(self):
         state = self.control

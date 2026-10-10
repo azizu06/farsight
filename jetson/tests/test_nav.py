@@ -108,18 +108,68 @@ class LeaseTests(unittest.TestCase):
     def bridge(self, **message):
         self.nav.receive(message)
 
-    def test_goal_needs_backend_and_live_permit(self):
+    def test_goal_needs_backend_controller_and_a_valid_permit_while_held(self):
         self.nav.bridge = None
         with self.assertRaises(Refused) as missing:
             self.nav.set_goal(1, -2)
         self.assertEqual((missing.exception.nav["state"], missing.exception.nav["backend"]), ("unavailable", None))
         self.nav.bridge = object()
         self.bridge(type="status", state="idle", goal_id=None)
-        self.clock.now += 0.3  # no held lease
+        with self.assertRaises(Refused) as foreign:
+            self.nav.set_goal(1, -2, session_id="another-session")
+        self.assertIn("session", foreign.exception.message)
+        self.assertTrue(self.send())  # held: a stale permit is still refused, and the press keeps going
         with self.assertRaises(Refused) as unheld:
-            self.nav.set_goal(1, -2)
+            self.nav.set_goal(1, -2, session_id=self.session, permit="expired")
         self.assertIn("permit", unheld.exception.message)
         self.assertEqual(set(unheld.exception.nav), NAV_KEYS)
+        self.assertEqual(self.state.status()["reason"], "active")
+        self.state.end(self.session)
+        with self.assertRaises(Refused) as nobody:
+            self.nav.set_goal(1, -2)
+        self.assertIn("controller", nobody.exception.message)
+        self.assertIsNone(self.nav.goal)
+
+    def test_goal_stages_while_stopped_and_drives_only_on_a_new_press(self):
+        self.bridge(type="status", state="idle", goal_id=None)
+        nav = self.nav.set_goal(1.0, -2.0, session_id=self.session)  # deadman released: no lease
+        self.assertEqual(set(nav), NAV_KEYS)
+        self.assertEqual((nav["mode"], nav["state"], nav["goal"]), (None, "idle", {"x": 1.0, "z": -2.0}))
+        self.assertFalse(self.nav.intent()["active"])
+        self.bridge(type="cmd_vel", linear=0.3, angular=0, goal_id=self.nav.goal_id)
+        self.assertEqual(self.state.output()[:2], (0, 0))  # staged: nothing moves without a lease
+        self.assertTrue(self.send(mode="goto"))
+        self.assertEqual(self.state.output()[:2], (0, 0))  # the command from before the press is discarded
+        self.bridge(type="cmd_vel", linear=0.2, angular=0, goal_id=self.nav.goal_id)
+        self.assertGreater(self.state.output()[0], 0)
+        self.assertEqual(self.state.status()["nav"]["goal"], {"x": 1.0, "z": -2.0})
+
+    def test_staged_goal_needs_a_release_and_a_drive_ready_camera(self):
+        camera = dict(ready=True)
+        self.state = ControlState(clock=self.clock, navigator=self.nav, proximity_stop=False,
+                                  camera_ready=lambda: camera["ready"])
+        self.nav.attach(self.state)
+        self.state.set_connected(True)
+        self.session = self.state.begin()
+        self.send(deadman=False)
+        self.bridge(type="status", state="idle", goal_id=None)
+        self.assertTrue(self.send())
+        self.clock.now += 0.3  # trigger still held while the map view sends no heartbeats: the lease expires
+        self.nav.set_goal(0.5, -1.0)
+        self.assertEqual(self.state.status()["reason"], "lease_expired")
+        self.assertFalse(self.send(mode="goto"))  # back in the camera view: no resume without a release
+        self.assertEqual(self.state.status()["reason"], "release_required")
+        self.send(deadman=False)
+        camera["ready"] = False
+        self.assertFalse(self.send(mode="goto"))
+        self.assertEqual(self.state.status()["reason"], "camera_stale")
+        camera["ready"] = True
+        self.send(deadman=False)
+        self.assertTrue(self.send(mode="goto"))
+        self.assertEqual(self.state.output()[:2], (0, 0))  # only commands computed after this press count
+        self.bridge(type="cmd_vel", linear=0.2, angular=0, goal_id=self.nav.goal_id)
+        self.assertGreater(self.state.output()[0], 0)
+        self.assertEqual(self.nav.goal, (0.5, -1.0))
 
     def test_goto_drives_from_fresh_cmd_vel_and_stops_on_stale_release_or_teleop(self):
         self.bridge(type="status", state="idle", goal_id=None)
@@ -459,6 +509,10 @@ class ServerTests(unittest.TestCase):
                     status = ws.receive_json()
                     ws.send_json(dict(session_id=status["session_id"], seq=0, deadman=False))
                     status = ws.receive_json()
+                    staged = client.post("/nav/goal", json=dict(x=0.2, z=-1.0))  # stopped: staged, not refused
+                    self.assertEqual(staged.status_code, 202, staged.text)
+                    self.assertEqual((staged.json()["mode"], staged.json()["goal"]), (None, {"x": 0.2, "z": -1.0}))
+                    self.assertEqual(client.get("/control/status").json()["left_pwm"], 0)
                     ws.send_json(dict(session_id=status["session_id"], permit=status["permit"], seq=1, deadman=True,
                                       v=0, w=0, pan=0, mode="teleop", video_fresh=True, video_age_ms=0))
                     time.sleep(0.03)

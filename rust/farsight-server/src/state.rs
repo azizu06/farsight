@@ -81,6 +81,9 @@ pub struct MapState {
     /// Frame consumers (e.g. the nav seam) called with every accepted
     /// RGB-D frame, outside the map lock (state.frame_observers parity).
     pub frame_observers: Mutex<Vec<Arc<dyn Fn(&RgbdFrame) + Send + Sync>>>,
+    /// Bumped on every map revision so /ws/map subscribers push the fresh
+    /// packet at fusion time instead of waiting out the 500 ms status tick.
+    revision_tx: tokio::sync::watch::Sender<u64>,
 }
 
 impl MapState {
@@ -115,12 +118,18 @@ impl MapState {
             pose_history: VecDeque::new(),
             scan: None,
         };
+        let (revision_tx, _) = tokio::sync::watch::channel(0u64);
         Self {
             demo,
             inner: Mutex::new(inner),
             packets: Mutex::new(None),
             frame_observers: Mutex::new(Vec::new()),
+            revision_tx,
         }
+    }
+
+    pub fn revision_watch(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.revision_tx.subscribe()
     }
 
     pub fn start_session(&self, identity: Identity, device: String) {
@@ -161,7 +170,9 @@ impl MapState {
     }
 
     pub fn clear(&self) {
-        Self::clear_locked(&mut self.inner.lock().unwrap());
+        let mut s = self.inner.lock().unwrap();
+        Self::clear_locked(&mut s);
+        let _ = self.revision_tx.send(s.revision);
     }
 
     /// Replace, never stitch separate rover origins or mix with ARKit geometry.
@@ -172,6 +183,7 @@ impl MapState {
         s.scan = Some(metadata);
         s.paused = true;
         s.reason = Some("Camera-only snapshot retained; estimated metric depth".into());
+        let _ = self.revision_tx.send(s.revision);
     }
 
     pub fn observe_pose(&self, header: &Value, transform: &Mat4) -> Result<(), String> {
@@ -303,6 +315,7 @@ impl MapState {
         s.surfaces.integrate(mesh, &frame.transform);
         s.frames += 1;
         s.revision += 1;
+        let _ = self.revision_tx.send(s.revision);
         let duration = started.elapsed().as_secs_f64();
         s.processing_ms = (duration * 1000.0 * 10.0).round() / 10.0;
         s.fps = (1.0 / duration.max(1e-4) * 10.0).round() / 10.0;
@@ -447,6 +460,12 @@ impl MapState {
         let s = self.inner.lock().unwrap();
         let (points, colors) = s.cloud.snapshot();
         export_ply(&points, &colors)
+    }
+
+    /// Live /phone session with normal ARKit tracking (--lidar-drive opt-in).
+    pub fn lidar_drive_eligible(&self) -> bool {
+        let s = self.inner.lock().unwrap();
+        s.connected && !self.demo && s.tracking == "normal"
     }
 
     pub fn set_paused(&self, paused: bool) {

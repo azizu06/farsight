@@ -46,6 +46,10 @@ struct Args {
     /// servo: a pan servo follows the commanded pan and forward drive is blocked while it is off-centre (default). none: no pan hardware; the headset pans digitally, the Uno never gets P and pan never blocks forward drive
     #[arg(long)]
     autonomy_max_pwm: Option<i64>,
+    /// Opt-in: fresh /phone LiDAR frames with normal ARKit tracking may drive
+    /// (FARSIGHT_LIDAR_DRIVE); default off — LiDAR is view-only.
+    #[arg(long)]
+    lidar_drive: bool,
     #[arg(long, default_value = "servo", value_parser = ["servo", "none"])]
     pan_mount: String,
     /// Bundled CPU person detector
@@ -243,6 +247,7 @@ async fn main() {
         args.nav_max_w,
         args.nav_camera_height,
         args.sim_world,
+        args.lidar_drive,
     );
     server::start_services(&state);
     let dist = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../quest/dist");

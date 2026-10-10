@@ -25,7 +25,8 @@ ros2 launch farsight_nav nav.launch.py                 # or the farsight-nav sys
 - **Modes:** with Nav2 up, all three autonomy modes plan with Nav2; `nav.backend`
   says which one is driving (`nav2` or `fallback`).
   - **Go-to-point:** `POST /nav/goal` arms a voxel-map `x, z`; the operator's held
-    `goto` heartbeats drive it.
+    `goto` heartbeats drive it. A goal posted while stopped (deadman not held) is
+    staged and waits for a new press.
   - **Explore:** the bridge finds frontiers (free cells next to unknown space,
     8-connected clusters of at least 30 cm) on the global costmap every second and
     sends the best one to Nav2: near, wide and roughly ahead wins. A goal Nav2
@@ -47,8 +48,8 @@ ros2 launch farsight_nav nav.launch.py                 # or the farsight-nav sys
   recovery; a new phone session or map epoch disarms the goal and resets Nav2.
 - **Gating:** the bridge is not a controller. Nav2's `cmd_vel` only moves the rover
   while the operator holds the deadman in an autonomy mode with a live 250 ms lease.
-  `POST /nav/goal` only arms a goal; motion starts with the operator's own `goto`
-  heartbeats. A command older than 250 ms, or computed for an earlier goal or
+  `POST /nav/goal` only arms a goal (staged without a lease); motion starts with the
+  operator's own `goto` heartbeats on a new press. A command older than 250 ms, or computed for an earlier goal or
   before the current deadman press, stops; the forward range stop still applies
   (unless `--proximity-stop off`); stick input, STOP, cancel, a controller change
   or a serial disconnect disarm the goal.

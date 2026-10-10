@@ -107,6 +107,56 @@ struct Inner {
 type OnPerson = Box<dyn Fn(&str, &Value, &[u8], &Value) + Send + Sync>;
 type FaceStatus = Box<dyn Fn() -> Value + Send + Sync>;
 
+/// Evidence writes go through one dedicated thread so disk stalls on the
+/// Jetson's storage can never sit on the 40 Hz control status task or the
+/// camera path. Appends keep a file open; bursts batch, quiet periods flush.
+enum WriterJob {
+    Append(PathBuf, Vec<u8>),
+    Write(PathBuf, Vec<u8>),
+    WriteRename(PathBuf, PathBuf, Vec<u8>),
+}
+
+fn spawn_writer() -> std::sync::mpsc::Sender<WriterJob> {
+    let (tx, rx) = std::sync::mpsc::channel::<WriterJob>();
+    std::thread::spawn(move || {
+        use std::collections::HashMap;
+        use std::io::Write;
+        let mut files: HashMap<PathBuf, std::io::BufWriter<std::fs::File>> = HashMap::new();
+        let flush_all = |files: &mut HashMap<PathBuf, std::io::BufWriter<std::fs::File>>| {
+            for f in files.values_mut() {
+                let _ = f.flush();
+            }
+        };
+        while let Ok(job) = rx.recv() {
+            match job {
+                WriterJob::Append(path, line) => {
+                    if !files.contains_key(&path) {
+                        if let Ok(f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+                            files.insert(path.clone(), std::io::BufWriter::new(f));
+                        }
+                    }
+                    if let Some(f) = files.get_mut(&path) {
+                        let _ = f.write_all(&line);
+                    }
+                }
+                WriterJob::Write(path, bytes) => {
+                    let _ = std::fs::write(&path, &bytes);
+                }
+                WriterJob::WriteRename(tmp, path, bytes) => {
+                    if std::fs::write(&tmp, &bytes).is_ok() {
+                        let _ = std::fs::rename(&tmp, &path);
+                    }
+                }
+            }
+            if rx.try_recv().is_err() {
+                flush_all(&mut files);
+            }
+        }
+        flush_all(&mut files);
+    });
+    tx
+}
+
 pub struct Mission {
     pub started: f64,
     pub id: String,
@@ -117,6 +167,7 @@ pub struct Mission {
     on_person: Mutex<Option<OnPerson>>,
     face_status: Mutex<FaceStatus>,
     pub drill_score: crate::drill::Drill,
+    writer: Option<std::sync::mpsc::Sender<WriterJob>>,
 }
 
 impl Mission {
@@ -132,6 +183,7 @@ impl Mission {
         if record {
             let _ = std::fs::create_dir_all(directory.as_ref().unwrap().join("frames"));
         }
+        let writer_tx = directory.as_ref().map(|_| spawn_writer());
         let mission = Self {
             started: epoch(),
             id,
@@ -153,11 +205,21 @@ impl Mission {
             on_person: Mutex::new(None),
             face_status: Mutex::new(Box::new(Value::default)),
             drill_score: crate::drill::Drill::new(),
+            writer: writer_tx,
         };
         if record {
             mission.finish_recording(Some(0.0));
         }
         Ok(mission)
+    }
+
+    /// Queue one JSONL line on the evidence writer thread.
+    fn append_jsonl(&self, name: &str, event: &Value) {
+        if let (Some(dir), Some(tx)) = (&self.directory, &self.writer) {
+            let mut line = serde_json::to_string(event).unwrap().into_bytes();
+            line.push(b'\n');
+            let _ = tx.send(WriterJob::Append(dir.join(name), line));
+        }
     }
 
     /// Append replay evidence to the mission directory, without control tokens.
@@ -174,7 +236,9 @@ impl Mission {
         if kind == "frame" {
             if let (Some(f), Some(dir)) = (frame, &self.directory) {
                 let name = format!("frames/{:08}.jpg", inner.record_frames);
-                let _ = std::fs::write(dir.join(&name), &f.jpeg);
+                if let Some(tx) = &self.writer {
+                    let _ = tx.send(WriterJob::Write(dir.join(&name), f.jpeg.clone()));
+                }
                 inner.record_frames += 1;
                 event["file"] = json!(name);
                 event["frame"] = json!(f.frame_id);
@@ -189,11 +253,8 @@ impl Mission {
             }
             event["packet"] = Value::Object(stripped);
         }
-        if let Some(dir) = &self.directory {
-            if let Ok(mut log) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("replay.jsonl")) {
-                use std::io::Write;
-                let _ = writeln!(log, "{}", serde_json::to_string(&event).unwrap());
-            }
+        if self.directory.is_some() {
+            self.append_jsonl("replay.jsonl", &event);
         }
     }
 
@@ -201,10 +262,12 @@ impl Mission {
         if self.recording {
             if let Some(dir) = &self.directory {
                 let duration = elapsed.unwrap_or_else(|| now_monotonic() - self.record_started);
-                let _ = std::fs::write(
-                    dir.join("replay.json"),
-                    serde_json::to_string(&json!({"version": 1, "duration_s": duration})).unwrap(),
-                );
+                let bytes = serde_json::to_string(&json!({"version": 1, "duration_s": duration}))
+                    .unwrap()
+                    .into_bytes();
+                if let Some(tx) = &self.writer {
+                    let _ = tx.send(WriterJob::Write(dir.join("replay.json"), bytes));
+                }
             }
         }
     }
@@ -330,11 +393,7 @@ impl Mission {
             return;
         }
         inner.flagged_saved += 1;
-        let dir = self.directory.as_ref().unwrap();
-        if let Ok(mut log) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("events.jsonl")) {
-            use std::io::Write;
-            let _ = writeln!(log, "{}", serde_json::to_string(&event).unwrap());
-        }
+        self.append_jsonl("events.jsonl", &event);
     }
 
     fn summary_locked(&self, inner: &Inner, now: f64) -> Value {
@@ -459,12 +518,11 @@ impl Mission {
             }
             if save {
                 if let Some(dir) = &self.directory {
-                    let _ = std::fs::write(dir.join(&image_name), &frame.jpeg);
-                    inner.saved_snapshots += 1;
-                    if let Ok(mut log) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("events.jsonl")) {
-                        use std::io::Write;
-                        let _ = writeln!(log, "{}", serde_json::to_string(&event).unwrap());
+                    if let Some(tx) = &self.writer {
+                        let _ = tx.send(WriterJob::Write(dir.join(&image_name), frame.jpeg.clone()));
                     }
+                    inner.saved_snapshots += 1;
+                    self.append_jsonl("events.jsonl", &event);
                 }
             }
             if boxv["cls"].as_str() == Some("person") && has_on_person {
@@ -516,14 +574,14 @@ impl Mission {
             let mut entry = serde_json::Map::new();
             entry.insert("key".into(), json!(key));
             entry.append(&mut record);
-            if let Ok(mut log) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("triage.jsonl")) {
-                use std::io::Write;
-                let _ = writeln!(log, "{}", serde_json::to_string(&Value::Object(entry)).unwrap());
-            }
-            let report = self.report_locked(&self.id.clone(), self.started, self.directory.is_some(), &inner);
-            let temporary = dir.join("report.json.tmp");
-            if std::fs::write(&temporary, serde_json::to_string(&report).unwrap()).is_ok() {
-                let _ = std::fs::rename(&temporary, dir.join("report.json"));
+            self.append_jsonl("triage.jsonl", &Value::Object(entry));
+            let report = self.report_locked(&self.id.clone(), self.started, true, &inner);
+            if let Some(tx) = &self.writer {
+                let _ = tx.send(WriterJob::WriteRename(
+                    dir.join("report.json.tmp"),
+                    dir.join("report.json"),
+                    serde_json::to_string(&report).unwrap().into_bytes(),
+                ));
             }
         }
     }
