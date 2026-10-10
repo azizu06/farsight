@@ -62,6 +62,9 @@ pub struct Inner {
     pub reason: Option<String>,
     pub jpeg: Option<Vec<u8>>,
     pub depth_jpeg: Option<Vec<u8>>,
+    /// Bounded producer clock observations from the last processed frame
+    /// (camera.capture_diagnostics; never a qualification decision).
+    pub capture_diagnostics: serde_json::Map<String, Value>,
     pub depth_range: Option<[f64; 2]>,
     pub pose_history: VecDeque<(f64, PoseIdentity)>,
     pub scan: Option<Value>,
@@ -103,6 +106,7 @@ impl MapState {
             reason: Some("Waiting for iPhone RGB-D stream".into()),
             jpeg: None,
             depth_jpeg: None,
+            capture_diagnostics: serde_json::Map::new(),
             depth_range: None,
             pose_history: VecDeque::new(),
             scan: None,
@@ -118,6 +122,7 @@ impl MapState {
             s.pose = IDENTITY;
             s.jpeg = None;
             s.depth_jpeg = None;
+            s.capture_diagnostics.clear();
             s.depth_range = None;
             s.last_received = 0.0;
             s.last_frame_received = 0.0;
@@ -218,6 +223,7 @@ impl MapState {
             generation = s.processing_generation;
             Self::observe_pose_locked(&mut s, &frame.header, &frame.transform)?;
             s.jpeg = Some(frame.jpeg.clone());
+            s.capture_diagnostics = crate::camera::capture_diagnostics(&frame.header);
             s.last_frame_received = camera_receipt;
             s.frame_id = frame.header["frame_id"].as_i64().unwrap_or(-1);
             // Depth heatmap (valid range 0.15..8m, turbo LUT, invalid black).
@@ -346,6 +352,10 @@ impl MapState {
     }
 
     /// Pose heartbeats never refresh the camera's capture receipt time.
+    pub fn capture_diagnostics(&self) -> serde_json::Map<String, Value> {
+        self.inner.lock().unwrap().capture_diagnostics.clone()
+    }
+
     pub fn camera_snapshot(&self) -> (Option<Vec<u8>>, f64, i64, &'static str) {
         let s = self.inner.lock().unwrap();
         (

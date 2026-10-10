@@ -22,6 +22,8 @@ pub struct Hello {
     pub supports_scene_depth: bool,
     #[serde(default)]
     pub supports_mesh: bool,
+    #[serde(default)]
+    pub supports_capture_permits: bool,
 }
 
 fn default_device() -> String {

@@ -165,6 +165,8 @@ impl ReplaySession {
                             received: now_monotonic(),
                             frame_id: event["frame"].as_i64().unwrap_or(0) + offset,
                             source: format!("REPLAY: {}", event["source"].as_str().unwrap_or("")),
+                            capture_verified: false,
+                            capture_binding: None,
                         }));
                     }
                 }
