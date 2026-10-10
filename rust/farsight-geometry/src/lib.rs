@@ -261,6 +261,10 @@ pub struct AnchorGeometry {
     count: usize,
     verts: usize,
     revision: u64,
+    /// True only after an accepted SnapshotEnd publishes a staged snapshot;
+    /// false on reset/reconnect staging so consumers never mistake a partial
+    /// or cleared map for a complete one (tools/qualify_geometry.py gate).
+    snapshot_complete: bool,
     session: [u8; 16],
     epoch: u64,
     last_seq: u64,
@@ -289,6 +293,7 @@ impl AnchorGeometry {
             count: 0,
             verts: 0,
             revision: 0,
+            snapshot_complete: false,
             session: [0; 16],
             epoch: 0,
             last_seq: 0,
@@ -301,6 +306,10 @@ impl AnchorGeometry {
 
     pub fn revision(&self) -> u64 {
         self.revision
+    }
+
+    pub fn snapshot_complete(&self) -> bool {
+        self.snapshot_complete
     }
 
     pub fn triangles(&self) -> usize {
@@ -361,6 +370,7 @@ impl AnchorGeometry {
             self.pending = Some(IndexMap::with_hasher(FxBuildHasher));
             self.pending_tri = 0;
             self.pending_vert = 0;
+            self.snapshot_complete = false;
             self.pub_lane.reconnects += 1;
             self.revision += 1;
         }
@@ -377,6 +387,7 @@ impl AnchorGeometry {
                 self.pending = Some(IndexMap::with_hasher(FxBuildHasher));
                 self.pending_tri = 0;
                 self.pending_vert = 0;
+                self.snapshot_complete = false;
                 self.revision += 1;
             }
             Op::SnapshotEnd => {
@@ -396,6 +407,7 @@ impl AnchorGeometry {
                             break;
                         }
                     }
+                    self.snapshot_complete = true;
                     self.revision += 1;
                 }
             }
@@ -772,6 +784,28 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_complete_lifecycle() {
+        // tools/qualify_geometry.py gate: unknown/staging must read false;
+        // only an accepted SnapshotEnd may report complete.
+        let mut g = AnchorGeometry::new(100);
+        assert!(!g.snapshot_complete());
+        // Staged replace without publish still incomplete.
+        g.apply_owned(upd(1, Op::Replace, Some(mesh(1))));
+        assert!(!g.snapshot_complete());
+        // Accepted SnapshotEnd publishes → complete.
+        g.apply_owned(upd(2, Op::SnapshotEnd, None));
+        assert!(g.snapshot_complete());
+        // A new snapshot staging clears published → incomplete again.
+        g.apply_owned(upd(3, Op::Reset, None));
+        assert!(!g.snapshot_complete());
+        // Reconnect staging (new session) also reports incomplete.
+        let mut u = upd(4, Op::Replace, Some(mesh(1)));
+        u.session = [9; 16];
+        g.apply_owned(u);
+        assert!(!g.snapshot_complete());
+    }
+
+    #[test]
     fn encode_applies_anchor_transform() {
         // Regression (Codex e2e catch): vertices are anchor-local; mesh.bin
         // must bake the record's column-major transform or every anchor
@@ -901,6 +935,7 @@ async fn status(State(s): State<Arc<Shared>>) -> Json<Value> {
     let connected = s.connected.lock().unwrap().clone();
     Json(json!({
         "revision": geo.revision(),
+        "snapshot_complete": geo.snapshot_complete(),
         "session": hex_uuid(&geo.session()),
         "epoch": geo.epoch(),
         "anchors": geo.anchors(),
