@@ -1,0 +1,85 @@
+{
+  "passed": true,
+  "scope": "Offline actual transpiled MacAutoView.update/place/placeEyes using real Three.js geometry and actual PoseRing helpers, with injected decoded-frame/XR fixtures; no constructor, GPU, browser, wire or headset claim",
+  "sourceRevision": "fb326627380a1daf0ff334dc006a9b156df6c5af",
+  "invalidStereoPlacement": [
+    {
+      "case": "null-echo",
+      "presenting": true,
+      "monoVisible": true,
+      "eyeVisibility": [
+        false,
+        false
+      ],
+      "stereoShown": false,
+      "lastFrameAt": 1000,
+      "label": "MAC RENDER · FLAT",
+      "ringMatched": false
+    },
+    {
+      "case": "unknown-id",
+      "presenting": true,
+      "monoVisible": true,
+      "eyeVisibility": [
+        false,
+        false
+      ],
+      "stereoShown": false,
+      "lastFrameAt": 1000,
+      "label": "MAC RENDER · FLAT",
+      "ringMatched": false
+    },
+    {
+      "case": "missing-eyes",
+      "presenting": true,
+      "monoVisible": true,
+      "eyeVisibility": [
+        false,
+        false
+      ],
+      "stereoShown": false,
+      "lastFrameAt": 1000,
+      "label": "MAC RENDER · FLAT",
+      "ringMatched": true
+    },
+    {
+      "case": "invalid-eye-projection",
+      "presenting": true,
+      "monoVisible": true,
+      "eyeVisibility": [
+        false,
+        false
+      ],
+      "stereoShown": false,
+      "lastFrameAt": 1000,
+      "label": "MAC RENDER · FLAT",
+      "ringMatched": true
+    }
+  ],
+  "wrongSession": {
+    "case": "wrong-session-existing-id",
+    "presenting": true,
+    "monoVisible": false,
+    "eyeVisibility": [
+      true,
+      true
+    ],
+    "stereoShown": true,
+    "lastFrameAt": 1000,
+    "label": "MAC RENDER · STEREO",
+    "ringMatched": true
+  },
+  "valid": {
+    "case": "valid-session-pair",
+    "presenting": true,
+    "monoVisible": false,
+    "eyeVisibility": [
+      true,
+      true
+    ],
+    "stereoShown": true,
+    "lastFrameAt": 1000,
+    "label": "MAC RENDER · STEREO",
+    "ringMatched": true
+  }
+}

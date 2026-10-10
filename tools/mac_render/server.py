@@ -16,6 +16,7 @@ import time
 from contextlib import suppress, asynccontextmanager
 from collections import deque
 from pathlib import Path
+from urllib.parse import urlencode
 
 from aiohttp import ClientSession, ClientTimeout, TCPConnector, WSMsgType, web
 from tools.operator_relay import upstream_origin
@@ -623,7 +624,7 @@ async def open_page(args):
               "--disable-renderer-backgrounding", f"--window-size={args.width},{args.height}"],
     )
     page = await browser.new_page(viewport={"width": args.width, "height": args.height})
-    query = f"upstream=http://127.0.0.1:{args.port}&width={args.width}&height={args.height}"
+    query = render_page_query(args)
     page.on("pageerror", lambda error: print(f"render page: {error}", flush=True))
     page.on("console", lambda message: print(f"render console: {message.text}", flush=True))
     await page.goto(f"http://127.0.0.1:{args.port}/render/render.html?{query}")
@@ -636,6 +637,13 @@ async def open_page(args):
     print(f"render page: {state.get('points')} points, {state.get('draws')} draws, {state.get('source')}", flush=True)
     page._playwright = playwright
     return browser, page
+
+
+def render_page_query(args):
+    # The encoded view is placed using its echoed pose on Quest. Cosmetic
+    # camera easing would make the pixels disagree with that exact pose.
+    return urlencode(dict(upstream=f"http://127.0.0.1:{args.port}", width=args.width,
+                          height=args.height, camera="snap"))
 
 
 def parse_args(argv=None):

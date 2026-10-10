@@ -7,7 +7,7 @@ import * as THREE from "three";
 import { MapWalk } from "../src/map-walk.js";
 import * as macPose from "../src/mac-auto-pose.js";
 import {
-  MAC_STALE_MS, PoseRing, frameSeenAt, frustumRect, macPresenting, macStereoEnabled, macViewEnabled, mapPoint, mapPoseMessage,
+  MAC_STALE_MS, PoseRing, frameSeenAt, frameView, frustumRect, macPresenting, macStereoEnabled, macViewEnabled, mapPoint, mapPoseMessage,
   mapQuaternion, pictureSize, projectionFovY, segmentKind, shouldSendPose, viewerEyes, worldPoint,
 } from "../src/mac-auto-pose.js";
 
@@ -123,7 +123,7 @@ function presentation() {
   const view = Object.create(module.exports.MacAutoView.prototype), camera = new THREE.Object3D();
   const context = { clearRect() {}, beginPath() {}, roundRect() {}, fill() {}, fillText() {} };
   Object.assign(view, {
-    active: true, viewer: { update() {}, displayedFrame: null, video: { videoWidth: 640, videoHeight: 360 } },
+    session: "test-session", active: true, viewer: { update() {}, displayedFrame: null, video: { videoWidth: 640, videoHeight: 360 } },
     renderer: { xr: { getCamera: () => camera, getReferenceSpace: () => null } }, poseSocket: null,
     head: { position: new THREE.Vector3(), quaternion: new THREE.Quaternion() }, offset: new THREE.Vector3(),
     lastFrameAt: -Infinity, lastFrameId: null, ring: new PoseRing(),
@@ -194,14 +194,14 @@ test("AUTO hides packed stereo when the exact eye pair is unavailable, then reco
   assert.ok(view.eyeQuads.every(quad => !quad.visible));
   const projection = new THREE.PerspectiveCamera(90, 1, .1, 100).projectionMatrix.elements;
   view.ring.push({ id: 7, mono: 10002, position: [0, 1.6, 0], quaternion: [0, 0, 0, 1],
-    eyes: [-.032, .032].map(x => ({ position: [x, 1.6, 0], quaternion: [0, 0, 0, 1], projection })) });
-  assert.equal(show(10003, "paired", 20, stereoMeta, { pose_id: 7 }), true);
+    eyes: [-.032, .032].map((x, index) => ({ eye: index ? "right" : "left", position: [x, 1.6, 0], quaternion: [0, 0, 0, 1], projection })) });
+  assert.equal(show(10003, "paired", 20, stereoMeta, { pose_id: 7, session_id: "test-session" }), true);
   assert.equal(view.picture.visible, false);
   assert.ok(view.eyeQuads.every(quad => quad.visible));
-  assert.equal(show(10004, "invalid-layout", 20, { ...stereoMeta, layout: "top-bottom" }, { pose_id: 7 }), false);
+  assert.equal(show(10004, "invalid-layout", 20, { ...stereoMeta, layout: "top-bottom" }, { pose_id: 7, session_id: "test-session" }), false);
   assert.ok(view.eyeQuads.every(quad => !quad.visible));
-  assert.equal(show(10005, "paired-again", 20, stereoMeta, { pose_id: 7 }), true);
-  assert.equal(show(10006, "stale-pair", MAC_STALE_MS, stereoMeta, { pose_id: 7 }), false);
+  assert.equal(show(10005, "paired-again", 20, stereoMeta, { pose_id: 7, session_id: "test-session" }), true);
+  assert.equal(show(10006, "stale-pair", MAC_STALE_MS, stereoMeta, { pose_id: 7, session_id: "test-session" }), false);
   assert.ok(view.eyeQuads.every(quad => !quad.visible));
 });
 
@@ -254,4 +254,41 @@ test("eye poses come from the XRFrame views, ordered and labelled, or not at all
     eyes, session: "s", mapRevision: 1, aspect: 16 / 9,
   });
   assert.deepEqual(message.eyes.map(eye => eye.eye), ["left", "right"]);
+});
+
+test("stereo pairs are shown only with this session's pose and both eyes valid; otherwise rejected, never mono", () => {
+  const session = "8F14E45F-CEEA-4672-A2C3-7D3C5E2B1A90";
+  const projection = new THREE.PerspectiveCamera(90, 1, 0.1, 100).projectionMatrix.elements.slice();
+  const eye = (side, x) => ({ eye: side, position: [x, 1.6, 0], quaternion: [0, 0, 0, 1], projection });
+  const ring = new PoseRing();
+  ring.push({ id: 1, mono: 10, position: [0, 1.6, 0], quaternion: [0, 0, 0, 1], eyes: [eye("left", -0.03), eye("right", 0.03)] });
+  ring.push({ id: 2, mono: 20, position: [0, 1.6, 0], quaternion: [0, 0, 0, 1], eyes: [] });
+  ring.push({ id: 3, mono: 30, position: [0, 1.6, 0], quaternion: [0, 0, 0, 1], eyes: [eye("left", -0.03), { ...eye("right", 0.03), projection: new Array(16).fill(NaN) }] });
+  const mine = id => ({ pose_id: id, session_id: session.toLowerCase() });
+
+  const valid = frameView(stereoMeta, mine(1), ring, session);
+  assert.equal(valid.mode, "stereo", "positive control: current session, both eyes valid");
+  assert.deepEqual(valid.eyes.map(e => e.eye), ["left", "right"]);
+  assert.equal(valid.rects.length, 2);
+
+  assert.equal(frameView(stereoMeta, null, ring, session), null, "missing echo");
+  assert.equal(frameView(stereoMeta, mine(99), ring, session), null, "unknown pose_id");
+  assert.equal(frameView(stereoMeta, { pose_id: 1 }, ring, session), null, "echo without session");
+  assert.equal(frameView(stereoMeta, mine(2), ring, session), null, "missing eye data");
+  assert.equal(frameView(stereoMeta, mine(3), ring, session), null, "invalid second-eye projection");
+  assert.equal(frameView(stereoMeta, { pose_id: 1, session_id: "another-session" }, ring, session), null, "foreign session, colliding pose_id");
+  assert.equal(frameView({ ...stereoMeta, eye_width: 0 }, mine(1), ring, session), null, "invalid layout");
+
+  assert.equal(frameView({}, { pose_id: 1, session_id: "another-session" }, ring, session), null, "foreign flat echo");
+  assert.equal(frameView({}, mine(1), ring, session).from.id, 1, "flat at its own pose");
+  assert.deepEqual(frameView({}, null, ring, session), { mode: "flat", from: null }, "flat without echo stays head-locked");
+  assert.equal(ring.find({ pose_id: 1, session_id: "another-session" }, session), null);
+  assert.equal(ring.find({ pose_id: 1 }, session).id, 1, "a v1 echo without session still matches flat");
+});
+
+test("a rejected frame drops the picture at once instead of renewing it as mono", () => {
+  const source = readFileSync(new URL("../src/mac-auto.ts", import.meta.url), "utf8");
+  assert.match(source, /this\.lastFrameAt = view \? frameSeenAt\([^)]*\) : -Infinity;/);
+  assert.match(source, /if \(view\?\.mode === "stereo"\) this\.placeEyes\(view\.eyes, view\.rects\);\s*else if \(view\) this\.place\(view\.from/);
+  assert.equal((source.match(/this\.ring\.find\(/g) ?? []).length, 0, "every pose lookup goes through frameView's session check");
 });

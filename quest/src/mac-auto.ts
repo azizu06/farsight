@@ -11,8 +11,8 @@ import { H264Viewer } from "./h264.js";
 import { mapWalk } from "./map-walk.js";
 import { socketUrl } from "./mac-view-urls.js";
 import {
-  DEFAULT_ASPECT, DEFAULT_FOV_Y_DEG, MAC_STALE_MS, PICTURE_DISTANCE, PoseRing, STEREO_LAYOUT, frameSeenAt, frustumRect, macPresenting, mapPoseMessage,
-  pictureSize, segmentKind, shouldSendPose, viewerEyes,
+  DEFAULT_ASPECT, DEFAULT_FOV_Y_DEG, MAC_STALE_MS, PICTURE_DISTANCE, PoseRing, STEREO_LAYOUT, frameSeenAt, macPresenting, mapPoseMessage,
+  frameView, pictureSize, shouldSendPose, viewerEyes,
 } from "./mac-auto-pose.js";
 
 export const MACVIEW_PATH = "/ws/macview";
@@ -98,21 +98,18 @@ export class MacAutoView {
     this.sendPose(now, viewerEyes(viewer?.views));
     this.viewer.update();
     const decoded = this.viewer.displayedFrame;
-    // A segment claiming packed stereo without a valid layout is unavailable, never shown as mono.
-    const kind = decoded ? segmentKind(decoded.metadata) : null;
-    const shown = kind === "invalid" ? null : decoded;
-    if (kind === "invalid") this.lastFrameAt = -Infinity;
-    if (shown) {
-      const fresh = Number.isFinite(shown.age) && shown.age >= 0 && shown.age < MAC_STALE_MS;
-      // Decoder progress does not renew an old capture; carry its bounded age into the watchdog.
-      this.lastFrameAt = fresh ? frameSeenAt(this.lastFrameAt, this.lastFrameId, shown.id, now - shown.age) : -Infinity;
-      if (shown.id !== this.lastFrameId) {
-        this.lastFrameId = shown.id;
-        if (fresh) {
-          this.stereoShown = kind === "stereo" && this.placeEyes(shown.pose);
-          if (kind === "stereo" && !this.stereoShown) this.lastFrameAt = -Infinity;
-          else if (!this.stereoShown) this.place(shown.pose, shown.fovY);
-        }
+    if (decoded) {
+      const fresh = Number.isFinite(decoded.age) && decoded.age >= 0 && decoded.age < MAC_STALE_MS;
+      if (!fresh) this.lastFrameAt = -Infinity;
+      if (decoded.id !== this.lastFrameId) {
+        // Validate before renewing: the shared VideoTexture already shows this frame.
+        // Preserve original capture age as well as the exact session and eye pair.
+        const view = fresh ? frameView(decoded.metadata, decoded.pose, this.ring, this.session) : null;
+        this.lastFrameAt = view ? frameSeenAt(this.lastFrameAt, this.lastFrameId, decoded.id, now - decoded.age) : -Infinity;
+        this.lastFrameId = decoded.id;
+        this.stereoShown = view?.mode === "stereo";
+        if (view?.mode === "stereo") this.placeEyes(view.eyes, view.rects);
+        else if (view) this.place(view.from, decoded.fovY);
       }
     }
     this.presenting = macPresenting(true, this.lastFrameAt, now);
@@ -164,8 +161,7 @@ export class MacAutoView {
   }
 
   /** Put the picture where it was rendered from (flat reprojection), else in front of the head. */
-  private place(echo: Record<string, unknown> | null, fovY: number | undefined) {
-    const from = this.ring.find(echo) as WorldPose | null;
+  private place(from: WorldPose | null, fovY: number | undefined) {
     const position = from ? this.offset.fromArray(from.position) : this.offset.copy(this.head.position);
     const quaternion = from ? this.picture.quaternion.fromArray(from.quaternion) : this.picture.quaternion.copy(this.head.quaternion);
     const video = this.viewer.video;
@@ -175,20 +171,13 @@ export class MacAutoView {
     this.picture.position.set(0, 0, -PICTURE_DISTANCE).applyQuaternion(quaternion).add(position);
   }
 
-  /**
-   * Place each eye's half where that eye was when the pair was requested, covering
-   * exactly its (asymmetric) frustum. False when the pair's views are unknown.
-   */
-  private placeEyes(echo: Record<string, unknown> | null) {
-    const from = this.ring.find(echo) as WorldPose | null;
-    if (!from || from.eyes.length < 2) return false;
-    return this.eyeQuads.every((quad, index) => {
-      const eye = from.eyes[index], rect = frustumRect(eye.projection);
-      if (!rect) return false;
+  /** Place each eye's half where that eye was when the pair was requested, covering exactly its (asymmetric) frustum. */
+  private placeEyes(eyes: EyePose[], rects: { cx: number; cy: number; width: number; height: number }[]) {
+    this.eyeQuads.forEach((quad, index) => {
+      const eye = eyes[index], rect = rects[index];
       quad.quaternion.fromArray(eye.quaternion);
       quad.scale.set(rect.width, rect.height, 1);
       quad.position.set(rect.cx, rect.cy, -PICTURE_DISTANCE).applyQuaternion(quad.quaternion).add(this.offset.fromArray(eye.position));
-      return true;
     });
   }
 

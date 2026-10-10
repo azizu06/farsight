@@ -97,14 +97,25 @@ export class PoseRing {
   constructor(size = 128) { this.size = size; /** @type {any[]} */ this.items = []; }
   /** @param {{id:number, mono:number, position:number[], quaternion:number[], eyes?:{position:number[], quaternion:number[], projection:number[]}[]}} pose */
   push(pose) { this.items.push(pose); if (this.items.length > this.size) this.items.shift(); }
-  /** Match the renderer's echo by pose_id when present, else by our own sent_mono_ms. */
-  find(echo) {
-    if (!echo || typeof echo !== "object") return null;
+  /**
+   * Match the renderer's echo by pose_id when present, else by our own sent_mono_ms.
+   * An echo from another session never matches, even with a colliding pose_id; with
+   * `strict` an echo must name this session.
+   */
+  find(echo, session = null, strict = false) {
+    if (!echo || typeof echo !== "object" || !sessionMatches(echo, session, strict)) return null;
     if (Number.isFinite(echo.pose_id)) return this.items.find(item => item.id === echo.pose_id) ?? null;
     if (Number.isFinite(echo.sent_mono_ms)) return this.items.find(item => item.mono === echo.sent_mono_ms) ?? null;
     return null;
   }
   clear() { this.items = []; }
+}
+
+/** Whether an echo belongs to this view session (UUIDs compare case-insensitively). */
+export function sessionMatches(echo, session, strict = false) {
+  if (session == null) return true;
+  const echoed = typeof echo?.session_id === "string" ? echo.session_id.toLowerCase() : null;
+  return echoed == null ? !strict : echoed === String(session).toLowerCase();
 }
 
 /** Latest-only pose pacing: at most POSE_HZ, and never queue behind an unsent pose. */
@@ -184,4 +195,22 @@ export function frustumRect(projection, distance = PICTURE_DISTANCE) {
 /** `?macview=1` opts in; anything else keeps the local map. */
 export function macViewEnabled(search) {
   return new URLSearchParams(search).get("macview") === "1";
+}
+
+/**
+ * How a newly decoded frame may be shown, decided before it renews presentation.
+ * "flat": the whole picture, at the echoed pose or head-locked without an echo.
+ * "stereo": both halves, each with this session's sent eye pose and a valid frustum.
+ * null: reject. The caller hides the texture at once and the local map returns;
+ * a rejected stereo pair is never shown as a mono picture.
+ */
+export function frameView(metadata, echo, ring, session) {
+  const kind = segmentKind(metadata);
+  if (kind === "invalid") return null;
+  if (kind === "flat") return sessionMatches(echo, session) ? { mode: "flat", from: ring.find(echo, session) } : null;
+  const from = ring.find(echo, session, true);
+  const eyes = from?.eyes?.slice(0, 2) ?? [];
+  if (eyes.length < 2 || eyes[0].eye === "right" || eyes[1].eye === "left") return null;
+  const rects = eyes.map(eye => frustumRect(eye.projection));
+  return rects.every(Boolean) ? { mode: "stereo", from, eyes, rects } : null;
 }

@@ -174,8 +174,9 @@ Manual right-stick driving and the stick's virtual locomotion are unchanged.
   was when the pair was requested and sized to cover that eye's exact
   (asymmetric) frustum at 3 m. Eye poses come from the frame's `XRViewerPose`
   views. Labelled `MAC RENDER · STEREO`. A segment without `stereo`/`layout`
-  stays flat; one that claims stereo with a bad layout or eye size is not shown
-  and lets the local map return. Without `stereo=1` nothing changes.
+  stays flat. A pair with a bad layout, an unknown or foreign-session pose echo,
+  or a missing or invalid eye is never shown as mono; it hides the picture at
+  once and the local map returns. Without `stereo=1` nothing changes.
 - **Fallback.** While Mac frames are fresh (under 1 s old), the local map
   geometry (points, mesh, scan markers) is hidden and its `/ws/map` transfers
   pause. People markers and nav goals stay drawn over the picture. When frames

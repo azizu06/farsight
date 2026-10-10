@@ -249,19 +249,24 @@ fn gallery_concurrent_enrollments_keep_both_committed_people() {
     for h in handles {
         h.join().unwrap().unwrap();
     }
-    let names: Vec<_> = gallery
+    // Enrollment order is racy between the two threads; the invariant is that
+    // both committed people survive (the Python test pins order with a blocked
+    // persist hook, which this engine does not have).
+    let mut names: Vec<_> = gallery
         .people()
         .iter()
         .map(|p| p["name"].as_str().unwrap().to_string())
         .collect();
+    names.sort();
     assert_eq!(names, ["One", "Two"]);
     assert_eq!(gallery.generation(), 2);
-    let names: Vec<_> = Gallery::new(Some(path))
+    let mut names: Vec<_> = Gallery::new(Some(path))
         .unwrap()
         .people()
         .iter()
         .map(|p| p["name"].as_str().unwrap().to_string())
         .collect();
+    names.sort();
     assert_eq!(names, ["One", "Two"]);
 }
 

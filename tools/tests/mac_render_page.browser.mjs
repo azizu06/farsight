@@ -68,7 +68,11 @@ try {
   browser = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
   const page = await browser.newPage({ viewport: { width: 320, height: 240 } });
   const errors = []; page.on('pageerror', error => errors.push(error.message));
-  await page.goto(`${origin}/tools/mac_render/render.html?upstream=${encodeURIComponent(origin)}&width=320&height=240`);
+  const python = process.env.FARSIGHT_PYTHON || new URL('../../.venv/bin/python', import.meta.url).pathname;
+  const query = execFileSync(python, ['-c',
+    'from tools.mac_render.server import render_page_query, parse_args; import sys; print(render_page_query(parse_args(["--port",sys.argv[1],"--width","320","--height","240"])))',
+    String(server.address().port)], { cwd: root, encoding: 'utf8' }).trim();
+  await page.goto(`${origin}/tools/mac_render/render.html?${query}`);
   await page.waitForFunction(() => window.__mac.points === 300 && window.__mac.drawnPoints > 0, { timeout: 10000 });
   await page.evaluate(() => {
     window.dispatchEvent(new Event('pagehide')); // disable periodic timer for deterministic manual pulls
@@ -121,7 +125,7 @@ try {
   const pose = { tracked: true, receiptAgeMs: 0, receivedMonoMs: 987654321,
     sentMonoMs: 5, sentWallMs: 10, position: [1, 2, 3], quaternion: [0, 0, 0, 1],
     ray: { origin: [1, 2, 3], direction: [0, 0, -1] } };
-  const producerScript = execFileSync(process.env.FARSIGHT_PYTHON || new URL('../../.venv/bin/python', import.meta.url).pathname,
+  const producerScript = execFileSync(python,
     ['-c', 'from tools.mac_render.server import _CAPTURE_POSE_JS; print(_CAPTURE_POSE_JS)'],
     { cwd: root, encoding: 'utf8' });
   const producerPose = { tracked: true, receipt_age_ms: 0, received_mono_ms: pose.receivedMonoMs,
@@ -136,15 +140,24 @@ try {
   assert.deepEqual(captured.meta.viewPosition, [1, 2, 3]);
   assert.equal(captured.meta.poseEcho.session_id, first);
   assert.equal(captured.meta.fovY, 85); assert.equal(captured.meta.aspect, 1.7);
+  await page.evaluate(() => window.__macRegisterLayer({ init: context => { window.__poseTestCamera = context.camera; } }));
+  const movingPose = { ...producerPose, position: [1.25, 2, 3],
+    quaternion: [0, Math.sin(Math.PI / 18), 0, Math.cos(Math.PI / 18)], frame_id: 2, pose_id: 2 };
+  captured = await captureFromProducer(movingPose);
+  assert.deepEqual(captured.meta.viewPosition, movingPose.position, 'small tracked moves use the echoed pose exactly');
+  const drawnQuaternion = await page.evaluate(() => window.__poseTestCamera.quaternion.toArray());
+  drawnQuaternion.forEach((value, index) => assert.ok(Math.abs(value - movingPose.quaternion[index]) < 1e-10,
+    'small tracked rotations never ease away from the frame pose'));
+  assert.equal(captured.meta.poseEcho.frame_id, 2);
   await page.waitForTimeout(270);
   captured = await page.evaluate(() => window.__macCapture());
   assert.equal(captured.meta.poseEcho, null); assert.equal(captured.meta.rayVisible, false);
-  assert.deepEqual(captured.meta.viewPosition, [1, 2, 3], 'stale pose retains camera position');
+  assert.deepEqual(captured.meta.viewPosition, movingPose.position, 'stale pose retains camera position');
   for (const invalid of [{ ...pose, receiptAgeMs: 251 }, { ...pose, tracked: false, position: [9, 9, 9] },
       { ...pose, quaternion: [0, 0, 0, 0] }, null]) {
     captured = await page.evaluate(value => { window.__macPose = value; return window.__macCapture(); }, invalid);
     assert.equal(captured.meta.poseEcho, null); assert.equal(captured.meta.rayVisible, false);
-    assert.deepEqual(captured.meta.viewPosition, [1, 2, 3]);
+    assert.deepEqual(captured.meta.viewPosition, movingPose.position);
   }
   captured = await captureFromProducer(null);
   assert.equal(captured.meta.poseEcho, null, 'atomic producer preserves disconnect clear');
