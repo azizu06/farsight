@@ -162,6 +162,21 @@ Optional pose fields (YOLO11-pose), present when the detector is a pose model:
   The server independently requires a fresh camera. Source loss stops all
   motion. Client decoded/drawn freshness also stops when the display stalls.
 
+### Optional demo guards (`--demo-mode`, `FARSIGHT_DEMO_MODE=1`)
+
+Not the simulated `--demo`. On the real rover these stops still zero the motors
+but do not set `requires_release`: `serial_disconnected`, `release_required` (serial
+reconnect or a new controller socket), `controller_disconnected`, `camera_stale`,
+`video_stale`, `lease_expired`, `expired_permit`, `stale_sequence` and the Nav2
+sensor faults (`nav_pose_lost`, `nav_tracking_limited`, `nav_depth_lost`,
+`nav_sensor_reset`). The next fresh `deadman: true` heartbeat with a valid permit
+resumes. Teleop heartbeats skip the camera-freshness checks (`camera_stale`,
+`video_fresh` / `video_age_ms`); autonomy, scan and drive-profile modes keep them.
+Unchanged: the 250 ms lease, the first press after server start needs one release,
+protocol faults (`invalid_*`, `wrong_session`, `unsupported_mode`, oversized or
+binary frames, `uno_rejected_command`) still latch, the Nav2 sensor gate still
+holds motion at zero until pose and depth are fresh, and the Uno's 300 ms watchdog.
+
 ### Optional drive-profile modes (`velocity`, `calibrate`)
 
 Both are **off by default**; an unconfigured server answers them with
