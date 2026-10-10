@@ -93,7 +93,7 @@ export class VRActionMenu {
     c.fillStyle = "#d5e6ee";
     c.font = "40px system-ui";
     c.fillText("Point + right grip to select", WIDTH / 2, 808);
-    c.fillText("Y closes", WIDTH / 2, 861);
+    c.fillText("Hold A closes", WIDTH / 2, 861);
     this.texture.needsUpdate = true;
   }
 

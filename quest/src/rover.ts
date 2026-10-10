@@ -18,6 +18,11 @@ import { encounterLine, summaryLines, timelineLines } from "./mission-report.js"
 import { floorHit, goalBody, mergeNav, navActive, navLabel, parseNav, postNav } from "./nav-view.js";
 import { NavOverlay, type Nav } from "./nav-overlay";
 
+/** Quest sticks drift; a slightly off-center right stick must not override Explore/Seek/go-to. */
+const XR_STICK_DEADZONE = 0.25;
+/** Holding right A this long opens Actions instead of toggling camera/map on release. */
+const A_HOLD_MS = 600;
+
 type Box = { id?: number; cls: string; conf: number; x: number; y: number; w: number; h: number; kpts?: number[][]; down?: boolean };
 type Detections = { frame: number | string; boxes: Box[]; fps?: number; source?: string; simulated?: boolean };
 type ControlStatus = {
@@ -98,6 +103,8 @@ export class RoverExperience {
   private lastPanAt = 0;
   private panDt() { const now = performance.now(), dt = this.lastPanAt ? (now - this.lastPanAt) / 1000 : 0; this.lastPanAt = now; return Math.min(dt, 0.1); }
   private toggleDown = false;
+  /** When an observed (unlatched) A press began: a tap toggles the view, a long hold opens Actions. */
+  private aPressedAt: number | null = null;
   private recenterDown = false;
   private xrLive = true;
   private scanPending = false;
@@ -108,11 +115,11 @@ export class RoverExperience {
   private scanning = false;
   private scanCompleting = false;
   private scanDown = false;
-  private scanMessage = "Y opens actions; select Scan, then center sticks and hold trigger";
+  private scanMessage = "Hold A (or Y) for actions; pick Scan, then hold the trigger";
   private scanPollAt = 0;
   private lastXRAt = -Infinity;
   private rightSource: XRInputSource | null = null;
-  private movementSource: XRInputSource | null = null;
+  private leftSource: XRInputSource | null = null;
   private canvas = document.createElement("canvas");
   private ctx: CanvasRenderingContext2D;
   private hudCanvas = document.createElement("canvas");
@@ -168,7 +175,7 @@ export class RoverExperience {
       <button id="rover-explore" aria-pressed="false">Explore (E)</button>
       <button id="rover-nav-cancel">Cancel nav (C)</button>
       <p id="rover-nav" class="rover-nav" role="status" hidden></p>
-      <p class="rover-help">Quest: hold right trigger + left stick. A: camera/map. B: stop. X: recenter view. Y: actions menu. Point with the right controller and squeeze right grip to select an action or a person. Left grip: start rescue drill. Map view: point at the floor, right grip sets a go-to goal; right stick click cancels nav.<span id="rover-voice-help" hidden> Hold left trigger: ask by voice (enable in Settings first).</span><br>Desktop: hold Space + WASD in camera view; click a person to seek; E explores; double-click the map floor for go-to, C cancels. Stick/WASD takes back control.</p>`;
+      <p class="rover-help">Quest (right hand only): hold the trigger to go, right stick steers. B: stop. Tap A: camera/map. Hold A: actions menu (or Y). Point and squeeze grip to pick an action, a person, or a floor goal in the map. Click the stick to cancel go-to. Optional left hand: X recenter, grip rescue drill.<span id="rover-voice-help" hidden> Hold left trigger: ask by voice (enable in Settings first).</span><br>Desktop: hold Space + WASD in camera view; click a person to seek; E explores; double-click the map floor for go-to, C cancels. Stick/WASD takes back control.</p>`;
     document.querySelector("main")!.append(panel);
     this.sourceBanner = document.createElement("div");
     this.sourceBanner.className = "source-banner"; this.sourceBanner.setAttribute("role", "status");
@@ -240,7 +247,7 @@ export class RoverExperience {
     this.renderer.xr.addEventListener("sessionstart", () => {
       this.stop("VR session started: release trigger");
       this.lastXRAt = -Infinity;
-      this.rightSource = null; this.movementSource = null;
+      this.rightSource = null; this.leftSource = null;
       this.inputValid = false; this.keys.clear(); this.pointerHeld = false;
       this.recenter = true; this.xrLive = true; this.actionMenu.visible = false; this.setView("camera");
       this.renderer.xr.getSession()?.addEventListener("visibilitychange", () => {
@@ -252,7 +259,7 @@ export class RoverExperience {
       this.voice?.stopListening("VR session ended: voice question cancelled");
       this.stop("VR session ended: release deadman"); this.suspended = false;
       this.lastXRAt = -Infinity;
-      this.rightSource = null; this.movementSource = null;
+      this.rightSource = null; this.leftSource = null;
       this.inputValid = false; this.keys.clear(); this.pointerHeld = false;
       this.actionMenu.visible = false; this.pointer.visible = false;
     });
@@ -486,12 +493,17 @@ export class RoverExperience {
       const sources = [...session.inputSources];
       const right = sources.find(source => source.handedness === "right" && source.gamepad);
       const left = sources.find(source => source.handedness === "left" && source.gamepad);
-      const movement = left ?? right;
-      if ((right ?? null) !== this.rightSource || (movement ?? null) !== this.movementSource) {
+      // All driving is on the right controller. The left one only carries optional buttons, so an
+      // idle, sleeping or swapped left controller never stops the rover or cancels autonomy.
+      if ((right ?? null) !== this.rightSource) {
         this.voice?.stopListening("Controller changed: voice question cancelled");
         this.stop("Controller changed: release trigger");
-        this.rightSource = right ?? null; this.movementSource = movement ?? null;
+        this.rightSource = right ?? null; this.leftSource = left ?? null;
         this.latchButtons();
+      } else if ((left ?? null) !== this.leftSource) {
+        this.voice?.stopListening("Controller changed: voice question cancelled");
+        this.leftSource = left ?? null;
+        this.scanDown = this.recenterDown = this.drillDown = this.talkDown = true;
       }
       const reference = this.renderer.xr.getReferenceSpace();
       let pose: XRViewerPose | null = null;
@@ -499,9 +511,7 @@ export class RoverExperience {
       try {
         if (session.visibilityState === "visible" && frame && reference) pose = frame.getViewerPose(reference) ?? null;
         tracked = Boolean(pose && frame && reference &&
-          right?.gamepad?.connected && movement?.gamepad?.connected &&
-          right.gripSpace && movement.gripSpace &&
-          frame.getPose(right.gripSpace, reference) && frame.getPose(movement.gripSpace, reference));
+          right?.gamepad?.connected && right.gripSpace && frame.getPose(right.gripSpace, reference));
       } catch { /* An ended/inactive frame cannot provide current tracking. */ }
       if (pose) {
         const orientation = pose.transform.orientation, position = pose.transform.position;
@@ -526,8 +536,14 @@ export class RoverExperience {
         return;
       }
       this.lastXRAt = now;
-      const gamepad = movement?.gamepad;
-      const axes = gamepad?.axes ?? [];
+      let leftTracked = false;
+      try { leftTracked = Boolean(left?.gamepad?.connected && left.gripSpace && frame && reference && frame.getPose(left.gripSpace, reference)); } catch { /* Left is optional. */ }
+      if (!leftTracked && this.voice?.capturing) {
+        // Push-to-talk is the left trigger: losing that controller ends the question, never the drive.
+        this.voice.stopListening("Left controller lost: voice question cancelled");
+        this.talkDown = true;
+      }
+      const axes = right?.gamepad?.axes ?? [];
       const held = !!right?.gamepad?.buttons[0]?.pressed;
       const scan = !!left?.gamepad?.buttons[5]?.pressed;
       const toggle = !!right?.gamepad?.buttons[4]?.pressed;
@@ -559,10 +575,17 @@ export class RoverExperience {
       if (center && !this.recenterDown && this.voice?.pendingAction) this.voice.dismissAction();
       if (drill && !this.drillDown) void this.startDrill();
       this.drillDown = drill;
-      if (toggle && !this.toggleDown) {
-        this.actionMenu.visible = false;
-        this.xrLive = !this.xrLive; this.stop("View changed: release trigger");
-        this.setView(this.xrLive ? "camera" : "3d");
+      // A: tap toggles camera/map; hold opens Actions so the right hand alone reaches every mode.
+      if (toggle && !this.toggleDown) this.aPressedAt = now;
+      let aHold = false;
+      if (this.aPressedAt !== null) {
+        if (toggle && now - this.aPressedAt >= A_HOLD_MS) { aHold = true; this.aPressedAt = null; }
+        else if (!toggle) {
+          this.aPressedAt = null;
+          this.actionMenu.visible = false;
+          this.xrLive = !this.xrLive; this.stop("View changed: release trigger");
+          this.setView(this.xrLive ? "camera" : "3d");
+        }
       }
       if (explore && !this.exploreDown) {
         this.actionMenu.visible = false; this.autonomy.clear();
@@ -576,10 +599,10 @@ export class RoverExperience {
       const yaw = Math.atan2(Math.sin(this.euler.y - this.baseYaw), Math.cos(this.euler.y - this.baseYaw));
       this.inputValid = !this.actionMenu.visible;
       this.input = { held,
-        v: -stick(axes.length >= 4 ? axes[3] : axes[1]) * 0.45,
-        w: stick(axes.length >= 4 ? axes[2] : axes[0]) * 0.55,
+        v: -stick(axes.length >= 4 ? axes[3] : axes[1], XR_STICK_DEADZONE) * 0.45,
+        w: stick(axes.length >= 4 ? axes[2] : axes[0], XR_STICK_DEADZONE) * 0.55,
         pan: this.digitalPan ? 0 : this.panSmoother.step(-THREE.MathUtils.radToDeg(yaw), this.panDt()) };
-      if (scan && !this.scanDown) {
+      if ((scan && !this.scanDown) || aHold) {
         this.stop("Actions open: release trigger");
         this.actionMenu.visible = !this.actionMenu.visible;
         this.inputValid = !this.actionMenu.visible;
@@ -954,6 +977,7 @@ export class RoverExperience {
   }
   /** Held buttons from a lost or replaced controller act only after an observed release. */
   private latchButtons() {
+    this.aPressedAt = null;
     this.toggleDown = this.exploreDown = this.recenterDown = this.scanDown = this.drillDown = this.talkDown = this.goalDown = this.cancelDown = true;
   }
   private createCameraTexture() {
