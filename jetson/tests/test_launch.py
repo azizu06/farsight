@@ -125,9 +125,16 @@ class WaitTests(unittest.TestCase):
     def test_rig_without_sensors_maps_proximity_and_pan_mount(self):
         args = launch.build_args({"FARSIGHT_PROXIMITY_STOP": "off", "FARSIGHT_PAN_MOUNT": "none",
                                   "FARSIGHT_SERIAL_PORT": "/dev/ttyUSB0"})
-        args += launch.build_args({"FARSIGHT_MAX_PWM": "255", "FARSIGHT_MIN_PWM": "70", "FARSIGHT_AUTONOMY_MAX_PWM": "100"})
+        args += launch.build_args({"FARSIGHT_MAX_PWM": "255", "FARSIGHT_MIN_PWM": "70", "FARSIGHT_AUTONOMY_MAX_PWM": "100",
+                                   "FARSIGHT_DRIVE_PROFILE": "/etc/farsight/drive-profile.json",
+                                   "FARSIGHT_ALLOW_CALIBRATION": "1"})
+        self.assertIn("--allow-calibration", args)
+        self.assertNotIn("--allow-calibration", launch.build_args({"FARSIGHT_ALLOW_CALIBRATION": ""}))
+        self.assertIn("--lidar-drive", launch.build_args({"FARSIGHT_LIDAR_DRIVE": "1"}))
+        self.assertNotIn("--lidar-drive", launch.build_args({"FARSIGHT_LIDAR_DRIVE": ""}))
         for pair in (["--proximity-stop", "off"], ["--pan-mount", "none"], ["--serial-port", "/dev/ttyUSB0"],
-                     ["--max-pwm", "255"], ["--min-pwm", "70"], ["--autonomy-max-pwm", "100"]):
+                     ["--max-pwm", "255"], ["--min-pwm", "70"], ["--autonomy-max-pwm", "100"],
+                     ["--drive-profile", "/etc/farsight/drive-profile.json"]):
             i = args.index(pair[0])
             self.assertEqual(args[i:i + 2], pair)
 

@@ -65,9 +65,12 @@ class CameraFrame:
 
 
 class CameraService:
-    def __init__(self, mapping, device=None, width=640, height=480, fps=15, quality=55):
+    def __init__(self, mapping, device=None, width=640, height=480, fps=15, quality=55, lidar_drive=False):
         self.mapping = mapping
         self.device = device
+        # Opt-in (--lidar-drive): fresh /phone ARKit frames with normal tracking may
+        # drive without a capture-permit binding. Leases and stale stops still apply.
+        self.lidar_drive = lidar_drive
         self.width, self.height, self.fps, self.quality = width, height, fps, quality
         self.frame = None
         self.error = None
@@ -124,7 +127,9 @@ class CameraService:
         fresh = bool(frame and frame.age_ms < 500)
         bound = bool(frame and frame.capture_verified and frame.capture_binding
                      and frame.capture_binding.active)
-        drive_ready = fresh and (self.device is not None or bound
+        lidar = (self.lidar_drive and fresh and frame.source == "IPHONE LIDAR"
+                 and getattr(self.mapping, "lidar_drive_eligible", lambda: False)())
+        drive_ready = fresh and (self.device is not None or bound or lidar
                                  or frame.source == "SIMULATED" or frame.source.startswith("REPLAY"))
         return dict(camera=fresh, camera_drive_ready=bool(drive_ready),
                     camera_capture_verified=bound,

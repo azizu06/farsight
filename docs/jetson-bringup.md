@@ -105,7 +105,9 @@ Expect a TensorRT version, `models/yolo11n-pose.engine`, and `NV Power Mode: 15W
   `sudo nvpmodel -m ID` or `setup.sh --power-mode NAME`. For brown-outs or sudden reboots under load, check
   `sudo nvpmodel -q`, the actual supply/cable and attached peripherals, and record `tegrastats` power rails.
   A selected 15 W mode alone does not establish that the power bank can sustain the complete rig; measure
-  loaded behavior instead of inferring the cause from a reboot.
+  loaded behavior instead of inferring the cause from a reboot. Measured: the Anker Zolo 20K 45 W bank (15 V
+  barrel) held 25W mode, VLM + whisper + CPU load and +/-255 wheels-up motor pulses for 3 minutes, VDD_IN peak
+  15.3 W, with no under-voltage or reset (`docs/qualification/power-bank-load-2026-10-10.json`).
   `sudo jetson_clocks` only pins clocks within the active mode.
 - *Camera not found at the end checks*: step 4.
 - *Uno not found*: unplug the ESP32 camera module, try another cable, `dmesg | tail`.

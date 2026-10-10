@@ -607,3 +607,9 @@ that endpoint. `arkit_unverified` remains view-only. Binding propagation prepare
 the receiver for a supported producer contract; it does not qualify the current
 ARKit clock or fabricate camera/pose timestamps. The AVFoundation `/phone/rgb`
 clock and capture-permit rules are unchanged.
+
+Opt-in `--lidar-drive` (`FARSIGHT_LIDAR_DRIVE=1`, default off) makes
+`camera_drive_ready` true for an `IPHONE LIDAR` frame received under 500 ms ago
+while that `/phone` session is connected with ARKit tracking `normal`. It does
+not mark the frame `camera_capture_verified`, and no wire field changes. The
+lease, deadman, release, camera-stale and disconnect stops are unchanged.

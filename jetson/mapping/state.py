@@ -190,6 +190,10 @@ class MapState:
         """Pose heartbeats never refresh the camera's capture receipt time."""
         return self.latest_camera[:4]
 
+    def lidar_drive_eligible(self):
+        """Live /phone session with normal ARKit tracking; lock-free for safety readers."""
+        return self.connected and not self.demo and self.tracking == "normal"
+
     def camera_capture_snapshot(self):
         """Immutable camera and issuer evidence, independent of fusion locks."""
         value = self.latest_camera

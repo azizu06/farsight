@@ -1,7 +1,7 @@
 //! Single-session map state. Port of jetson/mapping/state.py.
 
 use std::collections::VecDeque;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use serde_json::{json, Value};
@@ -77,6 +77,9 @@ pub struct MapState {
     /// Compressible variants (zstd/br/gzip) are cached per map version like
     /// jetson/mapping/compress.py — no re-encoding per request.
     packets: Mutex<Option<PacketCache>>,
+    /// Frame consumers (e.g. the nav seam) called with every accepted
+    /// RGB-D frame, outside the map lock (state.frame_observers parity).
+    pub frame_observers: Mutex<Vec<Arc<dyn Fn(&RgbdFrame) + Send + Sync>>>,
 }
 
 impl MapState {
@@ -111,7 +114,12 @@ impl MapState {
             pose_history: VecDeque::new(),
             scan: None,
         };
-        Self { demo, inner: Mutex::new(inner), packets: Mutex::new(None) }
+        Self {
+            demo,
+            inner: Mutex::new(inner),
+            packets: Mutex::new(None),
+            frame_observers: Mutex::new(Vec::new()),
+        }
     }
 
     pub fn start_session(&self, identity: Identity, device: String) {
@@ -271,6 +279,11 @@ impl MapState {
             } else {
                 None
             };
+        }
+        // Frame consumers run outside the map lock, even when the frame is
+        // too degraded to fuse (mapping/state.py parity).
+        for observer in self.frame_observers.lock().unwrap().iter() {
+            observer(frame);
         }
         if !may_fuse {
             return Ok(());

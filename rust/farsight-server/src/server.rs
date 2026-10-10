@@ -62,6 +62,12 @@ pub struct AppState {
     /// Opt-in bonded upstream hub (--bonded-control); owns /ws/control/bonded
     /// when enabled. The legacy /ws/control owner path is unchanged.
     pub bonded: Option<Arc<BondedControlHub>>,
+    /// --nav2 NavService seam; the /nav/* contract still answers without it.
+    pub nav: Option<Arc<crate::nav::NavService>>,
+    /// --sim-world feed; drives camera/depth/range/detections from the sim.
+    pub sim: Option<Arc<crate::sim::SimFeed>>,
+    /// The loaded sim world name for /health (`sim_world` key).
+    pub sim_world: Option<String>,
 }
 
 pub fn build_state(
@@ -101,10 +107,25 @@ pub fn build_state(
     pan_mount: &str,
     autonomy_max_pwm: Option<i64>,
     bonded: bool,
+    nav2: bool,
+    nav_speed_mps: f64,
+    nav_turn_radps: f64,
+    nav_max_v: f64,
+    nav_max_w: f64,
+    nav_camera_height: f64,
+    sim_world: Option<String>,
 ) -> Arc<AppState> {
-    if scan_pan && pan_mount == "none" {
-        panic!("--scan-pan needs a physical pan servo (--pan-mount servo)");
+    // create_app validation order: sim-world, replay, simulated+serial,
+    // nav2+replay, then pan mount.
+    if sim_world.is_some()
+        && (serial_port.is_some() || camera_device.is_some() || replay.is_some())
+    {
+        panic!("--sim-world is simulated; it cannot drive real motors, cameras or replays");
     }
+    // A sim world is simulated hardware: the demo camera path and the
+    // simulated rover drive it, like create_app's `demo = simulate_rover = True`.
+    let demo = demo || sim_world.is_some();
+    let simulate_rover = simulate_rover || sim_world.is_some();
     if replay.is_some()
         && (serial_port.is_some() || camera_device.is_some() || demo || simulate_rover || record)
     {
@@ -113,7 +134,37 @@ pub fn build_state(
     if (demo || simulate_rover) && serial_port.is_some() {
         panic!("Simulated sources cannot be combined with a physical motor serial port");
     }
+    if nav2 && replay.is_some() {
+        panic!("Replay is read-only; navigation cannot be combined with it");
+    }
+    if scan_pan && pan_mount == "none" {
+        panic!("--scan-pan needs a physical pan servo (--pan-mount servo)");
+    }
     let mapping = Arc::new(MapState::new(demo));
+    let sim = sim_world.as_ref().map(|name| {
+        let world = crate::sim::load(name).unwrap_or_else(|e| panic!("{e}"));
+        Arc::new(crate::sim::SimFeed::new(crate::sim::RoverSim::new(
+            world,
+            Some(nav_speed_mps),
+            Some(nav_turn_radps),
+        )))
+    });
+    let nav = if nav2 {
+        Some(Arc::new(
+            crate::nav::NavService::new(
+                mapping.clone(),
+                nav_speed_mps,
+                nav_turn_radps,
+                nav_max_v,
+                nav_max_w,
+                nav_camera_height,
+                None,
+            )
+            .unwrap_or_else(|e| panic!("{e}")),
+        ))
+    } else {
+        None
+    };
     let camera = Arc::new(CameraService::new(mapping.clone(), camera_device.clone()));
     let mut video = VideoService::new(camera.clone(), h264);
     video.fps = video_fps;
@@ -138,6 +189,14 @@ pub fn build_state(
     // Physical serial requires verified drive eligibility (camera_drive_ready);
     // simulated/USB-free setups keep plain freshness (camera.py parity).
     let drive_key = if serial_port.is_some() { "camera_drive_ready" } else { "camera" };
+    // Ground-truth sim detections replace the perception snapshot with
+    // --sim-world (create_app `detections=sim.detections if sim else ...`).
+    let detections: crate::control::Detections = if let Some(feed) = &sim {
+        let feed = feed.clone();
+        Arc::new(move || feed.detections())
+    } else {
+        Arc::new(move || perc.snapshot())
+    };
     let control = Arc::new(
         ControlState::new(
             simulate_rover,
@@ -146,17 +205,40 @@ pub fn build_state(
             Some(Arc::new(move || {
                 cam.status()[drive_key].as_bool().unwrap_or(false)
             })),
-            Some(Arc::new(move || perc.snapshot())),
+            Some(detections),
             None,
             drive_profile,
             allow_calibration,
             proximity_stop,
             pan_mount,
             autonomy_max_pwm,
+            nav.clone(),
         )
         .expect("control config"),
     );
-    let pump = Arc::new(SerialPump::new(control.clone(), serial_port, simulate_rover));
+    // The sim's ultrasonic feeds the range input like a Uno echo.
+    let simulated_range: Option<Arc<dyn Fn() -> Option<i64> + Send + Sync>> =
+        sim.as_ref().map(|feed| {
+            let feed = feed.clone();
+            Arc::new(move || feed.sim.ultrasonic_cm(206.0)) as _
+        });
+    let pump = Arc::new(SerialPump::new(
+        control.clone(),
+        serial_port,
+        simulate_rover,
+        simulated_range,
+    ));
+    if let Some(nav) = &nav {
+        nav.attach(&control);
+        let observer = nav.clone();
+        mapping
+            .frame_observers
+            .lock()
+            .unwrap()
+            .push(Arc::new(move |frame: &crate::phone::RgbdFrame| {
+                observer.offer_frame(frame)
+            }));
+    }
     let replay_control = replay.as_ref().map(|_| Arc::new(ReplayControl::new()));
     let replay_session = match (&replay, &replay_control) {
         (Some(dir), Some(rc)) => Some(Arc::new(
@@ -166,11 +248,17 @@ pub fn build_state(
         _ => None,
     };
     // Live control loops feed the drill scorer; recorded replays have no
-    // live loop (hasattr(control, "state") in Python).
+    // live loop (hasattr(control, "state") in Python). The sim's apply() is
+    // chained after drill_motion like create_app's `applied` observer list.
     if replay_session.is_none() {
         let m2 = mission.clone();
-        *control.on_output.lock().unwrap() =
-            Some(Box::new(move |v, w, blocked| m2.drill_motion(v, w, blocked)));
+        let sim_apply = sim.clone();
+        *control.on_output.lock().unwrap() = Some(Box::new(move |v, w, blocked| {
+            m2.drill_motion(v, w, blocked);
+            if let Some(feed) = &sim_apply {
+                feed.sim.apply(v, w, blocked);
+            }
+        }));
     }
     // #79/#81: /mission/drill carries the face-detector status, and the face
     // pass only costs CPU while a drill is running.
@@ -253,6 +341,9 @@ pub fn build_state(
         replay_control,
         control_on_status: control_on_status.clone(),
         bonded: bonded.then(|| Arc::new(BondedControlHub::new(control.clone(), control_on_status))),
+        nav,
+        sim,
+        sim_world,
     })
 }
 
@@ -329,7 +420,10 @@ pub fn start_services(state: &Arc<AppState>) {
             }
         });
     }
-    if state.demo {
+    if let Some(feed) = state.sim.clone() {
+        // --sim-world: poses at 30 Hz, frames at 10 Hz (sim/stream.py).
+        crate::sim::spawn_world_stream(state.mapping.clone(), state.camera.clone(), feed);
+    } else if state.demo {
         // #59 parity: 15 Hz synthetic camera with bounded 5 Hz fusion —
         // capture cadence is independent of map work; busy fusion skips
         // candidates so queued geometry never goes stale.
@@ -416,6 +510,16 @@ async fn health(State(s): State<Arc<AppState>>) -> Json<Value> {
     );
     obj.insert("speech".into(), s.phrases.status());
     obj.insert("triage".into(), s.triage.status());
+    if let Some(nav) = &s.nav {
+        // Absent without --nav2, exactly like the Python health payload.
+        obj.insert(
+            "nav".into(),
+            json!({"enabled": true, "available": nav.available()}),
+        );
+    }
+    if let Some(name) = &s.sim_world {
+        obj.insert("sim_world".into(), json!(name));
+    }
     Json(status)
 }
 
@@ -687,29 +791,186 @@ async fn mission_triage(State(s): State<Arc<AppState>>, Path(key): Path<String>)
     }
 }
 
-/// The nav object when no planner is attached (docs/interfaces.md "Optional
-/// navigation status"): `state: "unavailable"`, everything else empty.
-fn nav_unavailable() -> Value {
-    json!({"state": "unavailable", "mode": Value::Null, "goal": Value::Null,
-           "path": [], "frontiers": [], "backend": Value::Null,
-           "message": "No navigation planner (Nav2 bridge not running)"})
+/// The disabled_router message (jetson/nav.py): the contract answers, but
+/// nothing navigates without --nav2.
+const NAV_DISABLED_MESSAGE: &str =
+    "Navigation disabled: start jetson.server with --nav2 (FARSIGHT_NAV2=1)";
+
+/// GoalRequest field: pydantic's lax float takes numbers, bools and numeric
+/// strings; non-finite values are legal JSON here and fail inside set_goal.
+fn goal_float(body: &Value, key: &str) -> Result<f64, ()> {
+    match body.get(key) {
+        Some(Value::Number(n)) => n.as_f64().ok_or(()),
+        Some(Value::Bool(b)) => Ok(if *b { 1.0 } else { 0.0 }),
+        Some(Value::String(t)) => t.trim().parse::<f64>().map_err(|_| ()),
+        _ => Err(()),
+    }
 }
 
-/// POST /nav/goal — 409 until a Nav2/fallback planner exists (the contract
-/// refuses rather than silently ignoring a go-to request).
-async fn nav_goal() -> Response {
-    (
-        StatusCode::CONFLICT,
-        Json(json!({"nav": nav_unavailable(), "message": "No navigation planner (Nav2 bridge not running)"})),
+/// POST /nav/goal — 202 nav object, 409 refusal with the nav object, 422 for
+/// bad input (the FastAPI GoalRequest contract).
+async fn nav_goal(
+    State(s): State<Arc<AppState>>,
+    body: Result<Json<Value>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let Some(nav) = s.nav.clone() else {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"nav": crate::nav::empty_nav("unavailable", NAV_DISABLED_MESSAGE),
+                        "message": NAV_DISABLED_MESSAGE})),
+        )
+            .into_response();
+    };
+    let body = match body {
+        Ok(Json(b)) if b.is_object() => b,
+        _ => {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(json!({"detail":[{"type":"json_invalid","loc":["body"],
+                            "msg":"JSON decode error","input":{}}]})),
+            )
+                .into_response();
+        }
+    };
+    let mut errors = Vec::new();
+    let x = match body.get("x") {
+        None => {
+            errors.push(json!({"type":"missing","loc":["body","x"],"msg":"Field required","input":body}));
+            None
+        }
+        Some(_) => match goal_float(&body, "x") {
+            Ok(v) => Some(v),
+            Err(()) => {
+                errors.push(json!({"type":"float_parsing","loc":["body","x"],
+                    "msg":"Input should be a valid number, unable to parse value as a number",
+                    "input":body["x"]}));
+                None
+            }
+        },
+    };
+    let z = match body.get("z") {
+        None => {
+            errors.push(json!({"type":"missing","loc":["body","z"],"msg":"Field required","input":body}));
+            None
+        }
+        Some(_) => match goal_float(&body, "z") {
+            Ok(v) => Some(v),
+            Err(()) => {
+                errors.push(json!({"type":"float_parsing","loc":["body","z"],
+                    "msg":"Input should be a valid number, unable to parse value as a number",
+                    "input":body["z"]}));
+                None
+            }
+        },
+    };
+    let session_id = match body.get("session_id") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(t)) => Some(t.clone()),
+        Some(_) => {
+            errors.push(json!({"type":"string_type","loc":["body","session_id"],
+                "msg":"Input should be a valid string","input":body["session_id"]}));
+            None
+        }
+    };
+    let permit = match body.get("permit") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(t)) => Some(t.clone()),
+        Some(_) => {
+            errors.push(json!({"type":"string_type","loc":["body","permit"],
+                "msg":"Input should be a valid string","input":body["permit"]}));
+            None
+        }
+    };
+    if !errors.is_empty() {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({"detail": errors})),
+        )
+            .into_response();
+    }
+    match nav.set_goal(
+        x.unwrap_or(f64::NAN),
+        z.unwrap_or(f64::NAN),
+        session_id.as_deref(),
+        permit.as_deref(),
+    ) {
+        Ok(nav_obj) => (StatusCode::ACCEPTED, Json(nav_obj)).into_response(),
+        Err(crate::nav::GoalError::Refused { nav, message }) => (
+            StatusCode::CONFLICT,
+            Json(json!({"nav": nav, "message": message})),
+        )
+            .into_response(),
+        Err(crate::nav::GoalError::Unprocessable(message)) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({"detail": message})),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /nav/cancel — disarms go-to-point; returns the nav object.
+async fn nav_cancel(State(s): State<Arc<AppState>>) -> Response {
+    match &s.nav {
+        Some(nav) => Json(nav.cancel()).into_response(),
+        None => Json(crate::nav::empty_nav("idle", "")).into_response(),
+    }
+}
+
+/// GET /nav/status — the nav object plus the diagnostic detail object.
+async fn nav_status(State(s): State<Arc<AppState>>) -> Json<Value> {
+    match &s.nav {
+        Some(nav) => {
+            let mut out = nav.status_object();
+            out.as_object_mut()
+                .unwrap()
+                .insert("detail".into(), nav.detail());
+            Json(out)
+        }
+        None => {
+            let mut out = crate::nav::empty_nav("unavailable", NAV_DISABLED_MESSAGE);
+            out.as_object_mut()
+                .unwrap()
+                .insert("detail".into(), json!({"enabled": false}));
+            Json(out)
+        }
+    }
+}
+
+/// GET /ws/nav — loopback bridge socket (NavService.websocket); disabled: the
+/// contract accepts and immediately closes 1008.
+async fn ws_nav(
+    ws: WebSocketUpgrade,
+    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<PeerAddr>,
+    State(s): State<Arc<AppState>>,
+) -> Response {
+    if let Some(nav) = s.nav.clone() {
+        let host = addr.0.ip().to_string();
+        ws.on_upgrade(move |socket| async move {
+            nav.run_ws(socket, host).await;
+        })
+    } else {
+        ws.on_upgrade(move |mut socket| async move {
+            let reason: String = NAV_DISABLED_MESSAGE.chars().take(100).collect();
+            let _ = socket
+                .send(axum::extract::ws::Message::Close(Some(
+                    axum::extract::ws::CloseFrame {
+                        code: 1008,
+                        reason: reason.into(),
+                    },
+                )))
+                .await;
+        })
+    }
+}
+
+/// GET /sim/state — sim-only ground truth (pose, collisions, coverage).
+async fn sim_state(State(s): State<Arc<AppState>>) -> Json<Value> {
+    Json(
+        s.sim
+            .as_ref()
+            .map(|feed| feed.sim.state())
+            .unwrap_or_else(|| json!({})),
     )
-        .into_response()
-}
-
-/// POST /nav/cancel — nothing armed; returns the nav object.
-async fn nav_cancel() -> Response {
-    Json(json!({"state": "idle", "mode": Value::Null, "goal": Value::Null,
-                "path": [], "frontiers": [], "backend": Value::Null, "message": ""}))
-        .into_response()
 }
 
 async fn speak_options(State(s): State<Arc<AppState>>) -> Json<Value> {
@@ -1545,11 +1806,18 @@ pub fn router(state: Arc<AppState>, dist: Option<PathBuf>) -> Router {
         .route("/speak", post(speak))
         .route("/tts/{name}", get(tts))
         .route("/nav/goal", post(nav_goal))
-        .route("/nav/cancel", post(nav_cancel));
+        .route("/nav/cancel", post(nav_cancel))
+        .route("/nav/status", get(nav_status))
+        .route("/ws/nav", get(ws_nav));
     // Opt-in bonded upstream (experimental v1): only mounted with
     // --bonded-control; /ws/control keeps its single-owner behaviour.
     let app = if state.bonded.is_some() {
         app.route("/ws/control/bonded", get(ws_control_bonded))
+    } else {
+        app
+    };
+    let app = if state.sim.is_some() {
+        app.route("/sim/state", get(sim_state))
     } else {
         app
     };
@@ -1590,10 +1858,28 @@ impl axum::serve::Listener for NodelayListener {
     }
 }
 
+/// Peer address of the accepted socket; any listener yielding SocketAddr
+/// (plain TCP and the axum_server TLS acceptor alike) feeds /ws/nav's
+/// loopback check the way ws.client.host does in Python.
+#[derive(Clone, Debug)]
+pub struct PeerAddr(pub SocketAddr);
+
+impl axum::extract::connect_info::Connected<axum::serve::IncomingStream<'_, NodelayListener>>
+    for PeerAddr
+{
+    fn connect_info(target: axum::serve::IncomingStream<'_, NodelayListener>) -> Self {
+        PeerAddr(*target.remote_addr())
+    }
+}
+
 /// Serve the app over plain HTTP (TLS handled in main via axum-server).
 pub async fn serve_http(app: Router, addr: SocketAddr) -> std::io::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(NodelayListener(listener), app).await
+    axum::serve(
+        NodelayListener(listener),
+        app.into_make_service_with_connect_info::<PeerAddr>(),
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -1640,6 +1926,13 @@ mod phone_lifecycle_tests {
             "servo",    // pan_mount
             None,       // autonomy_max_pwm
             false,      // bonded
+            false,      // nav2
+            0.45,       // nav_speed_mps
+            3.0,        // nav_turn_radps
+            0.7,        // nav_max_v
+            0.8,        // nav_max_w
+            0.15,       // nav_camera_height
+            None,       // sim_world
         )
     }
 
@@ -1790,7 +2083,7 @@ mod bonded_ws_tests {
 
     fn bonded_setup() -> (Arc<ControlState>, Arc<BondedControlHub>) {
         let control = Arc::new(
-            ControlState::new(false, 0, 100, None, None, None, None, false, false, "servo", None)
+            ControlState::new(false, 0, 100, None, None, None, None, false, false, "servo", None, None)
                 .unwrap(),
         );
         control.set_connected(true, None);

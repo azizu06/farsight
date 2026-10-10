@@ -1,0 +1,75 @@
+{
+ "test": "Power under worst-case load on the Anker Zolo 20K 45 W power bank (physical rig)",
+ "verdict": "PASS",
+ "date_utc": "2026-10-10T18:55:50Z to 18:59:45Z",
+ "conditions": {
+  "supply": "Anker Zolo 20K 45 W power bank, USB-C PD to 15 V barrel cable, into the Jetson Orin Nano carrier",
+  "power_mode": "NV Power Mode: 25W",
+  "rover_battery": "ON (motor supply, separate from the bank)",
+  "wheels": "off the ground (confirmed by the captain)",
+  "attached": "Uno over USB serial (CH340), iPhone over USB",
+  "load_for_200_s": [
+   "farsight-llm (llama.cpp VLM, CUDA): back-to-back vision queries, 120-token answers",
+   "farsight-whisper (whisper.cpp, CUDA): back-to-back transcription of a 25 s speech clip",
+   "two Python busy-loop processes (CPU)"
+  ],
+  "motors_for_180_s": "both sides +255 / -255 alternating, 2 s on / 2 s off, M renewed at 10 Hz through rover/serial_test.Link with farsight.service stopped; any non-OK reply, timeout, or a dmesg under-voltage/brownout/over-current/USB-disconnect line would stop the run (M 0 0)",
+  "tools": "tegrastats 500 ms, INA3221 hwmon 200 ms, dmesg --follow"
+ },
+ "results": {
+  "vdd_in_mW": {
+   "peak": 15255,
+   "mean": 12879,
+   "samples": 463
+  },
+  "vdd_cpu_gpu_cv_mW": {
+   "peak": 7245,
+   "mean": 5828,
+   "samples": 463
+  },
+  "vdd_soc_mW": {
+   "peak": 4027,
+   "mean": 3460,
+   "samples": 463
+  },
+  "module_5v_rail_mV_min": 4984,
+  "gpu": {
+   "load_peak_pct": 99,
+   "mhz_min": 305,
+   "mhz_max": 915
+  },
+  "tj_C_max": 59.406,
+  "llm": {
+   "requests": 31,
+   "ok": 31,
+   "median_s": 6.41
+  },
+  "whisper": {
+   "requests": 92,
+   "ok": 92,
+   "median_s": 2.165
+  },
+  "motor_pulses": {
+   "cycles": 45,
+   "phases": 90,
+   "approx_commands": 1800,
+   "non_ok_or_timeouts": 0,
+   "final_stop_reply": "OK"
+  },
+  "kernel_log": "only cpufreq DVFS notices during the run; no under-voltage, brownout, over-current, throttle, USB disconnect or reset",
+  "reboot": "none (same boot id before and after)",
+  "after": "farsight.service restarted; /health 200, Uno serial connected (rover true), max_pwm 255, min_pwm 70; farsight-llm, farsight-whisper, tailnet forward active"
+ },
+ "wall_power_baseline_15_s": {
+  "vdd_in_mW_peak": 16018,
+  "module_5v_rail_mV_min": 4936,
+  "tj_C_max": 49.6
+ },
+ "not_measured": [
+  "Total power drawn from the bank: VDD_IN is the module input only; the carrier, fan and the USB-attached iPhone are outside it (read the Anker display)",
+  "Motor current: it is on the rover battery, not the bank",
+  "Sustained runtime and bank state of charge",
+  "Driving on the floor (wheels were in the air), camera streaming and YOLO inference in farsight.service during the motor pulses (the service was stopped to free the serial port)"
+ ],
+ "raw_logs": "kept on the Jetson in ~/power-test/bank-185550 (tegrastats, ina, dmesg, load, pulse)"
+}

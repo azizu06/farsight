@@ -93,6 +93,9 @@ pub struct ControlState {
     /// Telemetry sink invoked with (v, w, blocked) after motor clamping;
     /// must never affect motor output. Port of `state.on_output`.
     pub on_output: Mutex<Option<OnOutput>>,
+    /// Opt-in Nav2 seam (jetson/control/state.py `self.navigator`); the
+    /// server stays motor authority — the nav backend supplies commands.
+    pub navigator: Option<Arc<crate::nav::NavService>>,
 }
 
 fn round1(v: f64) -> f64 {
@@ -118,6 +121,7 @@ impl ControlState {
         proximity_stop: bool,
         pan_mount: &str,
         autonomy_max_pwm: Option<i64>,
+        navigator: Option<Arc<crate::nav::NavService>>,
     ) -> Result<Self, String> {
         if !(0 <= min_pwm && min_pwm < max_pwm && max_pwm <= 255) {
             return Err("PWM bounds must satisfy 0 <= min_pwm < max_pwm <= 255".into());
@@ -156,7 +160,11 @@ impl ControlState {
                 reason: "rover_disabled".into(),
                 link_ms: None,
                 stick_override: false,
-                autonomy: if detections.is_some() { Some(Autonomy::new()) } else { None },
+                autonomy: if detections.is_some() || navigator.is_some() {
+                    Some(Autonomy::with_proximity(proximity_stop))
+                } else {
+                    None
+                },
                 scan_token: None,
                 scan_race_permits: std::collections::HashSet::new(),
                 scan_serial: 0,
@@ -164,10 +172,11 @@ impl ControlState {
                 drive: None,
             }),
             on_output: Mutex::new(None),
+            navigator,
         })
     }
 
-    fn now(&self) -> f64 {
+    pub(crate) fn now(&self) -> f64 {
         (self.clock)()
     }
 
@@ -198,6 +207,9 @@ impl ControlState {
         if value != s.connected {
             let reason = if value { "release_required" } else { reason.unwrap_or("serial_disconnected") };
             Self::stop_locked(&mut s, reason, true);
+            if let Some(nav) = &self.navigator {
+                nav.disarm(); // a serial fault needs a fresh goal, not a silent resume
+            }
             s.permits.clear();
             s.range_cm = None;
             s.range_at = f64::NEG_INFINITY;
@@ -218,6 +230,9 @@ impl ControlState {
         s.seq = -1;
         s.permits.clear();
         Self::stop_locked(&mut s, "release_required", true);
+        if let Some(nav) = &self.navigator {
+            nav.disarm();
+        }
         Some(id)
     }
 
@@ -227,6 +242,9 @@ impl ControlState {
             Self::stop_locked(&mut s, "controller_disconnected", true);
             s.session_id = None;
             s.permits.clear();
+            if let Some(nav) = &self.navigator {
+                nav.disarm(); // a go-to goal belongs to the controller that set it
+            }
         }
     }
 
@@ -307,7 +325,7 @@ impl ControlState {
         self.range_unsafe(s) || s.pan.abs() > 10
     }
 
-    fn camera_is_ready(&self) -> bool {
+    pub(crate) fn camera_is_ready(&self) -> bool {
         self.camera_ready.as_ref().map(|f| f()).unwrap_or(true)
     }
 
@@ -394,7 +412,9 @@ impl ControlState {
             Self::stop_locked(s, "unsupported_mode", true);
             return false;
         } else if !(mode == "teleop" || mode == "calibrate" || mode == "velocity")
-            && (s.autonomy.is_none() || !(mode == "explore" || mode == "seek"))
+            && (s.autonomy.is_none()
+                || !(mode == "explore" || mode == "seek" || mode == "goto")
+                || (mode == "goto" && self.navigator.is_none()))
         {
             Self::stop_locked(s, "unsupported_mode", true);
             return false;
@@ -451,6 +471,11 @@ impl ControlState {
                 mode = "teleop";
             } else {
                 pan = s.pan as f64;
+            }
+        }
+        if self.navigator.is_some() && (v != 0.0 || w != 0.0) {
+            if let Some(nav) = &self.navigator {
+                nav.disarm(); // stick input disarms go-to-point
             }
         }
         let stick_override = s.stick_override;
@@ -555,6 +580,11 @@ impl ControlState {
         let Some(drive) = s.drive else {
             return (0, 0, s.pan + 90);
         };
+        self.drive_output_values(s, drive)
+    }
+
+    /// _drive_output(kind, values): the Nav2 calibrated path also lands here.
+    fn drive_output_values(&self, s: &mut ControlInner, drive: DriveCmd) -> (i64, i64, i64) {
         let (mut left, mut right) = if s.connected {
             match drive {
                 DriveCmd::Calibrate(l, r) => (l, r),
@@ -594,7 +624,7 @@ impl ControlState {
         self.output_locked(&mut s)
     }
 
-    fn output_locked(&self, s: &mut ControlInner) -> (i64, i64, i64) {
+    pub(crate) fn output_locked(&self, s: &mut ControlInner) -> (i64, i64, i64) {
         if s.deadline != 0.0 && self.now() >= s.deadline {
             Self::stop_locked(s, "lease_expired", true);
         }
@@ -617,7 +647,83 @@ impl ControlState {
                 w = 0.0;
             }
         }
-        if s.autonomy.is_some() && autonomous && s.deadline != 0.0 {
+        let engaged = s
+            .autonomy
+            .as_ref()
+            .map(|a| a.mode != "teleop")
+            .unwrap_or(false)
+            && s.deadline != 0.0;
+        if let (Some(nav), Some(a)) = (self.navigator.as_ref(), s.autonomy.as_ref()) {
+            nav.sync(Some(a.mode.as_str()), a.target_id, engaged);
+        }
+        let backed = engaged
+            && self.navigator.is_some()
+            && s.autonomy
+                .as_ref()
+                .map(|a| self.navigator.as_ref().unwrap().handles(&a.mode))
+                .unwrap_or(false);
+        if backed && matches!(s.autonomy.as_ref().map(|a| a.mode.as_str()), Some("explore") | Some("seek")) {
+            let nav = self.navigator.as_ref().unwrap();
+            let snapshot = self.detections.as_ref().map(|d| d()).unwrap_or(json!({}));
+            let usable = snapshot.get("fresh").and_then(Value::as_bool).unwrap_or(false)
+                && snapshot.get("error").map(|e| e.is_null()).unwrap_or(true);
+            let person = if usable {
+                snapshot
+                    .get("boxes")
+                    .and_then(Value::as_array)
+                    .map(|boxes| boxes.iter().find(|b| crate::autonomy::valid_person(b)))
+                    .flatten()
+            } else {
+                None
+            };
+            if s.autonomy.as_ref().map(|a| a.mode.as_str()) == Some("explore") {
+                if let Some(person) = person {
+                    // Like the reactive policy: Explore hands over to Seek on
+                    // the first person seen.
+                    let id = person["id"].as_i64();
+                    if let Some(a) = s.autonomy.as_mut() {
+                        a.mode = "seek".into();
+                        a.target_id = id;
+                    }
+                    nav.sync(Some("seek"), id, true);
+                }
+            }
+            if s.autonomy.as_ref().map(|a| a.mode.as_str()) == Some("seek") {
+                nav.update_seek(&snapshot);
+            }
+        }
+        let fault = if backed {
+            self.navigator.as_ref().unwrap().sensor_fault()
+        } else {
+            None
+        };
+        if let Some(fault) = fault {
+            // No fresh normal-tracking pose or measured depth of the current
+            // sensor session: stop now, even with a live lease and fresh
+            // cmd_vel, and require a new press.
+            Self::stop_locked(s, fault, true);
+            v = 0.0;
+            w = 0.0;
+        } else if backed {
+            let nav = self.navigator.as_ref().unwrap();
+            if let Some(profile) = &self.drive_profile {
+                // Calibrated: Nav2 m/s, rad/s straight to wheel PWM.
+                let command = nav.command(true).unwrap_or((0.0, 0.0));
+                let top_v = profile.max_linear_mps(Some(self.max_pwm));
+                let top_w = profile.max_angular_radps(Some(self.max_pwm));
+                return self.drive_output_values(
+                    s,
+                    DriveCmd::Velocity(
+                        command.0.clamp(-top_v, top_v),
+                        command.1.clamp(-top_w, top_w),
+                    ),
+                );
+            }
+            let command = nav.command(false);
+            let (nv, nw) = command.unwrap_or((0.0, 0.0));
+            v = nv;
+            w = nw;
+        } else if engaged {
             let cm = if self.now() - s.range_at < RANGE_TTL { s.range_cm } else { None };
             let snapshot = self.detections.as_ref().map(|d| d()).unwrap_or(json!({}));
             if let Some(a) = s.autonomy.as_mut() {
@@ -678,7 +784,13 @@ impl ControlState {
 
     pub fn status(&self, issue_permit: bool) -> Value {
         let mut s = self.inner.lock().unwrap();
-        let (left, right, pan) = self.output_locked(&mut s);
+        self.status_locked(&mut s, issue_permit)
+    }
+
+    /// status() with the caller already holding the lock (the nav seam's
+    /// set_goal/cancel need the status nav object mid-transaction).
+    pub(crate) fn status_locked(&self, s: &mut ControlInner, issue_permit: bool) -> Value {
+        let (left, right, pan) = self.output_locked(s);
         let now = self.now();
         s.permits.retain(|(_, expiry)| *expiry > now);
         let permit = if issue_permit && s.session_id.is_some() {
@@ -688,14 +800,14 @@ impl ControlState {
         } else {
             None
         };
-        json!({
+        let mut out = json!({
             "type": "control_status",
             "session_id": s.session_id,
             "permit": permit,
             "permit_ms": 250,
             "seq": s.seq,
             "range_cm": s.range_cm,
-            "estop": self.forward_blocked(&s),
+            "estop": self.forward_blocked(s),
             "mode": if s.scan_token.is_some() {
                 Value::from("scan")
             } else {
@@ -720,7 +832,21 @@ impl ControlState {
             "drive_profile": self.drive_profile.is_some(),
             "calibration_allowed": self.allow_calibration,
             "drive_mode": s.drive.map(|d| d.kind()).unwrap_or("normalized"),
-        })
+        });
+        if let Some(nav) = &self.navigator {
+            let (mode, phase, engaged) = match s.autonomy.as_ref() {
+                Some(a) => (
+                    Some(a.mode.as_str()),
+                    Some(a.phase.as_str()),
+                    a.mode != "teleop" && s.deadline != 0.0,
+                ),
+                None => (None, None, false),
+            };
+            out.as_object_mut()
+                .unwrap()
+                .insert("nav".into(), nav.nav_object(mode, phase, Some(engaged)));
+        }
+        out
     }
 
     pub fn public_status(&self) -> Value {
@@ -736,16 +862,23 @@ pub struct SerialPump {
     pub state: Arc<ControlState>,
     pub port: Option<String>,
     pub simulate: bool,
+    /// Sim world HC-SR04 reading; None means no echo (control/serial_link.py).
+    pub simulated_range: Option<Arc<dyn Fn() -> Option<i64> + Send + Sync>>,
     quit: Arc<(Mutex<bool>, Condvar)>,
     thread: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 impl SerialPump {
-    pub fn new(state: Arc<ControlState>, port: Option<String>, simulate: bool) -> Self {
+    pub fn new(
+        state: Arc<ControlState>,
+        port: Option<String>,
+        simulate: bool,
+        simulated_range: Option<Arc<dyn Fn() -> Option<i64> + Send + Sync>>,
+    ) -> Self {
         if port.is_some() && simulate {
             panic!("Choose a real serial port OR simulated rover");
         }
-        Self { state, port, simulate, quit: Arc::new((Mutex::new(false), Condvar::new())), thread: Mutex::new(None) }
+        Self { state, port, simulate, simulated_range, quit: Arc::new((Mutex::new(false), Condvar::new())), thread: Mutex::new(None) }
     }
 
     fn wait(&self, secs: f64) -> bool {
@@ -788,7 +921,8 @@ impl SerialPump {
             tracing::warn!("SIMULATED ROVER: no motor hardware is connected");
             self.state.set_connected(true, None);
             while !self.quitting() {
-                self.state.update_range(120.0);
+                let cm = self.simulated_range.as_ref().map(|f| f()).unwrap_or(Some(120));
+                self.state.update_range(cm.map(|c| c as f64).unwrap_or(-1.0));
                 self.state.output();
                 self.wait(0.05);
             }
