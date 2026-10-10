@@ -1,4 +1,5 @@
 """Identity admission, ambiguous matches and bounded image decoding."""
+import base64
 import json
 import math
 import struct
@@ -267,6 +268,39 @@ class EngineTests(unittest.TestCase):
     def test_live_faces_have_bounded_recognition_work(self):
         engine = self.engine([face(x=20+i, y=20) for i in range(20)])
         self.assertEqual(len(engine.infer(self.image())), 8)
+
+    def test_live_thumbnail_is_a_small_aligned_jpeg(self):
+        result = self.engine([face()]).infer(self.image())[0]
+        self.assertIn("thumbnail", result)
+        jpeg = base64.b64decode(result["thumbnail"], validate=True)
+        self.assertLessEqual(len(jpeg), 8192)
+        crop = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
+        self.assertEqual(crop.shape, (112, 112, 3))
+        np.testing.assert_allclose(result["embedding"], vector())
+
+    def test_only_first_two_live_faces_carry_thumbnails(self):
+        result = self.engine([face(x=20+i) for i in range(8)]).infer(self.image())
+        self.assertTrue(all("thumbnail" in item for item in result[:2]))
+        self.assertTrue(all("thumbnail" not in item for item in result[2:]))
+
+    def test_thumbnail_failure_or_oversize_does_not_break_recognition(self):
+        image = self.image()
+        engine = self.engine([face()])
+        with patch.object(cv2, "imencode", side_effect=cv2.error("encoder unavailable")):
+            result = engine.infer(image)
+        self.assertEqual(len(result), 1)
+        self.assertNotIn("thumbnail", result[0])
+        with patch.object(cv2, "imencode", return_value=(True, np.zeros(8193, np.uint8))):
+            result = engine.infer(image)
+        self.assertEqual(len(result), 1)
+        self.assertNotIn("thumbnail", result[0])
+
+    def test_enrollment_candidates_never_include_face_images(self):
+        engine = self.engine([face()])
+        candidate = engine._faces(self.image(), enrollment=True)[0]
+        self.assertNotIn("thumbnail", candidate)
+        gallery = Gallery()
+        self.assertEqual(gallery.enroll("One", candidate["embedding"])["samples"], 1)
 
     def test_png_is_supported_and_truncated_jpeg_rejected(self):
         engine = self.engine([face()])

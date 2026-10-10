@@ -34,9 +34,9 @@
 Files: `jetson/identity_engine.py`, `jetson/tests/test_identity_engine.py`.
 Interfaces: `IdentityEngine(detector_path,recognizer_path).infer(bytes)` returns normalized boxes with embeddings; `enroll_embedding(bytes)` requires exactly one raw detected face. `Gallery(path=None).enroll(name,embedding,person_id=None)`, `people()`, `remove(id)`, `match(embedding)` and `generation`.
 
-- [ ] Write failing unittest coverage for bounds, unknown/ambiguous matching, deletion, persistence and image admission.
-- [ ] Implement YuNet landmarks/SFace alignment and normalized embeddings with one engine lock.
-- [ ] Verify focused unit tests and official model load/blank-image smoke; real accuracy remains unverified.
+- [x] Write failing unittest coverage for bounds, unknown/ambiguous matching, deletion, persistence and image admission.
+- [x] Implement YuNet landmarks/SFace alignment and normalized embeddings with one engine lock.
+- [x] Verify focused unit tests and official model load/blank-image smoke; real accuracy remains unverified.
 
 ### Task2: Background service and API
 
@@ -45,25 +45,48 @@ Interfaces: `IdentityService(camera,detector_path=None,recognizer_path=None,gall
 Routes: GET `/phone/identity/enroll`; GET/POST `/phone/identity/people`; DELETE `/phone/identity/people/{id}`; GET `/phone/identity/status`; WS `/ws/identity`.
 POST JSON `{name,image:<base64>,consent:true,person_id?:id}`. HTTP bodies bounded before JSON parsing. WS packet `{type:"identity",source,frame,received,age_ms,fresh,faces:[{x,y,w,h,conf,name,person_id,similarity}],gallery_generation,infer_ms,error}`; absent/stale results have empty faces. `similarity` is a cosine score, not a probability.
 
-- [ ] Write failing tests for optional startup, stale input, source replacement, deletion during inference, busy enrollment, HTTP admission and routes.
-- [ ] Implement latest-frame worker, bounded off-thread inference and original receipt age.
-- [ ] Mount before static fallback using env FARSIGHT_IDENTITY_YUNET/SFACE/GALLERY; start/close through existing lifespan after owner handoff.
-- [ ] Run service/API and existing camera/face tests; confirm no score/control behavior changed.
+- [x] Write failing tests for optional startup, stale input, source replacement, deletion during inference, busy enrollment, HTTP admission and routes.
+- [x] Implement latest-frame worker, bounded off-thread inference and original receipt age.
+- [x] Mount before static fallback using env FARSIGHT_IDENTITY_YUNET/SFACE/GALLERY; start/close through existing lifespan after owner handoff.
+- [x] Run service/API and existing camera/face tests; confirm no score/control behavior changed.
 
 ### Task3: Phone page and reproducible model setup
 
 Files: `jetson/identity_enroll.html`, `tools/setup_identity_models.py`, `docs/face-identity.md` and focused tests.
 
-- [ ] Build name/consent/camera-photo page with relative routes, safe DOM names, clear failures and removal; resize uploads before encoding.
-- [ ] Pin official model weights/size/SHA256 and model licenses in an atomic downloader; ignored models are not committed.
-- [ ] Verify downloader failures and mobile-page upload contract; document launch and hardware acceptance checks.
+- [x] Build name/consent/camera-photo page with relative routes, safe DOM names, clear failures and removal; resize uploads before encoding.
+- [x] Pin official model weights/size/SHA256 and model licenses in an atomic downloader; ignored models are not committed.
+- [x] Verify downloader failures and mobile-page upload contract; document launch and hardware acceptance checks.
 
 ### Task4: Quest consumer and integration
 
 Files: owner handoff determines new module and small renderer hooks; otherwise Firstmate consumes published WS contract.
 
-- [ ] Agree consumer/frame matching and file boundary on #24 before touching shared UI.
-- [ ] Test stale/source-switched packets and escaped names; display Unknown for unmatched faces.
-- [ ] Run Quest build and simulator judge checks if Quest files change; get independent review.
-- [ ] Commit and push issue branch, create PR, merge after review under standing human authorization.
+- [x] Agree consumer/frame matching and file boundary on #24 before touching shared UI.
+- [x] Test stale/source-switched packets and escaped names; display Unknown for unmatched faces.
+- [x] Run Quest build and simulator judge checks if Quest files change; get independent review.
+- [ ] Commit and push final integration, merge PR145 after review under standing human authorization.
 - [ ] Coordinate deployment; keep real phone enrollment, Jetson inference load and Quest recognition open until measured.
+
+## Final implementation and evidence
+
+The live consumer uses exact-observation thumbnails and independent name cards,
+not face boxes on a newer camera frame. Original receipt age, source and gallery
+generation are preserved; the overlay clears during frozen H.264 independently
+of camera presentation evidence. Enrollment never saves photographs.
+
+Software gate:55 focused Python tests,237 Quest tests,production build and15/15
+simulated/replay judge steps pass. Independent review cleared the final separate
+overlay after finding and fixing stale camera-baked cards. Actual pinned-model
+fixture tests exercise enrollment, name/Unknown streaming and deletion through
+create_app with simulated control; they do not establish real rover acceptance.
+
+Owner coordination is recorded on #24 (6102693819,6102711070,6102755624); the
+Rust parity owner acknowledged the additive contract (6102790307). The narrow
+Python lifecycle and Quest consumer hooks are in the same issue PR under Mehdi's
+standing authorization to finish integration. Deployment remains owner-operated.
+
+Phone routing remains a hardware check: switching the operator app to Safari
+suspends its local bridge. Direct operator Safari to the foreground rover phone's
+tailnet listener is a candidate; Mac enrollment with a copied photo is the
+fallback. Native in-app enrollment and named navigation are separate features.

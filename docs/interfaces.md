@@ -73,6 +73,37 @@ null and the primary detector keeps running) and is null otherwise. Replay serve
 omit both. The Quest drill HUD and the settings drill line show "No face model:
 victims cannot be found" when `face_detector` is false; absent means no warning.
 
+### Opt-in enrolled face names
+
+Named recognition is separate from the drill's face detector and has no motor
+permissions. `FARSIGHT_IDENTITY_YUNET`, `FARSIGHT_IDENTITY_SFACE`, and optional
+`FARSIGHT_IDENTITY_GALLERY` configure the Python server's CPU identity worker.
+With neither model configured, it stays disabled. See [setup and phone
+enrollment](face-identity.md) for pinned models, routes, and hardware checks.
+
+`GET /phone/identity/enroll` serves the mobile photo-picker page;
+`GET /phone/identity/status` reports enabled/ready/error state;
+`GET /phone/identity/people` lists `{people:[{id,name,samples}],...}`.
+`POST /phone/identity/people` accepts
+`{name,image:<base64 JPEG/PNG without data-URL prefix>,consent:true,person_id?:id}`
+and returns `{id,name,samples}`. `DELETE /phone/identity/people/{id}` removes the
+templates and returns `{removed:true}`. Enrollment photos are not persisted.
+
+`WS /ws/identity` emits JSON with
+`{type:"identity",source,frame,received,age_ms,fresh,faces,gallery_generation,infer_ms,error}`.
+Each face has normalized original-image `x,y,w,h,conf`, plus `name`, `person_id`
+and cosine `similarity`; ambiguous/nonmatches are `Unknown` with null ID/score.
+At most two faces include a base64 JPEG `thumbnail` of the actual aligned face,
+at most112 ×112 and8KiB. Results expire at1000ms from original receiver receipt;
+source/frame replacement and gallery mutation suppress obsolete names. Messages
+are checked at5Hz, sent when the observation/state changes or for a2s heartbeat;
+repeated heartbeats never refresh observation age.
+
+Quest renders up to two independent LAST SEEN cards rather than attaching a
+delayed name to a newer video image. Their expiry/source reset runs even when
+the camera texture stops updating. These packets contain no persistent person
+track, measured world destination, or authorization for named navigation.
+
 Legacy camera age is receiver receipt age adjusted by reported producer encoding
 time and server queue/decode delay. It excludes pre-callback exposure and transit.
 Native verified RGB instead uses the earlier of receiver token issuance and

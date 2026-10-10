@@ -128,8 +128,12 @@ class IdentityService:
                 faces = []
                 for box in detected[:8]:
                     match = self.gallery.match(box['embedding'])
-                    faces.append({key: box[key] for key in ('x', 'y', 'w', 'h', 'conf')} |
-                                 (match or dict(name='Unknown', person_id=None, similarity=None)))
+                    face = ({key: box[key] for key in ('x', 'y', 'w', 'h', 'conf')} |
+                            (match or dict(name='Unknown', person_id=None, similarity=None)))
+                    thumbnail = box.get('thumbnail')
+                    if len(faces) < 2 and isinstance(thumbnail, str) and len(thumbnail) <= 10924:
+                        face['thumbnail'] = thumbnail
+                    faces.append(face)
                 # A removed enrollment cannot reappear from an in-flight result.
                 if generation != self.gallery.generation:
                     faces = []

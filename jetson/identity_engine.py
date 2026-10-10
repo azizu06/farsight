@@ -5,6 +5,7 @@ are deliberately left unnamed. This module never authorizes rover movement.
 """
 from __future__ import annotations
 
+import base64
 import json
 import os
 import struct
@@ -156,8 +157,19 @@ class IdentityEngine:
                         embedding = _embedding(self.recognizer.feature(aligned))
                     except IdentityError:
                         continue
-                    result.append(dict(x=x/width, y=y/height, w=box_width/width,
-                                       h=box_height/height, conf=score, embedding=embedding))
+                    identified = dict(x=x/width, y=y/height, w=box_width/width,
+                                      h=box_height/height, conf=score, embedding=embedding)
+                    # A card shows the actual face used by this inference rather
+                    # than attaching an old name box to a newer video frame.
+                    # Enrollment never generates images for the gallery.
+                    if not enrollment and len(result) < 2 and aligned.shape == (112, 112, 3):
+                        try:
+                            ok, jpeg = cv2.imencode(".jpg", aligned, [cv2.IMWRITE_JPEG_QUALITY, 65])
+                            if ok and 0 < jpeg.nbytes <= 8192:
+                                identified["thumbnail"] = base64.b64encode(jpeg.tobytes()).decode("ascii")
+                        except cv2.error:
+                            pass  # Optional card images must not break recognition.
+                    result.append(identified)
             except cv2.error as exc:
                 raise IdentityError("Face model inference failed") from exc
         if enrollment and len(result) != 1:

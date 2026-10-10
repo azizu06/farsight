@@ -5,6 +5,7 @@ import base64
 import binascii
 import json
 from pathlib import Path
+import time
 
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
@@ -74,9 +75,17 @@ def identity_router(service):
     @router.websocket('/ws/identity')
     async def identities(ws: WebSocket):
         await ws.accept()
+        previous = None
+        last_sent = 0
         try:
             while True:
-                await asyncio.wait_for(ws.send_json(service.snapshot()), .5)
+                packet = service.snapshot()
+                key = (packet['source'], packet['frame'], packet['received'],
+                       packet['gallery_generation'], packet['fresh'], packet['error'])
+                now = time.monotonic()
+                if key != previous or now - last_sent >= 2:
+                    await asyncio.wait_for(ws.send_json(packet), .5)
+                    previous, last_sent = key, now
                 await asyncio.sleep(.2)
         except (WebSocketDisconnect, asyncio.TimeoutError, RuntimeError):
             return

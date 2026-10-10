@@ -6,6 +6,13 @@ the face, and SFace produces the template used for later comparisons. A face
 without a clear match remains **Unknown**. This is separate from the existing
 UltraFace detector and rescue-drill scoring.
 
+The live view shows up to two small **LAST SEEN** cards with a name and the
+original face thumbnail used for that match. Cards clear after one second,
+on a camera-source change, or when the identity connection is lost. They are a
+separate overlay that can clear even if the camera image freezes. A name is not
+drawn over a face in a newer video frame; the thumbnail makes the observed face
+explicit instead of claiming that delayed recognition is a current-frame result.
+
 ## Install the models on the Jetson
 
 From the repository root, use the Python environment that runs the rover:
@@ -53,11 +60,17 @@ The page accepts a photo from the phone's camera or a saved JPEG/PNG. It uses th
 native file picker, so HTTP works without a browser camera-permission prompt.
 On a Mac, a phone photo copied or AirDropped to the Mac can be chosen from disk.
 
-The operator bridge iPhone may be able to open the page in Safari at
-`http://127.0.0.1:8081/phone/identity/enroll`. **That route needs a test on the
-actual phone:** switching to Safari can background the native bridge app and
-interrupt its connections. Use the Mac page if the phone route fails. Keep the
-rover's capture iPhone in its capture app; do not interrupt ARKit to enroll.
+The native operator app deliberately suspends its bridge when it enters the
+background. Opening Safari therefore interrupts its local
+`http://127.0.0.1:8081` relay; that is not a reliable enrollment route.
+
+A candidate phone route is Safari on the **operator** iPhone directly to
+`http://<ROVER_PHONE_TAILNET_IP>:8081/phone/identity/enroll`, with its Tailscale VPN
+active. The rover's capture iPhone must remain in its foreground capture app
+and keep forwarding to the Jetson. **This route still needs a test on the actual
+phones.** Enroll while parked, then return to the operator app and restore the
+production bridge before using the headset. If the direct route fails, use the
+Mac page and a copied phone photo. No native in-app enrollment screen is included.
 
 1. Park the rover and open the enrollment page.
 2. Wait for **Ready to enroll**. If recognition was just enabled, tap Refresh.
@@ -95,10 +108,19 @@ All routes use the existing relay origin:
 | `GET /phone/identity/people` | `{people: [{id, name, samples}], enabled, ready, error, ...}` |
 | `POST /phone/identity/people` | Add a person or photo; returns `{id, name, samples}` |
 | `DELETE /phone/identity/people/{id}` | Delete a person; returns `{removed: true}` |
+| `WS /ws/identity` | Freshness-bound identity observations for the live-view cards |
 
 POST JSON contains `name`, `image` (base64 JPEG/PNG **without** a data-URL prefix),
 and `consent: true`. Include `person_id` only when adding a photo to an existing
 person. The enrollment page handles resizing, explicit consent, and deletion.
+
+Identity messages retain the original `source`, `frame`, `received`,
+`gallery_generation`, and `age_ms` alongside `fresh`, `error`, and `faces`.
+An optional face `thumbnail` is a base64 JPEG without a data-URL prefix, at most
+112 × 112 pixels and 8 KiB. The display accepts only the active camera source,
+does not refresh an old observation's age on repeated messages, and cancels a
+thumbnail decode when its observation is superseded or removed. Server and
+viewer both bound thumbnail work; names have no effect on motor permissions.
 
 ## Live demonstration checks
 
