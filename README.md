@@ -42,8 +42,11 @@ npm --prefix quest test
 npm --prefix quest run build
 ```
 
-See [mapping architecture and wire format](docs/mapping.md). The earlier [rover/control contract](docs/interfaces.md)
-remains separate: this mapper does not command motors or implement detections.
+See [mapping architecture and wire format](docs/mapping.md) and the
+[rover/control contract](docs/interfaces.md). The composed server includes
+perception and safe teleop/Explore/Seek control; motors remain disabled until
+an explicit serial port or `--simulate-rover` is supplied. See
+[control setup and tests](jetson/control/README.md).
 
 ## Model licenses
 

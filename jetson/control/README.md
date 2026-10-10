@@ -43,7 +43,10 @@ Then send at 20 Hz while the operator holds the deadman and sees a fresh frame:
 ```
 
 `v,w` are -1..1; `pan` is -80..80 relative to forward. Positive `w` turns right.
-Only teleop is supported; seek proposals never move motors. A command's lease
+Standalone control supports teleop; the composed mapping server additionally
+supplies an in-memory perception snapshot reader to enable Explore/Seek. An
+assistant's seek proposal alone never moves motors: the operator must select
+the mode and continue valid held-deadman heartbeats. A command's lease
 expires at most 250 ms after **server permit issue**, regardless of when the
 command arrives. Delayed packets cannot restore stale movement. Invalid,
 expired, out-of-order, wrong-session or stale-video commands stop motion and
@@ -74,3 +77,24 @@ Run deterministic policy and WebSocket integration tests with:
 ```sh
 python3 -m unittest discover -s jetson/control/tests -v
 ```
+
+## Explore / Seek
+
+The policies live in [`jetson/autonomy.py`](../autonomy.py). `ControlState`
+selects a policy only after validating the operator command, and recomputes its
+motion inside `output()` before the existing safety gates and PWM mixer. There
+is no second controller, background lease renewal, or direct serial write.
+An optional `detections` constructor callback must return a bounded in-memory
+snapshot (the mapping server supplies `PerceptionService.snapshot`); never put
+inference, network, or disk work in this callback.
+
+See [the additive protocol extension](../../docs/interfaces.md#optional-explore--seek-extension)
+for selection, override, arrival and target-loss behavior. Start the assembled
+hardware-free server with `python3 -m jetson.mapping.server --demo --simulate-rover`.
+The demo camera does not invent person detections. `test_full_server.py` injects
+explicit fake inference snapshots into the real demo server to exercise
+Explore → Seek, steering, target loss, stick override, and link-silence stops.
+`test_autonomy.py` covers the pure policy and deterministic simulated control
+failure paths, including e-stop, stale range, release, and disconnect. Real
+wheel speed, stopping distance, ultrasonic alignment and track stability still
+need rover calibration and a physical Quest/Jetson run.
