@@ -1001,6 +1001,7 @@ impl SerialPump {
         let mut pending: Vec<u8> = Vec::new();
         let started = self.state.now();
         let mut last_response = started;
+        let mut unanswered = 0u32;
         let mut next_tick = started;
         let mut next_range = started;
         let mut last_pan: i64 = 90;
@@ -1023,6 +1024,7 @@ impl SerialPump {
                 let reply = String::from_utf8_lossy(&raw[..raw.len() - 1]).trim().to_string();
                 if reply == "OK" || reply.starts_with("R ") {
                     last_response = now;
+                    unanswered = 0;
                 }
                 if !ready && reply == "OK" {
                     self.state.set_connected(true, None);
@@ -1036,7 +1038,10 @@ impl SerialPump {
                     self.state.stop("uno_rejected_command", true);
                 }
             }
-            if now - last_response > if ready { 0.5 } else { 2.0 } {
+            // Silence only counts while commands go out: a starved pump sends
+            // nothing, and blaming the Uno costs a port reopen + bootloader
+            // reset (be2ec07 parity).
+            if now - last_response > if ready { 0.5 } else { 2.0 } && (unanswered >= 4 || !ready) {
                 return Err("Uno response timeout".into());
             }
             if now >= next_tick {
@@ -1054,6 +1059,7 @@ impl SerialPump {
                     next_range = now + 0.1;
                 }
                 send(&mut device, data.as_bytes())?;
+                unanswered += 1;
                 next_tick = now + 0.05;
             }
             self.wait(0.005);
