@@ -22,7 +22,11 @@ PROXY_PREFIXES = ("/ws/", "/map/", "/tts/", "/video/", "/mission/", "/phone/")
 # Binary map downloads keep the client's Accept-Encoding so br/gzip crosses the cellular leg.
 # Everything else asks upstream for identity because the relay decodes and rewrites JSON.
 ENCODED_PATHS = {"/map/points.bin", "/map/mesh.bin", "/map/export.ply"}
-PROXY_PATHS = {"/health", "/control/status", "/camera.jpg", "/depth.jpg", "/stream.mjpg", "/ask", "/phone", "/scan"}
+PROXY_PATHS = {"/health", "/control/status", "/camera.jpg", "/depth.jpg", "/stream.mjpg", "/ask", "/phone", "/scan", "/speak"}
+
+
+def is_proxied(path):
+    return path in PROXY_PATHS or path.startswith(PROXY_PREFIXES)
 
 
 def upstream_origin(value):
@@ -222,7 +226,7 @@ def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5):
             raise web.HTTPBadGateway(text=f"Rover unavailable: {type(exc).__name__}")
 
     async def dispatch(request):
-        if request.path in PROXY_PATHS or request.path.startswith(PROXY_PREFIXES):
+        if is_proxied(request.path):
             return await proxy(request)
         if request.method not in ("GET", "HEAD"):
             raise web.HTTPMethodNotAllowed(request.method, ("GET", "HEAD"))
