@@ -1,0 +1,83 @@
+"""FastAPI integration. Call start/close from the application's lifespan."""
+
+import asyncio
+from contextlib import suppress
+import json
+
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+
+from .serial_link import SerialPump
+from .state import ControlState
+
+
+class ControlService:
+    def __init__(self, serial_port=None, simulate=False, max_pwm=100, camera_ready=None):
+        self.state = ControlState(simulated=simulate, max_pwm=max_pwm, camera_ready=camera_ready)
+        self.pump = SerialPump(self.state, port=serial_port, simulate=simulate)
+        self.router = APIRouter()
+        self.router.add_api_websocket_route("/ws/control", self.websocket)
+        self.router.add_api_route("/control/status", self.public_status, methods=["GET"])
+
+    def start(self):
+        self.pump.start()
+
+    def close(self):
+        self.pump.close()
+
+    def status(self):
+        return self.state.status()
+
+    async def public_status(self):
+        status = self.status()
+        status.pop("session_id", None)
+        return status
+
+    async def websocket(self, ws: WebSocket):
+        await ws.accept()
+        session_id = self.state.begin()
+        if session_id is None:
+            await ws.close(code=1008, reason="Another controller owns the rover")
+            return
+
+        async def send_status():
+            while True:
+                # A congested downstream status path makes continued control
+                # unsafe; closing causes a stop instead of queued status tokens.
+                await asyncio.wait_for(ws.send_json(self.state.status(issue_permit=True)), 0.1)
+                await asyncio.sleep(0.1)
+
+        async def receive_commands():
+            while True:
+                envelope = await ws.receive()
+                if envelope["type"] == "websocket.disconnect":
+                    return
+                text = envelope.get("text")
+                if text is None:
+                    self.state.stop("binary_control_rejected")
+                    await ws.close(code=1003)
+                    return
+                if len(text) > 2048:
+                    self.state.stop("oversized_command")
+                    await ws.close(code=1009)
+                    return
+                try:
+                    message = json.loads(text)
+                    self.state.accept(message, session_id)
+                except (ValueError, TypeError):
+                    self.state.stop("invalid_json")
+
+        tasks = [asyncio.create_task(send_status()), asyncio.create_task(receive_commands())]
+        try:
+            done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                task.result()
+        except (WebSocketDisconnect, OSError, RuntimeError, asyncio.TimeoutError):
+            pass
+        finally:
+            self.state.end(session_id)
+            for task in tasks:
+                task.cancel()
+                with suppress(asyncio.CancelledError, WebSocketDisconnect, OSError, RuntimeError, asyncio.TimeoutError):
+                    await task
+            with suppress(RuntimeError, OSError):
+                await ws.close()
