@@ -108,6 +108,10 @@ class FarsightBridge(Node):
         self.inactive_cancel_s = p("inactive_cancel_s", 0.3).value
         self.explore = p("explore", True).value  # frontier exploration for the server's Explore mode
         self.explore_goal_timeout_s = p("explore_goal_timeout_s", 25.0).value
+        # "events": rclpy's C++ EventsExecutor. The Python MultiThreadedExecutor
+        # rebuilt its wait set on every TF/costmap/feedback wakeup and spent
+        # most of a core doing it. Callbacks here never block, so one thread is enough.
+        self.executor_kind = p("executor", "events").value
 
         self.tf = TransformBroadcaster(self)
         self.static_tf = StaticTransformBroadcaster(self)
@@ -531,6 +535,18 @@ class FarsightBridge(Node):
         self.loop.run_until_complete(self.connect_forever())
 
 
+def make_executor(node):
+    if node.executor_kind == "events":
+        try:
+            from rclpy.experimental import EventsExecutor
+            return EventsExecutor()
+        except ImportError:
+            node.get_logger().warning("rclpy has no EventsExecutor; using the multi-threaded executor")
+    elif node.executor_kind != "multithreaded":
+        raise ValueError("executor must be events or multithreaded")
+    return MultiThreadedExecutor(num_threads=3)
+
+
 def main():
     rclpy.init()
     node = FarsightBridge()
@@ -539,7 +555,7 @@ def main():
         return
     thread = threading.Thread(target=node.run_websocket, name="farsight-ws", daemon=True)
     thread.start()
-    executor = MultiThreadedExecutor(num_threads=3)
+    executor = make_executor(node)
     executor.add_node(node)
     try:
         executor.spin()

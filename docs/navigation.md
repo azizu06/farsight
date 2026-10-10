@@ -19,6 +19,7 @@ operator held deadman --/ws/control--> ControlState |                           
 python -m jetson.server ... --nav2                     # server side; add --drive-profile for calibrated m/s
 ros2 launch farsight_nav nav.launch.py                 # or the farsight-nav systemd unit
     [controller:=rpp|mppi] [slam:=false|true] [costmap_source:=pointcloud|nvblox] [explore:=true|false]
+    [bridge_executor:=events|multithreaded]
 ```
 
 - **Modes:** with Nav2 up, all three autonomy modes plan with Nav2; `nav.backend`
@@ -205,24 +206,30 @@ python3 ros2/tests/smoke.py
 ### Scenario results (simulation only)
 
 Source: one `run-tests.sh all` run on the operator Mac (Docker Desktop, 15 cores,
-7.7 GB VM), one scenario at a time, while an unrelated pytest run shared the machine.
+7.7 GB VM), one scenario at a time, with `bridge_executor:=events` (the default).
 Raw reports and verdicts: `docs/qualification/nav-scenarios-sim.json`. RPP is the
 default and gates the suite; MPPI runs are informational.
 
 | World | What it checks | RPP (default) | MPPI |
 |---|---|---|---|
-| `popup` | a 0.5 m box appears in the corridor when the rover is 1.75 m from it; no standstill over 0.5 s | arrived in 36.9 s, longest standstill 0.41 s, clearance 0.22 m | stood still 1.62 s (fails the gate) |
-| `doorway` | the only way to the far room is a 0.8 m door off to one side | arrived in 60.8 s, 3 recoveries (earlier tuning runs: 24.7-27.9 s, 0 recoveries) | 30.7 s |
-| `deadend` | a 0.7 m corridor at the goal closes once the rover is inside; back out and take the side gap | arrived in 121.4 s, 9 recoveries (earlier tuning run: 79.6 s) | 118.0 s |
-| `floorplan` Explore | three rooms; time to see 90 % of reachable floor | 90 % in 24.9 s, 0 collisions | 90 % in 96.3 s |
-| `seek` | follow a 0.25 m/s walker, 0.8 m standoff | 5.25 m to a 1.61 m median gap (max 2.44 m) | 1.39 m median gap |
+| `popup` | a 0.5 m box appears in the corridor when the rover is 1.75 m from it; no standstill over 0.5 s | arrived in 26.4 s, longest standstill 0.41 s, clearance 0.24 m | stood still 1.22 s (fails the gate) |
+| `doorway` | the only way to the far room is a 0.8 m door off to one side | arrived in 26.0 s, 0 recoveries | 26.8 s |
+| `deadend` | a 0.7 m corridor at the goal closes once the rover is inside; back out and take the side gap | arrived in 73.4 s, 4 recoveries | 72.9 s |
+| `floorplan` Explore | three rooms; time to see 90 % of reachable floor | 91 % in 25.0 s, 0 collisions | 90 % in 33.4 s |
+| `seek` | follow a 0.25 m/s walker, 0.8 m standoff | 5.21 m to a 1.18 m median gap (max 2.04 m) | 1.24 m median gap |
 
-All runs: 0 collisions, controller 20 Hz median. CPU in % of one core, mean
-over a run: bridge 80-107 %, `jetson.server` 21-33 %, `controller_server` 4-4.5 %
-with RPP and about 6.5 % with MPPI, `bt_navigator` 3-4 %, `planner_server` about 2 %.
-The bridge figure is high and not yet explained; profile it before relying on the
-Jetson. Run-to-run spread is large (doorway and dead-end recoveries vary), so treat
-single times as examples, not bounds.
+All runs: 0 collisions, controller 20 Hz median. CPU in % of one core, mean over a
+run: bridge 4-6 %, `jetson.server` 29-38 %, `controller_server` about 5 % with RPP
+and 7 % with MPPI, `bt_navigator` 2-5 %, `planner_server` about 2 %.
+
+The bridge used to take 80-107 % of a core. py-spy showed 78 % of its samples
+inside rclpy's Python `MultiThreadedExecutor` rebuilding its wait set on every TF,
+costmap and action-feedback wakeup, not in bridge code. The bridge now spins
+rclpy's C++ `EventsExecutor` (`rclpy.experimental`, present in Jazzy rclpy 7.1.12
+on the Mac image and the Jetson). Its callbacks never block, so one thread is
+enough. `bridge_executor:=multithreaded` restores the old executor. In the earlier
+run the doorway and dead end took longer (up to 61 s and 121 s with more
+recoveries), so treat single times as examples, not bounds.
 
 ## Jetson install
 
