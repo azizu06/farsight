@@ -29,7 +29,7 @@ const HOP_HEADERS: &[&str] = &[
     "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
     "te", "trailer", "transfer-encoding", "upgrade", "host", "content-length",
 ];
-const PROXY_PREFIXES: &[&str] = &["/ws/", "/map/", "/tts/", "/video/", "/mission/", "/phone/"];
+const PROXY_PREFIXES: &[&str] = &["/ws/", "/map/", "/geometry/", "/tts/", "/video/", "/mission/", "/phone/"];
 const PROXY_PATHS: &[&str] = &["/health", "/control/status", "/camera.jpg", "/depth.jpg", "/stream.mjpg", "/ask", "/phone", "/scan", "/speak"];
 /// HTTP requests on these paths are control-plane traffic: they use the
 /// dedicated upstream pool so bulk downloads can never take their slots.
@@ -37,7 +37,7 @@ const CONTROL_PATHS: &[&str] = &["/control/status", "/scan", "/ask"];
 /// Only binary map downloads keep the client's Accept-Encoding across the
 /// cellular leg; everything else asks upstream for identity because the
 /// relay decodes and rewrites JSON (operator_relay.py parity).
-const ENCODED_PATHS: &[&str] = &["/map/points.bin", "/map/mesh.bin", "/map/export.ply"];
+const ENCODED_PATHS: &[&str] = &["/map/points.bin", "/map/mesh.bin", "/map/export.ply", "/geometry/mesh.bin"];
 
 pub(crate) type RemoteSink = Arc<
     tokio::sync::Mutex<
@@ -232,6 +232,13 @@ async fn bonded_guards(
             .into_response();
     }
     next.run(req).await
+}
+
+/// The HTTP route for geometry paths when a --geometry-upstream origin is
+/// configured (None = the Jetson origin serves everything).
+fn geometry_route(s: &AppState, path: &str) -> Option<Url> {
+    let g = s.geometry.as_ref()?;
+    (path.starts_with("/geometry/") || path == "/map/mesh.bin").then(|| g.clone())
 }
 
 fn upstream_target(s: &AppState, req: &Request) -> String {
@@ -529,7 +536,7 @@ async fn proxy_or_static(State(s): State<Arc<AppState>>, req: Request) -> Respon
                 Err(resp) => return resp,
             }
         }
-        let route = s.origin.clone();
+        let route = geometry_route(&s, &path).unwrap_or_else(|| s.origin.clone());
         return proxy_http(s, req, route).await;
     }
     if req.method() != axum::http::Method::GET && req.method() != axum::http::Method::HEAD {
