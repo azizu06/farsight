@@ -10,9 +10,22 @@ use crate::phone::RgbdFrame;
 /// the phone would have sent. Identical geometry, colors, and pose to the
 /// Python implementation.
 pub fn simulated_frame(elapsed: f64, frame_id: i64, identity: &(String, u64)) -> RgbdFrame {
+    render(elapsed, frame_id, identity, None)
+}
+
+/// Scan sweep view: single camera origin (no translation), yawed by the
+/// commanded sweep angle.
+pub fn simulated_scan_frame(scan_yaw_deg: f64, frame_id: i64, identity: &(String, u64)) -> RgbdFrame {
+    render(0.0, frame_id, identity, Some(scan_yaw_deg))
+}
+
+fn render(elapsed: f64, frame_id: i64, identity: &(String, u64), scan_yaw: Option<f64>) -> RgbdFrame {
     let (w, h) = (160usize, 120usize);
     let k = Calibration { width: w, height: h, fx: 135.0, fy: 135.0, cx: w as f64 / 2.0, cy: h as f64 / 2.0 };
-    let yaw = elapsed * 0.27;
+    let yaw = match scan_yaw {
+        None => elapsed * 0.27,
+        Some(deg) => -deg.to_radians(),
+    };
     let (cos, sin) = (yaw.cos(), yaw.sin());
     let mut pose = IDENTITY;
     pose[0][0] = cos;
@@ -22,6 +35,11 @@ pub fn simulated_frame(elapsed: f64, frame_id: i64, identity: &(String, u64)) ->
     pose[2][2] = cos;
     pose[0][3] = 0.65 * (elapsed * 0.12).sin();
     pose[2][3] = -1.4 + 0.5 * (elapsed * 0.12).cos();
+    if scan_yaw.is_some() {
+        pose[0][3] = 0.0;
+        pose[1][3] = 0.0;
+        pose[2][3] = 0.0; // scan sweep has one camera origin; no translated mapping
+    }
     let origin = [pose[0][3], pose[1][3], pose[2][3]];
 
     let bounds = [[-3.0f64, -0.48, -6.0], [3.0, 2.4, 2.0]];

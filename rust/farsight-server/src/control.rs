@@ -37,6 +37,9 @@ pub struct ControlInner {
     pub link_ms: Option<f64>,
     pub stick_override: bool,
     pub autonomy: Option<Autonomy>,
+    pub scan_token: Option<u64>,
+    pub scan_serial: u64,
+    pub scan_w: f64,
 }
 
 pub struct ControlState {
@@ -94,6 +97,9 @@ impl ControlState {
                 link_ms: None,
                 stick_override: false,
                 autonomy: if detections.is_some() { Some(Autonomy::new()) } else { None },
+                scan_token: None,
+                scan_serial: 0,
+                scan_w: 0.0,
             }),
         })
     }
@@ -110,6 +116,8 @@ impl ControlState {
         s.v = 0.0;
         s.w = 0.0;
         s.deadline = 0.0;
+        s.scan_token = None;
+        s.scan_w = 0.0;
         s.reason = reason.into();
         if let Some(a) = s.autonomy.as_mut() {
             a.reset();
@@ -154,6 +162,62 @@ impl ControlState {
             Self::stop_locked(&mut s, "controller_disconnected", true);
             s.session_id = None;
             s.permits.clear();
+        }
+    }
+
+    /// Reserve stopped control; never issue/renew an operator lease here.
+    pub fn begin_scan(&self, session_id: Option<&str>, permit: Option<&str>) -> Result<u64, String> {
+        let mut s = self.inner.lock().unwrap();
+        let (left, right, _) = self.output_locked(&mut s);
+        let permit_expires = permit
+            .and_then(|t| s.permits.iter().find(|(k, _)| k == t).map(|(_, e)| *e))
+            .unwrap_or(0.0);
+        let now = self.now();
+        if s.scan_token.is_some()
+            || s.session_id.is_none()
+            || session_id != s.session_id.as_deref()
+            || permit.is_none()
+            || permit_expires <= now
+            || !s.connected
+            || s.requires_release
+            || s.deadline <= now
+            || !self.camera_is_ready()
+            || left != 0
+            || right != 0
+            || s.v != 0.0
+            || s.w != 0.0
+            || s.autonomy.as_ref().map(|a| a.mode != "teleop").unwrap_or(false)
+        {
+            return Err("Scan requires a stopped rover and a live operator-held permit".into());
+        }
+        s.scan_serial += 1;
+        s.scan_token = Some(s.scan_serial);
+        s.scan_w = 0.0;
+        Ok(s.scan_serial)
+    }
+
+    pub fn scan_command(&self, token: Option<u64>, w: f64, pan: f64) -> Result<(), String> {
+        let mut s = self.inner.lock().unwrap();
+        self.output_locked(&mut s); // enforce expiry, camera and range gates
+        if token.is_none() || token != s.scan_token {
+            return Err("Scan cancelled: operator lease, override, or safety stop".into());
+        }
+        if !w.is_finite() || !(-0.35..=0.35).contains(&w) || !(-80.0..=80.0).contains(&pan) {
+            return Err("Scan command outside bounded sweep".into());
+        }
+        s.scan_w = w;
+        s.pan = pan.round_ties_even() as i64;
+        self.output_locked(&mut s);
+        if token != s.scan_token {
+            return Err("Scan cancelled: camera or range unavailable".into());
+        }
+        Ok(())
+    }
+
+    pub fn end_scan(&self, token: u64) {
+        let mut s = self.inner.lock().unwrap();
+        if s.scan_token == Some(token) {
+            Self::stop_locked(&mut s, "scan_finished", true);
         }
     }
 
@@ -237,8 +301,13 @@ impl ControlState {
             Self::stop_locked(&mut s, "camera_stale", true);
             return false;
         }
-        let mode = message.get("mode").and_then(Value::as_str).unwrap_or("teleop");
-        if mode != "teleop" && (s.autonomy.is_none() || !(mode == "explore" || mode == "seek")) {
+        let mut mode = message.get("mode").and_then(Value::as_str).unwrap_or("teleop");
+        if mode == "scan" {
+            if s.scan_token.is_none() {
+                Self::stop_locked(&mut s, "scan_not_active", true);
+                return false;
+            }
+        } else if mode != "teleop" && (s.autonomy.is_none() || !(mode == "explore" || mode == "seek")) {
             Self::stop_locked(&mut s, "unsupported_mode", true);
             return false;
         }
@@ -272,9 +341,17 @@ impl ControlState {
             return false;
         }
         let mut pan = pan;
+        if s.scan_token.is_some() {
+            if mode != "scan" || v != 0.0 || w != 0.0 {
+                Self::stop_locked(&mut s, "scan_override", false);
+                mode = "teleop";
+            } else {
+                pan = s.pan as f64;
+            }
+        }
         let stick_override = s.stick_override;
         if let Some(autonomy) = s.autonomy.as_mut() {
-            if mode == "teleop" {
+            if mode == "teleop" || mode == "scan" {
                 autonomy.reset();
                 s.stick_override = false;
             } else if v != 0.0 || w != 0.0 || stick_override {
@@ -312,10 +389,23 @@ impl ControlState {
             Self::stop_locked(s, "lease_expired", true);
         }
         let autonomous = s.autonomy.as_ref().map(|a| a.mode != "teleop").unwrap_or(false);
-        if (s.v != 0.0 || s.w != 0.0 || autonomous) && !self.camera_is_ready() {
+        if (s.v != 0.0 || s.w != 0.0 || autonomous || s.scan_token.is_some()) && !self.camera_is_ready() {
             Self::stop_locked(s, "camera_stale", true);
         }
         let (mut v, mut w) = (s.v, s.w);
+        if s.scan_token.is_some() {
+            v = 0.0;
+            w = s.scan_w;
+            if w != 0.0
+                && (s.range_cm.is_none()
+                    || self.now() - s.range_at >= RANGE_TTL
+                    || s.range_cm.unwrap() < 25.0)
+            {
+                Self::stop_locked(s, "scan_range_stop", true);
+                v = 0.0;
+                w = 0.0;
+            }
+        }
         if s.autonomy.is_some() && autonomous && s.deadline != 0.0 {
             let cm = if self.now() - s.range_at < RANGE_TTL { s.range_cm } else { None };
             let snapshot = self.detections.as_ref().map(|d| d()).unwrap_or(json!({}));
@@ -383,7 +473,11 @@ impl ControlState {
             "seq": s.seq,
             "range_cm": s.range_cm,
             "estop": self.forward_blocked(&s),
-            "mode": s.autonomy.as_ref().map(|a| a.mode.clone()).unwrap_or_else(|| "teleop".into()),
+            "mode": if s.scan_token.is_some() {
+                Value::from("scan")
+            } else {
+                s.autonomy.as_ref().map(|a| a.mode.clone().into()).unwrap_or_else(|| Value::from("teleop"))
+            },
             "link_ms": s.link_ms,
             "autonomy_state": if s.stick_override {
                 "stick_override"
