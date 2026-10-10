@@ -2,6 +2,8 @@ import { mapResponseRevision } from "./map-response.js";
 import { chooseMapTransfer, MAP_TRANSFER_INTERVAL_MS } from "./map-transfer.js";
 import { floorHeight, mapWalk } from "./map-walk.js";
 import { PersonMarkers } from "./person-markers.js";
+import { macViewEnabled } from "./mac-auto-pose.js";
+import { MacAutoView } from "./mac-auto";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { VRButton } from "three/addons/webxr/VRButton.js";
@@ -291,6 +293,8 @@ let vrMapSpan = 4;
 // Walk-through: 1:1 map, its floor on the headset floor, viewer moved by mapWalk.
 const headPosition = new THREE.Vector3(), headDirection = new THREE.Vector3(), yAxis = new THREE.Vector3(0, 1, 0);
 let wasWalking = false;
+// ?macview=1: in AUTO the Mac-rendered picture replaces the local map while its frames are fresh.
+let macView: MacAutoView | null = null, macShown = false;
 function walkingNow() { return mapWalk.walking && renderer.xr.isPresenting; }
 function placeWalk() {
   const head = renderer.xr.getCamera();
@@ -314,6 +318,8 @@ renderer.setAnimationLoop((_time, frame) => {
   if (walking !== wasWalking) { wasWalking = walking; visibility(); syncMapConnection(); }
   root.visible = walking || !rover?.vrCameraView;
   if (walking) placeWalk(); else rover?.placeMapOverview(root, vrMapCenter, vrMapSpan);
+  const shown = macView?.update(start, walking && (rover?.freeRoam.active ?? false)) ?? false;
+  if (shown !== macShown) { macShown = shown; visibility(); syncMapConnection(); }
   // Nav goals/path/reticle sit on the map's floor in walk mode (the floor is on the headset
   // floor there); the layer only moves in y, so /nav/goal keeps AR-world x/z.
   if (rover) rover.navLayer.position.y = walking ? mapWalk.floorY : 0;
@@ -336,6 +342,7 @@ renderer.setAnimationLoop((_time, frame) => {
 });
 
 rover = new RoverExperience(renderer, scene, camera, () => view, setView);
+if (macViewEnabled(location.search)) macView = new MacAutoView(renderer, scene, () => appliedPoints >= 0 ? appliedPoints : null);
 root.add(rover.navLayer);
 diagnostics = new DiagnosticsOverlay(() => rover!.diagnostics());
 rover.addCockpitPanel(diagnostics.panel);
@@ -376,9 +383,10 @@ function emptyGeometry() {
 }
 function visibility() {
   const walking = walkingNow();
-  scanMarkers.visible = walking || view !== "camera";
-  cloud.visible = walking || view !== "camera";
-  surfaces.visible = !pointsOnly && (walking || view === "3d");
+  // The Mac picture replaces the map geometry only; people and nav goals stay drawn over it.
+  scanMarkers.visible = !macShown && (walking || view !== "camera");
+  cloud.visible = !macShown && (walking || view !== "camera");
+  surfaces.visible = !macShown && !pointsOnly && (walking || view === "3d");
 }
 function frameMap() {
   const positions = cloud.geometry.getAttribute("position");
@@ -581,6 +589,8 @@ function acceptStatus(next: Status) {
 /** Server stride-capped Jetson mesh; phone-built (geometry_source) meshes are not capped this way. */
 function cappedMesh(next: Status) { return next.capped === true && !next.geometry_source; }
 function mapNeeded() {
+  // The Mac picture is the map while it is fresh: skip local geometry transfers and draws.
+  if (macShown) return false;
   // Walk-through keeps the map live while the rover drives or explores.
   if (walkingNow()) return true;
   return !mapDriving && (view !== "camera" || (renderer.xr.isPresenting && !rover?.vrCameraView));
@@ -592,7 +602,7 @@ function syncMapConnection() {
     pointsRequest?.abort(); meshRequest?.abort();
     if (socket) { socket.onclose = null; socket.close(); socket = null; }
     serverOnline = false;
-    text("cloud-status", mapDriving ? "Map retained · updates paused while deadman is held" : "Map retained · transfers paused during live camera view");
+    text("cloud-status", macShown ? "Map retained · Mac render shown in AUTO" : mapDriving ? "Map retained · updates paused while deadman is held" : "Map retained · transfers paused during live camera view");
     $("cloud-status").dataset.live = "false";
   }
 }
