@@ -31,12 +31,11 @@ VALUE_FLAGS = (
     ("FARSIGHT_TRIAGE_INTERVAL", "--triage-interval"), ("FARSIGHT_DEPTH_MODEL", "--depth-model"),
     ("FARSIGHT_SCAN_FOV", "--scan-fov"), ("FARSIGHT_SCAN_TURN_DPS", "--scan-turn-dps"),
     ("FARSIGHT_PROXIMITY_STOP", "--proximity-stop"), ("FARSIGHT_PAN_MOUNT", "--pan-mount"),
-    ("FARSIGHT_MAP_FUSION", "--map-fusion"),
     ("FARSIGHT_NAV_SPEED_MPS", "--nav-speed-mps"), ("FARSIGHT_NAV_TURN_RADPS", "--nav-turn-radps"),
     ("FARSIGHT_NAV_MAX_V", "--nav-max-v"), ("FARSIGHT_NAV_MAX_W", "--nav-max-w"),
     ("FARSIGHT_NAV_CAMERA_HEIGHT", "--nav-camera-height"),
 )
-BOOL_FLAGS = (("FARSIGHT_H264", "--h264"), ("FARSIGHT_SIMULATE_ROVER", "--simulate-rover"),
+BOOL_FLAGS = (("FARSIGHT_H264", "--h264"), ("FARSIGHT_FUSION_BYPASS", "--fusion-bypass"), ("FARSIGHT_SIMULATE_ROVER", "--simulate-rover"),
               ("FARSIGHT_SCAN_PAN", "--scan-pan"), ("FARSIGHT_RECORD", "--record"), ("FARSIGHT_NAV2", "--nav2"),
               ("FARSIGHT_ALLOW_CALIBRATION", "--allow-calibration"), ("FARSIGHT_LIDAR_DRIVE", "--lidar-drive"))
 INT_VARS = ("FARSIGHT_PORT", "FARSIGHT_MAX_PWM", "FARSIGHT_MIN_PWM", "FARSIGHT_AUTONOMY_MAX_PWM", "FARSIGHT_WAIT_SECONDS",

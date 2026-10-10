@@ -50,7 +50,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                record=False, replay=None, proximity_stop=True, pan_mount="servo", autonomy_max_pwm=None, nav2=False, nav_speed_mps=0.45,
                nav_turn_radps=3.0, nav_max_v=0.7, nav_max_w=0.8, nav_camera_height=0.15, bulk_limit_mbps=0, drive_profile=None,
                allow_calibration=False, sim_world=None, bonded_control=False, lidar_drive=False,
-               map_fusion=True):
+               fusion_bypass=False):
     if sim_world is not None:  # closed-loop simulator: a moving ray-cast rover in a test floor plan
         if serial_port or camera_device is not None or replay is not None:
             raise ValueError("--sim-world is simulated; it cannot drive real motors, cameras or replays")
@@ -70,7 +70,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
         raise ValueError("Replay is read-only; bonded control cannot be combined with it")
     if scan_pan and pan_mount == "none":
         raise ValueError("--scan-pan needs a physical pan servo (--pan-mount servo)")
-    state = MapState(demo, fusion=map_fusion)
+    state = MapState(demo, fusion_bypass=fusion_bypass)
     sim = (SimFeed(RoverSim(load_world(sim_world), speed_mps=nav_speed_mps, turn_radps=nav_turn_radps))
            if sim_world is not None else None)
     camera_service = CameraService(state, device=camera_device, lidar_drive=lidar_drive)
@@ -742,9 +742,9 @@ def main():
     parser.add_argument("--proximity-stop", type=on_off, default=True, metavar="on|off",
                         help="Ultrasonic stop: range < 25 cm or stale range blocks forward (default on). "
                              "'off' is an explicit opt-in for navigation runs that steer around obstacles")
-    parser.add_argument("--map-fusion", type=on_off, default=True, metavar="on|off",
-                        help="Build the voxel/mesh map from /phone RGB-D on the Jetson (default on). 'off' skips "
-                             "fusion only; pose, depth for Nav2, camera and inference keep running")
+    parser.add_argument("--fusion-bypass", action="store_true",
+                        help="Skip the Jetson voxel/mesh fusion of /phone RGB-D (the mesh is built elsewhere); "
+                             "pose, depth for Nav2, camera and inference keep running")
     parser.add_argument("--pan-mount", choices=("servo", "none"), default="servo",
                         help="servo: a pan servo follows the commanded pan and forward drive is blocked while "
                              "it is off-centre (default). none: no pan hardware; the headset pans digitally, "
@@ -813,7 +813,7 @@ def main():
                 nav_max_v=args.nav_max_v, nav_max_w=args.nav_max_w,
                 nav_camera_height=args.nav_camera_height, sim_world=args.sim_world,
                 bonded_control=args.bonded_control, lidar_drive=args.lidar_drive,
-                map_fusion=args.map_fusion), host=args.host, port=args.port,
+                fusion_bypass=args.fusion_bypass), host=args.host, port=args.port,
                 ssl_certfile=args.ssl_certfile, ssl_keyfile=args.ssl_keyfile,
                 ws_max_size=8 * 1024 * 1024, access_log=False,
                 timeout_graceful_shutdown=5)
