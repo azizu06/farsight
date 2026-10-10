@@ -342,9 +342,10 @@ async fn proxy_http(s: Arc<AppState>, req: Request) -> Response {
         // WebSocket upgrades are routed separately by the router.
         return (StatusCode::BAD_REQUEST, "Expected WebSocket upgrade").into_response();
     }
-    let mut headers = forward_headers(req.headers());
-    headers.remove("accept-encoding");
-    headers.insert("accept-encoding", HeaderValue::from_static("identity"));
+    // Forward the client's Accept-Encoding: the jetson leg of the proxy is
+    // the cellular hop, so the server must compress for it and the body
+    // passes through to the browser still encoded.
+    let headers = forward_headers(req.headers());
     let method = req.method().clone();
     let body = req.into_body();
     let body_bytes = match axum::body::to_bytes(body, 8 * 1024 * 1024).await {
