@@ -75,8 +75,11 @@ not face boxes on a newer camera frame. Original receipt age, source and gallery
 generation are preserved; the overlay clears during frozen H.264 independently
 of camera presentation evidence. Enrollment never saves photographs.
 
-Software gate:55 focused Python tests,237 Quest tests,production build and15/15
-simulated/replay judge steps pass. Independent review cleared the final separate
+Software gate:55 focused Python tests,239 Quest tests and production build pass.
+The simulator/replay judge passed15/15 before the last main integration. Latest
+combined and untouched main both abort Scan after1–2views (14/15); earlier
+main-only traces also contain this stop. It is a known inherited software gate,
+not evidence of a face regression or of real-rover acceptance. Independent review cleared the final separate
 overlay after finding and fixing stale camera-baked cards. Actual pinned-model
 fixture tests exercise enrollment, name/Unknown streaming and deletion through
 create_app with simulated control; they do not establish real rover acceptance.
