@@ -9,7 +9,7 @@ import time
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from starlette.datastructures import UploadFile
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ValidationError
 import uvicorn
@@ -28,6 +28,8 @@ from jetson.assistant import SceneAssistant, AssistantError
 from jetson.phrases import PhraseSpeaker, SpeechError
 from jetson.triage import TriageBusy, TriageService
 from jetson.scan import ScanService
+from jetson.bulk import BulkPacer, BulkPacketTooLarge
+from jetson.bulk_response import bulk_response, PacedStreamingResponse
 
 DIST = Path(__file__).resolve().parents[2] / "quest" / "dist"
 
@@ -38,7 +40,8 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                piper_bin=None, piper_model=None, tts_dir=None, face_model=None, whisper_url=None,
                piper_model_es=None, speaker_cmd="auto", triage_interval=3.0,
                depth_model=None, scan_pan=False, scan_fov=70, scan_intrinsics=None, scan_turn_dps=90,
-               record=False, replay=None):
+               record=False, replay=None, bulk_limit_mbps=0):
+    bulk = BulkPacer(bulk_limit_mbps)
     if replay is not None and (serial_port or camera_device is not None or demo or simulate_rover or record):
         raise ValueError("Replay cannot be combined with serial, live/simulated sources, or recording")
     if (demo or simulate_rover) and serial_port:
@@ -127,6 +130,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
     app.state.triage = triage
     app.state.phrases = phrases
     app.state.scanner = scanner
+    app.state.bulk = bulk
     app.include_router(control.router)
 
     class AskBodyLimit:
@@ -193,7 +197,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
         headers = dict(headers or {}, Vary="Accept-Encoding")
         if coding:
             headers["Content-Encoding"] = coding
-        return Response(body, media_type="application/octet-stream", headers=headers)
+        return bulk_response(body, bulk, media_type="application/octet-stream", headers=headers)
 
     @app.get("/map/points.bin")
     async def points(request: Request):
@@ -233,7 +237,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
         frame = await asyncio.to_thread(camera_service.preview)
         if frame is None:
             raise HTTPException(503, "Waiting for a camera frame")
-        return Response(frame.jpeg, media_type="image/jpeg", headers={"Cache-Control": "no-store",
+        return bulk_response(frame.jpeg, bulk, media_type="image/jpeg", headers={"Cache-Control": "no-store",
               "X-Frame-Id": str(frame.frame_id), "X-Frame-Age-Ms": str(frame.age_ms),
               "X-Frame-Source": frame.source})
 
@@ -241,7 +245,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
     async def depth():
         if state.depth_jpeg is None:
             raise HTTPException(503, "Waiting for measured depth")
-        return Response(state.depth_jpeg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+        return bulk_response(state.depth_jpeg, bulk, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
     @app.get("/stream.mjpg")
     async def stream():
@@ -255,6 +259,8 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                         yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame.jpeg + b"\r\n"
                         last = (frame.source, frame.frame_id)
                 await asyncio.sleep(0.02)
+        if bulk.enabled:
+            return PacedStreamingResponse(images(), bulk, media_type="multipart/x-mixed-replace; boundary=frame")
         return StreamingResponse(images(), media_type="multipart/x-mixed-replace; boundary=frame")
 
     @app.websocket("/ws/video")
@@ -277,16 +283,41 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
         try:
             frame = camera_service.snapshot()
             await ws.send_json(dict(type="video_init", mime=video_service.mime, source=frame.source if frame else "WAITING"))
-            await ws.send_bytes(video_service.init)
+            async def send_initialization(payload):
+                if bulk.enabled:
+                    await asyncio.wait_for(ws.send_bytes(payload), .5)
+                else:
+                    await ws.send_bytes(payload)
             requests = asyncio.Queue(maxsize=4)
             async def receive_requests():
                 while True:
-                    request = await asyncio.wait_for(ws.receive_json(), 10)
+                    reading = asyncio.create_task(ws.receive_json())
+                    try:
+                        # Keep outer cancellation authoritative even if a read
+                        # completes in the same turn as init admission fails.
+                        done, _ = await asyncio.wait((reading,), timeout=10)
+                        if not done:
+                            raise asyncio.TimeoutError()
+                        request = reading.result()
+                    finally:
+                        reading.cancel()
+                        await asyncio.gather(reading, return_exceptions=True)
                     request_id = request.get("request_id") if isinstance(request, dict) else None
                     if (not isinstance(request, dict) or request.get("type") != "next"
                             or type(request_id) is not int or not 0 <= request_id <= 2**53 - 1 or requests.full()):
                         raise ValueError("Invalid or excessive video request window")
                     requests.put_nowait((request_id, time.monotonic()))
+
+            # Monitor requests/disconnection while initialization waits for the
+            # shared budget, rather than retaining a cancelled client's slot.
+            receiver = asyncio.create_task(receive_requests())
+            initialization = asyncio.create_task(bulk.send_packet(video_service.init, send_initialization))
+            tasks = [receiver, initialization]
+            done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                task.result()
+            if receiver in done:
+                return
 
             async def send_fragments():
                 while True:
@@ -295,18 +326,23 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                     wait_ms = (time.monotonic() - waiting_at) * 1000
                     if fragment is None:
                         return
-                    metadata = {key: value for key, value in fragment.items() if key not in ("payload", "received")}
-                    metadata.update(type="video_segment", request_id=request_id,
-                                    server_wait_ms=wait_ms,
-                                    age_ms=max(0, round((time.monotonic() - fragment["received"]) * 1000)))
-                    await asyncio.wait_for(ws.send_json(metadata), .5)
-                    await asyncio.wait_for(ws.send_bytes(fragment["payload"]), .5)
+                    async def send_fragment(payload):
+                        metadata = {key: value for key, value in fragment.items() if key not in ("payload", "received")}
+                        metadata.update(type="video_segment", request_id=request_id,
+                                        server_wait_ms=wait_ms,
+                                        age_ms=max(0, round((time.monotonic() - fragment["received"]) * 1000)))
+                        await asyncio.wait_for(ws.send_json(metadata), .5)
+                        await asyncio.wait_for(ws.send_bytes(payload), .5)
+                    await bulk.send_packet(fragment["payload"], send_fragment)
 
-            tasks = [asyncio.create_task(receive_requests()), asyncio.create_task(send_fragments())]
+            tasks = [receiver, asyncio.create_task(send_fragments())]
             done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
                 task.result()
-        except (WebSocketDisconnect, RuntimeError, OSError, asyncio.TimeoutError, ValueError):
+        except BulkPacketTooLarge:
+            with suppress(RuntimeError, WebSocketDisconnect):
+                await ws.close(code=1009, reason="Oversized/invalid video packet; reduce bitrate/resolution for the bulk atomic cap")
+        except (WebSocketDisconnect, RuntimeError, OSError, asyncio.TimeoutError, TypeError, ValueError):
             with suppress(RuntimeError, WebSocketDisconnect):
                 await ws.close(code=1013)
         finally:
@@ -344,7 +380,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
         path = mission.directory / name
         if not path.is_file():
             raise HTTPException(404, "Mission snapshot unavailable")
-        return Response(await asyncio.to_thread(path.read_bytes), media_type="image/jpeg")
+        return bulk_response(await asyncio.to_thread(path.read_bytes), bulk, media_type="image/jpeg")
 
     class DrillRequest(BaseModel):
         duration_s: int = 90
@@ -414,7 +450,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
         path = assistant.output_dir / name
         if not path.is_file():
             raise HTTPException(404, "Speech reply unavailable")
-        return Response(await asyncio.to_thread(path.read_bytes), media_type="audio/wav")
+        return bulk_response(await asyncio.to_thread(path.read_bytes), bulk, media_type="audio/wav")
 
     @app.websocket("/ws/map")
     async def viewer(ws: WebSocket):
@@ -439,12 +475,20 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                                 return state.status(), state.point_packet()
                         status, packet = await asyncio.to_thread(snapshot)
                         await ws.send_json(status)
-                        await ws.send_bytes(packet)
+                        async def send_packet(payload):
+                            if bulk.enabled:
+                                await asyncio.wait_for(ws.send_bytes(payload), .5)
+                            else:
+                                await ws.send_bytes(payload)
+                        await bulk.send_packet(packet, send_packet)
                         revision = status["revision"]
                     else:
                         await ws.send_json(status)
                     await asyncio.sleep(0.5)
-            except (WebSocketDisconnect, RuntimeError, OSError):
+            except BulkPacketTooLarge:
+                with suppress(RuntimeError, WebSocketDisconnect):
+                    await ws.close(code=1009, reason="Bulk map packet too large; subscribe /ws/map?points=http and pull HTTP snapshots")
+            except (WebSocketDisconnect, RuntimeError, OSError, asyncio.TimeoutError):
                 pass
 
         async def wait_for_disconnect():
@@ -587,6 +631,8 @@ def main():
     parser.add_argument("--h264", action="store_true", help="Enable ffmpeg H264 fragmented MP4 WebSocket")
     parser.add_argument("--video-fps", type=int, default=10)
     parser.add_argument("--video-bitrate", type=int, default=500000, help="H264 bit/s; start low for cellular headroom")
+    parser.add_argument("--bulk-limit-mbps", type=float, default=0,
+                        help="Optional shared bulk payload Mbps cap; 0 disables, control/permits remain unpaced")
     parser.add_argument("--record", action="store_true", help="Record JPEG, detections and control in --mission-dir")
     parser.add_argument("--replay", help="Loop a recorded mission directory; motors always disabled")
     parser.add_argument("--mission-dir", help="Persist detection evidence beneath this directory")
@@ -602,6 +648,10 @@ def main():
     parser.add_argument("--triage-interval", type=float, default=3.0, help="Minimum seconds between SBAR model calls")
     parser.add_argument("--tts-dir", default="/tmp/farsight-tts", help="Bounded locally generated speech replies")
     args = parser.parse_args()
+    try:
+        BulkPacer(args.bulk_limit_mbps)
+    except ValueError as exc:
+        parser.error(str(exc))
     if args.record and not args.mission_dir:
         parser.error("--record requires --mission-dir")
     if args.replay and (args.serial_port or args.camera is not None or args.demo or args.simulate_rover or args.record):
@@ -622,7 +672,7 @@ def main():
                 speaker_cmd=args.speaker_cmd, triage_interval=args.triage_interval,
                 depth_model=args.depth_model, scan_pan=args.scan_pan, scan_fov=args.scan_fov,
                 scan_intrinsics=args.scan_intrinsics, scan_turn_dps=args.scan_turn_dps,
-                record=args.record, replay=args.replay), host=args.host, port=args.port,
+                record=args.record, replay=args.replay, bulk_limit_mbps=args.bulk_limit_mbps), host=args.host, port=args.port,
                 ssl_certfile=args.ssl_certfile, ssl_keyfile=args.ssl_keyfile,
                 ws_max_size=8 * 1024 * 1024, access_log=False,
                 timeout_graceful_shutdown=5)

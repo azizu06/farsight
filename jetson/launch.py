@@ -9,6 +9,7 @@ Dry run, no server started (exit 1 when a configured file or device is missing):
 """
 
 import argparse
+import math
 import os
 import sys
 import time
@@ -25,6 +26,7 @@ VALUE_FLAGS = (
     ("FARSIGHT_TTS_DIR", "--tts-dir"), ("FARSIGHT_PIPER_MODEL_ES", "--piper-model-es"),
     ("FARSIGHT_SPEAKER_CMD", "--speaker-cmd"), ("FARSIGHT_FACE_MODEL", "--face-model"),
     ("FARSIGHT_VIDEO_FPS", "--video-fps"), ("FARSIGHT_VIDEO_BITRATE", "--video-bitrate"),
+    ("FARSIGHT_BULK_LIMIT_MBPS", "--bulk-limit-mbps"),
     ("FARSIGHT_TRIAGE_INTERVAL", "--triage-interval"), ("FARSIGHT_DEPTH_MODEL", "--depth-model"),
     ("FARSIGHT_SCAN_FOV", "--scan-fov"), ("FARSIGHT_SCAN_TURN_DPS", "--scan-turn-dps"),
 )
@@ -32,7 +34,8 @@ BOOL_FLAGS = (("FARSIGHT_H264", "--h264"), ("FARSIGHT_SIMULATE_ROVER", "--simula
               ("FARSIGHT_SCAN_PAN", "--scan-pan"), ("FARSIGHT_RECORD", "--record"))
 INT_VARS = ("FARSIGHT_PORT", "FARSIGHT_MAX_PWM", "FARSIGHT_MIN_PWM", "FARSIGHT_WAIT_SECONDS",
             "FARSIGHT_VIDEO_FPS", "FARSIGHT_VIDEO_BITRATE")
-FLOAT_VARS = ("FARSIGHT_TRIAGE_INTERVAL", "FARSIGHT_SCAN_FOV", "FARSIGHT_SCAN_TURN_DPS")
+FLOAT_VARS = ("FARSIGHT_TRIAGE_INTERVAL", "FARSIGHT_SCAN_FOV", "FARSIGHT_SCAN_TURN_DPS",
+              "FARSIGHT_BULK_LIMIT_MBPS")
 # Variables whose value is a file that must exist for the feature to work.
 FILE_VARS = ("FARSIGHT_DETECTOR_MODEL", "FARSIGHT_FACE_MODEL", "FARSIGHT_PIPER_MODEL", "FARSIGHT_PIPER_MODEL_ES",
              "FARSIGHT_WHISPER_MODEL", "FARSIGHT_DEPTH_MODEL", "FARSIGHT_SSL_CERTFILE", "FARSIGHT_SSL_KEYFILE")
@@ -67,6 +70,10 @@ def build_args(env):
                     kind(_get(env, name))
                 except ValueError:
                     raise ValueError(f"{name} must be {'an integer' if kind is int else 'a number'}, got {_get(env, name)!r}")
+    if _get(env, "FARSIGHT_BULK_LIMIT_MBPS"):
+        bulk_limit = float(_get(env, "FARSIGHT_BULK_LIMIT_MBPS"))
+        if not math.isfinite(bulk_limit) or bulk_limit < 0:
+            raise ValueError("FARSIGHT_BULK_LIMIT_MBPS must be finite and nonnegative; 0 disables pacing")
     if _truthy(env, "FARSIGHT_SIMULATE_ROVER") and _get(env, "FARSIGHT_SERIAL_PORT"):
         raise ValueError("FARSIGHT_SIMULATE_ROVER cannot be combined with FARSIGHT_SERIAL_PORT")
     if bool(_get(env, "FARSIGHT_SSL_CERTFILE")) != bool(_get(env, "FARSIGHT_SSL_KEYFILE")):

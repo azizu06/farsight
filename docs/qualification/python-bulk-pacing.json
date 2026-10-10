@@ -1,0 +1,715 @@
+{
+  "scope": "Software simulation and modeled local link; not Jetson/cellular/Quest timing",
+  "host": "macOS-26.7-arm64-arm-64bit",
+  "pose_model": "models/yolo11n-pose.onnx",
+  "production_modified": false,
+  "trials": [
+    {
+      "bulk_limit_mbps": 0,
+      "scenario": "snapshot",
+      "seconds": 12.020827165979426,
+      "modeled_link": {
+        "mbps": 2,
+        "delay_each_direction_ms": 50
+      },
+      "guards": {
+        "permit_ms": 250,
+        "view_ms": 500
+      },
+      "explicitly_simulated_motors": true,
+      "actual_pose_workload": {
+        "detector": "pose",
+        "detector_backend": "pose-onnx",
+        "detector_error": null,
+        "detector_fps": 9.9,
+        "detector_inference_ms": 66.3
+      },
+      "snapshot_raw_bytes": 3200004,
+      "snapshot_gzip_bytes": 2961734,
+      "snapshot_delivered_bytes": 2088775,
+      "snapshot_complete": false,
+      "snapshot_content_encoding": null,
+      "snapshot_error": null,
+      "snapshot_intentionally_aborted": false,
+      "status_only_ack": true,
+      "status_messages": 24,
+      "map_binary_messages": 0,
+      "source_bulk_bytes": 3572369,
+      "source_bulk_offered_mbps": 2.377453032590163,
+      "proxy_total_mbps": 1.9264218410475094,
+      "control_ack_p95_ms": 193.08524997904897,
+      "accepted_permit_age_p95_ms": 202.54037500126287,
+      "first_backend_failure": null,
+      "capture_receipt_p95_ms": 375.4775840318762,
+      "received_video_fragments": 120,
+      "video_errors": [],
+      "control_errors": [],
+      "settled_moving_fraction": 0.0,
+      "recovery_moving_fraction": 0.0,
+      "recovery_view_peak_ms": 486.4462919891812,
+      "final_pacer_pending": 0,
+      "final_future_debt_ms": 0,
+      "phases": [
+        {
+          "name": "start",
+          "at": 0,
+          "source": {
+            "source": {},
+            "pacer_enabled": false,
+            "pacer_pending": 0,
+            "future_debt_ms": 0,
+            "model": {
+              "detector": "pose",
+              "detector_backend": "pose-onnx",
+              "detector_error": null,
+              "detector_fps": 9.9,
+              "detector_inference_ms": 67.6
+            },
+            "snapshot_raw_bytes": 3200004,
+            "snapshot_gzip_bytes": 2961734,
+            "snapshot_sha256": "d6c914fc1343e43a9980d58d2eddc58539952181c40345b474766f08260722bd"
+          },
+          "source_bulk_bytes": 0,
+          "delivered_map_bytes": 0,
+          "received_fragments": 13,
+          "video_connected": true,
+          "video_age_ms": 362.38262500893325
+        },
+        {
+          "name": "finish",
+          "at": 12.020827165979426,
+          "source": {
+            "source": {
+              "/ws/control:text": {
+                "bytes": 93086,
+                "messages": 239,
+                "first_at": 325618.6864615,
+                "last_at": 325630.678923666
+              },
+              "/control/status:body": {
+                "bytes": 74130,
+                "messages": 235,
+                "first_at": 325618.68708525,
+                "last_at": 325630.656324166
+              },
+              "/ws/video:text": {
+                "bytes": 28238,
+                "messages": 120,
+                "first_at": 325618.689571333,
+                "last_at": 325630.663319541
+              },
+              "/ws/video:binary": {
+                "bytes": 610635,
+                "messages": 120,
+                "first_at": 325618.68966975,
+                "last_at": 325630.663397666
+              },
+              "/ws/map:text": {
+                "bytes": 14496,
+                "messages": 24,
+                "first_at": 325618.740517,
+                "last_at": 325630.257399666
+              },
+              "/map/points.bin:body": {
+                "bytes": 2961734,
+                "messages": 1,
+                "first_at": 325618.843657416,
+                "last_at": 325618.843657416
+              }
+            },
+            "pacer_enabled": false,
+            "pacer_pending": 0,
+            "future_debt_ms": 0,
+            "model": {
+              "detector": "pose",
+              "detector_backend": "pose-onnx",
+              "detector_error": null,
+              "detector_fps": 9.9,
+              "detector_inference_ms": 66.3
+            },
+            "snapshot_raw_bytes": 3200004,
+            "snapshot_gzip_bytes": 2961734,
+            "snapshot_sha256": "d6c914fc1343e43a9980d58d2eddc58539952181c40345b474766f08260722bd"
+          },
+          "source_bulk_bytes": 3572369,
+          "delivered_map_bytes": 2088775,
+          "received_fragments": 133,
+          "video_connected": true,
+          "video_age_ms": 372.74233301403
+        }
+      ],
+      "header_accounting_caveat": "Case-sensitive helper copy omitted the lower-case content-encoding header; separate probe verifies gzip."
+    },
+    {
+      "bulk_limit_mbps": 1.4,
+      "scenario": "snapshot",
+      "seconds": 12.024763207999058,
+      "modeled_link": {
+        "mbps": 2,
+        "delay_each_direction_ms": 50
+      },
+      "guards": {
+        "permit_ms": 250,
+        "view_ms": 500
+      },
+      "explicitly_simulated_motors": true,
+      "actual_pose_workload": {
+        "detector": "pose",
+        "detector_backend": "pose-onnx",
+        "detector_error": null,
+        "detector_fps": 10.1,
+        "detector_inference_ms": 66.6
+      },
+      "snapshot_raw_bytes": 3200004,
+      "snapshot_gzip_bytes": 2961734,
+      "snapshot_delivered_bytes": 1474375,
+      "snapshot_complete": false,
+      "snapshot_content_encoding": null,
+      "snapshot_error": null,
+      "snapshot_intentionally_aborted": false,
+      "status_only_ack": true,
+      "status_messages": 24,
+      "map_binary_messages": 0,
+      "source_bulk_bytes": 2087824,
+      "source_bulk_offered_mbps": 1.389016291721169,
+      "proxy_total_mbps": 1.519347340482069,
+      "control_ack_p95_ms": 162.70320897456259,
+      "accepted_permit_age_p95_ms": 249.7917499858886,
+      "first_backend_failure": {
+        "reason": "lease_expired",
+        "at": 325633.363758375,
+        "seq": 27,
+        "last_active_command": {
+          "at": 325633.362601291,
+          "seq": 27,
+          "accepted": true,
+          "reason": "active",
+          "permit_age_ms": 249.7917499858886,
+          "permit_issued_at": 325633.112809541,
+          "permit_expires_at": 325633.362809541,
+          "previous_deadline_at": 325633.362809541,
+          "deadline_at": 325633.362809541
+        }
+      },
+      "capture_receipt_p95_ms": 431.9881669911556,
+      "received_video_fragments": 120,
+      "video_errors": [],
+      "control_errors": [],
+      "settled_moving_fraction": 0.0,
+      "recovery_moving_fraction": 0.0,
+      "recovery_view_peak_ms": 517.5518330107443,
+      "final_pacer_pending": 1,
+      "final_future_debt_ms": 0,
+      "phases": [
+        {
+          "name": "start",
+          "at": 0,
+          "source": {
+            "source": {},
+            "pacer_enabled": true,
+            "pacer_pending": 0,
+            "future_debt_ms": 0,
+            "model": {
+              "detector": "pose",
+              "detector_backend": "pose-onnx",
+              "detector_error": null,
+              "detector_fps": 10.0,
+              "detector_inference_ms": 67.3
+            },
+            "snapshot_raw_bytes": 3200004,
+            "snapshot_gzip_bytes": 2961734,
+            "snapshot_sha256": "d6c914fc1343e43a9980d58d2eddc58539952181c40345b474766f08260722bd"
+          },
+          "source_bulk_bytes": 0,
+          "delivered_map_bytes": 0,
+          "received_fragments": 13,
+          "video_connected": true,
+          "video_age_ms": 366.1713749887422
+        },
+        {
+          "name": "finish",
+          "at": 12.024763207999058,
+          "source": {
+            "source": {
+              "/ws/control:text": {
+                "bytes": 93509,
+                "messages": 240,
+                "first_at": 325633.270976416,
+                "last_at": 325645.2943605
+              },
+              "/control/status:body": {
+                "bytes": 74164,
+                "messages": 235,
+                "first_at": 325633.271255708,
+                "last_at": 325645.245116666
+              },
+              "/ws/video:text": {
+                "bytes": 28194,
+                "messages": 120,
+                "first_at": 325633.275271,
+                "last_at": 325645.288424541
+              },
+              "/ws/video:binary": {
+                "bytes": 613449,
+                "messages": 120,
+                "first_at": 325633.275385416,
+                "last_at": 325645.288506458
+              },
+              "/ws/map:text": {
+                "bytes": 14496,
+                "messages": 24,
+                "first_at": 325633.325046833,
+                "last_at": 325644.83537675
+              },
+              "/map/points.bin:body": {
+                "bytes": 1474375,
+                "messages": 337,
+                "first_at": 325633.428196875,
+                "last_at": 325645.255374583
+              }
+            },
+            "pacer_enabled": true,
+            "pacer_pending": 1,
+            "future_debt_ms": 0,
+            "model": {
+              "detector": "pose",
+              "detector_backend": "pose-onnx",
+              "detector_error": null,
+              "detector_fps": 10.1,
+              "detector_inference_ms": 66.6
+            },
+            "snapshot_raw_bytes": 3200004,
+            "snapshot_gzip_bytes": 2961734,
+            "snapshot_sha256": "d6c914fc1343e43a9980d58d2eddc58539952181c40345b474766f08260722bd"
+          },
+          "source_bulk_bytes": 2087824,
+          "delivered_map_bytes": 1474375,
+          "received_fragments": 133,
+          "video_connected": true,
+          "video_age_ms": 390.14591699652374
+        }
+      ],
+      "header_accounting_caveat": "Case-sensitive helper copy omitted the lower-case content-encoding header; separate probe verifies gzip."
+    },
+    {
+      "bulk_limit_mbps": 0,
+      "scenario": "abort",
+      "seconds": 12.040889457974117,
+      "modeled_link": {
+        "mbps": 2,
+        "delay_each_direction_ms": 50
+      },
+      "guards": {
+        "permit_ms": 250,
+        "view_ms": 500
+      },
+      "explicitly_simulated_motors": true,
+      "actual_pose_workload": {
+        "detector": "pose",
+        "detector_backend": "pose-onnx",
+        "detector_error": null,
+        "detector_fps": 10.0,
+        "detector_inference_ms": 66.3
+      },
+      "snapshot_raw_bytes": 3200004,
+      "snapshot_gzip_bytes": 2961734,
+      "snapshot_delivered_bytes": 491075,
+      "snapshot_complete": false,
+      "snapshot_content_encoding": null,
+      "snapshot_error": null,
+      "snapshot_intentionally_aborted": true,
+      "status_only_ack": true,
+      "status_messages": 6,
+      "map_binary_messages": 0,
+      "source_bulk_bytes": 3571571,
+      "source_bulk_offered_mbps": 2.372961573953968,
+      "proxy_total_mbps": 0.8592109441839076,
+      "control_ack_p95_ms": 153.09416700620204,
+      "accepted_permit_age_p95_ms": 203.35479197092354,
+      "first_backend_failure": null,
+      "capture_receipt_p95_ms": 365.6575829703361,
+      "received_video_fragments": 120,
+      "video_errors": [],
+      "control_errors": [],
+      "settled_moving_fraction": 0.0,
+      "recovery_moving_fraction": 0.0,
+      "recovery_view_peak_ms": 375.2330420333892,
+      "final_pacer_pending": 0,
+      "final_future_debt_ms": 0,
+      "phases": [
+        {
+          "name": "start",
+          "at": 0,
+          "source": {
+            "source": {},
+            "pacer_enabled": false,
+            "pacer_pending": 0,
+            "future_debt_ms": 0,
+            "model": {
+              "detector": "pose",
+              "detector_backend": "pose-onnx",
+              "detector_error": null,
+              "detector_fps": 10.1,
+              "detector_inference_ms": 67.3
+            },
+            "snapshot_raw_bytes": 3200004,
+            "snapshot_gzip_bytes": 2961734,
+            "snapshot_sha256": "d6c914fc1343e43a9980d58d2eddc58539952181c40345b474766f08260722bd"
+          },
+          "source_bulk_bytes": 0,
+          "delivered_map_bytes": 0,
+          "received_fragments": 13,
+          "video_connected": true,
+          "video_age_ms": 364.2567089824006
+        },
+        {
+          "name": "after_abort",
+          "at": 3.0096498749917373,
+          "source": {
+            "source": {
+              "/ws/control:text": {
+                "bytes": 23291,
+                "messages": 60,
+                "first_at": 325647.915030333,
+                "last_at": 325650.887485875
+              },
+              "/control/status:body": {
+                "bytes": 18529,
+                "messages": 59,
+                "first_at": 325647.915308791,
+                "last_at": 325650.874025958
+              },
+              "/ws/video:text": {
+                "bytes": 6984,
+                "messages": 30,
+                "first_at": 325647.917763791,
+                "last_at": 325650.827272916
+              },
+              "/ws/video:binary": {
+                "bytes": 152569,
+                "messages": 30,
+                "first_at": 325647.917838375,
+                "last_at": 325650.827367
+              },
+              "/ws/map:text": {
+                "bytes": 3624,
+                "messages": 6,
+                "first_at": 325647.968940708,
+                "last_at": 325650.473296166
+              },
+              "/map/points.bin:body": {
+                "bytes": 2961734,
+                "messages": 1,
+                "first_at": 325648.072139125,
+                "last_at": 325648.072139125
+              }
+            },
+            "pacer_enabled": false,
+            "pacer_pending": 0,
+            "future_debt_ms": 0,
+            "model": {
+              "detector": "pose",
+              "detector_backend": "pose-onnx",
+              "detector_error": null,
+              "detector_fps": 9.9,
+              "detector_inference_ms": 66.5
+            },
+            "snapshot_raw_bytes": 3200004,
+            "snapshot_gzip_bytes": 2961734,
+            "snapshot_sha256": "d6c914fc1343e43a9980d58d2eddc58539952181c40345b474766f08260722bd"
+          },
+          "source_bulk_bytes": 3114303,
+          "delivered_map_bytes": 491075,
+          "received_fragments": 43,
+          "video_connected": true,
+          "video_age_ms": 430.36558298720047
+        },
+        {
+          "name": "finish",
+          "at": 12.040889457974117,
+          "source": {
+            "source": {
+              "/ws/control:text": {
+                "bytes": 92700,
+                "messages": 238,
+                "first_at": 325647.915030333,
+                "last_at": 325659.930678958
+              },
+              "/control/status:body": {
+                "bytes": 73502,
+                "messages": 233,
+                "first_at": 325647.915308791,
+                "last_at": 325659.90543075
+              },
+              "/ws/video:text": {
+                "bytes": 28167,
+                "messages": 120,
+                "first_at": 325647.917763791,
+                "last_at": 325659.8611215
+              },
+              "/ws/video:binary": {
+                "bytes": 609837,
+                "messages": 120,
+                "first_at": 325647.917838375,
+                "last_at": 325659.861217
+              },
+              "/ws/map:text": {
+                "bytes": 3624,
+                "messages": 6,
+                "first_at": 325647.968940708,
+                "last_at": 325650.473296166
+              },
+              "/map/points.bin:body": {
+                "bytes": 2961734,
+                "messages": 1,
+                "first_at": 325648.072139125,
+                "last_at": 325648.072139125
+              }
+            },
+            "pacer_enabled": false,
+            "pacer_pending": 0,
+            "future_debt_ms": 0,
+            "model": {
+              "detector": "pose",
+              "detector_backend": "pose-onnx",
+              "detector_error": null,
+              "detector_fps": 10.0,
+              "detector_inference_ms": 66.3
+            },
+            "snapshot_raw_bytes": 3200004,
+            "snapshot_gzip_bytes": 2961734,
+            "snapshot_sha256": "d6c914fc1343e43a9980d58d2eddc58539952181c40345b474766f08260722bd"
+          },
+          "source_bulk_bytes": 3571571,
+          "delivered_map_bytes": 491075,
+          "received_fragments": 133,
+          "video_connected": true,
+          "video_age_ms": 388.39841593429446
+        }
+      ],
+      "header_accounting_caveat": "Case-sensitive helper copy omitted the lower-case content-encoding header; separate probe verifies gzip.",
+      "post_abort_source_map_extra_bytes": 0,
+      "post_abort_received_video_fragments": 90,
+      "post_abort_observed_seconds": 9.03123958298238
+    },
+    {
+      "bulk_limit_mbps": 1.4,
+      "scenario": "abort",
+      "seconds": 12.012580542010255,
+      "modeled_link": {
+        "mbps": 2,
+        "delay_each_direction_ms": 50
+      },
+      "guards": {
+        "permit_ms": 250,
+        "view_ms": 500
+      },
+      "explicitly_simulated_motors": true,
+      "actual_pose_workload": {
+        "detector": "pose",
+        "detector_backend": "pose-onnx",
+        "detector_error": null,
+        "detector_fps": 10.0,
+        "detector_inference_ms": 67.9
+      },
+      "snapshot_raw_bytes": 3200004,
+      "snapshot_gzip_bytes": 2961734,
+      "snapshot_delivered_bytes": 350000,
+      "snapshot_complete": false,
+      "snapshot_content_encoding": null,
+      "snapshot_error": null,
+      "snapshot_intentionally_aborted": true,
+      "status_only_ack": true,
+      "status_messages": 6,
+      "map_binary_messages": 0,
+      "source_bulk_bytes": 973920,
+      "source_bulk_offered_mbps": 0.6486000216816151,
+      "proxy_total_mbps": 0.7648501475489342,
+      "control_ack_p95_ms": 151.7852499964647,
+      "accepted_permit_age_p95_ms": 175.64962501637638,
+      "first_backend_failure": null,
+      "capture_receipt_p95_ms": 423.83262501563877,
+      "received_video_fragments": 120,
+      "video_errors": [],
+      "control_errors": [],
+      "settled_moving_fraction": 0.07109004739336493,
+      "recovery_moving_fraction": 0.0,
+      "recovery_view_peak_ms": 460.59366703545675,
+      "final_pacer_pending": 0,
+      "final_future_debt_ms": 0,
+      "phases": [
+        {
+          "name": "start",
+          "at": 0,
+          "source": {
+            "source": {},
+            "pacer_enabled": true,
+            "pacer_pending": 0,
+            "future_debt_ms": 0,
+            "model": {
+              "detector": "pose",
+              "detector_backend": "pose-onnx",
+              "detector_error": null,
+              "detector_fps": 10.2,
+              "detector_inference_ms": 68.2
+            },
+            "snapshot_raw_bytes": 3200004,
+            "snapshot_gzip_bytes": 2961734,
+            "snapshot_sha256": "d6c914fc1343e43a9980d58d2eddc58539952181c40345b474766f08260722bd"
+          },
+          "source_bulk_bytes": 0,
+          "delivered_map_bytes": 0,
+          "received_fragments": 14,
+          "video_connected": true,
+          "video_age_ms": 344.54312399122864
+        },
+        {
+          "name": "after_abort",
+          "at": 3.0263552090036683,
+          "source": {
+            "source": {
+              "/ws/control:text": {
+                "bytes": 23456,
+                "messages": 61,
+                "first_at": 325662.635608416,
+                "last_at": 325665.66136575
+              },
+              "/control/status:body": {
+                "bytes": 18305,
+                "messages": 59,
+                "first_at": 325662.636169583,
+                "last_at": 325665.611125125
+              },
+              "/ws/video:text": {
+                "bytes": 6975,
+                "messages": 30,
+                "first_at": 325662.639330541,
+                "last_at": 325665.589595416
+              },
+              "/ws/video:binary": {
+                "bytes": 151308,
+                "messages": 30,
+                "first_at": 325662.639506208,
+                "last_at": 325665.589716833
+              },
+              "/ws/map:text": {
+                "bytes": 3624,
+                "messages": 6,
+                "first_at": 325662.689707041,
+                "last_at": 325665.193489208
+              },
+              "/map/points.bin:body": {
+                "bytes": 358750,
+                "messages": 82,
+                "first_at": 325662.79590425,
+                "last_at": 325665.639051125
+              }
+            },
+            "pacer_enabled": true,
+            "pacer_pending": 2,
+            "future_debt_ms": 0,
+            "model": {
+              "detector": "pose",
+              "detector_backend": "pose-onnx",
+              "detector_error": null,
+              "detector_fps": 9.9,
+              "detector_inference_ms": 66.2
+            },
+            "snapshot_raw_bytes": 3200004,
+            "snapshot_gzip_bytes": 2961734,
+            "snapshot_sha256": "d6c914fc1343e43a9980d58d2eddc58539952181c40345b474766f08260722bd"
+          },
+          "source_bulk_bytes": 510058,
+          "delivered_map_bytes": 350000,
+          "received_fragments": 44,
+          "video_connected": true,
+          "video_age_ms": 482.55258403904736
+        },
+        {
+          "name": "finish",
+          "at": 12.012580542010255,
+          "source": {
+            "source": {
+              "/ws/control:text": {
+                "bytes": 92086,
+                "messages": 237,
+                "first_at": 325662.635608416,
+                "last_at": 325674.598865041
+              },
+              "/control/status:body": {
+                "bytes": 72647,
+                "messages": 231,
+                "first_at": 325662.636169583,
+                "last_at": 325674.59715225
+              },
+              "/ws/video:text": {
+                "bytes": 28163,
+                "messages": 120,
+                "first_at": 325662.639330541,
+                "last_at": 325674.598999041
+              },
+              "/ws/video:binary": {
+                "bytes": 610795,
+                "messages": 120,
+                "first_at": 325662.639506208,
+                "last_at": 325674.599112458
+              },
+              "/ws/map:text": {
+                "bytes": 3624,
+                "messages": 6,
+                "first_at": 325662.689707041,
+                "last_at": 325665.193489208
+              },
+              "/map/points.bin:body": {
+                "bytes": 363125,
+                "messages": 83,
+                "first_at": 325662.79590425,
+                "last_at": 325665.768043208
+              }
+            },
+            "pacer_enabled": true,
+            "pacer_pending": 0,
+            "future_debt_ms": 0,
+            "model": {
+              "detector": "pose",
+              "detector_backend": "pose-onnx",
+              "detector_error": null,
+              "detector_fps": 10.0,
+              "detector_inference_ms": 67.9
+            },
+            "snapshot_raw_bytes": 3200004,
+            "snapshot_gzip_bytes": 2961734,
+            "snapshot_sha256": "d6c914fc1343e43a9980d58d2eddc58539952181c40345b474766f08260722bd"
+          },
+          "source_bulk_bytes": 973920,
+          "delivered_map_bytes": 350000,
+          "received_fragments": 134,
+          "video_connected": true,
+          "video_age_ms": 345.4915420273319
+        }
+      ],
+      "header_accounting_caveat": "Case-sensitive helper copy omitted the lower-case content-encoding header; separate probe verifies gzip.",
+      "post_abort_source_map_extra_bytes": 4375,
+      "post_abort_received_video_fragments": 90,
+      "post_abort_observed_seconds": 8.986225333006587
+    }
+  ],
+  "pose_model_sha256": "f008a85f03209fab36167d32303f61c06fa9ea1256fb0278ed1ea3f2b434e1d3",
+  "method_notes": [
+    "Source bytes count successful ASGI body/binary handoffs, not physical wire delivery.",
+    "The sizing fixture is a fixed 200,000-point packet; it is not a measured reconstructed scene.",
+    "Snapshot trials ran 12 seconds and were terminated before the multi-megabyte download completed.",
+    "The helper initially copied headers into a case-sensitive dictionary, so content_encoding null is an accounting bug; the production relay did preserve gzip.",
+    "Separate metadata-only probe through the same paced production path verified status 200, content-encoding gzip, and raw magic 1f8b.",
+    "The initial evidence has no saved client-invalidation detail; moving fractions cannot establish a causal pacing improvement."
+  ],
+  "compression_probe": {
+    "bulk_limit_mbps": 1.4,
+    "status": 200,
+    "content_encoding": "gzip",
+    "raw_magic_hex": "1f8b",
+    "content_length": null,
+    "transfer_encoding": "chunked",
+    "physical_inputs": false
+  }
+}
