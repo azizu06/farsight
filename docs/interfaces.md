@@ -856,9 +856,9 @@ ignore:
 
 | Field | Meaning |
 |---|---|
-| `pose_id` | Monotonic per Quest page. Renderers should echo it in `video_segment.pose`. |
+| `pose_id` | Monotonic per Quest page; also sent as `frame_id`. Renderers echo it in `video_segment.pose`. |
 | `space` | `"ar_map"`. |
-| `session_id` | New per AUTO entry. |
+| `session_id` | Renderer view identity, new per AUTO entry: a UUID in secure contexts, otherwise an opaque token. |
 | `map_revision` | Point revision of the Quest's local map, or `null`. |
 | `viewer` | `{x, y, z, yaw}` of `mapWalk`. |
 | `eyes[]` | `{position, quaternion, projection[16]}` per XR eye, in map coordinates. `projection` is column-major. |

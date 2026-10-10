@@ -171,8 +171,9 @@ Manual right-stick driving and the stick's virtual locomotion are unchanged.
 - **Fallback.** While Mac frames are fresh (under 1 s old), the local map
   geometry (points, mesh, scan markers) is hidden and its `/ws/map` transfers
   pause. People markers and nav goals stay drawn over the picture. When frames
-  stop, the local map and its transfers return under a `MAC VIEW LOST · LOCAL MAP` label. Leaving AUTO
-  closes both Mac sockets.
+  stop or freeze, the local map and its transfers return under a
+  `MAC VIEW LOST · LOCAL MAP` label. Only a new decoded frame renews freshness.
+  Leaving AUTO closes both Mac sockets.
 - **Desk proof** (Chrome, sim map, PR #132 renderer bc155e8, no headset): 1280x720
   decoded and shown 0.8–1.6 s after AUTO entry. After the first frame (which can echo a
   previous session's pose and is head-locked), every displayed frame matched a sent
