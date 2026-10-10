@@ -679,6 +679,12 @@ async fn map_export(State(s): State<Arc<AppState>>, headers: HeaderMap) -> Respo
     map_packet_response(&s, crate::state::PacketKind::Ply, &headers, true)
 }
 
+/// Read-only map state for geometry relays/renderers (real-backend contract;
+/// Codex's Python state.status mirror).
+async fn map_status(State(s): State<Arc<AppState>>) -> Json<Value> {
+    Json(s.mapping.status())
+}
+
 async fn map_reset(State(s): State<Arc<AppState>>) -> Json<Value> {
     s.mapping.clear();
     Json(s.mapping.status())
@@ -1875,6 +1881,7 @@ pub fn router(state: Arc<AppState>, dist: Option<PathBuf>) -> Router {
         .route("/health", get(health))
         // Raw 16 B/point payloads crossing a cellular link; compressed
         // variants are cached per map version inside MapState.
+        .route("/map/status", get(map_status))
         .route("/map/points.bin", get(map_points))
         .route("/map/mesh.bin", get(map_mesh))
         .route("/map/export.ply", get(map_export))
