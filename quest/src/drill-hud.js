@@ -14,6 +14,8 @@ export function parseDrill(json) {
   const summary = json.summary && finite(json.summary.found) ? json.summary : null;
   return {
     active: json.active, remaining_s: json.remaining_s,
+    face_detector: typeof json.face_detector === "boolean" ? json.face_detector : null,
+    face_error: typeof json.face_error === "string" ? json.face_error : null,
     found: json.found ?? 0, total: finite(json.total) ? json.total : null, estops: finite(json.estops) ? json.estops : 0,
     route_home: points(json.route_home), breadcrumb: points(json.breadcrumb),
     summary: summary && {
@@ -24,16 +26,20 @@ export function parseDrill(json) {
   };
 }
 
+export const NO_FACE_MODEL = "No face model: victims cannot be found";
+/** Warning only when the rover explicitly reports the face pass missing; older rovers omit the field. */
+export const faceWarning = drill => (drill?.face_detector === false ? NO_FACE_MODEL : "");
+
 const victims = (found, total) => `${found}${total === null ? "" : "/" + total}`;
 const clock = seconds => `${Math.floor(seconds / 60)}:${String(Math.round(seconds % 60)).padStart(2, "0")}`;
 
 /** One-line status; `ageMs` is the time since the server status arrived. */
 export function drillLine(drill, ageMs) {
-  if (!drill || drill.remaining_s === null) return "";
+  if (!drill || drill.remaining_s === null) return faceWarning(drill);
   if (ageMs > 3000 && drill.active) return "Rescue drill status stale";
   const left = Math.max(0, drill.remaining_s - ageMs / 1000);
   const head = drill.active && left > 0 ? `Rescue drill ${Math.ceil(left)}s` : "Rescue drill complete";
-  return `${head} · victims ${victims(drill.found, drill.total)} · e-stops ${drill.estops}`;
+  return [`${head} · victims ${victims(drill.found, drill.total)} · e-stops ${drill.estops}`, faceWarning(drill)].filter(Boolean).join(" · ");
 }
 
 export function endLines(drill) {
@@ -97,6 +103,7 @@ export function drawDrill(c, drill, ageMs, width, height) {
     c.font = `bold ${30 * u}px system-ui`; c.fillText(`Victims ${victims(drill.found, drill.total)}`, 190 * u, 92 * u);
     c.font = `${20 * u}px system-ui`; c.fillText(`E-stops ${drill.estops}${ageMs > 3000 ? " · status stale" : ""}`, 20 * u, 130 * u);
   }
+  if (faceWarning(drill)) { c.fillStyle = "#ff8a80"; c.font = `bold ${17 * u}px system-ui`; c.fillText(NO_FACE_MODEL, 20 * u, 156 * u); }
   const box = { x: 20 * u, y: 170 * u, w: width - 40 * u, h: 250 * u };
   c.strokeStyle = "#3a4b5c"; c.lineWidth = 1; c.beginPath();
   c.moveTo(box.x, box.y); c.lineTo(box.x + box.w, box.y); c.lineTo(box.x + box.w, box.y + box.h);
@@ -138,7 +145,7 @@ export class DrillHud {
       const response = await this.fetchImpl("/mission/drill", { cache: "no-store", ...init, signal: abort.signal });
       if (!response.ok) throw new Error(`Drill HTTP ${response.status}`);
       this.drill = parseDrill(await response.json()); this.at = this.now();
-      return drillLine(this.drill, 0) || "Ready to start";
+      return this.drill.remaining_s === null ? ["Ready to start", faceWarning(this.drill)].filter(Boolean).join(" · ") : drillLine(this.drill, 0);
     } catch (error) {
       return `Drill unavailable: ${String(error)}`;
     } finally { clearTimeout(timer); this.busy = false; }

@@ -73,6 +73,7 @@ class PerceptionService:
         self.pose = None
         self.face_model = face_model
         self.face = None
+        self.face_error = None
         self.error = None
         self.packet = dict(ts=0, frame=-1, fps=0, boxes=[], detector="disabled", source="WAITING")
         self.tracker = Tracker()
@@ -81,8 +82,12 @@ class PerceptionService:
 
     def _setup(self):
         if self.face_model:
-            from .face import FaceDetector
-            self.face = FaceDetector(self.face_model)
+            # A bad face model disables only the face pass; primary detection still starts.
+            try:
+                from .face import FaceDetector
+                self.face = FaceDetector(self.face_model)
+            except Exception as exc:
+                self.face_error = f"Face model unavailable: {exc}"
         if self.mode == "pose":
             if not self.model:
                 raise ValueError("pose mode needs --detector-model (YOLO11-pose .onnx, or .engine on the Jetson)")
@@ -185,12 +190,17 @@ class PerceptionService:
                     self.error = str(exc)
             await asyncio.sleep(max(.01, 1 / self.fps - (time.monotonic() - started)))
 
+    def face_status(self):
+        """Whether the cls==face pass the rescue drill scores on is loaded."""
+        return dict(face_detector=self.face is not None, face_error=self.face_error)
+
     def health(self):
         """Detector fields for GET /health: mode, concrete backend, error, and live fps/latency."""
         packet = self.snapshot()
         return dict(detector=self.mode, detector_backend=self.pose.name if self.pose is not None else self.mode,
                     detector_error=self.error, detector_fps=packet["fps"] if packet["fresh"] else 0,
-                    detector_inference_ms=packet.get("inference_ms") if packet["fresh"] else None)
+                    detector_inference_ms=packet.get("inference_ms") if packet["fresh"] else None,
+                    **self.face_status())
 
     def snapshot(self):
         packet = dict(self.packet)

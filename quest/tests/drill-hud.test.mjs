@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { DRILL_TRAINS, DrillHud, drawDrill, drillLine, endLines, parseDrill, routeArrows } from "../src/drill-hud.js";
+import { DRILL_TRAINS, NO_FACE_MODEL, faceWarning, DrillHud, drawDrill, drillLine, endLines, parseDrill, routeArrows } from "../src/drill-hud.js";
 
 const running = {
   active: true, remaining_s: 60, elapsed_s: 30, duration_s: 90, found: 1, total: 3, estops: 2,
@@ -103,4 +103,24 @@ test("DrillHud reports server errors without throwing", async () => {
   const hud = new DrillHud({ fetchImpl: async () => ({ ok: false, status: 422, json: async () => ({}) }), now: () => 0, canvas: null });
   assert.match(await hud.start(), /Drill unavailable/);
   assert.equal(hud.visible(), false);
+});
+
+test("missing face model is flagged in the line, idle settings text and canvas", async () => {
+  assert.equal(NO_FACE_MODEL, "No face model: victims cannot be found");
+  const noFace = parseDrill({ ...running, face_detector: false, face_error: null });
+  assert.equal(faceWarning(noFace), NO_FACE_MODEL);
+  assert.equal(drillLine(noFace, 0), `Rescue drill 60s · victims 1/3 · e-stops 2 · ${NO_FACE_MODEL}`);
+  // Loaded model, or an older rover without the field: no warning.
+  assert.equal(faceWarning(parseDrill({ ...running, face_detector: true })), "");
+  assert.equal(drillLine(parseDrill(running), 0), "Rescue drill 60s · victims 1/3 · e-stops 2");
+  const texts = [];
+  const c = new Proxy({}, { get: (_, key) => key === "fillText" ? text => texts.push(text) : () => {}, set: () => true });
+  drawDrill(c, noFace, 0, 512, 512);
+  assert.ok(texts.includes(NO_FACE_MODEL));
+  texts.length = 0;
+  drawDrill(c, parseDrill({ ...running, face_detector: true }), 0, 512, 512);
+  assert.ok(!texts.includes(NO_FACE_MODEL));
+  const idle = { active: false, remaining_s: null, found: 0, total: null, estops: 0, face_detector: false, face_error: "Face model unavailable: x" };
+  const hud = new DrillHud({ canvas: null, fetchImpl: async () => ({ ok: true, json: async () => idle }) });
+  assert.equal(await hud.refresh(), `Ready to start · ${NO_FACE_MODEL}`);
 });

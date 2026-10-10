@@ -122,6 +122,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
     app.state.video = video_service
     app.state.control = control
     app.state.perception = perception
+    mission.face_status = perception.face_status
     app.state.mission = mission
     app.state.assistant = assistant
     app.state.triage = triage
