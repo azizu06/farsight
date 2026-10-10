@@ -178,7 +178,7 @@ test('render-loop health polling keeps immersive live proof renewed without brow
   let polls = 0;
   f.document.hidden = true;
   Object.assign(f.view, { sourceTruth: { refresh: async () => { polls++; truth.accept(health, f.clock.now); } },
-    applyRoverMount() {}, applyVoiceAvailability() {}, applyTransportProfile() {} });
+    applyRoverMount() {}, applyVoiceAvailability() {}, applyTransportProfile() {}, applyRoverVideo() {} });
   for (let now = 0; now <= 12000; now += 100) {
     f.clock.now = now; f.view.pollHealth(now); await flush();
     assert.equal(truth.state({ now, frameSource: 'PHONE RGB', frameId: '1', videoAgeMs: 0 }).kind, 'LIVE');

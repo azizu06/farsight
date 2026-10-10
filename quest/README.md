@@ -110,6 +110,8 @@ qualification. The scoped redesign measurement is saved in
   deep-linked: `?mount=fixed|servo&h264=0|1&voice=0|1&diag=0|1`. A query value
   beats the saved choice and is saved; a saved choice beats the default. With no
   mount chosen, `/health.camera_pan: false` selects fixed (`src/viewer-settings.js`).
+  With no H.264 choice, `/health.video.enabled: true` selects H.264 for that page
+  (unsaved); if no verified decoded frame arrives within 6 s it reverts to JPEG.
 
 ## Freshness and bandwidth
 

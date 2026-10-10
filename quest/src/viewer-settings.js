@@ -25,8 +25,9 @@ export function readSaved(storage) {
 }
 
 /** @typedef {{ mount: "fixed" | "servo", h264: boolean, voice: boolean, diag: boolean }} ViewerSettings */
-/** "rover" marks a mount chosen from /health; it is never saved. */
-/** @typedef {Record<keyof ViewerSettings, "query" | "saved" | "default" | "rover">} SettingOrigins */
+/** "rover" marks a mount or video mode chosen from /health; it is never saved. */
+/** "fallback" marks an auto-selected H.264 that produced no frame and reverted to JPEG. */
+/** @typedef {Record<keyof ViewerSettings, "query" | "saved" | "default" | "rover" | "fallback">} SettingOrigins */
 
 /** @param {string} search location.search @param {Record<string, unknown>} saved from readSaved
  * @returns {{ values: ViewerSettings, origin: SettingOrigins, explicit: Partial<ViewerSettings> }} */
@@ -46,6 +47,13 @@ export function resolveSettings(search, saved = {}) {
  * Older servers without `camera_pan` keep the servo default. */
 export function defaultMount(health) {
   return health?.camera_pan === false ? "fixed" : health?.camera_pan === true ? "servo" : null;
+}
+
+/** H.264 when nothing was chosen: on when the rover's /health offers enabled H.264 video
+ * (JPEG stays the fallback and an explicit choice). Unknown health keeps the default. */
+export function defaultH264(health) {
+  const video = health?.video;
+  return video?.enabled === true ? true : video?.enabled === false ? false : null;
 }
 
 /** @param {Pick<Storage, "getItem" | "setItem"> | null | undefined} storage @returns {boolean} saved */
