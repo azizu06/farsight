@@ -25,6 +25,19 @@ class BuildArgsTests(unittest.TestCase):
             self.assertEqual(args[i:i + 2], pair)
         self.assertIn("--h264", args)
 
+    def test_assistant_env_maps_to_server_flags(self):
+        env = {"FARSIGHT_ASSISTANT_URL": "http://127.0.0.1:8092", "FARSIGHT_WHISPER_URL": "http://127.0.0.1:8091",
+               "FARSIGHT_WHISPER_BIN": "whisper-cli", "FARSIGHT_WHISPER_MODEL": "/m/ggml-base.en.bin",
+               "FARSIGHT_PIPER_BIN": "piper", "FARSIGHT_PIPER_MODEL": "/m/en_US-lessac-low.onnx",
+               "FARSIGHT_TTS_DIR": "/var/lib/farsight/tts"}
+        args = launch.build_args(env)
+        for pair in (["--assistant-url", "http://127.0.0.1:8092"], ["--whisper-url", "http://127.0.0.1:8091"],
+                     ["--whisper-bin", "whisper-cli"], ["--whisper-model", "/m/ggml-base.en.bin"],
+                     ["--piper-bin", "piper"], ["--piper-model", "/m/en_US-lessac-low.onnx"],
+                     ["--tts-dir", "/var/lib/farsight/tts"]):
+            i = args.index(pair[0])
+            self.assertEqual(args[i:i + 2], pair)
+
     def test_blank_values_ignored_and_false_flag_off(self):
         args = launch.build_args({"FARSIGHT_CAMERA": "  ", "FARSIGHT_H264": "0"})
         self.assertNotIn("--camera", args)
