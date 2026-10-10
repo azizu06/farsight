@@ -101,6 +101,19 @@ class ProfileTests(unittest.TestCase):
         self.assertLess(left, 0)
         self.assertGreater(right, 0)
 
+    def test_in_place_turns_use_the_measured_spin_floor(self):
+        # 2026-10-10 rig: floors L70/R40 from straight runs; spins measured from PWM 80.
+        profile = make_profile(max_pwm=255, min_pwm_left=70, min_pwm_right=40,
+                               linear_pwm=(80, 120, 160), linear_mps=(0.268, 0.416, 0.588),
+                               angular_pwm=(80, 120, 160), angular_radps=(0.82, 2.5, 3.83),
+                               half_track_m=0.166, trim_left=0.975, trim_right=1.025)
+        left, right = profile.wheel_pwm(0, 0.82)  # straight-line curve alone gives about L-75/R+60
+        self.assertEqual((left, right), (-80, 80))
+        left, right = profile.wheel_pwm(0, -2.2)
+        self.assertTrue(left > 80 and right < -80)
+        self.assertLess(profile.wheel_pwm(0.10, 0)[1], 80)  # straight driving keeps its own floors
+        self.assertEqual(profile.wheel_pwm(0, 0.82, max_pwm=75), (-75, 75))  # never above the cap
+
     def test_non_finite_rejected(self):
         with self.assertRaises(ValueError):
             make_profile().wheel_pwm(float("nan"), 0)
