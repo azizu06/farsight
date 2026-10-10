@@ -1,0 +1,98 @@
+# Judge demo: 90-second live sequence (#43)
+
+One coherent story for a 6-minute judging slot ([rules](hackers-guide.md): 2 min setup, 6 min
+judging + Q&A, 2 min teardown). The 90 s sequence is the core; the rest of the slot is Q&A and
+the optional beats at the bottom. Failures: [fallback-playbook.md](fallback-playbook.md). What may
+be claimed: [devpost-checklist.md](devpost-checklist.md). Design: [architecture.md](architecture.md).
+
+**Hardware status when this was written (2026-10-10 morning):** the Jetson does not yet accept SSH
+([jetson-setup-handoff.md](jetson-setup-handoff.md)), and no Quest, rover, phone or motor run has
+been qualified. Everything below is the plan for the *qualified* rig. If a gate has not passed on
+the day, use the matching fallback tier and say so. Never narrate simulation or replay as live.
+
+## Roles (4 people)
+
+| Role | Does | Hands |
+|---|---|---|
+| **Operator** | Wears the Quest, drives, selects the person | Right trigger, left stick, right A |
+| **Spotter** | Plays the person to find; lies down on cue | Stays out of the rover's path |
+| **Presenter** | Talks, runs the MacBook browser (`localhost:8080`) for Ask and Report | MacBook |
+| **Rig tech** | Rover reset, power, E-stop reach, watches `tools.ready` and the HUD | Next to the rover, hand near battery switch |
+
+The rig tech may kill rover power at any moment. Say this to judges: safety is not a demo prop.
+
+## Start state (before judges walk in)
+
+Do the cold boot in [demo-checklist.md](demo-checklist.md) until `tools.ready` prints `READY`, then:
+
+- [ ] Quest in VR on `http://localhost:8080`, camera view (not map), HUD shows video age and **no** `SIMULATED` or `REPLAY` badge.
+- [ ] Rover on the floor, camera centred (left X once), front range clear, ~2 m of free floor ahead, a wall or table leg visible in the distance.
+- [ ] Spotter standing 3-4 m ahead, in the rover's view, **not** moving yet.
+- [ ] Trigger released. Nothing is held. Detector HUD shows 0-1 detections.
+- [ ] MacBook browser open, Settings closed, mission report empty or from a previous run you can name.
+- [ ] Reset between runs: new `--mission-dir` run (restart the `farsight` unit) so the report only shows this demo.
+
+## Controls (current main, `quest/src/rover.ts`)
+
+| Input | Action |
+|---|---|
+| **Right trigger (hold)** | Deadman. Release stops the rover; Jetson lease is 250 ms |
+| **Left stick** | Drive (forward capped at 45% of the PWM ceiling) |
+| **Head turn** | Pans camera (servo, or digital crop if the camera is fixed) |
+| **Right A**, controller ray on a tracked person's box | **Seek** that person |
+| **Right A**, ray anywhere else | Toggle live camera / 3D map (stops driving; re-press trigger) |
+| **Right B** | Toggle Explore (live view only) |
+| **Left X** | Centre pan |
+| **Left Y** (with trigger held, sticks centred) | Camera-only 3D scan |
+| **Left grip** | Start the 90 s rescue drill |
+| Any stick input during Seek/Explore | Takes over; autonomy stays off until trigger release |
+
+`quest/README.md` and `README.md` still say "B centers pan"; the code above is authoritative. The
+canonical controls are being re-integrated under #40, so re-check this table against
+`quest/src/rover.ts` right before rehearsal.
+
+## The 90 seconds
+
+| Time | Operator does | Presenter says | Proof shown |
+|---|---|---|---|
+| 0:00-0:10 | Put on / already in headset, trigger **released** | "This is a rover you inhabit. The Jetson on its back does the seeing and the safety." | Live camera on the panel, HUD freshness |
+| 0:10-0:25 | Turn head left and right | "My head pans the camera." Spotter steps in view. "Each box is a tracked person with a stable id and a pose." | Boxes and keypoints on matching frames; id stays while spotter walks |
+| 0:25-0:40 | Hold **right trigger**, nudge **left stick** forward, then **release** | "Deadman: let go and the Jetson cuts the motors. A bad link does the same." | Rover moves, stops on release |
+| 0:40-0:55 | Hold trigger, aim right controller at the spotter's box, press **right A** | "Seek: I choose a person, the rover drives itself, slows near them, and stops on arrival." | HUD autonomy state `tracking` then `arrived`; rover stops ~60 cm out |
+| 0:55-1:05 | Release trigger. Spotter lies down | "Pose flags a person who looks down." | `down` flag on the box (pose detector only) |
+| 1:05-1:20 | (Operator hands headset to a judge, or keeps it on) Presenter opens Settings on the MacBook, types **"What do you see?"** | "Local assistant, no internet. It answers from live detections, and a small vision model if loaded." | Text answer with timing; says it is offline |
+| 1:20-1:30 | Presenter clicks **Open mission report** | "Everything it found is logged where the sensors are." | Per-person entries, snapshot, SBAR note, range, time |
+
+Cue the spotter, not the clock: if Seek is slow, extend that beat and drop 1:05-1:20 rather than rushing.
+
+### Say these limits out loud (one sentence each, no apologies)
+
+- Counts are **person tracks / encounters**, not verified distinct people.
+- Pose "down" is a geometric heuristic on keypoints, not a medical assessment. SBAR text is a model draft, not triage.
+- Seek arrival is a **software bound** from the front ultrasonic (nearest obstacle, not necessarily the person), not an accuracy claim.
+- Video age on the HUD is receipt-to-display software age, **not** measured camera-to-eye latency.
+- Remote driving needs the cellular/Tailscale link; models run offline, the *link* does not.
+
+## Optional beats (Q&A or spare time; each only if its gate passed)
+
+| Beat | How | Gate before showing |
+|---|---|---|
+| **Explore** | Hold trigger, **right B**. Rover wanders, hands over to Seek on a fresh person | Explore qualified on the real rover with range check |
+| **Scan** | Hold trigger, sticks centred, **left Y**; wait for the 5-view sweep, snapshot opens; **right A** off a person toggles map | Depth model on the Jetson (Mac only so far); label "estimated depth, not LiDAR" |
+| **Phone LiDAR map** | Pro iPhone capture app to `/phone`; show the 3D map | Needs a LiDAR iPhone paired and routed; an ordinary iPhone gives RGB only |
+| **Rescue drill** | **Left grip**; 90 s timer; faces held in view 1 s count as found; route-home summary | Faces model loaded; real people as victims; reports "observed face tracks" |
+| **Speak** | Settings, phrase picker, Say EN / Say ES | USB speaker verified; otherwise the browser plays it and says so |
+| **Voice ask** | Settings, Ask by voice, approve mic | Mic checked on the Quest browser; in-VR push-to-talk is not built |
+
+## What not to attempt live
+
+- Driving at a wall to "prove" the e-stop unless the rig tech has tested range-stop at that speed that day.
+- Anything needing a model that was not pushed to the Jetson (`tools/push_models.sh`).
+- Raising any timeout to hide a slow link ([AGENTS.md](../AGENTS.md)). If video is stale, the rover is *meant* to stop; say so and move to the fallback.
+
+## UI polish proposals (for the Quest owner, after P0 integration)
+
+No Quest source is edited by this task. Candidates for the #40 owner, in priority order:
+1. In-headset hint line for the A/B/X/Y/grip bindings (docs disagree today).
+2. Persistent `SIMULATED` / `REPLAY` banner large enough to read from judges' distance on the mirrored view.
+3. Show the Seek `arrived` state as a distinct HUD colour.

@@ -1,5 +1,7 @@
 # Farsight
 
+Judging: [90 s demo](docs/judge-demo.md), [fallback playbook](docs/fallback-playbook.md), [architecture](docs/architecture.md), [Devpost evidence](docs/devpost-checklist.md).
+
 Optional camera-only room snapshot: [scan setup, model contract and local evidence](docs/scan.md).
 
 See, steer, and search through a rover's camera from a Quest 2. The Jetson Orin
