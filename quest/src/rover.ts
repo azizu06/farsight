@@ -1219,6 +1219,13 @@ export class RoverExperience {
   }
   private createCameraTexture() {
     const texture = new THREE.CanvasTexture(this.canvas);
+    // The camera is already display-sized. Bilinear, no mip chain: mipmaps resample
+    // a moving picture every upload and smear the VR panel.
+    texture.generateMipmaps = false;
+    texture.minFilter = THREE.LinearFilter;
+    texture.magFilter = THREE.LinearFilter;
+    // JPEG and the canvas are sRGB. The renderer output is sRGB, so keep this
+    // texture sRGB too; LinearSRGBColorSpace would decode it a second time.
     texture.colorSpace = THREE.SRGBColorSpace;
     return texture;
   }

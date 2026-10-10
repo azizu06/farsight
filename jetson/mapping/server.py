@@ -47,7 +47,9 @@ DIST = Path(__file__).resolve().parents[2] / "quest" / "dist"
 
 def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=False,
                detector="hog", detector_model=None, h264=False, mission_dir=None, max_pwm=100, min_pwm=0,
-               video_fps=10, video_bitrate=500000, assistant_url=None, whisper_bin=None, whisper_model=None,
+               video_fps=None, video_bitrate=None, video_width=None, video_height=None, video_profile="low",
+               video_encoder=None,
+               assistant_url=None, whisper_bin=None, whisper_model=None,
                piper_bin=None, piper_model=None, tts_dir=None, face_model=None, whisper_url=None,
                piper_model_es=None, speaker_cmd="auto", triage_interval=3.0,
                depth_model=None, scan_pan=False, scan_fov=70, scan_intrinsics=None, scan_turn_dps=90,
@@ -90,7 +92,9 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
            if sim_world is not None else None)
     camera_service = CameraService(state, device=camera_device, lidar_drive=lidar_drive)
     identity_service = IdentityService.from_environment(camera_service)
-    video_service = VideoService(camera_service, enabled=h264, fps=video_fps, bitrate=video_bitrate)
+    video_service = VideoService(camera_service, enabled=h264, profile=video_profile,
+                                 width=video_width, height=video_height, fps=video_fps, bitrate=video_bitrate,
+                                 encoder=video_encoder)
     mission = Mission(mission_dir, record=record)
     # Opt-in ROS 2 Nav2 backend (ros2/farsight_nav); without --nav2 autonomy is unchanged.
     nav = NavService(state, speed_mps=nav_speed_mps, turn_radps=nav_turn_radps, max_v=nav_max_v,
@@ -249,7 +253,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                       detector=perception.mode, detector_error=perception.error,
                       detector_fps=perception.snapshot()["fps"] if perception.snapshot()["fresh"] else 0,
                       video=dict(enabled=h264, ready=video_service.ready, error=video_service.error,
-                                 fps=video_fps, bitrate=video_bitrate),
+                                 fps=video_service.fps, bitrate=video_service.bitrate),
                       assistant=dict(vision_model=bool(assistant_url), whisper=bool(whisper_url or (whisper_bin and whisper_model)),
                                      piper=bool(piper_model)),
                       speech=await asyncio.to_thread(phrases.status), triage=triage.status())
@@ -809,8 +813,20 @@ def main():
     parser.add_argument("--scan-intrinsics", type=float, nargs=4, metavar=("FX", "FY", "CX", "CY"), help="Calibrated intrinsics for the transmitted RGB pixel grid")
     parser.add_argument("--scan-turn-dps", type=float, default=90, help="Measured turn degrees/sec at w=.3; approximate open-loop fallback")
     parser.add_argument("--h264", action="store_true", help="Enable ffmpeg H264 fragmented MP4 WebSocket")
-    parser.add_argument("--video-fps", type=int, default=10)
-    parser.add_argument("--video-bitrate", type=int, default=500000, help="H264 bit/s; start low for cellular headroom")
+    parser.add_argument("--video-profile", choices=("low", "hq"), default="low",
+                        help="H.264 quality. low (default) is 640x480, 10 fps, 500 kbps, ultrafast baseline. "
+                             "hq is opt-in: 1280x720, 15 fps, 1.5 Mbps, veryfast main; a smaller camera "
+                             "picture is stretched to fill the box so detection boxes stay on the person. "
+                             "Neither changes /camera.jpg. Explicit size/fps/bitrate flags override the profile")
+    parser.add_argument("--video-encoder", choices=("libx264", "nvenc", "h264_nvmpi", "h264_nvv4l2enc"),
+                        default="libx264",
+                        help="H.264 encoder. libx264 (default) always works. nvenc tries h264_nvmpi then "
+                             "h264_nvv4l2enc and falls back to libx264 if the chip is missing or will not open. "
+                             "The Orin Nano has no NVENC")
+    parser.add_argument("--video-width", type=int, default=None, help="Override the profile width (even, 16..1920)")
+    parser.add_argument("--video-height", type=int, default=None, help="Override the profile height (even, 16..1920)")
+    parser.add_argument("--video-fps", type=int, default=None, help="Override the profile frame rate (1..30)")
+    parser.add_argument("--video-bitrate", type=int, default=None, help="Override the profile H.264 bit/s (64000..4000000)")
     parser.add_argument("--bulk-limit-mbps", type=float, default=0,
                         help="Optional shared bulk payload Mbps cap for map/PLY/TTS/snapshots; 0 disables. "
                              "Live video, control and permits stay unpaced")
@@ -859,7 +875,10 @@ def main():
     uvicorn.run(create_app(args.demo, camera_device=args.camera, serial_port=args.serial_port,
                 simulate_rover=args.simulate_rover, detector=args.detector, detector_model=args.detector_model,
                 h264=args.h264, mission_dir=args.mission_dir, max_pwm=args.max_pwm, min_pwm=args.min_pwm,
-                video_fps=args.video_fps, video_bitrate=args.video_bitrate, assistant_url=args.assistant_url,
+                video_fps=args.video_fps, video_bitrate=args.video_bitrate,
+                video_width=args.video_width, video_height=args.video_height,
+                video_profile=args.video_profile, video_encoder=args.video_encoder,
+                assistant_url=args.assistant_url,
                 whisper_bin=args.whisper_bin, whisper_model=args.whisper_model, piper_bin=args.piper_bin,
                 piper_model=args.piper_model, tts_dir=args.tts_dir, face_model=args.face_model,
                 whisper_url=args.whisper_url, piper_model_es=args.piper_model_es,

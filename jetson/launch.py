@@ -26,6 +26,7 @@ VALUE_FLAGS = (
     ("FARSIGHT_PIPER_BIN", "--piper-bin"), ("FARSIGHT_PIPER_MODEL", "--piper-model"),
     ("FARSIGHT_TTS_DIR", "--tts-dir"), ("FARSIGHT_PIPER_MODEL_ES", "--piper-model-es"),
     ("FARSIGHT_SPEAKER_CMD", "--speaker-cmd"), ("FARSIGHT_FACE_MODEL", "--face-model"),
+    ("FARSIGHT_VIDEO_WIDTH", "--video-width"), ("FARSIGHT_VIDEO_HEIGHT", "--video-height"),
     ("FARSIGHT_VIDEO_FPS", "--video-fps"), ("FARSIGHT_VIDEO_BITRATE", "--video-bitrate"),
     ("FARSIGHT_BULK_LIMIT_MBPS", "--bulk-limit-mbps"), ("FARSIGHT_VIDEO_LIMIT_MBPS", "--video-limit-mbps"),
     ("FARSIGHT_TRIAGE_INTERVAL", "--triage-interval"), ("FARSIGHT_DEPTH_MODEL", "--depth-model"),
@@ -40,7 +41,8 @@ BOOL_FLAGS = (("FARSIGHT_H264", "--h264"), ("FARSIGHT_FUSION_BYPASS", "--fusion-
               ("FARSIGHT_SCAN_PAN", "--scan-pan"), ("FARSIGHT_RECORD", "--record"), ("FARSIGHT_NAV2", "--nav2"),
               ("FARSIGHT_ALLOW_CALIBRATION", "--allow-calibration"), ("FARSIGHT_DEMO_MODE", "--demo-mode"), ("FARSIGHT_LIDAR_DRIVE", "--lidar-drive"))
 INT_VARS = ("FARSIGHT_PORT", "FARSIGHT_MAX_PWM", "FARSIGHT_MIN_PWM", "FARSIGHT_AUTONOMY_MAX_PWM", "FARSIGHT_WAIT_SECONDS",
-            "FARSIGHT_VIDEO_FPS", "FARSIGHT_VIDEO_BITRATE", "FARSIGHT_MAP_POINTS_CAP", "FARSIGHT_MAP_TRIANGLES_CAP")
+            "FARSIGHT_VIDEO_WIDTH", "FARSIGHT_VIDEO_HEIGHT", "FARSIGHT_VIDEO_FPS", "FARSIGHT_VIDEO_BITRATE",
+            "FARSIGHT_MAP_POINTS_CAP", "FARSIGHT_MAP_TRIANGLES_CAP")
 FLOAT_VARS = ("FARSIGHT_TRIAGE_INTERVAL", "FARSIGHT_SCAN_FOV", "FARSIGHT_SCAN_TURN_DPS",
               "FARSIGHT_BULK_LIMIT_MBPS", "FARSIGHT_VIDEO_LIMIT_MBPS", "FARSIGHT_NAV_SPEED_MPS", "FARSIGHT_NAV_TURN_RADPS",
               "FARSIGHT_NAV_MAX_V", "FARSIGHT_NAV_MAX_W", "FARSIGHT_NAV_CAMERA_HEIGHT")
@@ -79,6 +81,12 @@ def build_args(env):
                     kind(_get(env, name))
                 except ValueError:
                     raise ValueError(f"{name} must be {'an integer' if kind is int else 'a number'}, got {_get(env, name)!r}")
+    profile = _get(env, "FARSIGHT_VIDEO_PROFILE").lower()
+    if profile and profile not in ("low", "hq"):
+        raise ValueError("FARSIGHT_VIDEO_PROFILE must be low or hq")
+    encoder = _get(env, "FARSIGHT_VIDEO_ENCODER").lower()
+    if encoder and encoder not in ("libx264", "nvenc", "h264_nvmpi", "h264_nvv4l2enc"):
+        raise ValueError("FARSIGHT_VIDEO_ENCODER must be libx264, nvenc, h264_nvmpi, or h264_nvv4l2enc")
     if _get(env, "FARSIGHT_BULK_LIMIT_MBPS"):
         bulk_limit = float(_get(env, "FARSIGHT_BULK_LIMIT_MBPS"))
         if not math.isfinite(bulk_limit) or bulk_limit < 0:
@@ -104,6 +112,11 @@ def build_args(env):
             except ValueError:
                 raise ValueError(f"FARSIGHT_SCAN_INTRINSICS must be four numbers, got {value!r}")
         args += ["--scan-intrinsics", *intrinsics]
+    # Lowercased so FARSIGHT_VIDEO_PROFILE=HQ does not die in argparse choices=("low","hq").
+    if profile:
+        args += ["--video-profile", profile]
+    if encoder:
+        args += ["--video-encoder", encoder]
     return args
 
 

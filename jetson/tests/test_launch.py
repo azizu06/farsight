@@ -88,6 +88,25 @@ class BuildArgsTests(unittest.TestCase):
             with self.subTest(rate=rate), self.assertRaises(ValueError):
                 launch.build_args({"FARSIGHT_BULK_LIMIT_MBPS": rate})
 
+    def test_video_profile_maps_and_rejects_unknown(self):
+        args = launch.build_args({"FARSIGHT_VIDEO_PROFILE": "hq", "FARSIGHT_VIDEO_WIDTH": "960"})
+        self.assertEqual(args[args.index("--video-profile"):args.index("--video-profile") + 2], ["--video-profile", "hq"])
+        self.assertEqual(args[args.index("--video-width"):args.index("--video-width") + 2], ["--video-width", "960"])
+        self.assertNotIn("--video-profile", launch.build_args({}))
+        with self.assertRaises(ValueError):
+            launch.build_args({"FARSIGHT_VIDEO_PROFILE": "cinema"})
+        # The service file may write HQ. argparse only accepts lowercase, so the
+        # flag that actually starts the rover has to be lowercase or the unit dies.
+        shouted = launch.build_args({"FARSIGHT_VIDEO_PROFILE": "HQ"})
+        self.assertEqual(shouted[shouted.index("--video-profile") + 1], "hq")
+
+    def test_video_encoder_maps_and_rejects_unknown(self):
+        args = launch.build_args({"FARSIGHT_VIDEO_ENCODER": "NVENC"})
+        self.assertEqual(args[args.index("--video-encoder"):args.index("--video-encoder") + 2], ["--video-encoder", "nvenc"])
+        self.assertNotIn("--video-encoder", launch.build_args({}))
+        with self.assertRaises(ValueError):
+            launch.build_args({"FARSIGHT_VIDEO_ENCODER": "h264_qsv"})
+
     def test_blank_values_ignored_and_false_flag_off(self):
         args = launch.build_args({"FARSIGHT_CAMERA": "  ", "FARSIGHT_H264": "0"})
         self.assertNotIn("--camera", args)
