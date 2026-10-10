@@ -86,15 +86,29 @@ async function waitHttp(url, entry, timeoutMs) {
 const results = [];
 let liveSeen = null;
 let hudPage = null; // page whose HUD text is appended to a failure
-async function step(name, run) {
+async function failure(error) {
+  const hud = hudPage ? await hudPage.evaluate(() => `${document.querySelector("#rover-message")?.textContent} | ${document.querySelector("#rover-details")?.textContent.split(" · ").at(-1)}`).catch(() => null) : null;
+  return error.message.split("\n")[0] + (hud ? ` [HUD: ${hud}]` : "");
+}
+// Held-deadman steps get one visible retry: on a loaded machine the viewer's own freshness guards
+// (500 ms video, 250 ms display) can invalidate a hold, exactly as they would on a slow rig.
+// Fatal errors (a server-side abort) are never retried.
+async function step(name, run, { retries = 0 } = {}) {
   const started = Date.now();
-  try {
-    const detail = await run();
-    results.push({ step: name, result: "PASS", ms: Date.now() - started, detail: String(detail ?? "") });
-  } catch (error) {
-    const hud = hudPage ? await hudPage.locator("#rover-message").textContent().catch(() => null) : null;
-    results.push({ step: name, result: "FAIL", ms: Date.now() - started, detail: error.message.split("\n")[0] + (hud ? ` [HUD: ${hud}]` : "") });
+  const attempts = [];
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      if (hudPage) await releaseAll(hudPage);
+      const detail = await run();
+      const note = attempts.length ? ` (passed on retry; first attempt: ${attempts.join("; ")})` : "";
+      results.push({ step: name, result: "PASS", ms: Date.now() - started, detail: String(detail ?? "") + note });
+      return;
+    } catch (error) {
+      attempts.push(await failure(error));
+      if (error.fatal) break;
+    }
   }
+  results.push({ step: name, result: "FAIL", ms: Date.now() - started, detail: attempts.join(" | then: ") });
 }
 
 async function openViewer(browser, origin, { injectPerson = () => false, counters = {} } = {}) {
@@ -214,7 +228,7 @@ async function main() {
         return s.left_pwm === 0 && s.right_pwm === 0 && s;
       }, 2000, 20);
       return `PWM ${moving.left_pwm}/${moving.right_pwm} while held; 0/0 (${stopped.reason}) ${Date.now() - releasedAt} ms after release (simulated rover)`;
-    });
+    }, { retries: 1 });
 
     await step("Explore select", async () => {
       await page.keyboard.press("KeyE");
@@ -228,7 +242,7 @@ async function main() {
         return false;
       }, 2000, 200);
       return `server mode explore, autonomy_state ${s.autonomy_state}; stopped on release`;
-    });
+    }, { retries: 1 });
 
     await step("Seek select (click synthetic person)", async () => {
       const point = await page.evaluate(() => {
@@ -249,15 +263,16 @@ async function main() {
       await waitFor("seek did not stop on release", async () => { const v = await status(); return v.left_pwm === 0 && v.right_pwm === 0; }, 2000, 20);
       inject = false;
       return `server mode seek target #${s.target_id}, autonomy_state ${s.autonomy_state} (server tracker has no such person)`;
-    });
+    }, { retries: 1 });
 
     await step("drill start/score", async () => {
-      await page.locator("#settings-toggle").click();
+      if (!(await page.locator("#settings").evaluate((d) => d.open))) await page.locator("#settings-toggle").click();
       await page.locator("#start-drill").click();
-      const drill = await waitFor("server drill never became active", async () => { const d = await json(`${simOrigin}/mission/drill`); return d.active && d; }, 4000);
+      const drill = await waitFor("server drill never became active", async () => { const d = await json(`${simOrigin}/mission/drill`); return d.active && d; }, 4000)
+        .catch(async (error) => { throw new Error(`${error.message}; UI drill status "${await page.locator("#drill-status").textContent()}"`); });
       const line = await waitFor("drill status never showed a score", async () => (await page.locator("#drill-status").textContent()).match(/victims \d+\/\d+ · e-stops \d+/), 4000);
       return `active, ${drill.remaining_s}s left; UI "${line[0]}"`;
-    });
+    }, { retries: 1 });
 
     await step("ask (text path)", async () => {
       const answer = page.locator(".local-assistant p[role=status]").first();
@@ -285,13 +300,24 @@ async function main() {
       await holdDeadman(page, simOrigin);
       await waitFor("deadman not ready for scan", async () => { const v = await status(); return v.reason === "active"; }, 4000, 50);
       await page.locator("#rover-scan").click();
-      const done = await waitFor("scan never completed", async () => { const r = await json(`${simOrigin}/scan`); if (r.state === "aborted") throw new Error(`scan aborted: ${r.error}`); return r.state === "complete" && r; }, 30000, 200);
+      const done = await waitFor("scan never completed", async () => {
+        const r = await json(`${simOrigin}/scan`);
+        // Known intermittent bug (docs/judge-demo.md): server aborts at view 0 when a teleop heartbeat lands after POST /scan.
+        if (r.state === "aborted") throw Object.assign(new Error(`server aborted scan after ${r.views?.length ?? 0} views: ${r.error}`), { fatal: true });
+        return r.state === "complete" && r;
+      }, 30000, 100);
       // The viewer reports completion and opens the map before the operator lets go.
-      await waitFor("viewer never reported the completed scan", async () => /points/.test(await roverDetails(page)) || /View changed/.test(await roverMessage(page)), 3000);
+      await waitFor("viewer never reported the completed scan", async () => {
+        const details = await roverDetails(page);
+        // Known bug (docs/judge-demo.md): the viewer only treats status reason "scan_finished" as completion,
+        // but the next held heartbeat overwrites it with "release_required" before most status ticks.
+        if (/Scan cancelled/.test(details)) throw Object.assign(new Error("viewer cancelled a scan the server completed (status reason release_required replaced scan_finished)"), { fatal: true });
+        return /points/.test(details) || /View changed/.test(await roverMessage(page));
+      }, 3000);
       await releaseAll(page);
       if (!done.simulated) throw new Error("scan result not flagged simulated");
       return `${done.views?.length} views, ${done.points} points, ${(done.scan_ms / 1000).toFixed(1)} s, simulated=${done.simulated}, backend ${done.backend}`;
-    });
+    }, { retries: 1 });
 
     if (errors.length) results.push({ step: "no page errors (simulator)", result: "FAIL", ms: 0, detail: errors.join("; ") });
     await page.close();

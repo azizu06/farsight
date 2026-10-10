@@ -33,6 +33,21 @@ server never tracks that person. XR controller paths are covered separately by
 On a heavily loaded machine a headless render stall can trip the viewer's 250 ms display guard
 (a FAIL whose HUD says "Release deadman to continue"); re-run once before treating it as a regression.
 
+**Known open bugs (found by this test, not fixed here), so `scan` fails often:**
+
+- *Viewer cancels a completed scan.* The sweep ends with `stop("scan_finished")`
+  (`jetson/control/state.py` `end_scan`); the operator's next held heartbeat then hits
+  `requires_release` and overwrites the reason with `release_required` before the 50 ms status tick
+  (`jetson/control/service.py`). `quest/src/rover.ts` only sets `scanCompleting` for reason
+  `scan_finished`, so it shows "Scan cancelled" and never opens the 3D map even though `/scan` says
+  `complete`. Timing does not depend on scan length, so the real rig is affected too. FAIL text:
+  `viewer cancelled a scan the server completed`.
+- *Server aborts at view 0 (seen less often).* `server aborted scan after 0 views: Scan cancelled:
+  operator lease, override, or safety stop`, with the control reason back at `active`. Likely cause:
+  the zero-stick `teleop` heartbeat sent just before `POST /scan` reaches the rover after
+  `begin_scan` (separate WebSocket and HTTP paths through the relay) and is treated as
+  `scan_override`.
+
 ## Roles (4 people)
 
 | Role | Does | Hands |
