@@ -7,7 +7,8 @@ by a human; no script stores one. `--dry-run` on `tools/bootstrap_jetson.sh`, `t
 
 Issues covered: #1 camera stream (steps 4, 7), #9 detector (step 10), #11 one command boot (steps 5, 12),
 #19 assistant (step 11), #14 depth engine (step 11b). JetPack 7.2.1 is already flashed
-([flash handoff](jetson-flash-handoff.md)); do not reflash.
+([flash handoff](jetson-flash-handoff.md), latest state in [jetson-setup-handoff.md](jetson-setup-handoff.md)); do not reflash.
+`USER` below is the account created at flash time (`farsight` in the handoff).
 
 Needs: Jetson booted to Ubuntu with an SSH-capable user, USB-C data cable to the Mac, UVC webcam on a
 Jetson USB-A port, internet for the Jetson during setup (venue Wi-Fi, a phone hotspot, or macOS
