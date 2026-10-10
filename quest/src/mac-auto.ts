@@ -9,7 +9,7 @@ import { H264Viewer } from "./h264.js";
 import { mapWalk } from "./map-walk.js";
 import { socketUrl } from "./mac-view-urls.js";
 import {
-  DEFAULT_ASPECT, DEFAULT_FOV_Y_DEG, PICTURE_DISTANCE, PoseRing, macPresenting, mapPoseMessage, pictureSize, shouldSendPose,
+  DEFAULT_ASPECT, DEFAULT_FOV_Y_DEG, PICTURE_DISTANCE, PoseRing, frameSeenAt, macPresenting, mapPoseMessage, pictureSize, shouldSendPose,
 } from "./mac-auto-pose.js";
 
 export const MACVIEW_PATH = "/ws/macview";
@@ -35,6 +35,7 @@ export class MacAutoView {
   private poseId = 0;
   private lastPoseAt = -Infinity;
   private lastFrameAt = -Infinity;
+  private lastFrameId: string | null = null;
   private readonly ring = new PoseRing();
   private readonly head = { position: new THREE.Vector3(), quaternion: new THREE.Quaternion() };
   private readonly eye = { position: new THREE.Vector3(), quaternion: new THREE.Quaternion(), scale: new THREE.Vector3() };
@@ -67,7 +68,8 @@ export class MacAutoView {
     this.sendPose(now, xrCamera);
     this.viewer.update();
     const shown = this.viewer.displayedFrame;
-    if (shown) { this.lastFrameAt = now; this.place(shown.pose, shown.fovY); }
+    this.lastFrameAt = frameSeenAt(this.lastFrameAt, this.lastFrameId, shown?.id ?? null, now);
+    if (shown && shown.id !== this.lastFrameId) { this.lastFrameId = shown.id; this.place(shown.pose, shown.fovY); }
     this.presenting = macPresenting(true, this.lastFrameAt, now);
     this.picture.visible = this.presenting;
     this.paintLabel(this.presenting ? LABEL : LOST);
@@ -80,8 +82,9 @@ export class MacAutoView {
 
   private start() {
     this.active = true;
-    this.session = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-    this.lastFrameAt = -Infinity; this.lastPoseAt = -Infinity; this.ring.clear();
+    // Renderer view identity (not capture/map identity); a UUID where the page is a secure context.
+    this.session = globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    this.lastFrameAt = -Infinity; this.lastFrameId = null; this.lastPoseAt = -Infinity; this.ring.clear();
     this.connectPose(); this.viewer.start();
   }
 

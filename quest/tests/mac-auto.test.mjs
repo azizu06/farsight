@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import * as THREE from "three";
 import { MapWalk } from "../src/map-walk.js";
 import {
-  MAC_STALE_MS, PoseRing, macPresenting, macViewEnabled, mapPoint, mapPoseMessage, mapQuaternion, pictureSize,
+  MAC_STALE_MS, PoseRing, frameSeenAt, macPresenting, macViewEnabled, mapPoint, mapPoseMessage, mapQuaternion, pictureSize,
   projectionFovY, shouldSendPose, worldPoint,
 } from "../src/mac-auto-pose.js";
 
@@ -60,6 +60,7 @@ test("pose message keeps the v1 renderer fields and adds identity, eyes and FOV"
   assert.equal(message.version, 1);
   assert.equal(message.sent_mono_ms, 1234.5);
   assert.equal(message.pose_id, 7);
+  assert.equal(message.frame_id, 7, "alias for frame_id parsers");
   assert.equal(message.space, "ar_map");
   assert.equal(message.session_id, "s1");
   assert.equal(message.map_revision, 42);
@@ -93,6 +94,17 @@ test("the local map returns when Mac frames stop", () => {
   assert.equal(macPresenting(true, 100, 100 + MAC_STALE_MS - 1), true);
   assert.equal(macPresenting(true, 100, 100 + MAC_STALE_MS), false);
   assert.equal(macPresenting(false, 100, 101), false, "only in AUTO");
+});
+
+test("a frozen picture goes stale: only a new decoded frame renews it", () => {
+  let at = -Infinity, id = null;
+  for (const [now, shown] of [[0, "h264:1:1"], [400, "h264:1:1"], [800, "h264:1:1"], [1200, "h264:1:1"]]) {
+    at = frameSeenAt(at, id, shown, now); id = shown;
+  }
+  assert.equal(at, 0, "the same frame id never renews");
+  assert.equal(macPresenting(true, at, 1200), false, "local map returns");
+  assert.equal(frameSeenAt(at, id, "h264:1:2", 1250), 1250, "a new frame does");
+  assert.equal(frameSeenAt(at, id, null, 1250), at, "no frame changes nothing");
 });
 
 test("flat picture is sized so it subtends the renderer's field of view", () => {

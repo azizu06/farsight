@@ -78,6 +78,8 @@ export function mapPoseMessage(input) {
     head: { position: mapPoint(walk, head.position), quaternion: mapQuaternion(walk, head.quaternion) },
     ray,
     pose_id: input.id,
+    // Alias for renderers that name the view counter frame_id.
+    frame_id: input.id,
     space: "ar_map",
     session_id: input.session,
     map_revision: Number.isFinite(input.mapRevision) ? input.mapRevision : null,
@@ -116,6 +118,14 @@ export function shouldSendPose(lastMono, nowMono, bufferedAmount) {
  */
 export function macPresenting(active, lastFrameAt, now) {
   return active && Number.isFinite(lastFrameAt) && now - lastFrameAt < MAC_STALE_MS;
+}
+
+/**
+ * Time of the newest decoded Mac picture. Only a new decoded frame id renews it, so
+ * a frozen video (same picture still on screen) goes stale and the local map returns.
+ */
+export function frameSeenAt(previous, previousId, shownId, now) {
+  return shownId != null && shownId !== previousId ? now : previous;
 }
 
 /** Picture size at `distance` for a vertical FOV and aspect, metres. */
