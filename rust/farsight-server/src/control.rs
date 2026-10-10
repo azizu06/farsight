@@ -15,6 +15,9 @@ use crate::autonomy::Autonomy;
 use crate::state::now_monotonic;
 
 pub const LEASE: f64 = 0.250;
+/// A session silent this long is dead (#139): a new socket replaces it
+/// instead of being refused for the seconds a dead peer took to reap.
+pub const STALE_SESSION: f64 = 1.0;
 pub const RANGE_TTL: f64 = 0.350;
 pub const PAN_MOUNTS: [&str; 2] = ["servo", "none"];
 
@@ -24,6 +27,10 @@ pub type Detections = Arc<dyn Fn() -> Value + Send + Sync>;
 
 pub struct ControlInner {
     pub session_id: Option<String>,
+    /// Last message from the current controller session (#139): a live
+    /// controller sends at least every 50 ms, so a session silent for
+    /// STALE_SESSION is a dead socket the server has not noticed yet.
+    pub last_message_at: f64,
     pub permits: VecDeque<(String, f64)>,
     pub seq: i64,
     pub connected: bool,
@@ -161,6 +168,7 @@ impl ControlState {
             clock: clock.unwrap_or_else(|| Arc::new(now_monotonic)),
             inner: Mutex::new(ControlInner {
                 session_id: None,
+                last_message_at: f64::NEG_INFINITY,
                 permits: VecDeque::new(),
                 seq: -1,
                 connected: false,
@@ -238,10 +246,22 @@ impl ControlState {
     pub fn begin(&self) -> Option<String> {
         let mut s = self.inner.lock().unwrap();
         if s.session_id.is_some() {
-            return None;
+            if self.now() - s.last_message_at < STALE_SESSION {
+                return None;
+            }
+            // Dead socket: stop it and let the new controller take over;
+            // the old handler sees the session change and closes (#139).
+            // Inline end() — the inner lock is already held.
+            self.stop_locked(&mut s, "controller_disconnected", true);
+            s.session_id = None;
+            s.permits.clear();
+            if let Some(nav) = &self.navigator {
+                nav.disarm();
+            }
         }
         let id = Uuid::new_v4().to_string();
         s.session_id = Some(id.clone());
+        s.last_message_at = self.now();
         s.seq = -1;
         s.permits.clear();
         self.stop_locked(&mut s, "release_required", true);
@@ -370,6 +390,7 @@ impl ControlState {
         if !message.is_object() || s.session_id.as_deref() != Some(session_id) {
             return false;
         }
+        s.last_message_at = self.now();
         if message.get("session_id").and_then(Value::as_str) != Some(session_id) {
             self.stop_locked(s, "wrong_session", true);
             return false;

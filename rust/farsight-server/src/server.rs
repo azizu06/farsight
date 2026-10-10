@@ -1228,15 +1228,19 @@ async fn handle_ws_control(socket: WebSocket, s: Arc<AppState>) {
     // #110 opt-in nav revision lane, latched per socket (control/service.py).
     let lane = Arc::new(std::sync::Mutex::new(None::<crate::nav::NavLane>));
     let send_lane = lane.clone();
+    let sender_sid = session_id.clone();
     let sender = tokio::spawn(async move {
         // Mission recording keeps its 20 Hz control sampling
         // (control/service.py RECORD_INTERVAL), while status publishes at 40 Hz.
         let mut recorded = f64::NEG_INFINITY;
         loop {
-            // A congested status path makes continued control unsafe; a send
-            // timeout closes the socket rather than queueing permits.
+            // #139: a newer controller replaced this session after it went
+            // silent — stop publishing so the socket closes (service.py).
             let started = now_monotonic();
             let status = control.status(true);
+            if status["session_id"].as_str() != Some(sender_sid.as_str()) {
+                return;
+            }
             let status = send_lane
                 .lock()
                 .unwrap()

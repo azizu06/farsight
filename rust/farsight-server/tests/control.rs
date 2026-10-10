@@ -595,3 +595,33 @@ fn demo_off_by_default_keeps_latching() {
     assert!(f.state.status(false)["requires_release"].as_bool().unwrap());
     assert!(!f.send(json!({})));
 }
+
+// ---- #139: a new controller replaces a session silent for 1 s ----
+
+#[test]
+fn stale_session_live_controller_keeps_the_rover() {
+    let f = fixture();
+    *f.now.lock().unwrap() += 0.5;
+    f.state.accept(
+        &json!({"session_id": f.session, "seq": 1, "deadman": false}),
+        &f.session,
+    );
+    *f.now.lock().unwrap() += 0.9;
+    assert!(f.state.begin().is_none()); // refused: the owner spoke 0.9 s ago
+}
+
+#[test]
+fn stale_session_silent_session_is_replaced_and_its_commands_are_refused() {
+    let f = fixture();
+    *f.now.lock().unwrap() += farsight_server::control::STALE_SESSION + 0.01;
+    let new = f.state.begin().unwrap();
+    assert_ne!(new, f.session);
+    assert_eq!(f.state.status(false)["session_id"], new);
+    assert!(f.state.status(false)["requires_release"].as_bool().unwrap());
+    assert!(!f.state.accept(
+        &json!({"session_id": f.session, "seq": 2, "deadman": true}),
+        &f.session,
+    ));
+    f.state.end(&f.session); // old handler cleanup must not end the new session
+    assert_eq!(f.state.status(false)["session_id"], new);
+}
