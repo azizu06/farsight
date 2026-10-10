@@ -60,7 +60,7 @@ fn stale_and_error_snapshots_cannot_steer() {
 }
 
 #[test]
-fn explore_turns_on_obstacle_and_timeout_then_hands_to_seek() {
+fn explore_turns_and_people_never_switch_to_seek() {
     for (trigger_time, range_cm) in [(10.1, 65.0), (14.0, 120.0)] {
         let mut p = Autonomy::new();
         p.choose_turn = Box::new(|| -1.0);
@@ -69,10 +69,9 @@ fn explore_turns_on_obstacle_and_timeout_then_hands_to_seek() {
         eq(p.step(trigger_time, Some(range_cm), &empty()), (0.0, -0.35));
         assert_eq!(p.phase, "turning");
         eq(p.step(trigger_time + 1.01, Some(120.0), &empty()), (0.25, 0.0));
-        eq(p.step(trigger_time + 1.1, Some(120.0), &detection(0.4, 7, 0.0)), (0.3, 0.0));
-        assert_eq!((p.mode.as_str(), p.target_id), ("seek", Some(7)));
-        p.select("explore", None, trigger_time + 1.2); // operator heartbeat
-        assert_eq!(p.mode, "seek");
+        // #130: a seen person never switches Explore to Seek.
+        eq(p.step(trigger_time + 1.1, Some(120.0), &detection(0.4, 7, 0.0)), (0.25, 0.0));
+        assert_eq!((p.mode.as_str(), p.target_id), ("explore", None));
     }
 }
 
