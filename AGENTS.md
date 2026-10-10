@@ -12,8 +12,7 @@ projects (the guide requires original work).
 2. Branch from `main`: `<issue#>-short-name`, e.g. `4-uno-serial`.
 3. Small commits. Push early.
 4. Open a PR with `Closes #<issue>` in the body, using the template.
-5. One teammate glances at it (5 minutes max), then squash merge. If nobody is free
-   within 15 minutes and the change only touches your own folder, merge it yourself.
+5. When your PR looks good, squash merge it yourself. No required reviewer, no waiting period. Applies to teammates and AI agents.
 6. Changing `docs/interfaces.md` needs the affected owner's OK in the PR.
 
 ## Folders and owners
