@@ -130,7 +130,7 @@ Optional pose fields (YOLO11-pose), present when the detector is a pose model:
 
 - `kpts`: 17 COCO keypoints (nose, eyes, ears, shoulders, elbows, wrists, hips, knees, ankles), each `[x, y, conf]`. Omitted if the detector has no pose.
 - `down`: true when the person looks fallen (body axis more than 60 degrees from vertical, or a wide box when keypoints are unreliable). Omitted fields mean false/absent; clients must ignore unknown fields.
-- `world` (optional, Python server only): `[x, y, z]` metres in the map frame (ARKit world, Y up) of a tracked person's torso, from the median confident LiDAR depth in the box centre of the exact RGB-D frame it was detected on. Absent for RGB-only or estimated-depth sources and when too few depth samples are valid. The Quest draws a labeled, expiring `PERSON #id` capsule there (`quest/src/person-markers.js`); it is never fused into the map.
+- `world` (optional): `[x, y, z]` metres in the map frame (ARKit world, Y up) of a tracked person's torso, from the median confident LiDAR depth in the box centre of the exact RGB-D frame it was detected on. Absent for RGB-only or estimated-depth sources and when too few depth samples are valid. The Quest draws a labeled, expiring `PERSON #id` capsule there (`quest/src/person-markers.js`); it is never fused into the map.
 - `id` is stable across frames: the server runs a small IoU + velocity tracker (`jetson/tracker.py`) over every detector mode, keeping an id through brief dropouts (about 5 frames or 2 s) and never reusing one. Clients may rely on it for `target_id`.
 
 ## WebSocket `/ws/control` (Quest -> Jetson), JSON, 20 Hz timer plus one per new permit while the deadman is held
