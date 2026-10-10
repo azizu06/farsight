@@ -32,9 +32,22 @@ def feed(nav, tracking="normal", identity=PHONE, frame=True):
         nav.offer_frame(type("Frame", (), dict(
             header=dict(session_id=identity[0], map_epoch=identity[1], tracking=tracking,
                         _received_monotonic=time.monotonic(),
-                        _mapping_socket_generation=getattr(mapping, "socket_generation", 0)),
+                        _mapping_socket_generation=getattr(mapping, "socket_generation", 0),
+                        frame_id=nav.frame_seq + 1, t_capture=float(nav.frame_seq + 1),
+                        _mapping_sensor_key=(*identity, getattr(mapping, "socket_generation", 0),
+                                             nav.frame_seq + 1, float(nav.frame_seq + 1))),
             depth=depth, confidence=np.full(depth.shape, 2, np.uint8), transform=np.eye(4),
             calibration=Calibration(160, 120, 135, 135, 79.5, 59.5)))())
+        return nav.frame
+
+
+def detected(sensor_frame, *, mirrored=False, **changes):
+    value = dict(boxes=[dict(id=4, cls="person", x=.45, y=.2, w=.1, h=.6)],
+                 fresh=True, error=None, source="IPHONE LIDAR", mirrored=mirrored,
+                 frame=sensor_frame.header["frame_id"],
+                 sensor_key=list(sensor_frame.header["_mapping_sensor_key"]))
+    value.update(changes)
+    return value
 
 
 class Clock:
@@ -463,13 +476,150 @@ class LeaseTests(unittest.TestCase):
                 self.send(deadman=False)
                 self.drive_goto()
 
-    def begin_seek(self):
-        self.state.detections = lambda: dict(boxes=[dict(id=4, cls="person", x=.45, y=.2, w=.1, h=.6)],
-                                             fresh=True, error=None)
+    def begin_seek(self, target_id=4):
+        packet = detected(self.nav.frame, boxes=[dict(id=target_id, cls="person", x=.45, y=.2, w=.1, h=.6)])
+        self.state.detections = lambda: packet
+        self.bridge(type="status", state="idle", goal_id=None)
+        self.assertTrue(self.send(mode="seek", target_id=target_id))
+        self.state.output()
+        return self.nav.intent()["goal_id"]
+
+    def test_seek_uses_exact_retained_capture_when_inference_finishes_after_newer_depth(self):
+        original = self.nav.frame
+        packet = detected(original)
+        newest = feed(self.nav)
+        newest.depth[:] = 6
+        self.state.detections = lambda: packet
         self.bridge(type="status", state="idle", goal_id=None)
         self.assertTrue(self.send(mode="seek", target_id=4))
         self.state.output()
-        return self.nav.intent()["goal_id"]
+        expected = self.nav.locate(packet["boxes"][0], original)
+        np.testing.assert_allclose(self.nav.seek["person"], expected)
+        self.assertNotEqual(self.nav.seek["person"], self.nav.locate(packet["boxes"][0], newest))
+
+    def test_invalid_seek_pair_stops_immediately_without_waiting_for_projection_throttle(self):
+        goal = self.begin_seek()
+        self.bridge(type="cmd_vel", linear=.2, angular=0, goal_id=goal)
+        self.assertGreater(self.state.output()[0], 0)
+        packet = detected(self.nav.frame)
+        packet["sensor_key"][3] += 100
+        self.state.detections = lambda: packet
+        self.assertEqual(self.state.output()[:2], (0, 0))
+        self.assertIsNone(self.nav.cmd)
+        self.assertIsNone(self.nav.intent()["goal"])
+
+    def test_seek_rejects_missing_malformed_wrong_source_and_non_boolean_pair_metadata(self):
+        for change in (dict(sensor_key=None), dict(sensor_key="unknown"),
+                       dict(sensor_key=[*PHONE, True, 1, 1.]), dict(mirrored=None),
+                       dict(mirrored=1), dict(source="PHONE RGB"), dict(fresh=1),
+                       dict(frame=None), dict(frame=999), dict(frame=True)):
+            with self.subTest(change=change):
+                self.setUp()
+                goal = self.begin_seek()
+                self.bridge(type="cmd_vel", linear=.2, angular=0, goal_id=goal)
+                self.assertGreater(self.state.output()[0], 0)
+                packet = detected(self.nav.frame, **change)
+                self.state.detections = lambda: packet
+                self.assertEqual(self.state.output()[:2], (0, 0))
+                self.assertIsNone(self.nav.cmd)
+                self.assertIsNone(self.nav.intent()["goal"])
+                self.nav.seek_checked = 0
+
+    def test_seek_rejects_out_of_view_boxes_and_non_integer_person_ids_immediately(self):
+        for change in (dict(x=-.1), dict(y=-.1), dict(x=1.1), dict(y=1.1),
+                       dict(w=1.1), dict(h=1.1), dict(x=.9, w=.2), dict(y=.9, h=.2),
+                       dict(id=4.0), dict(id=True)):
+            with self.subTest(change=change):
+                self.setUp()
+                target_id = 1 if change.get("id") is True else 4
+                goal = self.begin_seek(target_id)
+                self.bridge(type="cmd_vel", linear=.2, angular=0, goal_id=goal)
+                self.assertGreater(self.state.output()[0], 0)
+                box = dict(id=target_id, cls="person", x=.45, y=.2, w=.1, h=.6)
+                box.update(change)
+                packet = detected(self.nav.frame, boxes=[box])
+                self.state.detections = lambda: packet
+                self.assertEqual(self.state.output()[:2], (0, 0))
+                self.assertIsNone(self.nav.cmd)
+                self.assertIsNone(self.nav.intent()["goal"])
+
+    def test_same_id_and_capture_on_reconnected_socket_cannot_pair_old_inference(self):
+        old = self.nav.frame
+        packet = detected(old)
+        self.nav.mapping.start_session(PHONE, "same phone")
+        newest = feed(self.nav)
+        newest.header.update(frame_id=old.header["frame_id"], t_capture=old.header["t_capture"])
+        newest.header["_mapping_sensor_key"] = (*PHONE, self.nav.mapping.socket_generation,
+                                                  old.header["frame_id"], old.header["t_capture"])
+        self.nav.offer_frame(newest)
+        self.state.detections = lambda: packet
+        self.bridge(type="status", state="idle", goal_id=None)
+        self.assertTrue(self.send(mode="seek", target_id=4))
+        self.state.output()
+        self.assertIsNone(self.nav.intent()["goal"])
+        self.assertIsNone(self.nav.cmd)
+
+    def test_seek_does_not_use_an_expired_older_capture_when_newest_depth_is_fresh(self):
+        old = self.nav.frame
+        old.header["_received_monotonic"] = time.monotonic() - 2
+        self.nav.offer_frame(old)
+        packet = detected(old)
+        feed(self.nav)
+        self.assertIsNone(self.nav.sensor_fault())
+        self.state.detections = lambda: packet
+        self.bridge(type="status", state="idle", goal_id=None)
+        self.assertTrue(self.send(mode="seek", target_id=4))
+        self.state.output()
+        self.assertIsNone(self.nav.intent()["goal"])
+
+    def test_seek_depth_cache_is_bounded_and_evicted_capture_cannot_drive(self):
+        old = self.nav.frame
+        packet = detected(old)
+        for _ in range(13):
+            feed(self.nav)
+        self.state.detections = lambda: packet
+        self.bridge(type="status", state="idle", goal_id=None)
+        self.assertTrue(self.send(mode="seek", target_id=4))
+        self.state.output()
+        self.assertIsNone(self.nav.intent()["goal"])
+        self.assertLessEqual(len(self.nav.seek_frames), 12)
+
+    def test_seek_rotates_matched_sensor_depth_to_the_detector_input_view(self):
+        from jetson.mapping.tests.test_orientation import phone_upside_down
+        upright = simulated_frame(1.0, 4, identity=PHONE)
+        sensor = phone_upside_down(upright)
+        sensor.header.update(_received_monotonic=time.monotonic(),
+                             _mapping_socket_generation=self.nav.mapping.socket_generation,
+                             _mapping_sensor_key=(*PHONE, self.nav.mapping.socket_generation, 4,
+                                                  sensor.header["t_capture"]))
+        with self.nav.mapping.lock:
+            self.nav.mapping.pose = sensor.transform.copy()
+            self.nav.mapping.last_received = time.monotonic()
+        self.nav.offer_frame(sensor)
+        packet = detected(sensor, mirrored=True)
+        packet["boxes"] = [dict(x=.31, y=.22, w=.2, h=.4, cls="person", id=4)]
+        self.state.detections = lambda: packet
+        self.bridge(type="status", state="idle", goal_id=None)
+        self.assertTrue(self.send(mode="seek", target_id=4))
+        self.state.output()
+        expected = self.nav.locate(packet["boxes"][0], upright)
+        np.testing.assert_allclose(self.nav.seek["person"], expected, atol=2e-3)
+
+    def test_seek_projection_that_expires_cannot_rearm_a_command(self):
+        self.begin_seek()
+        locate = self.nav.locate
+        clock = SimpleNamespace(now=time.monotonic())
+        def slow_projection(box, frame):
+            result = locate(box, frame)
+            clock.now += 2
+            self.nav.mapping.last_received = clock.now
+            return result
+        self.nav.locate = slow_projection
+        self.nav.seek_checked = 0
+        with patch('jetson.nav.time', SimpleNamespace(monotonic=lambda: clock.now)):
+            self.nav.update_seek(detected(self.nav.frame))
+        self.assertIsNone(self.nav.intent()["goal"])
+        self.assertIsNone(self.nav.cmd)
 
     def test_seek_replacement_stops_until_a_command_for_the_new_goal_arrives(self):
         first = self.begin_seek()
@@ -564,16 +714,11 @@ class LeaseTests(unittest.TestCase):
         self.assertIs(self.nav.frame, current)
 
     def test_seek_projects_the_person_through_depth_and_follows_with_standoff(self):
-        from jetson.mapping.geometry import Calibration
-        depth = np.full((120, 160), 3.0, np.float32)
-        frame = type("Frame", (), dict(header=dict(session_id=PHONE[0], map_epoch=PHONE[1], tracking="normal",
-                                                    _received_monotonic=time.monotonic()),
-                                        depth=depth, confidence=np.full(depth.shape, 2, np.uint8),
-                                        calibration=Calibration(160, 120, 135, 135, 79.5, 59.5),
-                                        transform=np.eye(4)))()
-        self.nav.offer_frame(frame)
+        frame = feed(self.nav)
+        depth = frame.depth
         boxes = [dict(id=4, cls="person", x=0.45, y=0.2, w=0.1, h=0.6)]
-        self.state.detections = lambda: dict(boxes=boxes, fresh=True, age_ms=10, error=None)
+        packet = detected(frame, boxes=boxes, age_ms=10)
+        self.state.detections = lambda: packet
         self.bridge(type="status", state="idle", goal_id=None)
         self.assertTrue(self.send(mode="seek", target_id=4))
         self.state.output()

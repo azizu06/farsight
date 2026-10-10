@@ -27,10 +27,15 @@ The issue branch and review are [PR #153](https://github.com/azizu06/farsight/pu
 | Cinematic camera easing renders an intermediate pose while the frame echoes the latest tracked pose | Draw at the exact accepted pose so Quest's matched-pose placement is valid; preserve cinematic styling. Small head-move/yaw regressions reproduce the mismatch under default settings and `camera=smooth` |
 | Old camera decoding changes a replacement socket's upside-down mount state | Check the current binding while updating mount hysteresis; recheck publication after rotating pixels |
 | Upright person boxes reuse unrelated depth just because their frame number matches | Retain native JPEG and a server-created capture key; match the exact socket/capture and source before projecting markers |
+| Seek projects upright or delayed detections into the newest unrelated native depth | Retain 12 exact captures and use the detector input's source, socket, frame and orientation. Recheck after projection; invalid pairing withdraws the old goal, while delayed valid inference uses its retained measured capture |
 
 The frame and motion age cutoffs are preserved. Repairs do not grant face
 recognition or model text authority over motors, synthesize metric geometry, or
 quietly change production routes.
+The browser judge check now samples continuous motion through three seconds of
+held manual drive and six seconds of Explore, including forward/turn phases,
+then verifies release STOP. This is a local simulation check, not a physical
+speed limit or evidence of venue-network timing.
 
 ## Deployment
 
