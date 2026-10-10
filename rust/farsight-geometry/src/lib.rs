@@ -332,7 +332,25 @@ impl AnchorGeometry {
     }
 
     /// Apply with ownership of the mesh payload (avoids cloning chunk data).
-    pub fn apply_owned(&mut self, u: Update) -> bool {
+    pub fn apply_owned(&mut self, mut u: Update) -> bool {
+        // ARKit anchor vertices are local. Transform each replacement once,
+        // before any session/sequence/cache mutation, into sensor-world metres.
+        if let Some(mesh) = &mut u.mesh {
+            let m = u.transform;
+            for point in &mut mesh.positions {
+                let [x, y, z] = point.map(f64::from);
+                let world = [
+                    f64::from(m[0]) * x + f64::from(m[4]) * y + f64::from(m[8]) * z + f64::from(m[12]),
+                    f64::from(m[1]) * x + f64::from(m[5]) * y + f64::from(m[9]) * z + f64::from(m[13]),
+                    f64::from(m[2]) * x + f64::from(m[6]) * y + f64::from(m[10]) * z + f64::from(m[14]),
+                ].map(|v| v as f32);
+                if !world.iter().all(|v| v.is_finite()) {
+                    self.pub_lane.dropped_malformed += 1;
+                    return false;
+                }
+                *point = world;
+            }
+        }
         if u.session != self.session || u.epoch != self.epoch {
             self.session = u.session;
             self.epoch = u.epoch;
@@ -709,6 +727,24 @@ mod tests {
         g.apply_owned(end);
         assert_eq!(g.triangles(), 3); // whole snapshot publishes at once
         assert_eq!(g.lane().reconnects, 2);
+    }
+
+    #[test]
+    fn anchor_rotation_and_translation_are_applied_once_before_export() {
+        let mut g = AnchorGeometry::new(100);
+        g.apply_owned(upd(1, Op::SnapshotEnd, None));
+        let mut update = upd(2, Op::Replace, Some(mesh(1)));
+        // Rotate +90 degrees around Z, then translate (1, 2, 3).
+        update.transform = [0., 1., 0., 0., -1., 0., 0., 0., 0., 0., 1., 0., 1., 2., 3., 1.];
+        assert!(g.apply_owned(update));
+        let bytes = g.encode();
+        let point = |index: usize| {
+            let offset = 8 + index * 16;
+            [0, 4, 8].map(|axis| f32::from_le_bytes(bytes[offset + axis..offset + axis + 4].try_into().unwrap()))
+        };
+        assert_eq!(point(0), [1., 2., 3.]);
+        assert_eq!(point(1), [0., 3., 4.]);
+        assert_eq!(point(2), [0., 2., 3.]);
     }
 
     #[test]
