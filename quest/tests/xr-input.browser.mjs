@@ -638,8 +638,8 @@ try {
     let revision = 0;
     const timer = setInterval(() => socket.send(JSON.stringify({
       type: "status", source: "SIMULATED", device: "BUDGET FIXTURE", connected: true,
-      fresh: true, generation: 1, revision: revision++, mesh_revision: revision,
-      points_transport: "http", points: 0, triangles: 0, frames: revision,
+      fresh: true, session_id: "budget-sim-only", map_epoch: 1, generation: 1, revision: 1, mesh_revision: 1,
+      points_transport: "http", points: 0, triangles: 1, frames: revision++,
       rejected: 0, dropped: 0, processing_ms: 0, age_ms: 0, tracking: "normal",
       position: [0, 0, 0], transform: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
       depth_range: null, reason: null,
@@ -649,13 +649,20 @@ try {
   });
   await page.locator("#settings-toggle").click();
   await page.getByText("H.264 video", { exact: false }).locator("input").first().check();
+  await page.locator('[data-view="3d"]').click();
   await page.waitForTimeout(350);
   const jpegBefore = jpegPulls;
   await page.waitForTimeout(2200);
   assert.equal(jpegPulls, jpegBefore, "H.264 suppresses both JPEG polling paths");
-  assert.ok(pointPulls > 0 && pointPulls <= 1, `bounded point pulls: ${pointPulls}`);
+  assert.equal(pointPulls, 0, "hybrid derives points from its mesh without a duplicate download");
   assert.ok(meshPulls > 0 && meshPulls <= 1, `bounded mesh pulls: ${meshPulls}`);
   assert.ok(mapUrls.every(url => url.endsWith("?points=http")));
+  await page.locator("#settings-toggle").click();
+  await page.locator("#points-only").check();
+  await page.waitForTimeout(3200);
+  assert.equal(pointPulls, 1, "points-only downloads one snapshot after the shared five-second gate");
+  assert.equal(meshPulls, 1, "points-only does not keep pulling meshes");
+  await page.locator("#close-settings").click();
   await page.evaluate(async () => {
     const { RoverExperience } = await import("/src/rover.ts");
     window.budgetDeadmanDescriptor = Object.getOwnPropertyDescriptor(RoverExperience.prototype, "deadmanHeld");
@@ -672,6 +679,9 @@ try {
   });
   await page.waitForTimeout(600);
   assert.ok(mapUrls.length >= 2, "released deadman resumes authoritative map subscription");
+  const reconnectPulls = [pointPulls, meshPulls];
+  await page.waitForTimeout(5200);
+  assert.deepEqual([pointPulls, meshPulls], reconnectPulls, "same-source reconnect and unchanged revisions never redownload the map");
   result.cellularTransfers = { pointPulls, meshPulls, jpegSuppressed: true, deadmanPause: true, resumed: true };
 
   // Camera mount: ?mount=fixed persists, wins over a rover that reports a pan servo,

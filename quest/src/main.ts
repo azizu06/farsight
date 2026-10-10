@@ -1,3 +1,4 @@
+import { chooseMapTransfer, MAP_TRANSFER_INTERVAL_MS } from "./map-transfer.js";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { VRButton } from "three/addons/webxr/VRButton.js";
@@ -96,7 +97,7 @@ let generation = -1,
   pendingMesh = false;
 let connectionVersion = 0;
 let mapDriving = false, appliedPoints = -1, lastMapAt = -Infinity;
-let lastMapKind: "points" | "mesh" = "mesh";
+let mapSourceIdentity = "";
 let pointsRequest: AbortController | null = null, meshRequest: AbortController | null = null;
 let socket: WebSocket | null = null,
   reconnectTimer = 0,
@@ -416,9 +417,9 @@ function statusLine(next: Status) {
   );
 }
 async function loadMesh(next: Status) {
-  if (!mapNeeded() || pendingMesh || pointsRequest || appliedMesh === next.mesh_revision || performance.now() - lastMapAt < 2000) return;
+  if (!mapNeeded() || pendingMesh || pointsRequest || appliedMesh === next.mesh_revision || performance.now() - lastMapAt < MAP_TRANSFER_INTERVAL_MS) return;
   pendingMesh = true;
-  lastMapAt = performance.now(); lastMapKind = "mesh";
+  lastMapAt = performance.now();
   const abort = new AbortController(); meshRequest = abort;
   const wantedGeneration = next.generation,
     wantedRevision = next.mesh_revision,
@@ -433,6 +434,9 @@ async function loadMesh(next: Status) {
       connectionVersion === wantedConnection && mapNeeded() && !abort.signal.aborted
     ) {
       replaceGeometry(surfaces, data, data.indices);
+      // Mesh vertices are the same measured reconstruction; avoid a second
+      // cellular download just to draw the hybrid point overlay and frame it.
+      replaceGeometry(cloud, data); appliedPoints = -1;
       appliedMesh = wantedRevision;
     }
   } catch (error) {
@@ -442,9 +446,9 @@ async function loadMesh(next: Status) {
   }
 }
 async function loadPoints(next: Status) {
-  if (next.points_transport !== "http" || !mapNeeded() || pointsRequest || meshRequest || appliedPoints === next.revision || performance.now() - lastMapAt < 2000) return;
+  if (next.points_transport !== "http" || !mapNeeded() || pointsRequest || meshRequest || appliedPoints === next.revision || performance.now() - lastMapAt < MAP_TRANSFER_INTERVAL_MS) return;
   const abort = new AbortController(); pointsRequest = abort;
-  lastMapAt = performance.now(); lastMapKind = "points";
+  lastMapAt = performance.now();
   const wantedGeneration = next.generation, wantedRevision = next.revision, wantedConnection = connectionVersion;
   try {
     const response = await fetch(api("/map/points.bin"), { cache: "no-store", signal: abort.signal });
@@ -460,6 +464,8 @@ async function loadPoints(next: Status) {
   } finally { pointsRequest = null; }
 }
 function acceptStatus(next: Status) {
+  const sourceIdentity = `${next.source}|${next.session_id ?? connectionVersion}|${next.map_epoch}`;
+  if (sourceIdentity !== mapSourceIdentity) { mapSourceIdentity = sourceIdentity; generation = -1; }
   if (next.generation < generation) return;
   if (next.generation !== generation) {
     generation = next.generation;
@@ -513,13 +519,16 @@ function acceptStatus(next: Status) {
     camera.position.add(position.clone().sub(controls.target));
     controls.target.copy(position);
   }
-  // Alternate the preferred kind so a changing mesh cannot starve points.
-  if (lastMapKind === "mesh") { void loadPoints(next); void loadMesh(next); }
-  else { void loadMesh(next); void loadPoints(next); }
+  const transfer = chooseMapTransfer({ needed: mapNeeded(), busy: !!(pointsRequest || meshRequest),
+    now: performance.now(), lastStarted: lastMapAt, pointsOnly, view, triangles: next.triangles,
+    pointsTransport: next.points_transport, pointRevision: next.revision, meshRevision: next.mesh_revision,
+    appliedPoints, appliedMesh });
+  if (transfer === "mesh") void loadMesh(next);
+  else if (transfer === "points") void loadPoints(next);
   visibility();
 }
 function mapNeeded() {
-  return !mapDriving && (view !== "camera" || settings.open || (renderer.xr.isPresenting && !rover?.vrCameraView));
+  return !mapDriving && (view !== "camera" || (renderer.xr.isPresenting && !rover?.vrCameraView));
 }
 function syncMapConnection() {
   if (mapNeeded()) {
@@ -541,9 +550,8 @@ function connect() {
     if (socket !== nextSocket) return;
     serverOnline = true;
     connectionVersion += 1;
-    generation = -1;
-    appliedMesh = -1;
-    appliedPoints = -1;
+    // Keep acknowledged revisions across transport reconnects. A changed
+    // sensor session/epoch or mapper generation resets them in acceptStatus.
   };
   nextSocket.onmessage = (event) => {
     if (socket !== nextSocket) return;

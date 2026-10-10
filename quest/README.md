@@ -17,6 +17,14 @@ Use the [operator launcher](../tools/demo.py)
 for the integrated app; Vite development mode uses port 8443 as its upstream.
 Do not confuse an old server already on that port with a freshly launched demo.
 
+Full map transfers start at most once every five seconds, with one request in
+flight and only when the selected geometry revision changes. Hybrid 3D view
+downloads the mesh and derives its point overlay locally; points-only/2D mode
+requests the point snapshot. Same-source reconnects keep applied revisions.
+Opening camera settings does not download a map, and holding the deadman pauses
+map transfers. Source/session, epoch or mapper generation changes clear retained
+geometry. This reduces snapshot traffic while the phone-to-Mac delta lane lands.
+
 `node tests/vr-visual-audit.mjs --after` launches its own isolated simulated
 server/relay and captures the production stereo view and menu hover into `/tmp`.
 For comparative upload profiling, point `PERF_ORIGIN` at a separate simulated
