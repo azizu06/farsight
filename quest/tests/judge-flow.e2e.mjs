@@ -289,6 +289,16 @@ async function main() {
       return `"${text.slice(0, 90)}…"`;
     });
 
+    await step("survivor phrase reaches rover through relay (never 405)", async () => {
+      const result = await page.evaluate(async () => {
+        const response = await fetch("/speak", { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ phrase: "help_coming", lang: "en" }) });
+        return { status: response.status, body: (await response.text()).slice(0, 120) };
+      });
+      if (result.status === 405 || result.status === 404) throw new Error(`relay did not proxy /speak: ${result.status}`);
+      return `upstream status ${result.status}: ${result.body}`;
+    });
+
     await step("mission report opens, labelled SIMULATED", async () => {
       await page.locator("#open-mission-report").click();
       const dialog = page.locator("dialog.mission-report");
