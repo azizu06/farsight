@@ -32,12 +32,25 @@ const upstream = (params.get("upstream") || "").replace(/\/$/, "");
 const width = Number(params.get("width") || 1280);
 const height = Number(params.get("height") || 720);
 
+// Source-frame JPEG quality for __macCapture: 0.9 is the stream default,
+// ?jq= overrides it when encode time matters more than fidelity.
+const jqParam = Number(params.get("jq"));
+const jpegQuality = Number.isFinite(jqParam) && jqParam > 0
+  ? Math.min(0.98, jqParam)
+  : 0.9;
 const style = params.get("style") === "unlit" ? "unlit" : "lit";
 const GRAPHITE = 0x1c2228;
 const FOG = 0x242b31;
 const ACCENT = 0xc4a574;
 
-const renderer = new THREE.WebGLRenderer({ antialias: false, alpha: false });
+const renderer = new THREE.WebGLRenderer({
+  antialias: false, alpha: false,
+  // Captures can read the canvas outside the render task; a preserved
+  // backbuffer means those reads can never hit a cleared buffer even if a
+  // path (raw screencast) skips the same-task draw guarantee.
+  preserveDrawingBuffer: true,
+  powerPreference: "high-performance",
+});
 renderer.setSize(width, height, false);
 renderer.setPixelRatio(1);
 renderer.setClearColor(GRAPHITE);
@@ -657,7 +670,7 @@ window.__macCapture = () => {
   // "capture" forces a draw in this same task, so toDataURL never reads a cleared buffer.
   drawScene("capture");
   const captureStarted = performance.now();
-  const data = renderer.domElement.toDataURL("image/jpeg", 0.8).split(",")[1];
+  const data = renderer.domElement.toDataURL("image/jpeg", jpegQuality).split(",")[1];
   window.__mac.captureMs = performance.now() - captureStarted;
   // The readback is where rasterization actually bills: render+capture is the
   // real per-frame cost in the server-driven pipeline.
