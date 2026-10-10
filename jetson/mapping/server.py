@@ -50,6 +50,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                depth_model=None, scan_pan=False, scan_fov=70, scan_intrinsics=None, scan_turn_dps=90,
                record=False, replay=None, proximity_stop=True, pan_mount="servo", autonomy_max_pwm=None, nav2=False, nav_speed_mps=0.45,
                nav_turn_radps=3.0, nav_max_v=0.7, nav_max_w=0.8, nav_camera_height=0.15, bulk_limit_mbps=0, drive_profile=None,
+               video_limit_mbps=0,
                allow_calibration=False, sim_world=None, bonded_control=False, lidar_drive=False,
                fusion_bypass=False, map_points_cap=None, map_triangles_cap=None):
     if sim_world is not None:  # closed-loop simulator: a moving ray-cast rover in a test floor plan
@@ -61,6 +62,9 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
         if drive_profile.meta.get("source") == "simulated":
             logging.getLogger(__name__).warning("Drive profile came from a SIMULATED rover; it does not describe real motors")
     bulk = BulkPacer(bulk_limit_mbps)
+    # Live video keeps its own unpaced lane: a shared cap made every JPEG wait behind
+    # map snapshots, pushing camera age past the 500 ms motion-stop threshold.
+    live = BulkPacer(video_limit_mbps)
     if replay is not None and (serial_port or camera_device is not None or demo or simulate_rover or record):
         raise ValueError("Replay cannot be combined with serial, live/simulated sources, or recording")
     if (demo or simulate_rover) and serial_port:
@@ -200,6 +204,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
     app.state.phrases = phrases
     app.state.scanner = scanner
     app.state.bulk = bulk
+    app.state.live = live
     app.include_router(control.router)
     app.state.nav = nav
     app.include_router(nav.router if nav is not None else disabled_router())
@@ -319,7 +324,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
         frame = await asyncio.to_thread(camera_service.preview)
         if frame is None:
             raise HTTPException(503, "Waiting for a camera frame")
-        return bulk_response(frame.jpeg, bulk, media_type="image/jpeg", headers={"Cache-Control": "no-store",
+        return bulk_response(frame.jpeg, live, media_type="image/jpeg", headers={"Cache-Control": "no-store",
               "X-Frame-Id": str(frame.frame_id), "X-Frame-Age-Ms": str(frame.age_ms),
               "X-Frame-Source": frame.source})
 
@@ -327,7 +332,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
     async def depth():
         if state.depth_jpeg is None:
             raise HTTPException(503, "Waiting for measured depth")
-        return bulk_response(state.depth_jpeg, bulk, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+        return bulk_response(state.depth_jpeg, live, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
     @app.get("/stream.mjpg")
     async def stream():
@@ -341,8 +346,8 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                         yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame.jpeg + b"\r\n"
                         last = (frame.source, frame.frame_id)
                 await asyncio.sleep(0.02)
-        if bulk.enabled:
-            return PacedStreamingResponse(images(), bulk, media_type="multipart/x-mixed-replace; boundary=frame")
+        if live.enabled:
+            return PacedStreamingResponse(images(), live, media_type="multipart/x-mixed-replace; boundary=frame")
         return StreamingResponse(images(), media_type="multipart/x-mixed-replace; boundary=frame")
 
     @app.websocket("/ws/video")
@@ -366,7 +371,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
             frame = camera_service.snapshot()
             await ws.send_json(dict(type="video_init", mime=video_service.mime, source=frame.source if frame else "WAITING"))
             async def send_initialization(payload):
-                if bulk.enabled:
+                if live.enabled:
                     await asyncio.wait_for(ws.send_bytes(payload), .5)
                 else:
                     await ws.send_bytes(payload)
@@ -393,7 +398,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
             # Monitor requests/disconnection while initialization waits for the
             # shared budget, rather than retaining a cancelled client's slot.
             receiver = asyncio.create_task(receive_requests())
-            initialization = asyncio.create_task(bulk.send_packet(video_service.init, send_initialization))
+            initialization = asyncio.create_task(live.send_packet(video_service.init, send_initialization))
             tasks = [receiver, initialization]
             done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
@@ -415,7 +420,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                                         age_ms=max(0, round((time.monotonic() - fragment["received"]) * 1000)))
                         await asyncio.wait_for(ws.send_json(metadata), .5)
                         await asyncio.wait_for(ws.send_bytes(payload), .5)
-                    await bulk.send_packet(fragment["payload"], send_fragment)
+                    await live.send_packet(fragment["payload"], send_fragment)
 
             tasks = [receiver, asyncio.create_task(send_fragments())]
             done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
@@ -770,11 +775,14 @@ def main():
     parser.add_argument("--video-fps", type=int, default=10)
     parser.add_argument("--video-bitrate", type=int, default=500000, help="H264 bit/s; start low for cellular headroom")
     parser.add_argument("--bulk-limit-mbps", type=float, default=0,
-                        help="Optional shared bulk payload Mbps cap; 0 disables, control/permits remain unpaced")
+                        help="Optional shared bulk payload Mbps cap for map/PLY/TTS/snapshots; 0 disables. "
+                             "Live video, control and permits stay unpaced")
     parser.add_argument("--map-points-cap", type=int, default=None,
                         help="Visual cap on served/exported map points (env FARSIGHT_MAP_POINTS_CAP, default 30000); 0 disables")
     parser.add_argument("--map-triangles-cap", type=int, default=None,
                         help="Visual cap on served mesh triangles (env FARSIGHT_MAP_TRIANGLES_CAP, default 40000); 0 disables")
+    parser.add_argument("--video-limit-mbps", type=float, default=0,
+                        help="Optional separate Mbps cap for live video (camera/depth JPEG, MJPEG, H.264); 0 disables")
     parser.add_argument("--record", action="store_true", help="Record JPEG, detections and control in --mission-dir")
     parser.add_argument("--replay", help="Loop a recorded mission directory; motors always disabled")
     parser.add_argument("--mission-dir", help="Persist detection evidence beneath this directory")
@@ -794,6 +802,7 @@ def main():
         parser.error("--map-points-cap and --map-triangles-cap must be >= 0 (0 disables)")
     try:
         BulkPacer(args.bulk_limit_mbps)
+        BulkPacer(args.video_limit_mbps)
     except ValueError as exc:
         parser.error(str(exc))
     if args.record and not args.mission_dir:
@@ -821,6 +830,7 @@ def main():
                 depth_model=args.depth_model, scan_pan=args.scan_pan, scan_fov=args.scan_fov,
                 scan_intrinsics=args.scan_intrinsics, scan_turn_dps=args.scan_turn_dps,
                 record=args.record, replay=args.replay, bulk_limit_mbps=args.bulk_limit_mbps,
+                video_limit_mbps=args.video_limit_mbps,
                 drive_profile=args.drive_profile, allow_calibration=args.allow_calibration,
                 proximity_stop=args.proximity_stop, pan_mount=args.pan_mount, autonomy_max_pwm=args.autonomy_max_pwm,
                 nav2=args.nav2, nav_speed_mps=args.nav_speed_mps, nav_turn_radps=args.nav_turn_radps,
