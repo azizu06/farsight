@@ -82,6 +82,17 @@ export class ControlSafety {
   }
 }
 
+/** Deadman trigger with hysteresis: engage above 0.6, release below 0.25. An analog trigger resting
+ * near the browser's own `pressed` threshold no longer flickers deadman on/off while it is held.
+ * Release stays immediate once the finger lets go below the low threshold; a missing button releases.
+ * @param {boolean} wasHeld @param {{ pressed?: boolean, value?: number } | undefined} button */
+export const TRIGGER_ENGAGE = 0.6, TRIGGER_RELEASE = 0.25;
+export function triggerHeld(wasHeld, button) {
+  if (!button) return false;
+  const value = Number.isFinite(button.value) && (button.value > 0 || !button.pressed) ? button.value : button.pressed ? 1 : 0;
+  return wasHeld ? value >= TRIGGER_RELEASE : value > TRIGGER_ENGAGE;
+}
+
 export function stick(value, deadzone = 0.18) {
   if (!Number.isFinite(value) || Math.abs(value) <= deadzone) return 0;
   return Math.sign(value) * Math.min(1, (Math.abs(value) - deadzone) / (1 - deadzone));
