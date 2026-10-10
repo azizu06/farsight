@@ -376,6 +376,12 @@ canvas:focus-visible {
 #rover-details { font-size: 11px; line-height: 1.5; color: #a9b9ca; margin: 0 0 10px; }
 .rover-controls .hold-button { width: 100%; touch-action: none; user-select: none; }
 .rover-controls .hold-button.engaged { background: #24573b; border-color: #8dffa9; }
+.rover-nav { margin: 8px 0 0; font-size: 11px; line-height: 1.5; color: #8a96a3; }
+.rover-nav[data-state="planning"] { color: #8fb4ff; }
+.rover-nav[data-state="driving"] { color: #43e8ff; }
+.rover-nav[data-state="recovering"] { color: #ffc14d; }
+.rover-nav[data-state="arrived"] { color: #6dff9c; }
+.rover-nav[data-state="failed"] { color: #ff6b6b; }
 .rover-help { margin: 10px 0 0; font-size: 10px; line-height: 1.6; color: #afbbc8; }
 .navigation-hint { bottom: 255px; }
 .local-assistant { border-top: 1px solid #505050; margin-top: 18px; padding-top: 10px; }

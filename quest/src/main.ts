@@ -45,7 +45,7 @@ app.innerHTML = `
     <button class="settings-toggle" id="settings-toggle" title="Settings (Escape)" aria-label="Open viewer settings">Settings</button>
     <p class="navigation-hint" id="navigation-help">
       <span><b>Right drag</b> Orbit</span><span><b>Left drag</b> Pan</span><span><b>Scroll</b> Zoom</span>
-      <span><b>F</b> Frame scan</span><span><b>P</b> Points / hybrid</span><span><b>Home</b> Reset view</span><span><b>Esc</b> Settings</span>
+      <span><b>Double-click floor</b> Go-to</span><span><b>F</b> Frame scan</span><span><b>P</b> Points / hybrid</span><span><b>Home</b> Reset view</span><span><b>Esc</b> Settings</span>
     </p>
     <p class="sr-only" id="keyboard-help">Arrow keys pan. Shift and arrow keys rotate. Plus and minus zoom.
       On a touchscreen use one finger to orbit, or two fingers to pan and pinch to zoom.</p>
@@ -284,6 +284,7 @@ renderer.setAnimationLoop((_time, frame) => {
 });
 
 rover = new RoverExperience(renderer, scene, camera, () => view, setView);
+root.add(rover.navLayer);
 diagnostics = new DiagnosticsOverlay(() => rover!.diagnostics());
 rover.addCockpitPanel(diagnostics.panel);
 setView(new URLSearchParams(location.search).get("view") === "map" ? "3d" : "camera");

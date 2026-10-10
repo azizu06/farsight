@@ -218,6 +218,35 @@ Those conditions block forward translation; camera/link failure stops all
 motion. `link_ms` is permit age at command arrival; the browser's acknowledged
 sequence RTT is a different measurement. Optional autonomy fields follow below.
 
+### Optional navigation status and go-to goals
+
+Servers with the ROS 2 / Nav2 planner (or its fallback) add an optional `nav`
+object to `/control/status` and every `/ws/control` status. Coordinates are
+voxel-map world metres: map `x, z` (ROS `x, y`) on the floor plane.
+
+```json
+"nav": {"state":"driving","mode":"goto","goal":{"x":2.0,"z":-1.5},
+        "path":[[0,0],[1.1,-0.6],[2.0,-1.5]],"frontiers":[[3.2,0.4]],
+        "backend":"nav2","message":""}
+```
+
+- `state`: `idle`, `planning`, `driving`, `recovering`, `arrived`, `failed` or
+  `unavailable`. `mode`: `explore`, `seek`, `goto` or `null`. `backend`: `nav2`
+  or `fallback`. `path` has at most 200 points, `frontiers` at most 50.
+- `POST /nav/goal` with exactly `{"x": 2.0, "z": -1.5}` (metres, millimetre
+  precision) returns `202` with the nav object, or `409` with a nav object or
+  `{"message"}` explaining the refusal. `POST /nav/cancel` (no body) cancels and
+  returns the nav object.
+- Viewer (`quest/src/nav-view.js`, `nav-overlay.ts`): an unknown `state` hides
+  the overlay, and a path with any non-finite point is not drawn at all. Only a
+  `202` arms go-to; held-deadman heartbeats then carry `mode: "goto"` (no
+  `target_id`, `v: 0`, `w: 0`), and releases still carry `mode: "teleop"`. All
+  permit, sequence, deadman and fresh-video rules above still apply; a release or
+  view change needs a new deadman press but keeps the goal armed. Stick input,
+  STOP and cancel disarm it and send `POST /nav/cancel`. Servers that do not
+  accept `mode: "goto"` stop with `unsupported_mode`; return `409` from
+  `/nav/goal` until they do.
+
 ## H264 over WebSocket `/ws/video`
 
 Enable the server with `--h264`; enable the viewer's H.264 checkbox separately.
