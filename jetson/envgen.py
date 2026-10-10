@@ -17,10 +17,13 @@ from pathlib import Path
 PLACEHOLDER_REPO = "/home/farsight/farsight"
 ASSISTANT_URL = "http://127.0.0.1:8092"
 WHISPER_URL = "http://127.0.0.1:8091"
-VISION_PAIRS = (
-    ("SmolVLM-500M-Instruct-Q8_0.gguf", "mmproj-SmolVLM-500M-Instruct-Q8_0.gguf"),
-    ("Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf", "mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf"),
-)
+SMOLVLM_PAIR = ("SmolVLM-500M-Instruct-Q8_0.gguf", "mmproj-SmolVLM-500M-Instruct-Q8_0.gguf")
+QWEN25_PAIR = ("Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf", "mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf")
+QWEN3_PAIR = ("Qwen3VL-2B-Instruct-Q4_K_M.gguf", "mmproj-Qwen3VL-2B-Instruct-Q8_0.gguf")
+# Every known model is bound to its own projector; automatic choice takes the first complete pair here.
+VISION_PAIRS = (SMOLVLM_PAIR, QWEN25_PAIR, QWEN3_PAIR)
+AUTO_VISION_ORDER = (QWEN3_PAIR, SMOLVLM_PAIR, QWEN25_PAIR)
+WHISPER_ORDER = ("ggml-base.en.bin", "ggml-tiny.en.bin", "ggml-medium.en.bin", "ggml-medium.bin")
 
 
 def model_selection(repo, exists=os.path.exists, overrides=None):
@@ -45,7 +48,7 @@ def model_selection(repo, exists=os.path.exists, overrides=None):
         elif projector and not model:
             model = next((str(Path(projector).parent / name) for name, paired in VISION_PAIRS if Path(projector).name == paired), "")
     else:
-        for name, paired in VISION_PAIRS:
+        for name, paired in AUTO_VISION_ORDER:
             if exists(str(models / name)) and exists(str(models / paired)):
                 model, projector = str(models / name), str(models / paired)
                 break
@@ -57,8 +60,7 @@ def model_selection(repo, exists=os.path.exists, overrides=None):
     llm_ready = bool(model and projector and matching and exists(model) and exists(projector))
     if explicit and not llm_ready:
         warnings.append("Configured vision pair is missing, incomplete, or mixes known model families; no automatic replacement was selected")
-    whisper = safe(configured("FARSIGHT_WHISPER_SERVER_MODEL", "FARSIGHT_WHISPER_MODEL")) or first((
-        "ggml-tiny.en.bin", "ggml-base.en.bin", "ggml-medium.en.bin", "ggml-medium.bin"))
+    whisper = safe(configured("FARSIGHT_WHISPER_SERVER_MODEL", "FARSIGHT_WHISPER_MODEL")) or first(WHISPER_ORDER)
     piper = safe(configured("FARSIGHT_PIPER_MODEL")) or first((
         "en_US-lessac-low.onnx", "piper/en_US-lessac-medium.onnx", "en_US-lessac-medium.onnx"))
     spanish = safe(configured("FARSIGHT_PIPER_MODEL_ES")) or first(("piper/es_MX-claude-high.onnx", "es_MX-claude-high.onnx"))

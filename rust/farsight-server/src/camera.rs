@@ -15,6 +15,11 @@ pub struct CameraFrame {
     pub received: f64, // monotonic seconds
     pub frame_id: i64,
     pub source: String, // "USB CAMERA" | "PHONE RGB" | "IPHONE LIDAR" | "SIMULATED"
+    /// True when the frame echoed a live receiver-issued capture permit.
+    pub capture_verified: bool,
+    /// The permit issuer the frame was bound to; drive eligibility requires
+    /// it to still be active (jetson/camera.py parity).
+    pub capture_binding: Option<Arc<crate::capture_permits::CapturePermits>>,
 }
 
 impl CameraFrame {
@@ -26,6 +31,7 @@ impl CameraFrame {
 struct Inner {
     frame: Option<CameraFrame>,
     phone_rgb: Option<CameraFrame>,
+    phone_capture_diagnostics: serde_json::Map<String, serde_json::Value>,
     error: Option<String>,
 }
 
@@ -40,6 +46,34 @@ pub fn adjusted_receipt(header: &serde_json::Value, received_at: f64) -> Result<
             .ok_or("Producer encoding delay must be finite milliseconds in 0..60000")?,
     };
     Ok(received_at - delay_ms / 1000.0)
+}
+
+/// Bounded producer clock observations, never a server qualification
+/// decision. Port of camera.capture_diagnostics.
+pub fn capture_diagnostics(
+    header: &serde_json::Value,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut result = serde_json::Map::new();
+    if let Some(clock) = header
+        .get("capture_clock")
+        .and_then(|v| v.as_str())
+        .filter(|c| matches!(*c, "avcapture_sync_to_host" | "arkit_unverified"))
+    {
+        result.insert("clock".into(), serde_json::json!(clock));
+    }
+    for key in [
+        "t_capture",
+        "callback_host_t",
+        "sensor_timestamp_raw_t",
+        "sensor_timestamp_host_t",
+        "sensor_host_delta_ms",
+        "sensor_age_ms",
+    ] {
+        if let Some(v) = header.get(key).and_then(|v| v.as_f64()).filter(|v| v.is_finite()) {
+            result.insert(key.into(), serde_json::json!(v));
+        }
+    }
+    result
 }
 
 pub struct CameraService {
@@ -62,7 +96,12 @@ impl CameraService {
             height: 480,
             fps: 15,
             quality: 55,
-            inner: Mutex::new(Inner { frame: None, phone_rgb: None, error: None }),
+            inner: Mutex::new(Inner {
+                frame: None,
+                phone_rgb: None,
+                phone_capture_diagnostics: serde_json::Map::new(),
+                error: None,
+            }),
             stop: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -75,13 +114,26 @@ impl CameraService {
             }
             drop(inner);
             let (jpeg, received, frame_id, source) = self.mapping.camera_snapshot();
-            return jpeg.map(|jpeg| CameraFrame { jpeg, received, frame_id, source: source.into() });
+            return jpeg.map(|jpeg| CameraFrame {
+                jpeg,
+                received,
+                frame_id,
+                source: source.into(),
+                capture_verified: false,
+                capture_binding: None,
+            });
         }
         self.inner.lock().unwrap().frame.clone()
     }
 
     /// Validate + store a phone RGB packet. Mirrors accept_phone_rgb.
-    pub fn accept_phone_rgb(&self, packet: &[u8], session_id: &str, previous_frame: i64) -> Result<i64, String> {
+    pub fn accept_phone_rgb(
+        &self,
+        packet: &[u8],
+        session_id: &str,
+        previous_frame: i64,
+        permits: Option<&Arc<crate::capture_permits::CapturePermits>>,
+    ) -> Result<i64, String> {
         if packet.len() <= 4 || packet.len() > 2 * 1024 * 1024 {
             return Err("RGB packet length is invalid".into());
         }
@@ -121,8 +173,21 @@ impl CameraService {
         if img.width().max(img.height()) > 4096 {
             return Err("RGB image cannot be decoded or is excessive".into());
         }
-        self.inner.lock().unwrap().phone_rgb =
-            Some(CameraFrame { jpeg: jpeg.to_vec(), received: adjusted_receipt(&header, now_monotonic())?, frame_id: fid, source: "PHONE RGB".into() });
+        let origin = permits.and_then(|p| p.verified_origin(&header));
+        let mut received = adjusted_receipt(&header, now_monotonic())?;
+        if let Some(origin) = origin {
+            received = received.min(origin);
+        }
+        let mut inner = self.inner.lock().unwrap();
+        inner.phone_capture_diagnostics = capture_diagnostics(&header);
+        inner.phone_rgb = Some(CameraFrame {
+            jpeg: jpeg.to_vec(),
+            received,
+            frame_id: fid,
+            source: "PHONE RGB".into(),
+            capture_verified: origin.is_some(),
+            capture_binding: permits.cloned(),
+        });
         Ok(fid)
     }
 
@@ -132,9 +197,35 @@ impl CameraService {
 
     pub fn status(&self) -> serde_json::Value {
         let frame = self.snapshot();
-        let error = self.inner.lock().unwrap().error.clone();
+        let inner = self.inner.lock().unwrap();
+        let error = inner.error.clone();
+        let fresh = frame.as_ref().map(|f| f.age_ms() < 500).unwrap_or(false);
+        let bound = frame
+            .as_ref()
+            .map(|f| {
+                f.capture_verified
+                    && f.capture_binding.as_ref().map(|p| p.is_active()).unwrap_or(false)
+            })
+            .unwrap_or(false);
+        // Drive eligibility: verified phone RGB, local USB, or a known-safe
+        // source; legacy/unverified streams are viewable but cannot drive.
+        let drive_ready = fresh
+            && (self.device.is_some()
+                || bound
+                || frame.as_ref().map(|f| {
+                    f.source == "SIMULATED" || f.source.starts_with("REPLAY")
+                })
+                .unwrap_or(false));
+        let diagnostics = if inner.phone_rgb.is_some() {
+            inner.phone_capture_diagnostics.clone()
+        } else {
+            self.mapping.capture_diagnostics()
+        };
         serde_json::json!({
-            "camera": frame.as_ref().map(|f| f.age_ms() < 500).unwrap_or(false),
+            "camera": fresh,
+            "camera_drive_ready": drive_ready,
+            "camera_capture_verified": bound,
+            "camera_capture_diagnostics": diagnostics,
             "camera_age_ms": frame.as_ref().map(|f| f.age_ms()),
             "camera_frame": frame.as_ref().map(|f| f.frame_id),
             "camera_source": frame.as_ref().map(|f| f.source.clone())
@@ -214,6 +305,8 @@ impl CameraService {
                                         received: now_monotonic(),
                                         frame_id,
                                         source: "USB CAMERA".into(),
+                                        capture_verified: false,
+                                        capture_binding: None,
                                     });
                                     inner.error = None;
                                     drop(inner);

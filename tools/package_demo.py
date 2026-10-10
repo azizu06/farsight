@@ -41,6 +41,8 @@ MODEL_FAMILIES = {
                  export_manifest="yolo11n-pose.manifest.json", source="https://github.com/ultralytics/assets"),
     "vision-smol": dict(files=("SmolVLM-500M-Instruct-Q8_0.gguf", "mmproj-SmolVLM-500M-Instruct-Q8_0.gguf"),
                         source="https://huggingface.co/ggml-org/SmolVLM-500M-Instruct-GGUF", paired=True),
+    "vision-qwen3": dict(files=("Qwen3VL-2B-Instruct-Q4_K_M.gguf", "mmproj-Qwen3VL-2B-Instruct-Q8_0.gguf"),
+                         source="https://huggingface.co/Qwen/Qwen3-VL-2B-Instruct-GGUF", paired=True),
     "vision-qwen": dict(files=("Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf", "mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf"),
                         source="https://huggingface.co/ggml-org/Qwen2.5-VL-3B-Instruct-GGUF", paired=True),
     "whisper-tiny": dict(files=("ggml-tiny.en.bin",), source="https://huggingface.co/ggerganov/whisper.cpp"),

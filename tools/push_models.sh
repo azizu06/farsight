@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Copy models/ (not in git) from a laptop to the Jetson. Safe to re-run: rsync only sends what changed.
-# Usage: tools/push_models.sh [--fetch] [--groups piper,face,whisper,vlm] [--dry-run] [user@host]
+# Usage: tools/push_models.sh [--fetch] [--groups piper,face,whisper,vlm-qwen3,vlm] [--dry-run] [user@host]
 #   default target: $USER@farsight.local     (USB-C to the Mac: user@192.168.55.1)
 #   --fetch  first download what is missing on this laptop (Piper English + Spanish voices, face model,
-#            whisper base.en; add --groups vlm for the 2.8 GB Qwen2.5-VL). Without it, only a report.
+#            whisper base.en; add --groups vlm-qwen3 for the 1.55 GB Qwen3-VL-2B, the default assistant model). Without it, only a report.
 #   --dry-run shows what would be downloaded and sent; nothing changes.
 # Engines (*.engine) are never pushed: they only run on the TensorRT build that made them (jetson/setup.sh builds them).
 set -euo pipefail
