@@ -25,6 +25,7 @@ PROXY_PREFIXES = ("/ws/", "/map/", "/tts/", "/video/", "/mission/", "/phone/", "
 # Everything else asks upstream for identity because the relay decodes and rewrites JSON.
 ENCODED_PATHS = {"/map/points.bin", "/map/mesh.bin", "/map/export.ply"}
 PROXY_PATHS = {"/health", "/control/status", "/camera.jpg", "/depth.jpg", "/stream.mjpg", "/ask", "/phone", "/scan", "/speak"}
+RENDER_PATHS = ("/ws/macview", "/ws/macview-pose")
 
 
 def is_proxied(path):
@@ -37,6 +38,26 @@ def upstream_origin(value):
             or url.path not in ("", "/") or url.query or url.fragment):
         raise ValueError("Upstream must be an http(s) origin without credentials, path, or query")
     return url.origin()
+
+
+def render_origin(value, jetson_origins=()):
+    from .geometry_relay import geometry_origin
+    try:
+        render = geometry_origin(value)
+    except (ValueError, TypeError):
+        raise ValueError("Render upstream must be a credential-free loopback HTTP(S) origin") from None
+    for jetson in jetson_origins:
+        if jetson is None:
+            continue
+        try:
+            local_jetson = geometry_origin(str(jetson))
+        except ValueError:
+            continue
+        # localhost/127.0.0.1/::1 may reach the same listener. Different
+        # spelling or scheme must not turn reserved render paths into Jetson.
+        if render.port == local_jetson.port:
+            raise ValueError("Render upstream must use a different port from loopback Jetson routes")
+    return render
 
 
 def local_url(value, upstream):
@@ -66,7 +87,8 @@ def forward_headers(headers):
             if key.lower() not in HOP_HEADERS | extra}
 
 
-def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5, bonded_upstream=None, geometry_upstream=None):
+def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5, bonded_upstream=None, geometry_upstream=None,
+               render_upstream=None):
     origin = upstream_origin(upstream)
     second = upstream_origin(bonded_upstream) if bonded_upstream is not None else None
     if second == origin:
@@ -74,6 +96,7 @@ def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5, bonded_upstr
     if geometry_upstream is not None:
         from .geometry_relay import geometry_origin
         geometry_upstream = geometry_origin(geometry_upstream)
+    render = render_origin(render_upstream, (origin, second)) if render_upstream is not None else None
     dist = Path(dist).resolve()
     tls = ssl.create_default_context(cafile=ca_file)
 
@@ -95,6 +118,7 @@ def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5, bonded_upstr
     app = web.Application(client_max_size=8 * 1024 * 1024, middlewares=[local_only])
     app["origin"] = origin
     control_closures = ControlClosures()
+    render_connections = 0
 
     async def sessions(app):
         timeout = aiohttp.ClientTimeout(total=None, connect=5, sock_read=10)
@@ -103,6 +127,10 @@ def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5, bonded_upstr
             connector=aiohttp.TCPConnector(limit=16, ssl=tls))
         app["control"] = aiohttp.ClientSession(timeout=timeout,
             connector=aiohttp.TCPConnector(limit=4, ssl=tls))
+        if render is not None:
+            # Frame/pose sockets cannot consume camera or control pool slots.
+            app["render"] = aiohttp.ClientSession(timeout=timeout,
+                connector=aiohttp.TCPConnector(limit=4, ssl=tls))
         if second is not None:
             from .bonded_relay import BondedRelay
             app["bonded"] = BondedRelay((origin, second), app["control"], app["http"])
@@ -119,6 +147,8 @@ def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5, bonded_upstr
                 await app["geometry"].close()
             if second is not None:
                 await app["bonded"].close()
+            if render is not None:
+                await app["render"].close()
             await app["http"].close()
             await app["control"].close()
 
@@ -127,7 +157,9 @@ def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5, bonded_upstr
     async def relay_health(request):
         packet = {"relay": True, "upstream": str(origin),
                   "quest_built": (dist / "index.html").is_file(),
-                  "control_closures": control_closures.status(enabled=second is None)}
+                  "control_closures": control_closures.status(enabled=second is None),
+                  "render": {"configured": render is not None, "endpoints": list(RENDER_PATHS),
+                             "transport_only": True}}
         if second is not None:
             packet["transport"] = app["bonded"].status()
         if geometry_upstream is not None:
@@ -135,26 +167,28 @@ def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5, bonded_upstr
         return web.json_response(packet,
                                  headers={"Cache-Control": "no-store"})
 
-    async def websocket(request, target):
+    async def websocket(request, target, render_lane=False):
         control = request.path == "/ws/control"
-        session = app["control"] if control else app["http"]
+        session = app["render"] if render_lane else app["control"] if control else app["http"]
+        pose = render_lane and request.path == "/ws/macview-pose"
+        message_limit = 16384 if control or pose else 8 * 1024 * 1024
         diagnostic = control_closures.begin() if control else None
         # Do not accept the Quest socket until the upstream socket exists.
         try:
             remote = await session.ws_connect(target, heartbeat=10,
-                max_msg_size=16384 if control else 8 * 1024 * 1024,
+                max_msg_size=message_limit,
                 autoclose=True, compress=0,
                 timeout=aiohttp.ClientWSTimeout(ws_close=0.25))
         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
             if diagnostic is not None:
                 diagnostic.end("upstream", "connect_failure", exception=exc, operation="connect")
-            raise web.HTTPBadGateway(text=f"Rover unavailable: {type(exc).__name__}")
+            raise web.HTTPBadGateway(text=f"{'Mac render' if render_lane else 'Rover'} unavailable: {type(exc).__name__}")
         except BaseException as exc:
             if diagnostic is not None:
                 diagnostic.end("upstream", "connect_failure", exception=exc, operation="connect")
             raise
         local = web.WebSocketResponse(heartbeat=10, timeout=0.25,
-            max_msg_size=16384 if control else 8 * 1024 * 1024, compress=False)
+            max_msg_size=message_limit, compress=False)
         try:
             try:
                 await local.prepare(request)
@@ -164,7 +198,7 @@ def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5, bonded_upstr
                 raise
             if diagnostic is not None:
                 diagnostic.opened()
-            deadline = min(send_timeout, 0.1) if control else send_timeout
+            deadline = min(send_timeout, 0.1) if control or pose else min(send_timeout, 0.5) if render_lane else send_timeout
 
             async def send(operation, client_to_rover):
                 try:
@@ -200,7 +234,7 @@ def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5, bonded_upstr
                                     diagnostic.end("quest", "invalid_control", local.close_code, remote.close_code, exc)
                                 await local.close(code=1008, message=b"Invalid control JSON")
                                 return
-                        if not client_to_rover:
+                        if not client_to_rover and not render_lane:
                             # Assistant/telemetry messages may contain absolute audio URLs.
                             with suppress(ValueError, TypeError):
                                 data = json.dumps(rewrite_json(json.loads(data), target.origin()))
@@ -252,6 +286,25 @@ def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5, bonded_upstr
                     await asyncio.wait_for(local.close(code=1011,
                         message=b"Relay link ended; reconnect stopped"), 0.25)
         return local
+
+    async def render_websocket(request):
+        nonlocal render_connections
+        if render is None:
+            raise web.HTTPServiceUnavailable(text="Mac render transport is not configured")
+        if render.port == request.url.port:
+            raise web.HTTPServiceUnavailable(text="Mac render upstream points back to this relay")
+        if request.method != "GET":
+            raise web.HTTPMethodNotAllowed(request.method, ("GET",))
+        if request.headers.get("Upgrade", "").lower() != "websocket":
+            raise web.HTTPBadRequest(text="Mac render endpoint requires a WebSocket upgrade")
+        if render_connections >= 4:
+            raise web.HTTPServiceUnavailable(text="Mac render connection limit reached")
+        render_connections += 1
+        try:
+            target = render.with_path(request.rel_url.raw_path, encoded=True).with_query(request.query)
+            return await websocket(request, target, render_lane=True)
+        finally:
+            render_connections -= 1
 
     async def proxy(request):
         # origin and path are constructed separately; //host cannot change destination.
@@ -318,6 +371,8 @@ def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5, bonded_upstr
             raise web.HTTPBadGateway(text=f"Rover unavailable: {type(exc).__name__}")
 
     async def dispatch(request):
+        if request.path in RENDER_PATHS:
+            return await render_websocket(request)
         if request.path == "/ws/control/bonded":
             raise web.HTTPForbidden(text="Private upstream attachment endpoint")
         if geometry_upstream is not None and request.path in (
@@ -347,13 +402,14 @@ def main():
     parser.add_argument("--upstream", required=True, help="Jetson http(s) origin on Tailscale")
     parser.add_argument("--bonded-upstream", help="Opt-in second route to the same --bonded-control Jetson; JPEG only")
     parser.add_argument("--geometry-upstream", help="Opt-in loopback Mac geometry assembler origin, e.g. http://127.0.0.1:8484")
+    parser.add_argument("--render-upstream", help="Opt-in loopback Mac renderer origin; reserved frame/pose WebSockets only")
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--dist", type=Path, default=DIST)
     parser.add_argument("--ca-file", help="Trusted CA PEM for a private upstream certificate")
     args = parser.parse_args()
     try:
         app = create_app(args.upstream, args.dist, args.ca_file, bonded_upstream=args.bonded_upstream,
-                         geometry_upstream=args.geometry_upstream)
+                         geometry_upstream=args.geometry_upstream, render_upstream=args.render_upstream)
     except (ValueError, OSError) as exc:
         parser.error(str(exc))
     web.run_app(app, host="127.0.0.1", port=args.port, access_log=None,

@@ -176,3 +176,43 @@ reset/detach logs. This observation identifies where the relay noticed loss;
 it does not prove whether USB power, cellular service or another component
 caused it. Bonded control is explicitly excluded and uses its separate
 `transport` report. These diagnostics do not change stop or reconnect rules.
+
+## Optional local Mac render transport
+
+The render transport is disabled by default. If the Mac renderer is already
+running on loopback port 8090, opt in when launching the relay:
+
+```sh
+python -m tools.demo --upstream http://127.0.0.1:18443 \
+  --render-upstream http://127.0.0.1:8090 --quest
+```
+
+For direct relay startup, the same `--render-upstream` flag is available on
+`python -m tools.operator_relay`. Neither command launches the renderer.
+The origin must be credential-free loopback HTTP(S), without a path, query or
+fragment. A loopback Jetson route cannot share its port, including aliases such
+as `localhost` and `127.0.0.1`. HTTPS retains certificate verification.
+
+Only `/ws/macview` and `/ws/macview-pose` use this origin. Without configuration,
+both endpoints return 503 and are never forwarded to Jetson. Frame/pose text
+and binary messages are opaque and retain their exact bytes/order: the relay
+does not rewrite `video_init`, `next`, `video_segment` or version-1 pose fields.
+The renderer owns that protocol, capture timestamps, stereo rendering and
+head/ray interpretation.
+
+The render session has a separate connection pool and admits at most four
+sockets, including connections still opening. Additional attempts fail instead
+of waiting in a connection queue. Frame messages are bounded by 8 MiB with a
+500 ms maximum send deadline; pose messages use 16 KiB and 100 ms. A closure or
+stalled send tears down that pair. The relay has no render-message replay queue
+or automatic reconnect. Existing browser Origin/Host checks and rover control,
+camera-age and lease guards remain in effect.
+
+`GET /relay/health` reports `render.configured`, reserved endpoint names and
+`transport_only: true`. Configuration does not prove a running renderer, a
+fresh view, stereo correctness or Quest qualification. The focused tests use
+real loopback sockets with synthetic opaque records, not an actual renderer:
+
+```sh
+python -m unittest tools.tests.test_render_relay
+```

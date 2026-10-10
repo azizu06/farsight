@@ -71,6 +71,7 @@ def main():
     parser.add_argument("--ca-file", help="CA PEM for private Jetson TLS")
     parser.add_argument("--bonded-upstream", help="Opt-in second route to the same Jetson; requires server --bonded-control, JPEG only")
     parser.add_argument("--geometry-upstream", help="Optional loopback Mac geometry assembler; does not launch the assembler")
+    parser.add_argument("--render-upstream", help="Optional loopback Mac renderer; does not launch or qualify the renderer")
     parser.add_argument("--check", action="store_true", help="Check prerequisites and exit without starting servers")
     args = parser.parse_args()
     processes = []
@@ -94,6 +95,14 @@ def main():
             from .geometry_relay import geometry_origin
             try:
                 geometry_origin(args.geometry_upstream)
+            except ValueError as exc:
+                raise RuntimeError(str(exc)) from None
+        if args.render_upstream:
+            from .operator_relay import render_origin, upstream_origin
+            try:
+                jetson = upstream_origin(args.upstream) if args.upstream else upstream_origin(f"http://127.0.0.1:{args.jetson_port}")
+                second = upstream_origin(args.bonded_upstream) if args.bonded_upstream else None
+                render_origin(args.render_upstream, (jetson, second, upstream_origin(f"http://127.0.0.1:{args.port}")))
             except ValueError as exc:
                 raise RuntimeError(str(exc)) from None
         if args.bonded_upstream:
@@ -149,6 +158,8 @@ def main():
             command += ["--bonded-upstream", args.bonded_upstream]
         if args.geometry_upstream:
             command += ["--geometry-upstream", args.geometry_upstream]
+        if args.render_upstream:
+            command += ["--render-upstream", args.render_upstream]
         relay = start(command)
         wait_http(f"http://127.0.0.1:{args.port}/relay/health", relay)
         if args.quest:
