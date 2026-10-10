@@ -84,6 +84,16 @@ pub struct MapState {
     /// Bumped on every map revision so /ws/map subscribers push the fresh
     /// packet at fusion time instead of waiting out the 500 ms status tick.
     revision_tx: tokio::sync::watch::Sender<u64>,
+    /// Visual wire caps (board-agreed defaults 30k points / 40k triangles).
+    /// Bounds only the served/exported payload; the internal map, Nav2
+    /// depth/occupancy and labels keep full resolution. 0 = uncapped.
+    pub points_cap: usize,
+    pub triangles_cap: usize,
+    /// Opt-in Jetson fusion bypass (new offload architecture): keep /phone
+    /// pose + depth (Nav2) and the camera feed (inference/control), but skip
+    /// RGB-D point/mesh fusion — geometry arrives via the phone ARKit lane
+    /// assembled on the Mac instead. Status stays honest about map source.
+    pub fusion_bypass: bool,
 }
 
 impl MapState {
@@ -125,7 +135,19 @@ impl MapState {
             packets: Mutex::new(None),
             frame_observers: Mutex::new(Vec::new()),
             revision_tx,
+            points_cap: 0,
+            triangles_cap: 0,
+            fusion_bypass: false,
         }
+    }
+
+    /// Capped-export flags for the /map/status 'capped' label.
+    pub fn visual_capped(&self) -> (bool, bool) {
+        let s = self.inner.lock().unwrap();
+        (
+            self.points_cap > 0 && s.cloud.cells.len() > self.points_cap,
+            self.triangles_cap > 0 && s.surfaces.count > self.triangles_cap,
+        )
     }
 
     pub fn revision_watch(&self) -> tokio::sync::watch::Receiver<u64> {
@@ -283,9 +305,12 @@ impl MapState {
             .expect("depth JPEG encode");
             s.depth_jpeg = Some(jpeg_buf);
             may_fuse = !s.paused
+                && !self.fusion_bypass
                 && frame.header["tracking"].as_str() == Some("normal")
                 && s.tracking == "normal";
-            s.reason = if s.paused {
+            s.reason = if self.fusion_bypass {
+                Some("Geometry lane external; fusion bypassed".into())
+            } else if s.paused {
                 Some("Fusion paused".into())
             } else if !may_fuse {
                 Some("ARKit tracking limited; fusion frozen".into())
@@ -358,6 +383,9 @@ impl MapState {
             "tracking": if fresh { s.tracking.clone() } else { "stale".into() },
             "points": s.cloud.cells.len(),
             "triangles": s.surfaces.count,
+            "capped": (self.points_cap > 0 && s.cloud.cells.len() > self.points_cap)
+                || (self.triangles_cap > 0 && s.surfaces.count > self.triangles_cap),
+            "fusion_bypass": self.fusion_bypass,
             "keyframes": s.surfaces.keyframes.len(),
             "frames": s.frames,
             "rejected": s.rejected,
@@ -405,7 +433,13 @@ impl MapState {
             let (points, colors) = s.cloud.snapshot();
             let mesh = s.surfaces.encode();
             drop(s);
-            let pts = encode_points(&points, &colors);
+            // Visual wire caps bound only the exported payload; the
+            // internal map keeps full resolution (board-agreed 30k/40k
+            // defaults, deterministic stride decimation, PLY follows the
+            // capped points since it derives from pts.raw).
+            let pts = crate::geometry::decimate_points_bin(
+                &encode_points(&points, &colors), self.points_cap);
+            let mesh = crate::geometry::decimate_mesh_bin(&mesh, self.triangles_cap);
             // PLY is derived lazily from the cached points.bin records on
             // first request — running export_ply eagerly every map version
             // cost ~10-30 ms under this mutex even when nobody downloads it.

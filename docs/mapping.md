@@ -142,6 +142,13 @@ Binary packets are complete replacement snapshots. Reconnects receive current st
 Every map reset increments `generation`, and all surface and point caches must be cleared together.
 `processing_ms` measures the latest successful fusion computation; it is not network latency or camera capture FPS.
 
+`--map-fusion off` (`FARSIGHT_MAP_FUSION=off`) skips the voxel and surface fusion on the Jetson, for
+when the 3D mesh is built elsewhere. Every accepted `/phone` frame still publishes the camera, the
+depth view and the ARKit pose, and still reaches the Nav2 depth observer; the sensor gate and LiDAR
+drive rules are unchanged. Status (and `/health`) then reports `map_fusion: false`, zero `points`,
+`triangles` and `keyframes`, an unchanged `revision`, and a `reason` saying fusion is off. `frames`
+counts ingested frames and `processing_ms` is the ingest-only time per frame.
+
 ## Bounded reconstruction
 
 - Points: 120,000 recent spatial voxels at 4 cm; repeated observations update their average color and position.

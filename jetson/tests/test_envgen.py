@@ -213,6 +213,8 @@ class RenderTests(unittest.TestCase):
             argv = [defaults.get(item[2:-1], item) if item.startswith("${") and item.endswith("}") else item for item in argv]
             if unit == "farsight-llm.service":
                 self.assertEqual(argv[argv.index("--image-max-tokens") + 1], "256")
+                self.assertEqual(argv[argv.index("--cache-ram") + 1], "0")  # the 8 GiB default exhausts the board
+                self.assertIn("MemoryMax=4608M", text)
                 self.assertEqual(argv[argv.index("-m") + 1], selection["FARSIGHT_LLM_MODEL"])
                 self.assertEqual(argv[argv.index("--mmproj") + 1], selection["FARSIGHT_LLM_MMPROJ"])
             elif unit == "farsight-whisper.service":

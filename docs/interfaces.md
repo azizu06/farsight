@@ -428,6 +428,14 @@ Each `encounters[]` entry also gains `key` and `sbar` (the same object or `null`
 `--mission-dir`, notes append to `triage.jsonl` and `report.json` is rewritten on every note.
 `/health` gains `triage: {"enabled", "pending", "generated", "last_ms", "min_interval_s"}`.
 
+## `/health.map_fusion` and `/ws/map` status (Jetson -> Quest)
+
+Optional `map_fusion: bool`, default `true`. With `--map-fusion off` (`FARSIGHT_MAP_FUSION=off`) the
+Jetson builds no 3D map: `points`, `triangles` and `keyframes` stay `0`, `revision` does not
+advance, the map packets are empty and `reason` says fusion is off. Camera, depth view, pose and
+Nav2 sensing are unaffected. `source` still names the sensor (`IPHONE LIDAR`). Python server only
+so far.
+
 ## `/health.camera_pan` (Jetson -> Quest), default camera mount
 
 Optional `camera_pan: bool` is `true` only when the server runs with `--scan-pan` (a physical

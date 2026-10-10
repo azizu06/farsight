@@ -3,7 +3,6 @@
 //! upstream over a private network. The deadman/video-fresh contract and the
 //! JSON URL rewrite are byte-compatible with the Python relay.
 
-mod geometry;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;

@@ -132,6 +132,8 @@ class WaitTests(unittest.TestCase):
         self.assertNotIn("--allow-calibration", launch.build_args({"FARSIGHT_ALLOW_CALIBRATION": ""}))
         self.assertIn("--lidar-drive", launch.build_args({"FARSIGHT_LIDAR_DRIVE": "1"}))
         self.assertNotIn("--lidar-drive", launch.build_args({"FARSIGHT_LIDAR_DRIVE": ""}))
+        self.assertEqual(launch.build_args({"FARSIGHT_MAP_FUSION": "off"})[-2:], ["--map-fusion", "off"])
+        self.assertNotIn("--map-fusion", launch.build_args({"FARSIGHT_MAP_FUSION": ""}))
         for pair in (["--proximity-stop", "off"], ["--pan-mount", "none"], ["--serial-port", "/dev/ttyUSB0"],
                      ["--max-pwm", "255"], ["--min-pwm", "70"], ["--autonomy-max-pwm", "100"],
                      ["--drive-profile", "/etc/farsight/drive-profile.json"]):
