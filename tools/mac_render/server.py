@@ -40,7 +40,18 @@ _CAPTURE_JS = "() => window.__macCapture()"
 # A pending pose rides the capture evaluate: one browser turn applies the pose
 # and produces the frame that uses it, instead of a second page.evaluate
 # queuing behind a slow draw on the page main thread.
-_CAPTURE_POSE_JS = "(pose) => { window.__macPose = pose; return window.__macCapture(); }"
+_CAPTURE_POSE_JS = """(pose) => {
+  window.__macPose = pose === null ? null : {
+    position: pose.position, quaternion: pose.quaternion, ray: pose.ray,
+    sentMonoMs: pose.sent_mono_ms, sentWallMs: pose.sent_wall_ms,
+    receivedMonoMs: pose.received_mono_ms, receiptAgeMs: pose.receipt_age_ms,
+    tracked: pose.tracked, session_id: pose.session_id, frame_id: pose.frame_id,
+    pose_id: pose.pose_id, client_nonce: pose.client_nonce,
+    fov_y_deg: pose.fov_y_deg, aspect: pose.aspect, space: pose.space,
+    map_revision: pose.map_revision, eyes: pose.eyes
+  };
+  return window.__macCapture();
+}"""
 
 # A single page turn may legitimately take this long while the dense cloud
 # streams in; it is a hang detector, not a pacing bound.
