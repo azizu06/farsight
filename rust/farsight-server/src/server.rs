@@ -95,6 +95,7 @@ pub fn build_state(
     allow_calibration: bool,
     proximity_stop: bool,
     pan_mount: &str,
+    autonomy_max_pwm: Option<i64>,
 ) -> Arc<AppState> {
     if scan_pan && pan_mount == "none" {
         panic!("--scan-pan needs a physical pan servo (--pan-mount servo)");
@@ -146,6 +147,7 @@ pub fn build_state(
             allow_calibration,
             proximity_stop,
             pan_mount,
+            autonomy_max_pwm,
         )
         .expect("control config"),
     );
@@ -1486,6 +1488,7 @@ mod phone_lifecycle_tests {
             false,      // allow_calibration
             false,      // proximity_stop
             "servo",    // pan_mount
+            None,       // autonomy_max_pwm
         )
     }
 

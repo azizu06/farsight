@@ -70,6 +70,10 @@ pub struct ControlState {
     pub simulated: bool,
     pub max_pwm: i64,
     pub min_pwm: i64,
+    /// Ceiling for motion the operator does not steer directly (explore,
+    /// seek, goto, Nav2, scan sweeps); defaults to max_pwm (unchanged
+    /// behaviour). Port of #99 autonomy_max_pwm.
+    pub autonomy_max_pwm: i64,
     /// Opt-in measured drive profile; enables `mode: "velocity"`.
     pub drive_profile: Option<crate::drive_profile::DriveProfile>,
     /// Opt-in raw-PWM `mode: "calibrate"` for tools.calibrate_drive.
@@ -113,12 +117,17 @@ impl ControlState {
         allow_calibration: bool,
         proximity_stop: bool,
         pan_mount: &str,
+        autonomy_max_pwm: Option<i64>,
     ) -> Result<Self, String> {
         if !(0 <= min_pwm && min_pwm < max_pwm && max_pwm <= 255) {
             return Err("PWM bounds must satisfy 0 <= min_pwm < max_pwm <= 255".into());
         }
         if !PAN_MOUNTS.contains(&pan_mount) {
             return Err(format!("pan_mount must be one of {PAN_MOUNTS:?}"));
+        }
+        let autonomy_max_pwm = autonomy_max_pwm.unwrap_or(max_pwm);
+        if !(min_pwm < autonomy_max_pwm && autonomy_max_pwm <= max_pwm) {
+            return Err("autonomy_max_pwm must satisfy min_pwm < autonomy_max_pwm <= max_pwm".into());
         }
         Ok(Self {
             simulated,
@@ -128,6 +137,7 @@ impl ControlState {
             allow_calibration,
             proximity_stop,
             pan_mount: pan_mount.to_string(),
+            autonomy_max_pwm,
             camera_ready,
             detections: detections.clone(),
             clock: clock.unwrap_or_else(|| Arc::new(now_monotonic)),
@@ -635,12 +645,20 @@ impl ControlState {
         if let Some(hook) = self.on_output.lock().unwrap().as_ref() {
             hook(v / scale, w / scale, blocked);
         }
+        // Autonomy-driven motion and scan sweeps get the lower ceiling;
+        // operator-steered motion (including stick override) keeps max_pwm.
+        let engaged = autonomous && s.deadline != 0.0;
+        let top = if engaged || s.scan_token.is_some() {
+            self.autonomy_max_pwm
+        } else {
+            self.max_pwm
+        };
         let pwm = |value: f64| -> i64 {
             if value == 0.0 {
                 return 0;
             }
             let magnitude = (self.min_pwm as f64
-                + (self.max_pwm - self.min_pwm) as f64 * (value / scale).abs())
+                + (top - self.min_pwm) as f64 * (value / scale).abs())
             .round_ties_even() as i64;
             if value > 0.0 {
                 magnitude

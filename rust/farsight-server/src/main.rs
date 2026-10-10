@@ -44,6 +44,8 @@ struct Args {
     #[arg(long, default_value = "on", value_parser = ["on", "off"])]
     proximity_stop: String,
     /// servo: a pan servo follows the commanded pan and forward drive is blocked while it is off-centre (default). none: no pan hardware; the headset pans digitally, the Uno never gets P and pan never blocks forward drive
+    #[arg(long)]
+    autonomy_max_pwm: Option<i64>,
     #[arg(long, default_value = "servo", value_parser = ["servo", "none"])]
     pan_mount: String,
     /// Bundled CPU person detector
@@ -202,6 +204,7 @@ async fn main() {
         args.allow_calibration,
         args.proximity_stop == "on",
         &args.pan_mount,
+        args.autonomy_max_pwm,
     );
     server::start_services(&state);
     let dist = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../quest/dist");
