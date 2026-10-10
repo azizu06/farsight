@@ -83,6 +83,12 @@ opening the map or settings. Detections are drawn only on matching JPEG frame ID
 boxes are clipped and transformed in digital-crop mode. H.264 boxes require per-sample capture IDs matching the decoder timestamp; older
 servers without those IDs still play video but omit uncertain overlays.
 
+Pose and fall overlays (`src/pose-hud.js`) ride the same matched-frame boxes: when a
+detection carries `kpts`, confident limbs (conf >= 0.3, both ends inside the crop) are
+stroked as one path per frame; `down: true` adds a red frame with a "PERSON DOWN" tag.
+The HUD link chip is red ("LINK LOST") when no control status has arrived for 500 ms,
+otherwise shows the server `link_ms` and the detector fps. No pose data is invented.
+
 The local scene assistant accepts text in settings. Optional voice starts only
 when clicking Ask by voice, records at most 10 seconds, and sends audio to the rover
 for offline transcription. Closing settings or hiding the app cancels capture and

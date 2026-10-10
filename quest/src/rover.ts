@@ -3,12 +3,13 @@ import { SourceTruth } from "./source-banner.js";
 import { ControlSafety, stick } from "./control-safety.js";
 import { H264Viewer } from "./h264";
 import { cameraCrop, croppedBox } from "./camera-view.js";
+import { drawDownMarker, linkHealth, poseSegments, strokeSegments } from "./pose-hud.js";
 import { AssistantVoice } from "./assistant-voice";
 import { AutonomyIntent, autonomyLabel, containPoint, pickTarget, rayPanelPoint } from "./autonomy.js";
 import { PHRASE_LABELS, sbarLines, speakPhrase } from "./survivor-phrases.js";
 import { DRILL_TRAINS, DrillHud, endLines } from "./drill-hud.js";
 
-type Box = { id?: number; cls: string; conf: number; x: number; y: number; w: number; h: number };
+type Box = { id?: number; cls: string; conf: number; x: number; y: number; w: number; h: number; kpts?: number[][]; down?: boolean };
 type Detections = { frame: number | string; boxes: Box[]; fps?: number; source?: string; simulated?: boolean };
 type ControlStatus = {
   type?: string; session_id: string; permit: string; permit_ms: number; seq?: number;
@@ -603,6 +604,7 @@ export class RoverExperience {
     context.strokeStyle = "#8dffa9"; context.fillStyle = "#8dffa9";
     context.lineWidth = Math.max(2, this.canvas.width / 320);
     context.font = `${Math.max(14, this.canvas.width / 40)}px system-ui`;
+    const segments: number[] = [];
     for (const box of packet.boxes) {
       const visibleBox = croppedBox(box, crop, width, height);
       if (!visibleBox) continue;
@@ -614,7 +616,12 @@ export class RoverExperience {
       context.strokeRect(x, y, visibleBox.w * this.canvas.width, visibleBox.h * this.canvas.height);
       const id = Number.isSafeInteger(box.id) ? ` #${box.id}` : "";
       context.fillText(`${target ? "SEEK " : ""}${box.cls.slice(0, 30)}${id} ${Math.round(box.conf * 100)}%`, x + 4, Math.max(18, y - 5));
+      if (box.down === true) {
+        drawDownMarker(context, { x, y, w: visibleBox.w * this.canvas.width, h: visibleBox.h * this.canvas.height }, this.canvas.width, Math.max(16, this.canvas.width / 32));
+      }
+      if (box.kpts) segments.push(...poseSegments(box.kpts, crop, width, height));
     }
+    strokeSegments(context, segments, this.canvas.width, this.canvas.height, "#7fd4ff", Math.max(2, this.canvas.width / 240));
   }
   /** Held buttons from a lost or replaced controller act only after an observed release. */
   private latchButtons() {
@@ -648,11 +655,13 @@ export class RoverExperience {
     const range = this.status?.range_cm == null ? "range unknown" : `${Math.round(this.status.range_cm)} cm`;
     const matching = this.matchingDetections(now);
     const detection = matching ? `${matching.boxes.length} detections` : !this.detections ? "detector unavailable" : now - this.detectionsAt > 500 ? "detections stale" : "detections awaiting matching frame";
+    const link = linkHealth({ now, receivedAt: this.gate.receivedAt, connected: this.socket?.readyState === WebSocket.OPEN,
+      linkMs: this.status?.link_ms, detFps: this.detections?.fps });
     const drill = this.drillLine(now);
     const intent = this.autonomy.mode === "seek" ? `Seek #${this.autonomy.targetId} armed` : this.autonomy.mode === "explore" ? "Explore armed" : "";
     const autonomy = [intent, autonomyLabel(this.status)].filter(Boolean).join(" → ");
     const panMode = `${this.digitalPan ? "Digital pan (fixed camera)" : "Servo pan"} ${Math.round(this.input.pan)}°`;
-    const detail = `${this.frameSource} · ${panMode} · ${this.h264Enabled ? "H.264" : "JPEG"} video ${age} · ${ack} · ${range} · ${detection}${drill ? " · " + drill : ""}${this.h264Enabled && !this.h264.displayedFrame ? " · " + this.h264.state : ""} · ${this.scanMessage}`;
+    const detail = `${link.text} · ${this.frameSource} · ${panMode} · ${this.h264Enabled ? "H.264" : "JPEG"} video ${age} · ${ack} · ${range} · ${detection}${drill ? " · " + drill : ""}${this.h264Enabled && !this.h264.displayedFrame ? " · " + this.h264.state : ""} · ${this.scanMessage}`;
     this.message.textContent = headline;
     this.message.dataset.state = moving ? "moving" : ready ? "unsafe" : "ready";
     this.details.textContent = `${autonomy ? autonomy + " · " : ""}${detail}${this.status?.estop ? " · FORWARD BLOCKED" : ""}`;
@@ -665,6 +674,9 @@ export class RoverExperience {
     c.font = "bold 32px system-ui"; c.fillText(headline.slice(0, 58), 28, 46);
     c.font = "24px system-ui"; c.fillStyle = "#dce5ee";
     c.fillText(`${this.h264Enabled ? "H.264" : "JPEG"} video ${age} · ${range} · ${panMode}`, 28, 90);
+    c.font = "bold 24px system-ui"; c.textAlign = "right"; c.fillStyle = link.color;
+    c.fillText(link.text, this.hudCanvas.width - 28, 90); c.textAlign = "left";
+    c.font = "24px system-ui"; c.fillStyle = "#dce5ee";
     c.fillText(`${ack} · ${detection}${this.status?.estop ? " · FORWARD BLOCKED" : ""}`, 28, 126);
     if (drill || autonomy) { c.font = "18px system-ui"; c.fillText([autonomy, drill].filter(Boolean).join(" · "), 28, 150); }
     const hint = "R trigger: deadman · Stick: drive · A: seek/map · B: explore · X: center · Y: scan · L grip: drill · L trigger: ask";
