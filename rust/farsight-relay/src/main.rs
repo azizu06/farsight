@@ -11,6 +11,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::body::Body;
+mod closures;
+
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Request, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode, Uri};
@@ -112,6 +114,9 @@ struct AppState {
     /// A direction with no inbound traffic (including pong replies) for this
     /// long is declared dead — bounds a silently dropped cellular link.
     stale_after: Duration,
+    /// tools/control_closures.py parity: bounded single-route /ws/control
+    /// connection diagnostics surfaced at /relay/health.
+    closures: Arc<closures::ControlClosures>,
 }
 
 pub(crate) fn upstream_origin(value: &str) -> Result<Url, String> {
@@ -203,6 +208,9 @@ async fn relay_health(State(s): State<Arc<AppState>>) -> Response {
         "upstream": s.origin.as_str().trim_end_matches('/'),
         "geometry_upstream": s.geometry.as_ref().map(|u| u.as_str().trim_end_matches('/')),
         "quest_built": s.dist.join("index.html").is_file(),
+        // eab0c88: enabled only while the single upstream route exists;
+        // bonded-control is excluded from these counters by contract.
+        "control_closures": s.closures.status(s.bonded.is_none()),
     });
     if let Some(bond) = &s.bonded {
         packet["transport"] = bond.status().await;
@@ -292,9 +300,26 @@ async fn ws_upgrade(
     })
 }
 
+fn exc_name(e: &tokio_tungstenite::tungstenite::Error) -> &'static str {
+    use tokio_tungstenite::tungstenite::Error as E;
+    match e {
+        E::Io(_) => "IoError",
+        E::Tls(_) => "TlsError",
+        E::Http(_) | E::HttpFormat(_) => "HttpError",
+        E::ConnectionClosed | E::AlreadyClosed => "ConnectionClosed",
+        E::Protocol(_) => "ProtocolError",
+        E::Capacity(_) => "CapacityError",
+        E::Url(_) => "UrlError",
+        _ => "Error",
+    }
+}
+
 async fn relay_ws(local: WebSocket, s: Arc<AppState>, target: &str, control: bool, send_timeout: Duration) {
     // Do not accept the Quest socket until the upstream socket exists.
     let max_msg = if control { 16 * 1024 } else { 8 * 1024 * 1024 };
+    // control_closures parity: only the single-route /ws/control proxy is
+    // diagnosed (bonded control is excluded).
+    let attempt = control.then(|| s.closures.begin());
     let connector = tokio_tungstenite::Connector::Rustls(s.tls.clone());
     let mut ws_config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default();
     ws_config.max_message_size = Some(max_msg);
@@ -308,6 +333,9 @@ async fn relay_ws(local: WebSocket, s: Arc<AppState>, target: &str, control: boo
     {
         Ok(r) => r,
         Err(e) => {
+            if let Some(a) = &attempt {
+                a.end("upstream", "connect_failure", None, None, Some(exc_name(&e)), "connect");
+            }
             let mut local = local;
             let _ = local
                 .send(Message::Close(Some(axum::extract::ws::CloseFrame {
@@ -318,6 +346,9 @@ async fn relay_ws(local: WebSocket, s: Arc<AppState>, target: &str, control: boo
             return;
         }
     };
+    if let Some(a) = &attempt {
+        a.opened();
+    }
     let (local_tx, mut local_rx) = local.split();
     let (remote_tx, mut remote_rx) = remote.split();
     // Sinks are shared so the heartbeat and the bounded teardown can write
@@ -338,6 +369,7 @@ async fn relay_ws(local: WebSocket, s: Arc<AppState>, target: &str, control: boo
         let remote_tx = remote_tx.clone();
         let local_tx = local_tx.clone();
         let local_seen = local_seen.clone();
+        let attempt = attempt.clone();
         tokio::spawn(async move {
             while let Some(Ok(message)) = local_rx.next().await {
                 local_seen.store(now_ms(), Ordering::Relaxed);
@@ -360,6 +392,9 @@ async fn relay_ws(local: WebSocket, s: Arc<AppState>, target: &str, control: boo
                                     }
                                 }
                                 _ => {
+                                    if let Some(a) = &attempt {
+                                        a.end("quest", "invalid_control", Some(1008), None, None, "receive");
+                                    }
                                     local_close(&local_tx, 1008, "Invalid control JSON").await;
                                     return;
                                 }
@@ -375,11 +410,17 @@ async fn relay_ws(local: WebSocket, s: Arc<AppState>, target: &str, control: boo
                         .await
                         .is_err()
                         {
+                            if let Some(a) = &attempt {
+                                a.end("quest", "send_timeout", None, None, None, "send");
+                            }
                             return;
                         }
                     }
                     Message::Binary(bytes) => {
                         if control {
+                            if let Some(a) = &attempt {
+                                a.end("quest", "invalid_control", Some(1008), None, None, "receive");
+                            }
                             local_close(&local_tx, 1008, "Control requires JSON").await;
                             return;
                         }
@@ -393,12 +434,23 @@ async fn relay_ws(local: WebSocket, s: Arc<AppState>, target: &str, control: boo
                         .await
                         .is_err()
                         {
+                            if let Some(a) = &attempt {
+                                a.end("quest", "send_timeout", None, None, None, "send");
+                            }
                             return;
                         }
                     }
-                    Message::Close(_) => return,
+                    Message::Close(frame) => {
+                        if let Some(a) = &attempt {
+                            a.end("quest", "normal", frame.map(|f| f.code), None, None, "receive");
+                        }
+                        return;
+                    }
                     _ => {}
                 }
+            }
+            if let Some(a) = &attempt {
+                a.end("quest", "normal", None, None, None, "receive");
             }
             let rtx = remote_tx.clone();
             let _ = tokio::time::timeout(Duration::from_millis(250), async move {
@@ -417,6 +469,7 @@ async fn relay_ws(local: WebSocket, s: Arc<AppState>, target: &str, control: boo
     let mut r2c = {
         let local_tx = local_tx.clone();
         let remote_seen = remote_seen.clone();
+        let attempt = attempt.clone();
         tokio::spawn(async move {
             while let Some(Ok(message)) = remote_rx.next().await {
                 remote_seen.store(now_ms(), Ordering::Relaxed);
@@ -433,6 +486,9 @@ async fn relay_ws(local: WebSocket, s: Arc<AppState>, target: &str, control: boo
                         .await
                         .is_err()
                         {
+                            if let Some(a) = &attempt {
+                                a.end("upstream", "send_timeout", None, None, None, "send");
+                            }
                             return;
                         }
                     }
@@ -444,12 +500,24 @@ async fn relay_ws(local: WebSocket, s: Arc<AppState>, target: &str, control: boo
                         .await
                         .is_err()
                         {
+                            if let Some(a) = &attempt {
+                                a.end("upstream", "send_timeout", None, None, None, "send");
+                            }
                             return;
                         }
                     }
-                    tokio_tungstenite::tungstenite::Message::Close(_) => return,
+                    tokio_tungstenite::tungstenite::Message::Close(frame) => {
+                        if let Some(a) = &attempt {
+                            let code = frame.and_then(|f| u16::try_from(f.code).ok());
+                            a.end("upstream", "normal", None, code, None, "receive");
+                        }
+                        return;
+                    }
                     _ => {}
                 }
+            }
+            if let Some(a) = &attempt {
+                a.end("upstream", "normal", None, None, None, "receive");
             }
             local_close(&local_tx, 1011, "Relay link ended; reconnect stopped").await;
         })
@@ -463,6 +531,7 @@ async fn relay_ws(local: WebSocket, s: Arc<AppState>, target: &str, control: boo
         let local_tx = local_tx.clone();
         let remote_seen = remote_seen.clone();
         let local_seen = local_seen.clone();
+        let attempt = attempt.clone();
         let (ping, stale) = (s.ping_interval, s.stale_after);
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(ping);
@@ -474,6 +543,14 @@ async fn relay_ws(local: WebSocket, s: Arc<AppState>, target: &str, control: boo
                 if now.saturating_sub(remote_seen.load(Ordering::Relaxed)) > stale_ms
                     || now.saturating_sub(local_seen.load(Ordering::Relaxed)) > stale_ms
                 {
+                    if let Some(a) = &attempt {
+                        let side = if now.saturating_sub(remote_seen.load(Ordering::Relaxed)) > stale_ms {
+                            "upstream"
+                        } else {
+                            "quest"
+                        };
+                        a.end(side, "error", None, None, Some("HeartbeatTimeout"), "receive");
+                    }
                     return;
                 }
                 let rtx = remote_tx.clone();
@@ -779,6 +856,7 @@ async fn main() {
         send_timeout: Duration::from_millis(500),
         ping_interval: Duration::from_secs(10),
         stale_after: Duration::from_secs(20),
+        closures: Arc::new(closures::ControlClosures::new()),
     });
     let app = build_router(state.clone());
     let addr = SocketAddr::from(([127, 0, 0, 1], args.port));
@@ -972,6 +1050,7 @@ mod recovery_tests {
             send_timeout: Duration::from_millis(300),
             ping_interval: Duration::from_millis(ping_ms),
             stale_after: Duration::from_millis(stale_ms),
+            closures: Arc::new(closures::ControlClosures::new()),
         })
     }
 
