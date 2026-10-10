@@ -1,6 +1,7 @@
 /** One reversible switch for the judged demo (captain's decision, 2026-10-10): default ON, `?demo=0`
- * restores every client guard. It only relaxes client-side checks while immersive; the rover's own
- * leases, permits, `video_stale`/`camera_stale` checks and B / STOP are unchanged.
+ * restores every client guard. It only relaxes client-side checks while immersive; permits, leases,
+ * link loss and B / STOP are unchanged, `video_fresh` stays truthful, and the rover's own camera checks
+ * follow its separate `--demo-mode` (FARSIGHT_DEMO_MODE).
  *
  * Off in demo mode (XR only):
  * - the client 500 ms camera-stale motion block (a small VIDEO STALE warning shows instead);

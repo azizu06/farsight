@@ -62,9 +62,10 @@ qualification. The scoped redesign measurement is saved in
   after a transient stop with one client-sent release. AUTO is hands-free:
   Explore heartbeats carry deadman=true without the trigger until A or B. Hard
   stops (B, a MANUAL/AUTO switch, session start/end, viewer closed) still need a
-  real release. Server permits, leases, `video_stale`/`camera_stale` and link-loss
-  stops are unchanged, and `video_fresh` stays truthful, so the rover itself may
-  still refuse stale-video motion. The desktop page keeps every guard.
+  real release. Permits, leases and link-loss stops are unchanged, and `video_fresh`
+  stays truthful; the rover's own camera checks follow its separate
+  `--demo-mode` / `FARSIGHT_DEMO_MODE` (see `docs/interfaces.md`). The desktop
+  page keeps every guard.
 - Voice controls appear only when the rover's `/health` reports `assistant.whisper`;
   otherwise they stay hidden and the left trigger only confirms a pending proposal.
   With a Whisper model, hold the left trigger to ask the local assistant by voice;

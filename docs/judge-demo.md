@@ -97,7 +97,7 @@ Do the cold boot in [demo-checklist.md](demo-checklist.md) until `tools.ready` p
 | MANUAL right stick past its deadzone during Seek/go-to | Takes over; autonomy stays off until trigger release |
 
 Demo build: `quest/src/demo-config.js` is ON by default (`?demo=0` restores every client guard). It is
-listed in `quest/README.md#controls`; rover-side leases, permits and stale-video checks are unchanged.
+listed in `quest/README.md#controls`; permits and leases are unchanged; the rover's camera checks follow its own `--demo-mode`.
 
 `quest/README.md` and `README.md` match this table; `quest/src/rover.ts` stays authoritative,
 so re-check it right before rehearsal.
