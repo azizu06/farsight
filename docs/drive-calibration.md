@@ -98,7 +98,11 @@ With it, a held-deadman heartbeat with `mode: "velocity"`, `v_mps`, `w_radps`
 is mapped as `wheel speed = v -/+ half_track * w` (left/right), divided by the
 trim gain, inverted through the measured curve, raised to the side's floor, and
 capped at `--max-pwm`. Over-limit requests are scaled down together, keeping
-curvature. Speeds under 10% of the slowest tested speed stop that wheel.
+curvature. Speeds under 10% of the slowest tested speed stop that wheel. When
+the two wheels turn in opposite directions (in-place turn, very tight arc), each
+side gets at least the lowest PWM of the spin table (`angular.pwm[0]`). Skid-steer
+scrub stalls turns at the straight-line floors: on the 2026-10-10 floor run,
+0.82 rad/s scans mapped to L-75/R+60 and stalled under payload.
 
 The ROS 2 bridge should send Nav2 `cmd_vel` as `velocity` heartbeats (same
 session/permit/deadman as any controller) and read the same JSON for
