@@ -1,3 +1,4 @@
+import { mapResponseRevision } from "./map-response.js";
 import { chooseMapTransfer, MAP_TRANSFER_INTERVAL_MS } from "./map-transfer.js";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
@@ -10,6 +11,8 @@ import { DiagnosticsOverlay } from "./diagnostics-overlay";
 type Status = {
   type: string;
   source: string;
+  geometry_source?: string;
+  geometry?: { retained?: boolean; connected?: boolean; snapshot_complete?: boolean | null; partial?: boolean; reason?: string };
   device: string;
   connected: boolean;
   fresh: boolean;
@@ -403,6 +406,7 @@ function notify(message: string) {
 }
 function statusLine(next: Status) {
   const state =
+    next.geometry_source ? (next.geometry?.retained ? "Retained phone reconstruction" : "Phone-built 3D") :
     (!serverOnline ? "Mapper disconnected" : next.reason) ||
     (next.fresh && next.tracking === "normal"
       ? "Live RGB + depth"
@@ -428,6 +432,8 @@ async function loadMesh(next: Status) {
     const response = await fetch(api("/map/mesh.bin"), { cache: "no-store", signal: abort.signal });
     if (!response.ok)
       throw new Error(`Surface request failed (${response.status})`);
+    const actualRevision = mapResponseRevision(response.headers, { ...next, revision: wantedRevision });
+    if (actualRevision === null) return;
     const data = decodeMesh(await response.arrayBuffer());
     if (
       generation === wantedGeneration &&
@@ -437,7 +443,7 @@ async function loadMesh(next: Status) {
       // Mesh vertices are the same measured reconstruction; avoid a second
       // cellular download just to draw the hybrid point overlay and frame it.
       replaceGeometry(cloud, data); appliedPoints = -1;
-      appliedMesh = wantedRevision;
+      appliedMesh = actualRevision;
     }
   } catch (error) {
     if (!abort.signal.aborted) notify(String(error));
@@ -453,10 +459,12 @@ async function loadPoints(next: Status) {
   try {
     const response = await fetch(api("/map/points.bin"), { cache: "no-store", signal: abort.signal });
     if (!response.ok) throw new Error(`Point request failed (${response.status})`);
+    const actualRevision = mapResponseRevision(response.headers, { ...next, revision: wantedRevision });
+    if (actualRevision === null) return;
     const data = decodePoints(await response.arrayBuffer());
     if (generation === wantedGeneration && connectionVersion === wantedConnection && mapNeeded() && !abort.signal.aborted) {
       const first = !cloud.geometry.getAttribute("position")?.count;
-      replaceGeometry(cloud, data); appliedPoints = wantedRevision;
+      replaceGeometry(cloud, data); appliedPoints = actualRevision;
       if (first && data.positions.length && !renderer.xr.isPresenting) frameMap();
     }
   } catch (error) {
@@ -484,7 +492,7 @@ function acceptStatus(next: Status) {
     scanMarkers.geometry.computeBoundingSphere();
     scanMarkers.userData.revision = next.revision;
   }
-  text("panel-note", next.scan ? `Camera-only estimated metric snapshot · ${(next.scan.scan_ms / 1000).toFixed(1)} s${next.scan.approximate ? " · approximate timed rover rotation" : " · commanded physical pan"} · ${markers.length} detection markers` : "Observed RGB-D geometry. Unobserved space stays empty.");
+  text("panel-note", next.geometry_source ? `Phone-built ARKit reconstructed mesh${next.geometry?.retained ? " · retained while geometry reconnects" : ""}${next.geometry?.partial ? " · bounded partial map" : ""}${next.geometry?.reason ? " · " + next.geometry.reason : ""}` : next.scan ? `Camera-only estimated metric snapshot · ${(next.scan.scan_ms / 1000).toFixed(1)} s${next.scan.approximate ? " · approximate timed rover rotation" : " · commanded physical pan"} · ${markers.length} detection markers` : "Observed RGB-D geometry. Unobserved space stays empty.");
   statusLine(next);
   text(
     "connection",
