@@ -106,7 +106,7 @@ Jetson replies on the same socket, 10 Hz:
 
 ## `POST /ask` (Quest -> Jetson), local assistant
 
-Request: `multipart/form-data` with `audio` (webm/wav from the Quest mic) or JSON `{"text": "what do you see?"}`.
+Request: `multipart/form-data` with `audio` (recording from the Quest mic) or JSON `{"text": "what do you see?"}`.
 Response:
 
 ```json
@@ -131,8 +131,9 @@ Optional additive fields (clients ignore unknown fields):
 - `timings`: `{"stt": ms|null, "vlm": ms|null, "tts": ms|null}` per stage; `ms` stays the total.
 - `source`, `simulated`, `observation` (facts given to the model), `assistant_warning`, `speech_warning`.
 
-Headset: hold left **X** (or **T** / the on-screen button on a laptop) to record, release to send;
-left **Y** (or **Y**) confirms a proposal, pressing X again (or **N**) dismisses it.
+Accepted `audio`: WAV, WebM/Opus, Ogg/Opus, or MP4/AAC (whatever the browser's MediaRecorder gives), at most 8 MiB.
+Headset (`quest/src/assistant-voice.ts`): a proposal shows "Seek person #3?" with Confirm / Dismiss for
+20 seconds; a new question, cancel, or expiry clears it.
 
 ## WebSocket `/ws/points` (Jetson -> Quest), binary, 3D scan
 

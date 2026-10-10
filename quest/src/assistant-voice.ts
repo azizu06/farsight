@@ -1,4 +1,13 @@
-type Reply = { question?: string; answer?: string; audio_url?: string | null };
+export type Action = { type: "seek"; target_id: number } | { type: "scan" };
+type Reply = { question?: string; answer?: string; audio_url?: string | null; action?: unknown };
+const CONFIRM_WINDOW_MS = 20000;
+
+function validAction(action: unknown): Action | null {
+  const value = action as { type?: unknown; target_id?: unknown } | null;
+  if (value?.type === "scan") return { type: "scan" };
+  if (value?.type === "seek" && Number.isInteger(value.target_id)) return { type: "seek", target_id: value.target_id as number };
+  return null;
+}
 
 /** Capture starts only from a user click; all transcription stays on the rover. */
 export class AssistantVoice {
@@ -12,6 +21,11 @@ export class AssistantVoice {
   private cancelButton: HTMLButtonElement;
   private playButton: HTMLButtonElement;
   private status: HTMLElement;
+  private actionPrompt: HTMLElement;
+  private confirmButton: HTMLButtonElement;
+  private dismissButton: HTMLButtonElement;
+  private action: Action | null = null;
+  private actionAt = 0;
   private answer = "";
   private audioURL: string | null = null;
   private audio: HTMLAudioElement | null = null;
@@ -25,14 +39,26 @@ export class AssistantVoice {
     private textButton: HTMLButtonElement,
     private onStart: () => void,
     private onAnswer: (reply: Reply) => void,
+    private onConfirm: (action: Action) => void = () => {},
   ) {
     const block = document.createElement("div"); block.className = "voice-assistant";
-    block.innerHTML = '<div class="button-row"><button type="button" id="voice-record">Ask by voice</button><button type="button" id="voice-cancel" disabled>Cancel</button><button type="button" id="voice-play" disabled>Play answer</button></div><p role="status">Optional voice: records up to 10 seconds, transcribes on the rover.</p>';
+    block.innerHTML = '<div class="button-row"><button type="button" id="voice-record">Ask by voice</button><button type="button" id="voice-cancel" disabled>Cancel</button><button type="button" id="voice-play" disabled>Play answer</button></div><p role="status">Optional voice: records up to 10 seconds, transcribes on the rover.</p><p id="voice-action" hidden></p><div class="button-row"><button type="button" id="voice-confirm" disabled>Confirm</button><button type="button" id="voice-dismiss" disabled>Dismiss</button></div>';
     parent.append(block);
     this.recordButton = block.querySelector("#voice-record")!;
     this.cancelButton = block.querySelector("#voice-cancel")!;
     this.playButton = block.querySelector("#voice-play")!;
     this.status = block.querySelector("p")!;
+    // The rover only proposes motion; nothing happens until the operator confirms here.
+    this.actionPrompt = block.querySelector("#voice-action")!;
+    this.confirmButton = block.querySelector("#voice-confirm")!;
+    this.dismissButton = block.querySelector("#voice-dismiss")!;
+    this.confirmButton.onclick = () => {
+      const action = this.action;
+      const fresh = action && Date.now() - this.actionAt <= CONFIRM_WINDOW_MS;
+      this.clearAction(fresh ? undefined : "Proposal expired; ask again.");
+      if (fresh) this.onConfirm(action);
+    };
+    this.dismissButton.onclick = () => this.clearAction("Proposal dismissed.");
     this.recordButton.onclick = () => {
       if (this.recorder?.state === "recording") this.finish();
       else if (!this.textButton.disabled) void this.record();
@@ -60,7 +86,7 @@ export class AssistantVoice {
   }
   private async record() {
     if (this.disposed || !this.settings.open || document.hidden) return;
-    this.onStart(); this.stopPlayback();
+    this.onStart(); this.stopPlayback(); this.clearAction();
     const generation = ++this.generation;
     this.recordButton.disabled = true; this.cancelButton.disabled = false;
     this.ownsTextBusy = true; this.textButton.disabled = true; this.status.textContent = "Allow the microphone to ask by voice, or cancel and use text.";
@@ -119,8 +145,20 @@ export class AssistantVoice {
     }
   }
 
+  private clearAction(message?: string) {
+    this.action = null; this.actionPrompt.hidden = true; this.actionPrompt.textContent = "";
+    this.confirmButton.disabled = true; this.dismissButton.disabled = true;
+    if (message) this.status.textContent = message;
+  }
   setReply(reply: Reply) {
     this.stopPlayback(); this.answer = String(reply.answer ?? ""); this.audioURL = null;
+    this.clearAction();
+    const action = validAction(reply.action);
+    if (action) {
+      this.action = action; this.actionAt = Date.now();
+      this.actionPrompt.textContent = action.type === "seek" ? `Seek person #${action.target_id}?` : "Scan the room?";
+      this.actionPrompt.hidden = false; this.confirmButton.disabled = false; this.dismissButton.disabled = false;
+    }
     if (typeof reply.audio_url === "string") {
       try {
         const url = new URL(reply.audio_url, location.origin);
@@ -149,7 +187,7 @@ export class AssistantVoice {
     if ("speechSynthesis" in window) speechSynthesis.cancel();
   }
   cancelCapture(message?: string) {
-    this.stopPlayback();
+    this.stopPlayback(); this.clearAction();
     this.generation++; window.clearTimeout(this.timer); this.request?.abort(); this.request = null;
     if (this.recorder?.state === "recording") this.recorder.stop();
     this.recorder = null; this.releaseTracks(); this.chunks = [];

@@ -237,8 +237,12 @@ class SceneAssistant:
             format_name = "wav"
         elif audio.startswith(b"\x1a\x45\xdf\xa3"):
             format_name = "matroska"
+        elif audio.startswith(b"OggS"):
+            format_name = "ogg"
+        elif audio[4:8] == b"ftyp":
+            format_name = "mov"  # ffmpeg's mp4/m4a demuxer
         else:
-            raise AssistantInputError("Audio must be WAV or WebM")
+            raise AssistantInputError("Audio must be WAV, WebM, Ogg, or MP4")
         whisper, model, ffmpeg = self._program(self.whisper_bin), self._model(self.whisper_model), shutil.which("ffmpeg")
         if not ffmpeg or not (self.whisper_url or (whisper and model)):
             raise AssistantUnavailable("Audio questions require local ffmpeg, whisper-cli, and an installed Whisper model")

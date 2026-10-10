@@ -155,6 +155,26 @@ class AssistantTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(b"RIFF", body)
         self.assertIsInstance(result["timings"]["stt"], int)
 
+    @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg is required for real conversion check")
+    async def test_every_headset_recording_format_reaches_whisper(self):
+        # Formats quest/src/assistant-voice.ts may record: webm/opus, ogg/opus, mp4/aac.
+        def encode(*args):
+            return subprocess.run([shutil.which("ffmpeg"), "-nostdin", "-hide_banner", "-loglevel", "error",
+                "-f", "wav", "-i", "pipe:0", *args], input=wav_bytes(), stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, check=True).stdout
+
+        with tempfile.TemporaryDirectory() as directory:
+            mp4 = Path(directory) / "question.m4a"
+            subprocess.run([shutil.which("ffmpeg"), "-nostdin", "-hide_banner", "-loglevel", "error", "-f", "wav",
+                            "-i", "pipe:0", "-c:a", "aac", str(mp4)], input=wav_bytes(), check=True)
+            clips = {"webm": encode("-c:a", "libopus", "-f", "webm", "pipe:1"),
+                     "ogg": encode("-c:a", "libopus", "-f", "ogg", "pipe:1"), "mp4": mp4.read_bytes()}
+        for name, clip in clips.items():
+            with self.subTest(format=name), whisper_server() as (url, seen):
+                result = await self.service(whisper_url=url).ask(audio=clip)
+                self.assertEqual(result["question"], "What do you see?")
+                self.assertIn(b"RIFF", seen[0][1])
+
     async def test_whisper_url_is_loopback_only(self):
         for url in ("https://example.com", "http://user:secret@localhost:8091"):
             with self.subTest(url=url), self.assertRaises(ValueError):

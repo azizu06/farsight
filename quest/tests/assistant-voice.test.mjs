@@ -44,7 +44,8 @@ function fixture(fetchResponse = null) {
   set("MediaRecorder", Recorder);
   set("fetch", () => { requests++; if (fetchResponse) return Promise.resolve(fetchResponse); throw new Error("Cancelled recordings must not submit audio"); });
   const textButton = { disabled: false };
-  const voice = new AssistantVoice({ append() {} }, settings, textButton, () => {}, () => {});
+  const confirmed = [];
+  const voice = new AssistantVoice({ append() {} }, settings, textButton, () => {}, () => {}, action => confirmed.push(action));
   const stream = () => { const track = { stops: 0, stop() { this.stops++; } }; return { track, getTracks: () => [track] }; };
   const cleanup = () => {
     voice.dispose();
@@ -52,7 +53,7 @@ function fixture(fetchResponse = null) {
       if (descriptor) Object.defineProperty(globalThis, key, descriptor); else delete globalThis[key];
     }
   };
-  return { voice, textButton, buttons, settings, media, listeners, closeListeners, pendingPermissions, recorders, stopEvents, timers, stream,
+  return { voice, confirmed, textButton, buttons, settings, media, listeners, closeListeners, pendingPermissions, recorders, stopEvents, timers, stream,
     permissionCalls: () => permissionCalls, requests: () => requests, cleanup };
 }
 
@@ -115,4 +116,44 @@ test("voice cleanup cannot unlock an unrelated in-flight text request", () => {
     assert.equal(f.textButton.disabled, true);
     assert.equal(f.permissionCalls(), 0);
   } finally { f.cleanup(); }
+});
+
+test("a proposed action is only a prompt until the operator confirms it once", () => {
+  const f = fixture();
+  try {
+    f.voice.setReply({ answer: "One person ahead. Confirm on the headset to seek person #3.", action: { type: "seek", target_id: 3 } });
+    assert.match(f.buttons.get("#voice-action").textContent, /Seek person #3\?/);
+    assert.equal(f.buttons.get("#voice-confirm").disabled, false);
+    assert.deepEqual(f.confirmed, []);
+    f.buttons.get("#voice-confirm").onclick();
+    assert.deepEqual(f.confirmed, [{ type: "seek", target_id: 3 }]);
+    assert.equal(f.buttons.get("#voice-confirm").disabled, true);
+    f.buttons.get("#voice-confirm").onclick();
+    assert.equal(f.confirmed.length, 1);
+    f.voice.setReply({ answer: "Scanning needs confirmation.", action: { type: "scan" } });
+    assert.match(f.buttons.get("#voice-action").textContent, /Scan the room\?/);
+  } finally { f.cleanup(); }
+});
+
+test("dismissed, malformed, superseded, and stale proposals never confirm", () => {
+  const f = fixture();
+  const realNow = Date.now;
+  try {
+    f.voice.setReply({ answer: "a", action: { type: "seek", target_id: 3 } });
+    f.buttons.get("#voice-dismiss").onclick();
+    f.buttons.get("#voice-confirm").onclick();
+    for (const action of [{ type: "launch" }, { type: "seek", target_id: "3" }, { type: "seek" }, null]) {
+      f.voice.setReply({ answer: "a", action });
+      assert.equal(f.buttons.get("#voice-confirm").disabled, true);
+      f.buttons.get("#voice-confirm").onclick();
+    }
+    f.voice.setReply({ answer: "a", action: { type: "seek", target_id: 4 } });
+    f.voice.cancelCapture();
+    f.buttons.get("#voice-confirm").onclick();
+    f.voice.setReply({ answer: "a", action: { type: "seek", target_id: 5 } });
+    const later = realNow() + 20001; Date.now = () => later;
+    f.buttons.get("#voice-confirm").onclick();
+    assert.deepEqual(f.confirmed, []);
+    assert.equal(f.buttons.get("#voice-confirm").disabled, true);
+  } finally { Date.now = realNow; f.cleanup(); }
 });
