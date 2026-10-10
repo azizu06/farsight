@@ -35,6 +35,16 @@ struct Inner {
     error: Option<String>,
 }
 
+struct PreviewCache {
+    source: String,
+    frame_id: i64,
+    received: f64,
+    input: Vec<u8>,
+    width: u32,
+    quality: u8,
+    jpeg: Vec<u8>,
+}
+
 /// Mirrors camera.adjusted_receipt: receipt time minus the producer's own
 /// encoding delay, so frame age reflects true capture-to-now latency.
 pub fn adjusted_receipt(header: &serde_json::Value, received_at: f64) -> Result<f64, String> {
@@ -87,6 +97,7 @@ pub struct CameraService {
     pub fps: u32,
     pub quality: u32,
     inner: Mutex<Inner>,
+    preview_cache: Mutex<Option<PreviewCache>>,
     stop: Arc<AtomicBool>,
 }
 
@@ -106,6 +117,7 @@ impl CameraService {
                 phone_capture_diagnostics: serde_json::Map::new(),
                 error: None,
             }),
+            preview_cache: Mutex::new(None),
             stop: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -320,16 +332,59 @@ impl CameraService {
 
     /// Re-encode snapshot JPEG at preview size/quality (max_width=640, q=50).
     pub fn preview(&self) -> Option<CameraFrame> {
+        self.preview_with(640, 50)
+    }
+
+    pub fn preview_with(&self, max_width: u32, quality: u8) -> Option<CameraFrame> {
+        self.cached_preview(max_width, quality, encode_preview)
+    }
+
+    fn cached_preview(
+        &self,
+        max_width: u32,
+        quality: u8,
+        encode: impl FnOnce(&CameraFrame, u32, u8) -> Option<Vec<u8>>,
+    ) -> Option<CameraFrame> {
+        // Serialize only preview work. Capture/map locks are released before
+        // encoding; snapshot after waiting so queued requests use latest input.
+        let mut cache = self.preview_cache.lock().unwrap();
         let frame = self.snapshot()?;
+        let hit = cache.as_ref().filter(|cached| {
+            cached.source == frame.source && cached.frame_id == frame.frame_id
+                && cached.received == frame.received && cached.input == frame.jpeg
+                && cached.width == max_width && cached.quality == quality
+        });
+        let jpeg = if let Some(cached) = hit {
+            cached.jpeg.clone()
+        } else {
+            let jpeg = encode(&frame, max_width, quality)?;
+            *cache = Some(PreviewCache {
+                source: frame.source.clone(), frame_id: frame.frame_id,
+                received: frame.received, input: frame.jpeg.clone(),
+                width: max_width, quality, jpeg: jpeg.clone(),
+            });
+            jpeg
+        };
+        // Cache pixels only: current receipt/permit binding stays authoritative.
+        Some(CameraFrame { jpeg, ..frame })
+    }
+
+    pub fn close(&self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+}
+
+fn encode_preview(frame: &CameraFrame, max_width: u32, quality: u8) -> Option<Vec<u8>> {
+        if max_width == 0 { return None; }
         let img = image::load_from_memory_with_format(&frame.jpeg, image::ImageFormat::Jpeg).ok()?;
-        let img = if img.width() > 640 {
-            let h = (img.height() as u64 * 640 / img.width() as u64) as u32;
-            img.resize_exact(640, h, image::imageops::FilterType::Triangle)
+        let img = if img.width() > max_width {
+            let h = (img.height() as u64 * max_width as u64 / img.width() as u64).max(1) as u32;
+            img.resize_exact(max_width, h, image::imageops::FilterType::Triangle)
         } else {
             img
         };
         let mut buf = Vec::new();
-        let enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 50);
+        let enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, quality);
         image::ImageEncoder::write_image(
             enc,
             img.to_rgb8().as_raw(),
@@ -338,12 +393,7 @@ impl CameraService {
             image::ExtendedColorType::Rgb8,
         )
         .ok()?;
-        Some(CameraFrame { jpeg: buf, ..frame })
-    }
-
-    pub fn close(&self) {
-        self.stop.store(true, Ordering::Relaxed);
-    }
+        Some(buf)
 }
 
 /// Pull the next complete JPEG out of the MJPEG byte stream: resync on the
@@ -416,5 +466,88 @@ mod jpeg_tests {
         let frame = jpeg(2, 0x33);
         buf.extend_from_slice(&frame);
         assert_eq!(next_jpeg(&mut buf).unwrap(), frame);
+    }
+}
+
+#[cfg(test)]
+mod preview_tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    fn fixture() -> Arc<CameraService> {
+        let camera = Arc::new(CameraService::new(Arc::new(MapState::new(false)), None, false));
+        camera.set_phone_rgb(Some(CameraFrame {
+            jpeg: vec![1, 2, 3], received: now_monotonic() - 0.2,
+            frame_id: 7, source: "PHONE RGB".into(),
+            capture_verified: false, capture_binding: None,
+        }));
+        camera
+    }
+
+    #[test]
+    fn concurrent_requests_share_encode_and_never_renew_capture() {
+        let camera = fixture();
+        let received = camera.snapshot().unwrap().received;
+        let count = Arc::new(AtomicUsize::new(0));
+        let workers: Vec<_> = (0..16).map(|_| {
+            let camera = camera.clone();
+            let count = count.clone();
+            std::thread::spawn(move || {
+                camera.cached_preview(640, 50, |_, _, _| {
+                    count.fetch_add(1, Ordering::Relaxed);
+                    Some(vec![4, 5, 6])
+                }).unwrap()
+            })
+        }).collect();
+        for worker in workers {
+            let frame = worker.join().unwrap();
+            assert_eq!(frame.jpeg, vec![4, 5, 6]);
+            assert_eq!(frame.received, received);
+            assert!(frame.age_ms() >= 200);
+        }
+        assert_eq!(count.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn restart_profile_and_pixels_invalidate_without_restoring_old_metadata() {
+        let camera = fixture();
+        let count = AtomicUsize::new(0);
+        let encode = |_: &CameraFrame, _, _| {
+            count.fetch_add(1, Ordering::Relaxed);
+            Some(vec![4, 5, 6])
+        };
+        camera.cached_preview(640, 50, &encode).unwrap();
+        camera.cached_preview(640, 50, &encode).unwrap();
+        camera.cached_preview(320, 30, &encode).unwrap();
+        let mut frame = camera.snapshot().unwrap();
+        frame.received += 0.1; // Same counter/source after producer reconnect.
+        camera.set_phone_rgb(Some(frame.clone()));
+        let current = camera.cached_preview(320, 30, &encode).unwrap();
+        assert_eq!(current.received, frame.received);
+        frame.jpeg.push(4);
+        camera.set_phone_rgb(Some(frame.clone()));
+        camera.cached_preview(320, 30, &encode).unwrap();
+        frame.capture_verified = true;
+        camera.set_phone_rgb(Some(frame));
+        assert!(camera.cached_preview(320, 30, &encode).unwrap().capture_verified);
+        assert_eq!(count.load(Ordering::Relaxed), 4);
+        camera.set_phone_rgb(None);
+        assert!(camera.cached_preview(320, 30, &encode).is_none());
+    }
+
+    #[test]
+    fn real_preview_is_decodable_and_respects_profile() {
+        let camera = fixture();
+        let image = image::RgbImage::from_pixel(80, 48, image::Rgb([90, 90, 90]));
+        let mut jpeg = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 80)
+            .encode_image(&image).unwrap();
+        let mut frame = camera.snapshot().unwrap();
+        frame.jpeg = jpeg;
+        camera.set_phone_rgb(Some(frame));
+        let preview = camera.preview_with(40, 30).unwrap();
+        let decoded = image::load_from_memory_with_format(&preview.jpeg, image::ImageFormat::Jpeg).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (40, 24));
+        assert_eq!(camera.preview_with(40, 30).unwrap().received, preview.received);
     }
 }

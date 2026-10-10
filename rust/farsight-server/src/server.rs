@@ -717,7 +717,9 @@ async fn map_pause(State(s): State<Arc<AppState>>, Json(body): Json<Value>) -> R
 }
 
 async fn camera_jpg(State(s): State<Arc<AppState>>) -> Response {
-    match s.camera.preview() {
+    let camera = s.camera.clone();
+    // A first-frame JPEG encode must not stall control/health on an async worker.
+    match tokio::task::spawn_blocking(move || camera.preview()).await.ok().flatten() {
         Some(frame) => {
             let fid = frame.frame_id;
             let age = frame.age_ms();
@@ -754,7 +756,8 @@ async fn stream_mjpg(State(s): State<Arc<AppState>>) -> Response {
     let stream = async_stream::stream! {
         let mut last: Option<(String, i64)> = None;
         loop {
-            let frame = camera.preview();
+            let worker_camera = camera.clone();
+            let frame = tokio::task::spawn_blocking(move || worker_camera.preview()).await.ok().flatten();
             let identity = frame.as_ref().map(|f| (f.source.clone(), f.frame_id));
             if let Some(f) = frame {
                 if f.age_ms() < 500 && identity != last {
