@@ -532,3 +532,28 @@ class DemoModeTests(unittest.TestCase):
         state.set_connected(False, "serial_disconnected")
         state.set_connected(True)
         self.assertTrue(state.status()["requires_release"])
+
+
+class StaleSessionTests(unittest.TestCase):
+    def setUp(self):
+        self.clock = Clock()
+        self.state = ControlState(clock=self.clock, proximity_stop=False)
+        self.state.set_connected(True)
+        self.old = self.state.begin()
+
+    def test_a_live_controller_keeps_the_rover(self):
+        self.clock.now += 0.5
+        self.state.accept({"session_id": self.old, "seq": 1, "deadman": False}, self.old)
+        self.clock.now += 0.9
+        self.assertIsNone(self.state.begin())  # refused: the owner spoke 0.9 s ago
+
+    def test_a_silent_session_is_replaced_and_its_commands_are_refused(self):
+        self.clock.now += self.state.STALE_SESSION + 0.01
+        new = self.state.begin()
+        self.assertIsNotNone(new)
+        self.assertNotEqual(new, self.old)
+        self.assertEqual(self.state.session_id, new)
+        self.assertTrue(self.state.status()["requires_release"])
+        self.assertFalse(self.state.accept({"session_id": self.old, "seq": 2, "deadman": True}, self.old))
+        self.state.end(self.old)  # the old handler's cleanup must not end the new session
+        self.assertEqual(self.state.session_id, new)
