@@ -105,6 +105,8 @@ class RenderEncoder:
             # eye sizes. FFmpeg scales both halves together to the fixed pair.
             at = args.index("-c:v")
             args[at:at] = ["-s:v", f"{self.width}x{self.height}"]
+            at = max(index for index, value in enumerate(args) if value == "-movflags")
+            args[at + 1] += "+frag_every_frame"
         self.process = await asyncio.create_subprocess_exec(
             *args, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE)

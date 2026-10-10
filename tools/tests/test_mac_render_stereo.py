@@ -57,7 +57,8 @@ class StereoWireTests(unittest.IsolatedAsyncioTestCase):
         encoder = RenderEncoder(None, 1920, 1080, 30, 8_000_000, True, layout=SBS)
         process = type('Process', (), {'returncode': None, 'kill': lambda self: None, 'wait': AsyncMock()})()
         async def blocked(): await asyncio.Event().wait()
-        arguments = ['ffmpeg', '-flags', 'low_delay', '-i', 'pipe:0', '-c:v', 'h264_videotoolbox', 'pipe:1']
+        arguments = ['ffmpeg', '-flags', 'low_delay', '-i', 'pipe:0', '-c:v', 'h264_videotoolbox',
+                     '-movflags', 'empty_moov', 'pipe:1']
         with patch('tools.mac_render.server.shutil.which', return_value='/ffmpeg'), \
              patch('tools.mac_render.server.screencast_to_ffmpeg', return_value=(arguments, 'h264_videotoolbox')) as factory, \
              patch('tools.mac_render.server.asyncio.create_subprocess_exec', new=AsyncMock(return_value=process)) as launch, \
@@ -68,6 +69,7 @@ class StereoWireTests(unittest.IsolatedAsyncioTestCase):
             command = list(launch.call_args.args)
             self.assertLess(command.index('-i'), command.index('+low_delay'))
             self.assertEqual(command[command.index('-s:v') + 1], '1920x1080')
+            self.assertIn('frag_every_frame', command[command.index('-movflags') + 1])
             self.assertEqual(factory.call_args.kwargs, {'fragment_ms': 0})
             await encoder.close()
 
