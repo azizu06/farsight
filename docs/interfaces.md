@@ -813,3 +813,24 @@ encoding, headset display or stereo. The initial renderer contract uses the
 `stereo: false`; renderer message semantics and pose validation belong to the
 renderer/viewer owners. Render/pose timestamps do not establish physical
 camera freshness and never enter `/ws/control` through this transport.
+
+The Quest AUTO viewer (`?macview=1`, `quest/src/mac-auto.ts`) sends pose
+version 1 unchanged: `type`, `version`, `sent_mono_ms`, `sent_wall_ms`, `head`,
+and `ray` (currently `null`). `head` is in **AR-map coordinates**, not raw
+headset coordinates. It adds these optional fields, which a v1 renderer may
+ignore:
+
+| Field | Meaning |
+|---|---|
+| `pose_id` | Monotonic per Quest page. Renderers should echo it in `video_segment.pose`. |
+| `space` | `"ar_map"`. |
+| `session_id` | New per AUTO entry. |
+| `map_revision` | Point revision of the Quest's local map, or `null`. |
+| `viewer` | `{x, y, z, yaw}` of `mapWalk`. |
+| `eyes[]` | `{position, quaternion, projection[16]}` per XR eye, in map coordinates. `projection` is column-major. |
+| `fov_y_deg`, `aspect` | The picture the Quest would like to receive. |
+| `stereo` | `false`. |
+
+The viewer finds a frame's render pose by the echoed `pose_id`, or failing
+that by an exact `sent_mono_ms`. It sizes the picture from the echoed
+`video_segment.fov_y_deg`, which defaults to 50.
