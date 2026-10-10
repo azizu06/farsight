@@ -220,9 +220,13 @@ class Explorer:
         self.last_robot = None
         self.committed = None
         self.committed_at = 0.0
+        self.committed_frontier = None
+        self.committed_waypoint = None
 
     def release(self):
         self.committed = None
+        self.committed_frontier = None
+        self.committed_waypoint = None
 
     def _visit(self, robot, now):
         decay = max(0.1, self.config.revisit_decay_s)
@@ -249,7 +253,10 @@ class Explorer:
         thin = thin_obstacles(grid >= 99, resolution)
         half_width = cfg.min_corridor_width / 2
         scored = []
-        approaches = []
+        # Boundary samples/centroids move as the camera clears cells. Keep the
+        # exact active waypoint as an independent candidate and revalidate its
+        # full current approach on every score pass, even during a missing cluster.
+        approaches = [self.committed_frontier] if self.committed_frontier is not None else []
         for candidate in candidates:
             approaches.append(candidate)
             approaches.extend(Frontier(point, point, candidate.size_m) for point in candidate.samples)
@@ -262,10 +269,15 @@ class Explorer:
                 continue
             direction = np.array((dx, dy)) / distance
             # Stop one footprint short of the unseen boundary, never beyond it.
-            goal = np.asarray(candidate.goal) - direction * (half_width + resolution)
+            if candidate is self.committed_frontier:
+                goal = np.asarray(self.committed_waypoint)
+            else:
+                goal = np.asarray(candidate.goal) - direction * (half_width + resolution)
             if math.dist(goal, robot[:2]) < 0.25:
                 continue
-            start = goal - direction * min(cfg.approach_length, math.dist(goal, robot[:2]))
+            approach_distance = math.dist(goal, robot[:2])
+            approach_direction = (goal - robot[:2]) / approach_distance
+            start = goal - approach_direction * min(cfg.approach_length, approach_distance)
             approach = np.linspace(start, goal, max(2, math.ceil(cfg.approach_length / resolution) + 1))
             rc = np.floor((approach - origin) / resolution).astype(int)[:, ::-1]
             if (rc < 0).any() or (rc[:, 0] >= grid.shape[0]).any() or (rc[:, 1] >= grid.shape[1]).any():
@@ -282,8 +294,8 @@ class Explorer:
             if len(rows):
                 points = np.column_stack((cols + 0.5, rows + 0.5)) * resolution + origin
                 relative = points - start
-                along = np.clip(relative @ direction, 0, math.dist(start, goal))
-                near = np.linalg.norm(relative - along[:, None] * direction, axis=1) < 0.8
+                along = np.clip(relative @ approach_direction, 0, math.dist(start, goal))
+                near = np.linalg.norm(relative - along[:, None] * approach_direction, axis=1) < 0.8
                 # Density of occupied thin-clutter area, scaled to several 10 cm legs.
                 clutter = min(1.0, float(near.sum()) * resolution ** 2 / 0.12)
             revisit = 0.0
@@ -296,14 +308,15 @@ class Explorer:
                      + cfg.clutter_weight * clutter + cfg.revisit_weight * revisit
                      - cfg.clearance_weight * width - cfg.information_weight * information
                      - cfg.size_weight * min(candidate.size_m, 3.0))
-            scored.append((score, Frontier(tuple(goal), candidate.centroid, candidate.size_m), candidate.goal))
+            scored.append((score, Frontier(tuple(goal), candidate.centroid, candidate.size_m), candidate.goal, candidate))
         if not scored:
             self.release()
             return None
         scored.sort(key=lambda item: (item[0], item[2]))
         best = scored[0]
         if self.committed is not None:
-            current = min(scored, key=lambda item: math.dist(item[2], self.committed))
+            current = next((item for item in scored if item[3] is self.committed_frontier),
+                           min(scored, key=lambda item: math.dist(item[2], self.committed)))
             if math.dist(current[2], self.committed) < 0.6:
                 next_patch = [item for item in scored if math.dist(item[1].goal, robot[:2]) >= cfg.transition_distance]
                 if math.dist(current[1].goal, robot[:2]) < cfg.transition_distance and next_patch:
@@ -313,6 +326,7 @@ class Explorer:
         if self.committed is None or math.dist(best[2], self.committed) >= 0.6:
             self.committed_at = now
         self.committed = best[2]
+        self.committed_frontier, self.committed_waypoint = best[3], best[1].goal
         return best[1]
 
     def _information(self, grid, goal, resolution, origin):

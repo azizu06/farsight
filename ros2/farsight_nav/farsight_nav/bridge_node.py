@@ -462,7 +462,7 @@ class FarsightBridge(Node):
             self.no_frontier_since = None
             running = self.goal_handle is not None or (
                 self.goal_pending and now - self.goal_sent_at < 5.0)
-            same = target is not None and math.dist(choice.goal, target) < 0.6
+            same = target is not None and math.dist(choice.goal, target) < max(0.1, 2 * info.resolution)
             if same and running and not timed_out:
                 return
             # Preselect the next broad patch within the goal tolerance, before

@@ -182,3 +182,29 @@ def test_next_broad_patch_is_preselected_before_current_goal_arrives():
     chooser = frontiers.Explorer()
     assert chooser.choose([east, north], (6.05, 4.05, 0), grid, 0.1, (0, 0), now=0).centroid == east.centroid
     assert chooser.choose([east, north], (7.2, 4.05, 0), grid, 0.1, (0, 0), now=2).centroid == north.centroid
+
+
+def test_committed_waypoint_survives_resampling_but_is_revalidated():
+    grid = np.zeros((80, 100), np.int16)
+    grid[:, 80:] = -1
+    edge = frontiers.Frontier((7.95, 4.05), (7.95, 4.05), 2.0)
+    chooser = frontiers.Explorer()
+    first = chooser.choose([edge], (2.05, 4.05, 0), grid, 0.1, (0, 0), now=0)
+    # Frontier clustering/sample positions can disappear for one score cycle.
+    # Keep the exact waypoint, including its original setback, while it is safe.
+    retained = chooser.choose([], (2.45, 4.25, 0), grid, 0.1, (0, 0), now=2)
+    assert retained is not None and retained.goal == first.goal
+    grid[38:44, 65:78] = 100
+    assert chooser.choose([], (2.45, 4.25, 0), grid, 0.1, (0, 0), now=3) is None
+
+
+def test_blacklist_and_release_drop_retained_waypoints():
+    grid = np.zeros((80, 100), np.int16)
+    grid[:, 80:] = -1
+    edge = frontiers.Frontier((7.95, 4.05), (7.95, 4.05), 2.0)
+    chooser = frontiers.Explorer()
+    assert chooser.choose([edge], (2.05, 4.05, 0), grid, 0.1, (0, 0), now=0) is not None
+    assert chooser.choose([], (2.05, 4.05, 0), grid, 0.1, (0, 0), now=1, blacklist=[edge.goal]) is None
+    assert chooser.choose([edge], (2.05, 4.05, 0), grid, 0.1, (0, 0), now=2) is not None
+    chooser.release()
+    assert chooser.choose([], (2.05, 4.05, 0), grid, 0.1, (0, 0), now=3) is None

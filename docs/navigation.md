@@ -431,13 +431,13 @@ selected targets, actual wheel movement, release/disconnect/capture-loss stops,
 and time spent idle. A green software test does not qualify that floor behavior.
 
 Open-space closed-loop checks (2026-10-10, Docker Jazzy, RPP, ray-cast
-`floorplan`): the body-support/full-turn change reached 80% coverage, 1.647 m
-traveled and zero collisions. With background scoring and short-step preplanning,
-the latest two runs ended at 76.6% and 75.1% coverage (below the existing 80%
-scenario gate), both with zero collisions and a 0.61 s longest standstill.
-The latest run drove 0.990 m with 0.508 m minimum physical clearance; controller
-output was 20 Hz median and bridge CPU averaged 7.9% of one core in the container.
-The initial centroid-only/strict blind-ring candidate never moved (6.5%
-coverage). Startup and command continuity improved; coverage stability still
-needs resolution before this candidate can ship. Actual rig behavior remains
+`floorplan`): retaining and revalidating the exact committed waypoint through
+boundary resampling passed the existing 80% scenario gate with **81.6% coverage
+in 33.4 s, 1.856 m traveled, zero collisions, 0.305 m minimum physical clearance
+and a 0.61 s longest standstill**. Controller output was 20 Hz median (10.2 Hz
+minimum); bridge CPU averaged 8.6% of one core in the container. Two preceding
+background-scoring runs ended at 76.6% and 75.1%, both with zero collisions and
+0.61 s longest standstills; this remains a single successful final simulation,
+not a claim of repeatable floor performance. The initial centroid-only/strict
+blind-ring candidate never moved (6.5% coverage). Actual rig behavior remains
 unverified, and these numbers do not replace a real-floor receipt.
