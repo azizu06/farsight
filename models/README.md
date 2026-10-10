@@ -4,7 +4,7 @@ Not in git (see .gitignore). Get them from a teammate's laptop or re-download:
 |---|---|
 | yolo11n.onnx + .labels.json + .manifest.json | `python3 -m tools.export_detector` on a laptop; detection export for the live rover detector |
 | yolo11n-pose.onnx | `yolo export model=yolo11n-pose.pt format=onnx imgsz=640 opset=17 simplify=True` |
-| depth_anything_v2_metric_indoor_small_308x406.onnx | HF `depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf`, exported with torch.onnx (input 1x3x308x406, output metres) |
+| depth_anything_v2_metric_indoor_small_308x406.onnx + .manifest.json | `python3 -m tools.export_depth` on a laptop; pinned official HF indoor metric model |
 | Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf + mmproj Q8_0 | HF `ggml-org/Qwen2.5-VL-3B-Instruct-GGUF` |
 | SmolVLM-500M-Instruct-Q8_0.gguf + mmproj Q8_0 | HF `ggml-org/SmolVLM-500M-Instruct-GGUF` (fast fallback) |
 | ggml-base.en.bin | HF `ggerganov/whisper.cpp` |
@@ -19,6 +19,48 @@ CPU rehearsal: `--detector-model models/yolo11n.onnx`. With no model, the server
 uses the bundled HOG CPU person detector. HOG is a fallback and does not establish
 that TensorRT or GPU inference is working. Ultralytics export dependencies are
 needed on the laptop only; the Jetson inference path does not require PyTorch.
+
+## Optional metric-depth export for stationary scans
+
+Prepare this before the demo network becomes unavailable:
+
+```bash
+python3 -m pip install torch transformers onnx onnxruntime safetensors
+python3 -m tools.export_depth --output-dir models
+# Subsequent exports can use only already cached official weights:
+python3 -m tools.export_depth --local-only --output-dir /tmp/depth-export
+python -m tools.benchmark_scan --model models/depth_anything_v2_metric_indoor_small_308x406.onnx
+```
+
+The exporter uses official
+[Depth Anything V2 Metric Indoor Small](https://huggingface.co/depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf)
+at immutable revision `8078d68a9c75a972131914f6afd0c1723be0da7f`.
+The fixed FP32 contract is RGB `[1,3,308,406]`, divided by 255 and normalized
+with ImageNet mean/std, to optical-axis metres `[1,308,406]`. The existing
+runtime directly resizes to that grid; it does not use the Hub processor's
+default aspect-preserving 518-pixel resize. Output is never rescaled per view.
+Export includes ONNX checking, exact shape/type validation and numerical
+parity against the original PyTorch model on two deterministic inputs. It
+refuses existing output unless `--overwrite` is explicitly passed and emits
+SHA-256, checkpoint provenance, library versions and parity errors in its manifest.
+
+This laptop's tested exporter versions are Torch 2.14.0, Transformers 5.6.1,
+ONNX 1.21.0 and ONNX Runtime 1.24.4. Byte hashes may differ with exporter
+versions; the historical artifact hash in `docs/scan.md` is not a download
+integrity pin for a new export. Build the FP16 TensorRT engine on the target
+Jetson using `python -m jetson.build_engine models/depth_anything_v2_metric_indoor_small_308x406.onnx`.
+Neither successful CPU parity nor an engine build measures real-room depth
+accuracy or permits using estimated depth as safe driving clearance. See
+[`docs/scan.md`](../docs/scan.md) for runtime and hardware gates.
+
+The October 10 Mac export produced SHA-256
+`7ba4679f646ac5af720a565727cc8352ccb58a52dfc65fceb5874f8ed880190e`
+(99,112,383 bytes). Two deterministic parity samples differed by at most
+0.00000501 m; a separate public bus-photo sample differed by 0.0000739 m.
+The production HTTP scan benchmark completed five synthetic room views in
+2547.53 ms and delivered 89,968 points (1,439,492 bytes), with ONNX Runtime
+1.31.0 CPU on this Mac. This is a local software compatibility measurement,
+including its current host load, rather than target Jetson performance.
 
 ## Optional rescue-drill face detector (Hugging Face Hub)
 
