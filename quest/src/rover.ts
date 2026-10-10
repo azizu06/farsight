@@ -3,6 +3,7 @@ import { ControlSafety, stick } from "./control-safety.js";
 import { H264Viewer } from "./h264";
 import { cameraCrop, croppedBox } from "./camera-view.js";
 import { AssistantVoice } from "./assistant-voice";
+import { AutonomyIntent, autonomyLabel, containPoint, pickTarget, rayPanelPoint } from "./autonomy.js";
 
 type Box = { id?: number; cls: string; conf: number; x: number; y: number; w: number; h: number };
 type Detections = { frame: number | string; boxes: Box[]; fps?: number; source?: string; simulated?: boolean };
@@ -10,6 +11,7 @@ type ControlStatus = {
   type?: string; session_id: string; permit: string; permit_ms: number; seq?: number;
   rover: boolean; simulated?: boolean; estop?: boolean; range_cm?: number | null;
   requires_release?: boolean; reason?: string | null; link_ms?: number | null;
+  mode?: string; autonomy_state?: string; target_id?: number | null;
 };
 
 /** Same-origin only: Quest talks through USB/ADB to the operator relay. */
@@ -39,7 +41,10 @@ export class RoverExperience {
   private drillAt = -Infinity;
   private drillBusy = false;
   private voice: AssistantVoice | null = null;
-  private seekTarget: number | null = null;
+  private autonomy = new AutonomyIntent();
+  private drawnBoxes: Box[] = [];
+  private raycaster = new THREE.Raycaster();
+  private exploreDown = false;
   private lastSendAt = 0;
   private input = { held: false, v: 0, w: 0, pan: 0 };
   private keys = new Set<string>();
@@ -90,7 +95,8 @@ export class RoverExperience {
       <p id="rover-message" role="status">Waiting for live camera and rover</p>
       <p id="rover-details">Motion disabled until camera and control are fresh.</p>
       <button id="rover-hold" class="hold-button">Hold to enable · WASD to drive</button>
-      <p class="rover-help">Quest: hold right trigger + left stick. A: camera/map. B: center pan.<br>Desktop: hold Space + WASD in camera view. Release to stop.</p>`;
+      <button id="rover-explore" aria-pressed="false">Explore (E)</button>
+      <p class="rover-help">Quest: hold right trigger + left stick. A: seek pointed person (else camera/map). B: explore. X: center pan.<br>Desktop: hold Space + WASD in camera view; click a person to seek; E explores. Stick/WASD takes back control.</p>`;
     document.querySelector("main")!.append(panel);
     this.message = panel.querySelector("#rover-message")!;
     this.details = panel.querySelector("#rover-details")!;
@@ -98,6 +104,7 @@ export class RoverExperience {
     panel.querySelector<HTMLButtonElement>("#live-rover")!.onclick = () => this.setView("camera");
     panel.querySelector<HTMLButtonElement>("#rover-map")!.onclick = () => { this.stop("Map view: release deadman"); this.setView("3d"); };
     panel.querySelector<HTMLButtonElement>("#rover-stop")!.onclick = () => this.stop("Stopped: release deadman");
+    panel.querySelector<HTMLButtonElement>("#rover-explore")!.onclick = () => this.toggleExplore();
     this.holdButton.onpointerdown = event => {
       this.holdButton.setPointerCapture(event.pointerId);
       this.pointerHeld = true;
@@ -107,6 +114,7 @@ export class RoverExperience {
     window.addEventListener("keydown", this.keyDown);
     window.addEventListener("keyup", this.keyUp);
     window.addEventListener("blur", this.blur);
+    window.addEventListener("click", this.click);
     document.addEventListener("visibilitychange", this.visibility);
     document.addEventListener("keydown", this.escapeStop);
 
@@ -173,6 +181,13 @@ export class RoverExperience {
     if (["Space", "KeyW", "KeyA", "KeyS", "KeyD"].includes(key)) {
       event.preventDefault(); this.keys.add(key);
     }
+    if (key === "KeyE" && !event.repeat) { event.preventDefault(); this.toggleExplore(); }
+  };
+  // The 3D scene canvas sits above the camera canvas, so map window clicks onto the camera image.
+  private click = (event: MouseEvent) => {
+    if (this.getView() !== "camera" || this.renderer.xr.isPresenting || !(event.target instanceof HTMLCanvasElement)) return;
+    const point = containPoint(event.clientX, event.clientY, this.canvas.getBoundingClientRect(), this.canvas.width, this.canvas.height);
+    if (point) this.selectAt(point);
   };
   private keyUp = (event: KeyboardEvent) => { this.keys.delete(event.code); };
   private blur = () => { this.keys.clear(); this.pointerHeld = false; this.stop("Window inactive: release deadman"); };
@@ -180,7 +195,7 @@ export class RoverExperience {
   private escapeStop = (event: KeyboardEvent) => { if (event.key === "Escape") this.stop("Stopped: release deadman"); };
 
   stop(reason: string) {
-    this.seekTarget = null;
+    this.autonomy.clear();
     this.input = this.gate.stop(this.input, reason);
     this.send(false);
   }
@@ -278,13 +293,19 @@ export class RoverExperience {
       const axes = gamepad?.axes ?? [];
       const held = !!right?.gamepad?.buttons[0]?.pressed;
       const toggle = !!right?.gamepad?.buttons[4]?.pressed;
-      const center = !!right?.gamepad?.buttons[5]?.pressed;
-      if (toggle && !this.toggleDown) { this.xrLive = !this.xrLive; this.stop("View changed: release trigger"); this.setView(this.xrLive ? "camera" : "3d"); }
-      if (center && !this.recenterDown) this.recenter = true;
-      this.toggleDown = toggle; this.recenterDown = center;
+      const explore = !!right?.gamepad?.buttons[5]?.pressed;
+      const center = !!left?.gamepad?.buttons[4]?.pressed;
       const reference = this.renderer.xr.getReferenceSpace();
       let pose: XRViewerPose | null = null;
       try { if (frame && reference) pose = frame.getViewerPose(reference) ?? null; } catch { /* Tracking loss stops controls below. */ }
+      if (toggle && !this.toggleDown) {
+        // A on a tracked person selects Seek; A anywhere else keeps the camera/map toggle.
+        const point = this.xrLive ? this.panelPoint(frame, reference, right) : null;
+        if (!point || !this.selectAt(point)) { this.xrLive = !this.xrLive; this.stop("View changed: release trigger"); this.setView(this.xrLive ? "camera" : "3d"); }
+      }
+      if (explore && !this.exploreDown && this.xrLive) this.toggleExplore();
+      if (center && !this.recenterDown) this.recenter = true;
+      this.toggleDown = toggle; this.exploreDown = explore; this.recenterDown = center;
       if (pose) {
         const orientation = pose.transform.orientation, position = pose.transform.position;
         this.quat.set(orientation.x, orientation.y, orientation.z, orientation.w);
@@ -311,7 +332,7 @@ export class RoverExperience {
         pan: 0,
       };
     }
-    if (this.input.v || this.input.w) this.seekTarget = null;
+    if (this.autonomy.stick(this.input.v, this.input.w)) this.dirty = true;
     this.cockpit.visible = xr;
     this.cameraScreen.visible = this.xrLive;
     if (this.h264Enabled) {
@@ -321,6 +342,28 @@ export class RoverExperience {
     if (this.dirty || now - this.lastCanvasDraw > 100) this.drawCamera(now);
     if (now - this.lastHudAt > 100) { this.drawHUD(now); this.lastHudAt = now; }
   }
+  /** Controller ray (or head gaze) onto the camera panel, in canvas-normalized coordinates. */
+  private panelPoint(frame: XRFrame | undefined, reference: XRReferenceSpace | null, right: XRInputSource | undefined) {
+    let ray: XRPose | null = null;
+    try { if (frame && reference && right) ray = frame.getPose(right.targetRaySpace, reference) ?? null; } catch { /* Fall back to gaze. */ }
+    if (ray) {
+      const o = ray.transform.orientation, p = ray.transform.position;
+      this.raycaster.ray.origin.set(p.x, p.y, p.z);
+      this.raycaster.ray.direction.set(0, 0, -1).applyQuaternion(new THREE.Quaternion(o.x, o.y, o.z, o.w));
+    } else {
+      this.raycaster.ray.origin.copy(this.position);
+      this.raycaster.ray.direction.set(0, 0, -1).applyQuaternion(this.quat);
+    }
+    this.cockpit.updateMatrixWorld(true);
+    return rayPanelPoint(this.raycaster.intersectObject(this.cameraScreen, false)[0]?.uv ?? null);
+  }
+  private selectAt(point: { x: number; y: number }) {
+    const box = pickTarget(this.drawnBoxes, point.x, point.y);
+    if (!box || !this.autonomy.select(box.id!)) return false;
+    this.dirty = true;
+    return true;
+  }
+  private toggleExplore() { this.autonomy.toggleExplore(); this.dirty = true; }
   get vrCameraView() { return this.renderer.xr.isPresenting && this.xrLive; }
 
   private pump() {
@@ -346,7 +389,7 @@ export class RoverExperience {
       seq, session_id: this.status?.session_id ?? null, permit: this.status?.permit ?? null,
       deadman, v: deadman ? this.input.v : 0, w: deadman ? this.input.w : 0,
       pan: this.digitalPan ? 0 : this.input.pan, video_fresh: age < 500,
-      ...(this.seekTarget === null ? { mode: "teleop" } : { mode: "seek", target_id: this.seekTarget }),
+      ...this.autonomy.fields(deadman),
       video_age_ms: Number.isFinite(age) ? Math.ceil(age) : 999999,
     }));
     this.lastSendAt = performance.now();
@@ -399,6 +442,7 @@ export class RoverExperience {
   }
   private drawDetections(crop: ReturnType<typeof cameraCrop>, width: number, height: number, now: number) {
     const packet = this.matchingDetections(now);
+    this.drawnBoxes = [];
     if (!packet) return;
     const context = this.ctx;
     context.strokeStyle = "#8dffa9"; context.fillStyle = "#8dffa9";
@@ -407,9 +451,14 @@ export class RoverExperience {
     for (const box of packet.boxes) {
       const visibleBox = croppedBox(box, crop, width, height);
       if (!visibleBox) continue;
+      this.drawnBoxes.push({ ...box, ...visibleBox });
+      const target = box.id !== undefined && box.id === this.autonomy.targetId;
+      context.strokeStyle = context.fillStyle = target ? "#ffc779" : "#8dffa9";
+      context.lineWidth = Math.max(2, this.canvas.width / 320) * (target ? 2 : 1);
       const x = visibleBox.x * this.canvas.width, y = visibleBox.y * this.canvas.height;
       context.strokeRect(x, y, visibleBox.w * this.canvas.width, visibleBox.h * this.canvas.height);
-      context.fillText(`${box.cls.slice(0, 30)} ${Math.round(box.conf * 100)}%`, x + 4, Math.max(18, y - 5));
+      const id = Number.isSafeInteger(box.id) ? ` #${box.id}` : "";
+      context.fillText(`${target ? "SEEK " : ""}${box.cls.slice(0, 30)}${id} ${Math.round(box.conf * 100)}%`, x + 4, Math.max(18, y - 5));
     }
   }
   private drawHUD(now: number) {
@@ -424,11 +473,15 @@ export class RoverExperience {
     const matching = this.matchingDetections(now);
     const detection = matching ? `${matching.boxes.length} detections` : !this.detections ? "detector unavailable" : now - this.detectionsAt > 500 ? "detections stale" : "detections awaiting matching frame";
     const drill = this.drillLine(now);
+    const intent = this.autonomy.mode === "seek" ? `Seek #${this.autonomy.targetId} armed` : this.autonomy.mode === "explore" ? "Explore armed" : "";
+    const autonomy = [intent, autonomyLabel(this.status)].filter(Boolean).join(" → ");
     const panMode = `${this.digitalPan ? "Digital pan (fixed camera)" : "Servo pan"} ${Math.round(this.input.pan)}°`;
     const detail = `${this.frameSource} · ${panMode} · ${this.h264Enabled ? "H.264" : "JPEG"} video ${age} · ${ack} · ${range} · ${detection}${drill ? " · " + drill : ""}${this.h264Enabled && !this.h264.displayedFrame ? " · " + this.h264.state : ""}`;
     this.message.textContent = headline;
     this.message.dataset.state = moving ? "moving" : ready ? "unsafe" : "ready";
-    this.details.textContent = `${detail}${this.status?.estop ? " · FORWARD BLOCKED" : ""}`;
+    this.details.textContent = `${autonomy ? autonomy + " · " : ""}${detail}${this.status?.estop ? " · FORWARD BLOCKED" : ""}`;
+    const exploreButton = document.querySelector<HTMLButtonElement>("#rover-explore");
+    exploreButton?.setAttribute("aria-pressed", String(this.autonomy.mode === "explore"));
     this.holdButton.classList.toggle("engaged", moving);
     const c = this.hudContext;
     c.clearRect(0, 0, 1024, 220); c.fillStyle = "#111b25ee"; c.fillRect(0, 0, 1024, 220);
@@ -437,9 +490,9 @@ export class RoverExperience {
     c.font = "24px system-ui"; c.fillStyle = "#dce5ee";
     c.fillText(`${this.h264Enabled ? "H.264" : "JPEG"} video ${age} · ${range} · ${panMode}`, 28, 90);
     c.fillText(`${ack} · ${detection}${this.status?.estop ? " · FORWARD BLOCKED" : ""}`, 28, 126);
-    if (drill) { c.font = "18px system-ui"; c.fillText(drill, 28, 150); }
+    if (drill || autonomy) { c.font = "18px system-ui"; c.fillText([autonomy, drill].filter(Boolean).join(" · "), 28, 150); }
     c.font = "22px system-ui";
-    c.fillText("Right trigger: deadman · Left stick: drive · A: map · B: center pan", 28, 170);
+    c.fillText("Trigger: deadman · Stick: drive · A: seek pointed person/map · B: explore · X: center", 28, 170);
     c.fillText("Release trigger after a stop or reconnect", 28, 202);
     this.hudTexture.needsUpdate = true;
   }
@@ -459,7 +512,7 @@ export class RoverExperience {
         // A confirmed proposal still needs the held deadman; any stick input or stop cancels it.
         if (action.type !== "seek") { result.textContent = "Scan confirmed, but room scan is not wired to the rover yet."; return; }
         this.stop(`Seek person #${action.target_id}: release, then hold deadman`);
-        this.seekTarget = action.target_id;
+        this.autonomy.select(action.target_id);
         result.textContent = `Seek person #${action.target_id} armed: hold the deadman to approach; move the stick to cancel.`;
       });
     const drillButton = block.querySelector<HTMLButtonElement>("#start-drill")!;
@@ -562,7 +615,7 @@ export class RoverExperience {
     this.timers.forEach(timer => { window.clearInterval(timer); window.clearTimeout(timer); });
     this.socket?.close(); this.detectionsSocket?.close(); this.request?.abort(); this.h264.stop(); this.voice?.dispose();
     window.removeEventListener("keydown", this.keyDown); window.removeEventListener("keyup", this.keyUp);
-    window.removeEventListener("blur", this.blur); document.removeEventListener("visibilitychange", this.visibility);
+    window.removeEventListener("blur", this.blur); window.removeEventListener("click", this.click); document.removeEventListener("visibilitychange", this.visibility);
     document.removeEventListener("keydown", this.escapeStop);
     this.cameraTexture.dispose(); this.hudTexture.dispose();
   }
