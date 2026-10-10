@@ -6,7 +6,8 @@ import unittest
 from tools.mac_render.encode import encoder_args
 from tools.mac_render.mp4 import Mp4Reader, codec_from_init, fragment_timing
 from tools.mac_render.protocol import (
-    frame_age_ms, parse_pose, percentile, pose_to_frame_ms, segment_sidecar,
+    frame_age_ms, oldest_of, parse_pose, percentile, pose_is_stale,
+    pose_to_frame_ms, segment_sidecar,
 )
 from tools.mac_render.stats import summarize
 
@@ -47,6 +48,18 @@ class ProtocolTest(unittest.TestCase):
         self.assertEqual(side["request_id"], 7)
         self.assertGreaterEqual(side["age_ms"], 0)
         self.assertFalse(side["stereo"])
+
+    def test_stale_uses_the_mac_clock_not_the_viewer_clock(self):
+        held = {"received_mono_ms": 0}
+        self.assertTrue(pose_is_stale(held, 251))
+        self.assertFalse(pose_is_stale(held, 250))
+        # A viewer's own timestamp can be hours away from ours. That is not stale.
+        self.assertFalse(pose_is_stale({"received_mono_ms": 10_000}, 10_100))
+
+    def test_oldest_frame_in_a_fragment_is_the_age(self):
+        samples = [{"frame_id": 1}, {"frame_id": 2}, {"frame_id": 3}]
+        self.assertEqual(oldest_of(samples, 3)["frame_id"], 1)
+        self.assertEqual(oldest_of(samples, 1)["frame_id"], 3)
 
     def test_percentile(self):
         self.assertEqual(percentile([1, 2, 3, 4], 0.5), 2.5)

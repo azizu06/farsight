@@ -1,0 +1,55 @@
+{
+  "label": "Mac desk, simulated map, no headset",
+  "date": "2026-10-10",
+  "encoder": "h264_videotoolbox",
+  "stereo": false,
+  "visual_pass": {
+    "render_ms_p50_unlit_720p": 0.1,
+    "render_ms_p50_lit_720p": 0.1,
+    "note": "Three.js draw only, same simulated map, 30 samples"
+  },
+  "rows": [
+    {
+      "label": "Mac desk, simulated map, no headset",
+      "resolution": "1280x720",
+      "fps": 30,
+      "encoder": "h264_videotoolbox",
+      "seconds": 6.0,
+      "fragments": 131,
+      "render_ms_p50": 0.10000002384185791,
+      "capture_ms_p50": 0.808,
+      "encode_ms_p50": 220.4697079723701,
+      "bytes_per_s": 769205.5,
+      "frame_age_ms_p50": 221.026611328125,
+      "frame_age_ms_p95": 251.248779296875,
+      "pose_to_frame_ms_p50": 23.368500113487244,
+      "pose_to_frame_ms_p95": 66.50738294124604,
+      "stereo": false,
+      "note": "Flat pose-driven view. Not stereo. Not a Quest measurement.",
+      "render_ms_note": "Three.js draw only, not capture or encode",
+      "encode_ms_note": "JPEG handed to VideoToolbox until the fMP4 fragment comes back. Includes the encoder's own queue of about 6 frames.",
+      "frame_age_note": "now minus the oldest frame inside the fragment, not the newest"
+    },
+    {
+      "label": "Mac desk, simulated map, no headset",
+      "resolution": "1920x1080",
+      "fps": 30,
+      "encoder": "h264_videotoolbox",
+      "seconds": 6.0,
+      "fragments": 135,
+      "render_ms_p50": 0.10000002384185791,
+      "capture_ms_p50": 0.87,
+      "encode_ms_p50": 211.80654200725257,
+      "bytes_per_s": 789010.8,
+      "frame_age_ms_p50": 212.7548828125,
+      "frame_age_ms_p95": 249.26179199218748,
+      "pose_to_frame_ms_p50": 27.406167030334473,
+      "pose_to_frame_ms_p95": 66.510267162323,
+      "stereo": false,
+      "note": "Flat pose-driven view. Not stereo. Not a Quest measurement.",
+      "render_ms_note": "Three.js draw only, not capture or encode",
+      "encode_ms_note": "JPEG handed to VideoToolbox until the fMP4 fragment comes back. Includes the encoder's own queue of about 6 frames.",
+      "frame_age_note": "now minus the oldest frame inside the fragment, not the newest"
+    }
+  ]
+}

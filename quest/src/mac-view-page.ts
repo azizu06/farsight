@@ -5,36 +5,47 @@
 import * as THREE from "three";
 import { VRButton } from "three/addons/webxr/VRButton.js";
 import { H264Viewer } from "./h264.js";
-import { LABEL, MacView, MACVIEW_PATH } from "./mac-view.js";
+import { LABEL, MacView, rightInputIndex, socketUrl, MACVIEW_PATH } from "./mac-view.js";
 
 const params = new URLSearchParams(location.search);
 const origin = params.get("mac") || location.origin;
 
-const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.xr.enabled = true;
-renderer.setClearColor(0x080f16);
-document.body.prepend(renderer.domElement);
+let renderer: THREE.WebGLRenderer | null = null;
+try {
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.xr.enabled = true;
+  renderer.setClearColor(0x080f16);
+  document.body.prepend(renderer.domElement);
+} catch (error) {
+  // A desk browser with no WebGL can still play the flat stream and send pose.
+  console.warn(`WebGL unavailable, flat video only: ${error}`);
+}
 
-const scene = new THREE.Scene();
+const scene = renderer ? new THREE.Scene() : null;
 const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.01, 100);
 camera.position.set(0, 1.6, 0);
-const view = new MacView(origin, document.body, new H264Viewer(() => {}, () => {}, MACVIEW_PATH));
+const view = new MacView(origin, document.body, new H264Viewer(
+  () => {}, () => {}, socketUrl(origin, MACVIEW_PATH),
+));
 view.start();
 
-const texture = new THREE.VideoTexture(view.viewer.video);
-const panel = new THREE.Mesh(
-  new THREE.PlaneGeometry(1.6, 0.9),
-  new THREE.MeshBasicMaterial({ map: texture }),
-);
-panel.position.set(0, 1.6, -1.5);
-scene.add(panel);
+if (renderer && scene) {
+  const texture = new THREE.VideoTexture(view.viewer.video);
+  const panel = new THREE.Mesh(
+    new THREE.PlaneGeometry(1.6, 0.9),
+    new THREE.MeshBasicMaterial({ map: texture }),
+  );
+  panel.position.set(0, 1.6, -1.5);
+  scene.add(panel);
+}
 
 const label = document.createElement("div");
 label.textContent = LABEL;
 label.style.cssText = "position:fixed;left:12px;top:12px;color:#d7e2ea;font:13px monospace";
-document.body.append(label, VRButton.createButton(renderer));
+document.body.append(label);
+if (renderer) document.body.append(VRButton.createButton(renderer));
 
 const raycaster = new THREE.Raycaster();
 const headPos = new THREE.Vector3();
@@ -42,10 +53,10 @@ const headQuat = new THREE.Quaternion();
 const origin3 = new THREE.Vector3();
 const direction = new THREE.Vector3();
 
-renderer.setAnimationLoop((_time, frame) => {
+function tick(_time: number, frame: XRFrame | null) {
   const now = { mono: performance.now(), wall: Date.now() };
   let ray = null;
-  if (frame) {
+  if (frame && renderer) {
     const ref = renderer.xr.getReferenceSpace();
     const pose = ref && frame.getViewerPose(ref);
     if (pose) {
@@ -55,10 +66,14 @@ renderer.setAnimationLoop((_time, frame) => {
         pose.transform.orientation.z, pose.transform.orientation.w,
       );
     }
-    const right = renderer.xr.getController(0);
-    right.getWorldPosition(origin3);
-    right.getWorldDirection(direction);
-    ray = { origin: origin3, direction };
+    const session = renderer.xr.getSession();
+    const index = session ? rightInputIndex([...session.inputSources]) : -1;
+    if (index >= 0) {
+      const right = renderer.xr.getController(index);
+      right.getWorldPosition(origin3);
+      right.getWorldDirection(direction);
+      ray = { origin: origin3, direction };
+    }
   } else {
     headPos.copy(camera.position);
     headQuat.copy(camera.quaternion);
@@ -66,5 +81,8 @@ renderer.setAnimationLoop((_time, frame) => {
     ray = { origin: raycaster.ray.origin, direction: raycaster.ray.direction };
   }
   view.sendPose(now, { position: headPos, quaternion: headQuat }, ray);
-  renderer.render(scene, camera);
-});
+  view.tick();
+  if (renderer && scene) renderer.render(scene, camera);
+}
+if (renderer) renderer.setAnimationLoop(tick);
+else setInterval(() => tick(0, null), 1000 / 72);

@@ -29,11 +29,16 @@ async def measure(origin, seconds, poses):
         while time.monotonic() - started < seconds:
             request_id += 1
             if pose_socket is not None:
+                # Move the head so a picture that ignored the pose cannot pass.
+                yaw = (request_id % 36) * 0.1
                 await pose_socket.send(json.dumps({
                     "type": "pose", "version": 1,
                     "sent_mono_ms": time.monotonic() * 1000,
                     "sent_wall_ms": time.time() * 1000,
-                    "head": {"position": [0, 1.6, 3], "quaternion": [0, 0, 0, 1]},
+                    "head": {
+                        "position": [round(yaw, 3), 1.6, 3],
+                        "quaternion": [0, 0, 0, 1],
+                    },
                     "ray": {"origin": [0, 1.6, 3], "direction": [0, 0, -1]},
                 }))
             await socket.send(json.dumps({"type": "next", "request_id": request_id}))
@@ -63,7 +68,7 @@ def main(argv=None):
     samples, init = asyncio.run(measure(args.upstream, args.seconds, not args.no_pose))
     report = summarize(
         samples, args.seconds, init["width"], init["height"], init["fps"],
-        init.get("encoder", "see /health"), "Mac desk, no headset",
+        init.get("encoder") or "see /health", "Mac desk, no headset",
     )
     report["stereo"] = False
     report["note"] = "Flat pose-driven view. Not stereo. Not a Quest measurement."

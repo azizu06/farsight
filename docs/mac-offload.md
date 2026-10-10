@@ -6,36 +6,41 @@ shows the picture. This path never sends `/ws/control` and never moves the rover
 **What this is:** a flat, pose-driven view. The camera follows the head.
 **What this is not:** stereo VR. Nothing here is labelled stereo.
 
-Every number below is **Mac desk, no headset** unless a line says otherwise.
+Every number below is **Mac desk, simulated map, no headset** unless a line says
+otherwise.
 
 ## Run it
 
-```
-python -m tools.demo --simulate          # map source, another terminal
-python -m tools.mac_render --upstream http://127.0.0.1:8080 --port 8090
-```
-
-Or one process, simulated map included:
+Playwright's own headless shell is not installed on this desk. Pass a Chromium:
 
 ```
-python -m tools.mac_render --sim-world --port 8090
+python -m tools.mac_render --sim-world --port 8090 \
+  --browser "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 ```
 
-Open `http://127.0.0.1:8090` is the encoder. The viewer is the Quest page
-`macview.html` (built into `quest/dist/macview.html`). Point it at the encoder
-with `?mac=http://127.0.0.1:8090`.
+Open `http://127.0.0.1:8090/`. That page is the viewer, served by the Mac, and
+both sockets stay on that origin. The corner shows the frame age once a
+fragment arrives.
 
-On the headset, reverse both ports, then open the page through the relay:
+A page hosted somewhere else still works if you name the Mac:
 
 ```
-adb reverse tcp:8080 tcp:8080
+http://127.0.0.1:8092/macview.html?mac=http://127.0.0.1:8090
+```
+
+`?mac=` moves the video socket and the pose socket. A page with no `?mac=`
+keeps both sockets on its own origin.
+
+On the headset, reverse the Mac port, then open the page:
+
+```
 adb reverse tcp:8090 tcp:8090
 ```
 
 ## Message shapes (for review, not bound yet)
 
-`/ws/macview` uses the same request/fragment pattern as `/ws/video`, so
-`quest/src/h264.ts` can play it. `type` matches that player. `macview` names
+`/ws/macview` uses the same request/fragment pattern as `/ws/video`, so the
+existing H.264 player can play it. `type` matches that player. `macview` names
 the offload message.
 
 Init, then the fMP4 init bytes:
@@ -43,7 +48,7 @@ Init, then the fMP4 init bytes:
 ```json
 {"type":"video_init","macview":"macview_init","version":1,
  "mime":"video/mp4; codecs=\"avc1....\"","source":"MAC RENDER",
- "width":1280,"height":720,"fps":30,"stereo":false}
+ "width":1280,"height":720,"fps":30,"stereo":false,"encoder":"h264_videotoolbox"}
 ```
 
 Viewer asks `{"type":"next","request_id":1}`. Server answers with JSON, then
@@ -51,12 +56,19 @@ the fMP4 fragment bytes:
 
 ```json
 {"type":"video_segment","macview":"macview_segment","version":1,"request_id":1,
- "age_ms":40,"frame_id":12,"source":"SIMULATED","stereo":false,
+ "age_ms":221,"frame_id":12,"frames":3,"source":"SIMULATED","stereo":false,
  "media_start_s":0.0,"media_end_s":0.1,
  "capture_mono_ms":1200.5,"capture_wall_ms":1710000000000.0,
  "pose":{"sent_mono_ms":1180.0,"sent_wall_ms":1709999999980.0,"received_mono_ms":1182.0},
- "encode_ms":3.1,"render_ms":6.4,"capture_ms":1.2}
+ "encode_ms":220,"queue_ms":0.03,"render_ms":0.1,"capture_ms":0.8}
 ```
+
+`capture_wall_ms` is the oldest frame inside the fragment, not the newest. A
+fragment holds 3 frames, so reporting the newest one made the picture look
+about 67 ms fresher than it was. `encode_ms` is the time from handing that
+oldest JPEG to VideoToolbox until the fragment comes back. It includes the
+encoder's own queue, about 6 frames on this desk. `queue_ms` is only the wait
+before the JPEG is handed over, and it is under 1 ms.
 
 `/ws/macview-pose`, viewer to Mac, at most 72 Hz:
 
@@ -66,9 +78,13 @@ the fMP4 fragment bytes:
  "ray":{"origin":[0.2,1.4,-0.3],"direction":[0,0,-1]}}
 ```
 
-`ray` is the right controller, or null. A pose older than 250 ms on the Mac
-clock is not applied. That bound is local to this view. It does not change any
-motor lease.
+`ray` is the right controller, matched by hand, or null. A pose the Mac has
+held longer than 250 ms is dropped. Both ends of that check are the Mac
+monotonic clock. The viewer's clock is never compared with the Mac clock.
+That bound is local to this view. It does not change any motor lease.
+
+The pose echoed in a fragment is the pose the render page had already drawn,
+not a pose that arrived after the picture was taken.
 
 Frame age is `now - capture_wall_ms`. Pose-to-frame is
 `capture_mono_ms - pose.received_mono_ms`, both on the Mac clock.
@@ -83,28 +99,32 @@ timescale 1,000,000, 100 ms fragments.
 ## Measurements
 
 ```
-python -m tools.mac_render.bench --upstream http://127.0.0.1:8090
-node tools/mac_render/bench.mjs --upstream ws://127.0.0.1:8090
+python -m tools.mac_render.bench --upstream http://127.0.0.1:8090 --out docs/mac-offload-bench.json
 ```
 
-Target points: 1280x720@30 and 1920x1080@30. Report render ms, capture ms,
-encode ms, bytes/s, frame age p50/p95, pose-to-frame p50/p95.
+The committed numbers are in [mac-offload-bench.json](mac-offload-bench.json).
 
 ### This desk, 2026-10-10
 
-Apple silicon, `h264_videotoolbox`, simulated map (`python -m tools.mac_render --sim-world`),
-6 seconds, ~124 fragments. **Mac desk, no headset.**
+Apple silicon, `h264_videotoolbox`, simulated map (`--sim-world`), 6 seconds.
+**Mac desk, simulated map, no headset.**
 
 | Point | Render p50 | Capture p50 | Encode p50 | bytes/s | Frame age p50/p95 | Pose-to-frame p50/p95 |
 |---|---|---|---|---|---|---|
-| 1280x720@30 | 0.10 ms | 0.88 ms | 0.005 ms | 360,658 | 2.1 / 4.9 ms | 47.3 / 55.9 ms |
-| 1920x1080@30 | 0.10 ms | 1.08 ms | 0.007 ms | 588,122 | 4.2 / 7.5 ms | 45.4 / 51.9 ms |
+| 1280x720@30 | 0.10 ms | 0.81 ms | 220 ms | 769,206 | 221 / 251 ms | 23.4 / 66.5 ms |
+| 1920x1080@30 | 0.10 ms | 0.87 ms | 212 ms | 789,011 | 213 / 249 ms | 27.4 / 66.5 ms |
 
-Encode p50 is the time to stamp the fragment, not the encoder's internal queue.
-Pose-to-frame is pose received on the Mac to the captured frame. It is not
-pose-to-photon on a headset.
+Render p50 is the Three.js draw only. Capture p50 is the screenshot reaching
+Python. Encode p50 is VideoToolbox, JPEG in to fragment out, including its
+queue. Frame age is the oldest frame in the fragment. Pose-to-frame is the
+pose that was drawn, not a pose received after the shot.
 
-Label on every row: **Mac desk, no headset**.
+The lit look and the old unlit look draw in the same 0.10 ms at 720p on this
+desk. The two pictures are
+[before](assets/mac-offload-before.png) and
+[after](assets/mac-offload-after.png). Same simulated map. The lit one uses
+vertex normals, a matte surface, one key light and a hemisphere fill. It does
+not invent geometry.
 
 ## Still needs the real Quest
 

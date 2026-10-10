@@ -27,6 +27,18 @@ export function frameAgeMs(captureWallMs: number, nowWallMs: number): number {
   return nowWallMs - captureWallMs;
 }
 
+import { socketUrl } from "./mac-view-urls.js";
+
+export { socketUrl };
+
+/**
+ * Index of the right hand in the session's input sources. Index 0 is not
+ * guaranteed to be the right hand. -1 when the right controller is absent.
+ */
+export function rightInputIndex(sources: readonly { handedness: string }[]): number {
+  return sources.findIndex(source => source.handedness === "right");
+}
+
 export function poseMessage(now: { mono: number; wall: number }, head: {
   position: THREE.Vector3; quaternion: THREE.Quaternion;
 }, ray: { origin: THREE.Vector3; direction: THREE.Vector3 } | null): PoseMessage {
@@ -55,24 +67,34 @@ type Stream = {
   video: HTMLVideoElement;
   start: () => void;
   stop: () => void;
+  update?: () => void;
+  lastMessage?: Record<string, unknown> | null;
 };
 
 export class MacView {
   readonly viewer: Stream;
   readonly age = document.createElement("div");
+  readonly videoUrl: string;
+  readonly poseUrl: string;
   private poseSocket: WebSocket | null = null;
   private lastPoseMono = -Infinity;
   private stopped = true;
-  private origin: string;
   private panel: HTMLElement;
   frameAgeMs: number | null = null;
 
   constructor(origin?: string, panel?: HTMLElement, stream?: Stream) {
-    this.origin = origin ?? location.origin;
+    const base = origin ?? location.origin;
+    this.videoUrl = socketUrl(base, MACVIEW_PATH);
+    this.poseUrl = socketUrl(base, POSE_PATH);
     this.panel = panel ?? document.body;
     this.viewer = stream ?? { video: document.createElement("video"), start() {}, stop() {} };
     this.age.className = "mac-age";
     this.age.textContent = LABEL;
+  }
+
+  /** Both sockets, so a page loaded from another origin can be checked. */
+  sockets() {
+    return { video: this.videoUrl, pose: this.poseUrl };
   }
 
   start() {
@@ -83,7 +105,7 @@ export class MacView {
   }
 
   private connectPose() {
-    const socket = new WebSocket(new URL(POSE_PATH, this.origin).href.replace(/^http/, "ws"));
+    const socket = new WebSocket(this.poseUrl);
     this.poseSocket = socket;
     socket.onclose = () => {
       if (!this.stopped) window.setTimeout(() => this.connectPose(), 1000);
@@ -99,11 +121,18 @@ export class MacView {
     this.poseSocket.send(JSON.stringify(poseMessage(now, head, ray)));
   }
 
-  noteSidecar(message: { type?: string; macview?: string; capture_wall_ms?: number }) {
+  noteSidecar(message: { type?: string; macview?: string; capture_wall_ms?: number } | null) {
+    if (!message) return;
     const kind = message.macview ?? message.type;
     if (kind !== "macview_segment" || !Number.isFinite(message.capture_wall_ms)) return;
     this.frameAgeMs = frameAgeMs(message.capture_wall_ms as number, Date.now());
     this.paintAge();
+  }
+
+  /** Read the player's last sidecar and run its stall recovery. Call every frame. */
+  tick() {
+    this.viewer.update?.();
+    this.noteSidecar(this.viewer.lastMessage ?? null);
   }
 
   private paintAge() {
