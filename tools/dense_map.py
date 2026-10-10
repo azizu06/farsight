@@ -199,7 +199,7 @@ class DenseAccumulator:
                         metadata, records = unpack(raw)
                         await asyncio.to_thread(self.accept, metadata, records)
                         self.error = None
-                        delay = .01 if metadata["more"] else .1
+                        delay = .01 if metadata["more"] else .5
                 except READ_ERRORS as exc:
                     self.error = f"{type(exc).__name__}: {exc}"
                     delay = 1

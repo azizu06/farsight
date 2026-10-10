@@ -7,6 +7,7 @@ All samples expire: an unsegmented moving body must never become permanent.
 
 from collections import OrderedDict, deque
 from bisect import bisect_right
+from itertools import islice
 import json
 import struct
 import threading
@@ -159,12 +160,10 @@ class DenseMap:
                 start = bisect_right(entries, after, key=lambda v: v[0])
                 rows = [(v[0], v[1]) for v in entries[start:start + limit + 1]]
             else:
-                rows = []
-                for rev, record in reversed(self.journal):
-                    if rev <= after:
-                        break
-                    rows.append((rev, record))
-                rows.reverse()
+                # Revisions are contiguous. Copy one bounded page instead of
+                # allocating/reversing the entire outstanding 200k journal.
+                start = max(0, after - self.journal[0][0] + 1) if self.journal else 0
+                rows = list(islice(self.journal, start, start + limit + 1))
             more = len(rows) > limit
             rows = rows[:limit]
             cursor = rows[-1][0] if more else anchor if snapshot else self.revision
