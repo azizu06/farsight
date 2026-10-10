@@ -45,6 +45,12 @@ class RenderTests(unittest.TestCase):
         self.assertEqual(env["FARSIGHT_PIPER_MODEL_ES"], f"{MODELS}/piper/es_MX-claude-high.onnx")
         self.assertEqual(env["FARSIGHT_SSL_CERTFILE"], "/etc/farsight/tls/cert.pem")
 
+    def test_depth_model_prefers_engine(self):
+        base = f"{MODELS}/depth_anything_v2_metric_indoor_small_308x406"
+        self.assertEqual(render(present=(f"{base}.onnx", f"{base}.engine"))["FARSIGHT_DEPTH_MODEL"], f"{base}.engine")
+        self.assertEqual(render(present=(f"{base}.onnx",))["FARSIGHT_DEPTH_MODEL"], f"{base}.onnx")
+        self.assertEqual(render()["FARSIGHT_DEPTH_MODEL"], "")
+
     def test_tls_needs_both_files(self):
         env = render(present=("/etc/farsight/tls/cert.pem",))
         self.assertEqual((env["FARSIGHT_SSL_CERTFILE"], env["FARSIGHT_SSL_KEYFILE"]), ("", ""))

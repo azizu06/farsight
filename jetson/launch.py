@@ -25,15 +25,17 @@ VALUE_FLAGS = (
     ("FARSIGHT_TTS_DIR", "--tts-dir"), ("FARSIGHT_PIPER_MODEL_ES", "--piper-model-es"),
     ("FARSIGHT_SPEAKER_CMD", "--speaker-cmd"), ("FARSIGHT_FACE_MODEL", "--face-model"),
     ("FARSIGHT_VIDEO_FPS", "--video-fps"), ("FARSIGHT_VIDEO_BITRATE", "--video-bitrate"),
-    ("FARSIGHT_TRIAGE_INTERVAL", "--triage-interval"),
+    ("FARSIGHT_TRIAGE_INTERVAL", "--triage-interval"), ("FARSIGHT_DEPTH_MODEL", "--depth-model"),
+    ("FARSIGHT_SCAN_FOV", "--scan-fov"), ("FARSIGHT_SCAN_TURN_DPS", "--scan-turn-dps"),
 )
-BOOL_FLAGS = (("FARSIGHT_H264", "--h264"), ("FARSIGHT_SIMULATE_ROVER", "--simulate-rover"))
+BOOL_FLAGS = (("FARSIGHT_H264", "--h264"), ("FARSIGHT_SIMULATE_ROVER", "--simulate-rover"),
+              ("FARSIGHT_SCAN_PAN", "--scan-pan"), ("FARSIGHT_RECORD", "--record"))
 INT_VARS = ("FARSIGHT_PORT", "FARSIGHT_MAX_PWM", "FARSIGHT_MIN_PWM", "FARSIGHT_WAIT_SECONDS",
             "FARSIGHT_VIDEO_FPS", "FARSIGHT_VIDEO_BITRATE")
-FLOAT_VARS = ("FARSIGHT_TRIAGE_INTERVAL",)
+FLOAT_VARS = ("FARSIGHT_TRIAGE_INTERVAL", "FARSIGHT_SCAN_FOV", "FARSIGHT_SCAN_TURN_DPS")
 # Variables whose value is a file that must exist for the feature to work.
 FILE_VARS = ("FARSIGHT_DETECTOR_MODEL", "FARSIGHT_FACE_MODEL", "FARSIGHT_PIPER_MODEL", "FARSIGHT_PIPER_MODEL_ES",
-             "FARSIGHT_WHISPER_MODEL", "FARSIGHT_SSL_CERTFILE", "FARSIGHT_SSL_KEYFILE")
+             "FARSIGHT_WHISPER_MODEL", "FARSIGHT_DEPTH_MODEL", "FARSIGHT_SSL_CERTFILE", "FARSIGHT_SSL_KEYFILE")
 
 
 def _get(env, name):
@@ -76,6 +78,16 @@ def build_args(env):
     for name, flag in BOOL_FLAGS:
         if _truthy(env, name):
             args.append(flag)
+    intrinsics = _get(env, "FARSIGHT_SCAN_INTRINSICS").replace(",", " ").split()
+    if intrinsics:
+        if len(intrinsics) != 4:
+            raise ValueError("FARSIGHT_SCAN_INTRINSICS must be four numbers: FX FY CX CY")
+        for value in intrinsics:
+            try:
+                float(value)
+            except ValueError:
+                raise ValueError(f"FARSIGHT_SCAN_INTRINSICS must be four numbers, got {value!r}")
+        args += ["--scan-intrinsics", *intrinsics]
     return args
 
 

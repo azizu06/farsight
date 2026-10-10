@@ -54,6 +54,23 @@ class BuildArgsTests(unittest.TestCase):
             self.assertEqual(args[i:i + 2], pair)
         self.assertIn("--simulate-rover", args)
 
+    def test_scan_depth_and_record_map_to_server_flags(self):
+        env = {"FARSIGHT_DEPTH_MODEL": "/m/depth.engine", "FARSIGHT_SCAN_FOV": "78", "FARSIGHT_SCAN_TURN_DPS": "85.5",
+               "FARSIGHT_SCAN_INTRINSICS": "500, 500 320 240", "FARSIGHT_SCAN_PAN": "1", "FARSIGHT_RECORD": "true"}
+        args = launch.build_args(env)
+        for pair in (["--depth-model", "/m/depth.engine"], ["--scan-fov", "78"], ["--scan-turn-dps", "85.5"]):
+            i = args.index(pair[0])
+            self.assertEqual(args[i:i + 2], pair)
+        i = args.index("--scan-intrinsics")
+        self.assertEqual(args[i:i + 5], ["--scan-intrinsics", "500", "500", "320", "240"])
+        self.assertIn("--scan-pan", args)
+        self.assertIn("--record", args)
+
+    def test_bad_scan_intrinsics_rejected(self):
+        for bad in ("1 2 3", "a b c d"):
+            with self.assertRaises(ValueError):
+                launch.build_args({"FARSIGHT_SCAN_INTRINSICS": bad})
+
     def test_simulate_rover_conflicts_with_serial_port(self):
         with self.assertRaises(ValueError):
             launch.build_args({"FARSIGHT_SIMULATE_ROVER": "1", "FARSIGHT_SERIAL_PORT": "/dev/ttyACM0"})
@@ -103,7 +120,7 @@ class ServerContractTests(unittest.TestCase):
         import sys
         help_text = subprocess.run([sys.executable, "-m", "jetson.server", "--help"], capture_output=True,
                                    text=True, check=True, cwd=os.path.dirname(os.path.dirname(os.path.dirname(__file__)))).stdout
-        for flag in [f for _, f in launch.VALUE_FLAGS] + [f for _, f in launch.BOOL_FLAGS] + ["--host", "--port"]:
+        for flag in [f for _, f in launch.VALUE_FLAGS] + [f for _, f in launch.BOOL_FLAGS] + ["--host", "--port", "--scan-intrinsics"]:
             self.assertIn(flag, help_text, f"jetson.server has no {flag}; update jetson/launch.py")
 
 

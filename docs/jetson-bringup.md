@@ -243,11 +243,20 @@ returns `"played": true` with a USB speaker (`aplay -l` lists it), else the head
 (`journalctl -u farsight-llm -n 30`; `ls ~/src/llama.cpp/build/bin/llama-server models/*.gguf`), then
 `bash jetson/install_service.sh`. `/health` `assistant` shows what the server actually found.
 
-### 11b. Depth model engine: issue #14
+### 11b. Depth model engine and scan: issue #14
 
-`setup.sh` builds `models/depth_anything*.onnx` into an engine when the ONNX is pushed. The scan wiring and
-flags ship with the scan work ([PR #33](https://github.com/azizu06/farsight/pull/33), `docs/scan.md`);
-until it merges this only prepares the engine: `jetson/.venv/bin/python -m jetson.build_engine models/depth_anything_v2_metric_indoor_small_308x406.onnx`.
+`setup.sh` builds `models/depth_anything*.onnx` into an engine once the ONNX is pushed, and `install_service.sh` puts the engine
+(else the ONNX) in `FARSIGHT_DEPTH_MODEL`. Camera geometry and turn rate are `FARSIGHT_SCAN_*` in `/etc/farsight.env`
+([scan.md](scan.md)). Check the engine on its own:
+
+```sh
+cd ~/farsight && FARSIGHT_DEPTH_MODEL=models/depth_anything_v2_metric_indoor_small_308x406.engine \
+  jetson/.venv/bin/python -m unittest jetson.tests.test_scan.DepthModelTests -v
+```
+
+**If it fails:** no engine means `models/depth_anything*.onnx` was not pushed (`tools/push_models.sh`) or `trtexec` failed
+(`jetson/.venv/bin/python -m jetson.build_engine --force models/depth_anything*.onnx` shows the trtexec tail).
+The physical sweep and Quest controls are the rig test in `docs/scan.md`.
 
 ## 12. Cold boot to READY: issue #11
 

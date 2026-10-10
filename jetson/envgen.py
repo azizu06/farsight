@@ -26,6 +26,9 @@ def render(example_text, repo, exists=os.path.exists, tls_dir="/etc/farsight/tls
             break
     else:
         values.update(FARSIGHT_DETECTOR="hog", FARSIGHT_DETECTOR_MODEL="")
+    depth = "depth_anything_v2_metric_indoor_small_308x406"
+    values["FARSIGHT_DEPTH_MODEL"] = next((f"{models}/{depth}.{ext}" for ext in ("engine", "onnx")
+                                           if exists(f"{models}/{depth}.{ext}")), "")
     for key, relative in (("FARSIGHT_FACE_MODEL", "version-RFB-320.onnx"),
                           ("FARSIGHT_PIPER_MODEL", "piper/en_US-lessac-medium.onnx"),
                           ("FARSIGHT_PIPER_MODEL_ES", "piper/es_MX-claude-high.onnx")):
