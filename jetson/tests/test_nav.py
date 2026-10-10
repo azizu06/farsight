@@ -380,22 +380,20 @@ class LeaseTests(unittest.TestCase):
         self.state.output()
         self.assertEqual(self.state.status()["nav"]["state"], "failed")
 
-    def test_nav_explore_hands_over_to_seek_on_the_first_person(self):
-        boxes, detector = [], dict(error=None)
-        self.state.detections = lambda: dict(boxes=boxes, fresh=True, age_ms=10, error=detector["error"])
+    def test_nav_explore_keeps_exploring_when_a_person_is_seen(self):
+        # Indoors a person is a moving obstacle for the costmaps, never a reason to switch modes.
+        boxes = []
+        self.state.detections = lambda: dict(boxes=boxes, fresh=True, age_ms=10, error=None)
         self.bridge(type="status", state="driving", goal_id="explore-1")
         self.assertTrue(self.send(mode="explore"))
         self.state.output()
         self.assertEqual(self.nav.intent()["mode"], "explore")
-        self.assertEqual(self.state.status()["nav"]["backend"], "nav2")
         boxes.append(dict(id=7, cls="person", x=0.4, y=0.2, w=0.1, h=0.5))
-        detector["error"] = "detector stalled"  # boxes from a faulted detector are not a person sighting
-        self.state.output()
-        self.assertEqual(self.nav.intent()["mode"], "explore")
-        detector["error"] = None
-        self.state.output()
-        self.assertEqual((self.state.status()["mode"], self.nav.intent()["mode"]), ("seek", "seek"))
-        self.assertEqual(self.nav.intent()["target_id"], 7)
+        for _ in range(3):
+            self.state.output()
+        self.assertEqual((self.state.status()["mode"], self.nav.intent()["mode"]), ("explore", "explore"))
+        self.assertIsNone(self.nav.intent().get("target_id"))
+        self.assertEqual(self.state.status()["nav"]["backend"], "nav2")
 
     def test_controller_change_or_serial_fault_disarms_the_goal(self):
         self.bridge(type="status", state="idle", goal_id=None)

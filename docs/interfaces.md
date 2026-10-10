@@ -201,9 +201,9 @@ Autonomy never renews a permit or lease itself. Example held-deadman heartbeat:
 
 - Select Explore with `mode: "explore"`, `v: 0`, `w: 0`. It drives at 0.25
   normalized speed until front range is below 70 cm or four seconds pass, then
-  turns randomly left/right at 0.35 for at most one second and repeats. A fresh
-  person detection automatically hands over to Seek, retaining its track ID
-  even when subsequent heartbeats still say `explore`.
+  turns randomly left/right at 0.35 for at most one second and repeats. A
+  detected person never switches Explore to Seek; Seek runs only when selected
+  with `mode: "seek"` and a `target_id`.
 - Seek turns proportionally to the selected box's horizontal centre. Forward
   speed tapers to zero at 60 cm (maximum 0.35). Arrival latches stopped. The front
   ultrasonic measures the nearest obstacle, not necessarily the selected person.
@@ -224,7 +224,7 @@ Autonomy never renews a permit or lease itself. Example held-deadman heartbeat:
   is no range.
 
 Status replies add optional `autonomy_state` and `target_id` fields; `mode`
-reports the active mode, including automatic Explore-to-Seek handover. States
+reports the active mode. States
 are `idle`, `forward`, `turning`, `tracking`, `target_missing`, `target_lost`,
 `arrived`, `estop`, `stick_override`, and `goto` (see the navigation extension). `estop` and `requires_release` retain
 their existing safety meanings. Public status never grants a usable permit.

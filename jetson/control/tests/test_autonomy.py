@@ -42,7 +42,7 @@ class AutonomyPolicyTests(unittest.TestCase):
                 policy.select("seek", 7, 10)
                 self.assertEqual(policy.step(10, 120, snapshot), (0, 0))
 
-    def test_explore_obstacle_and_timeout_turn_bounded_then_handover_to_seek(self):
+    def test_explore_obstacle_and_timeout_turn_bounded_and_people_never_switch_to_seek(self):
         empty = dict(fresh=True, error=None, age_ms=0, boxes=[])
         for trigger_time, range_cm in ((10.1, 65), (14, 120)):
             with self.subTest(trigger_time=trigger_time):
@@ -52,10 +52,8 @@ class AutonomyPolicyTests(unittest.TestCase):
                 self.assertEqual(policy.step(trigger_time, range_cm, empty), (0, -.35))
                 self.assertEqual(policy.phase, "turning")
                 self.assertEqual(policy.step(trigger_time + 1.01, 120, empty), (.25, 0))
-                self.assertEqual(policy.step(trigger_time + 1.1, 120, detection()), (.3, 0))
-                self.assertEqual((policy.mode, policy.target_id), ("seek", 7))
-                policy.select("explore", None, trigger_time + 1.2)  # operator's heartbeat
-                self.assertEqual(policy.mode, "seek")
+                self.assertEqual(policy.step(trigger_time + 1.1, 120, detection()), (.25, 0))
+                self.assertEqual((policy.mode, policy.target_id), ("explore", None))
 
     def test_unknown_range_and_estop_stop_all_autonomous_motion(self):
         for mode in ("explore", "seek"):
@@ -125,7 +123,7 @@ class AutonomyControlTests(unittest.TestCase):
         self.assertEqual(self.state.output()[:2], (0, 0))
         self.send(deadman=False)
         self.send(mode="explore", target_id=None)
-        self.assertEqual(self.state.status()["mode"], "seek")  # person found
+        self.assertEqual(self.state.status()["mode"], "explore")  # a seen person never switches modes
 
     def test_autonomy_ceiling_keeps_autonomous_speed_while_teleop_uses_full_range(self):
         self.state = ControlState(simulated=True, max_pwm=255, min_pwm=70, autonomy_max_pwm=100,
