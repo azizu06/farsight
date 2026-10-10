@@ -6,6 +6,8 @@
 //! Record codec v1 (issue #24 contract): length-framed binary updates with
 //! optional zlib DEFLATE payload; see `decode` for the byte layout.
 
+use std::collections::{HashMap, VecDeque};
+
 use bytes::Bytes;
 use indexmap::IndexMap;
 use rustc_hash::FxBuildHasher;
@@ -272,6 +274,10 @@ pub fn encode(update: &Update, coding: RecordCoding) -> Vec<u8> {
 /// between Reset and SnapshotEnd.
 pub struct AnchorGeometry {
     budget: usize,
+    /// Published vertex bound — default stays inside the documented Quest
+    /// decodeMesh ceiling; the Mac render lane can run higher via
+    /// --max-vertices since its bound is the renderer, not the headset.
+    max_verts: usize,
     chunks: IndexMap<[u8; 16], ChunkMesh, FxBuildHasher>,
     count: usize,
     verts: usize,
@@ -312,8 +318,13 @@ pub struct LaneStats {
 
 impl AnchorGeometry {
     pub fn new(triangle_budget: usize) -> Self {
+        Self::with_limits(triangle_budget, MAX_PUBLISHED_VERTICES)
+    }
+
+    pub fn with_limits(triangle_budget: usize, max_verts: usize) -> Self {
         Self {
             budget: triangle_budget,
+            max_verts,
             chunks: IndexMap::with_hasher(FxBuildHasher),
             count: 0,
             verts: 0,
@@ -464,7 +475,7 @@ impl AnchorGeometry {
                         self.chunks.insert(id, mesh);
                         self.jpush(seq, id, Op::Replace);
                     }
-                    while self.count > self.budget || self.verts > MAX_PUBLISHED_VERTICES {
+                    while self.count > self.budget || self.verts > self.max_verts {
                         if let Some((id, evicted)) = self.chunks.shift_remove_index(0) {
                             self.count -= evicted.indices.len();
                             self.verts -= evicted.positions.len();
@@ -491,7 +502,7 @@ impl AnchorGeometry {
                     // grow the buffer unboundedly.
                     if pending.len() >= MAX_PENDING_ANCHORS
                         || self.pending_tri + tri > self.budget
-                        || self.pending_vert + vert > MAX_PUBLISHED_VERTICES
+                        || self.pending_vert + vert > self.max_verts
                     {
                         self.pub_lane.dropped_malformed += 1;
                         return false;
@@ -524,7 +535,7 @@ impl AnchorGeometry {
     fn upsert(&mut self, anchor_id: [u8; 16], mesh: ChunkMesh) -> bool {
         if mesh.indices.is_empty()
             || mesh.indices.len() > self.budget
-            || mesh.positions.len() > MAX_PUBLISHED_VERTICES
+            || mesh.positions.len() > self.max_verts
         {
             return false;
         }
@@ -538,7 +549,7 @@ impl AnchorGeometry {
         self.observed_verts += mesh.positions.len() as u64;
         self.observed_anchors += 1;
         self.chunks.insert(anchor_id, mesh);
-        while self.count > self.budget || self.verts > MAX_PUBLISHED_VERTICES {
+        while self.count > self.budget || self.verts > self.max_verts {
             if let Some((id, evicted)) = self.chunks.shift_remove_index(0) {
                 self.count -= evicted.indices.len();
                 self.verts -= evicted.positions.len();
@@ -1009,18 +1020,67 @@ mod tests {
 use std::sync::{Arc, Mutex};
 
 /// Shared service state: assembled geometry + revision-keyed packet cache.
+/// Memoized /geometry/chunks records: keyed by (session, epoch, seq,
+/// anchor, emitted op). Op is the EMITTED op — a journaled Replace whose
+/// anchor is no longer retained emits Evict, so degradation can never
+/// serve a stale payload. Bounded FIFO so a heavy journal can't grow it.
+const DELTA_CACHE_CAP: usize = 512;
+
+#[derive(Default)]
+struct DeltaCache {
+    map: HashMap<([u8; 16], u64, u64, [u8; 16], u8), Vec<u8>>,
+    order: VecDeque<([u8; 16], u64, u64, [u8; 16], u8)>,
+}
+
+impl DeltaCache {
+    fn get_or_insert_with(
+        &mut self,
+        key: ([u8; 16], u64, u64, [u8; 16], u8),
+        build: impl FnOnce() -> Vec<u8>,
+    ) -> Vec<u8> {
+        if let Some(b) = self.map.get(&key) {
+            return b.clone();
+        }
+        let bytes = build();
+        while self.map.len() >= DELTA_CACHE_CAP {
+            if let Some(old) = self.order.pop_front() {
+                self.map.remove(&old);
+            }
+        }
+        self.order.push_back(key);
+        self.map.insert(key, bytes.clone());
+        bytes
+    }
+}
+
+fn op_code(op: Op) -> u8 {
+    match op {
+        Op::Replace => 0,
+        Op::Remove => 1,
+        Op::Reset => 2,
+        Op::SnapshotEnd => 3,
+        Op::Evict => 4,
+    }
+}
+
 pub struct Shared {
     pub geo: Mutex<AnchorGeometry>,
     packet: Mutex<Option<(u64, VariantCache)>>,
     connected: Mutex<Option<String>>,
+    delta_cache: Mutex<DeltaCache>,
 }
 
 impl Shared {
     pub fn new(triangle_budget: usize) -> Arc<Self> {
+        Self::with_limits(triangle_budget, MAX_PUBLISHED_VERTICES)
+    }
+
+    pub fn with_limits(triangle_budget: usize, max_verts: usize) -> Arc<Self> {
         Arc::new(Self {
-            geo: Mutex::new(AnchorGeometry::new(triangle_budget)),
+            geo: Mutex::new(AnchorGeometry::with_limits(triangle_budget, max_verts)),
             packet: Mutex::new(None),
             connected: Mutex::new(None),
+            delta_cache: Mutex::new(DeltaCache::default()),
         })
     }
 }
@@ -1219,7 +1279,7 @@ async fn chunks_delta(
     let session = geo.session();
     let epoch = geo.epoch();
     let oldest_journaled = geo.journal().front().map(|e| e.0);
-    let newest_journaled = geo.journal().back().map(|e| e.0).unwrap_or(0);
+
     // Bootstrap when the consumer cannot prove continuity: fresh cursor, a
     // cursor behind the bounded journal, OR a stale cursor ahead of the
     // producer's seq — seqs restart per session/epoch, so after > last_seq
@@ -1289,20 +1349,27 @@ async fn chunks_delta(
         next_seq = entries.last().map(|e| e.0).unwrap_or(after);
     }
     let remaining = geo.journal().iter().filter(|e| e.0 > next_seq).count() as u64;
+    let mut cache = s.delta_cache.lock().unwrap();
     let mut body = Vec::new();
     for (seq, op, id, mesh) in &entries {
-        let update = Update {
-            session,
-            epoch,
-            seq: *seq,
-            op: *op,
-            anchor: *id,
-            transform: IDENTITY,
-            mesh: mesh.clone(),
-        };
-        for rec in emit_delta_records(&update) {
-            body.extend_from_slice(&rec);
-        }
+        let key = (session, epoch, *seq, *id, op_code(*op));
+        let bytes = cache.get_or_insert_with(key, || {
+            let update = Update {
+                session,
+                epoch,
+                seq: *seq,
+                op: *op,
+                anchor: *id,
+                transform: IDENTITY,
+                mesh: mesh.clone(),
+            };
+            let mut b = Vec::new();
+            for rec in emit_delta_records(&update) {
+                b.extend_from_slice(&rec);
+            }
+            b
+        });
+        body.extend_from_slice(&bytes);
     }
     (
         [

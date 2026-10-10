@@ -24,6 +24,11 @@ struct Args {
     /// indices = 160k faces) with headroom — board-agreed bound.
     #[arg(long, default_value_t = 100_000)]
     budget: usize,
+    /// Published vertex bound per assembled packet. Default 600k stays inside
+    /// the documented Quest decodeMesh ceiling; raise it when the consumer is
+    /// the Mac renderer (bound = renderer, not the headset).
+    #[arg(long, default_value_t = 600 * 1024)]
+    max_vertices: usize,
     /// Reconnect backoff bounds (seconds) when the lane drops.
     #[arg(long, default_value_t = 0.5)]
     retry_min: f64,
@@ -35,7 +40,7 @@ struct Args {
 async fn main() {
     tracing_subscriber::fmt::init();
     let args = Args::parse();
-    let shared = geom::Shared::new(args.budget);
+    let shared = geom::Shared::with_limits(args.budget, args.max_vertices);
     tokio::spawn(geom::pull_loop(
         shared.clone(),
         args.upstream,
