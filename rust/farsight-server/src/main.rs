@@ -94,6 +94,9 @@ struct Args {
     tts_dir: Option<PathBuf>,
 }
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();

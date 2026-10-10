@@ -402,6 +402,9 @@ async fn proxy_http(s: Arc<AppState>, req: Request) -> Response {
     (status, out_headers, body).into_response()
 }
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[tokio::main]
 async fn main() {
     rustls::crypto::CryptoProvider::install_default(rustls::crypto::aws_lc_rs::default_provider()).ok();
