@@ -1,6 +1,7 @@
 # Farsight Nav2 parameters (ROS 2 Jazzy). Small indoor rover, ARKit odometry, LiDAR-phone point cloud.
-# Tuning on the real chassis: docs/navigation.md. Velocities here are in m/s and rad/s; jetson.server
-# converts them with --nav-speed-mps / --nav-turn-radps and caps them with --nav-max-v / --nav-max-w.
+# Tuning on the real chassis: docs/navigation.md. Velocities here are in m/s and rad/s; jetson.server maps
+# them through --drive-profile when loaded, otherwise via --nav-speed-mps / --nav-turn-radps capped by
+# --nav-max-v / --nav-max-w. Keep vx_max / wz_max at or under the drive profile's limits.
 # No static map and no collision monitor (captain's call): the costmaps and the controller avoid obstacles.
 
 bt_navigator:

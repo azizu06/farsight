@@ -1,5 +1,148 @@
 # Navigation
 
+Nav2 path planning is **opt-in**. Without `--nav2` (`FARSIGHT_NAV2=1`) the server
+runs exactly the reactive policy in `jetson/autonomy.py`, and `/nav/goal` answers
+`409` (contract: [interfaces](interfaces.md#optional-navigation-status-and-go-to-goals-nav2)).
+Everything below is simulation and Docker evidence until it runs on the rig.
+
+```
+iPhone (ARKit pose + LiDAR depth) --/phone--> jetson.server --/ws/nav (loopback)--> farsight_bridge (rclpy)
+                                                   ^                                   | /odom, TF, PointCloud2,
+operator held deadman --/ws/control--> ControlState |                                   | depth image + camera_info, Range
+                                                   |   cmd_vel (m/s, rad/s)            v
+                                      wheel PWM <--+<---------------------------- Nav2 (planner, MPPI/RPP, BT, behaviors)
+```
+
+## Running it
+
+```
+python -m jetson.server ... --nav2                     # server side; add --drive-profile for calibrated m/s
+ros2 launch farsight_nav nav.launch.py                 # or the farsight-nav systemd unit
+    [controller:=mppi|rpp] [slam:=false|true] [costmap_source:=pointcloud|nvblox]
+```
+
+- **Go-to-point** (`POST /nav/goal`) is the Nav2-backed mode today. Explore and
+  Seek keep the reactive policy until their Nav2 versions land; the `nav.backend`
+  field says which one is driving (`nav2` or `fallback`).
+- **Fallback:** if the bridge is down, silent for 1.5 s, or Nav2's lifecycle is not
+  active, `nav.backend` is `fallback` (or `null`), go-to goals are refused with `409`,
+  and Explore/Seek drive the reactive policy. Nothing restarts or waits on ROS.
+- **Gating:** the bridge is not a controller. Nav2's `cmd_vel` only moves the rover
+  while the operator holds the deadman in an autonomy mode with a live 250 ms lease.
+  A command older than 250 ms stops, the forward range stop still applies (unless
+  `--proximity-stop off`), and stick input, STOP or cancel disarm the goal.
+- **Velocity mapping:** with `--drive-profile`, `cmd_vel` goes through
+  `DriveProfile.wheel_pwm` exactly like `velocity` heartbeats
+  ([drive calibration](drive-calibration.md)). Without it, `linear / --nav-speed-mps`
+  and `angular / --nav-turn-radps` become normalized `v, w`, capped by
+  `--nav-max-v` / `--nav-max-w`. Keep Nav2's `vx_max` / `wz_max` at or under the
+  profile's `limits`, or the profile saturates (curvature is kept).
+
+## Frames
+
+```
+map -> odom -> base_link -> camera_link -> camera_optical
+```
+
+- **odom is the ARKit world.** ARKit is metres, Y up, the rover starting toward -Z.
+  ROS odom is X forward, Y left, Z up: `X = -z`, `Y = -x`, `Z = y - floor_y`.
+  Voxel-map `x, z` (what the viewer sees) is therefore ROS `-Y, -X`; every path,
+  goal and frontier the server sends is in voxel-map `x, z`.
+- **map -> odom** is identity, published by the bridge, unless `slam:=true`.
+  The global costmap and goals live in `map`, so SLAM corrections move them with
+  the world, not with ARKit drift.
+- **base_link** is on the floor under the phone, yaw only. Its heading is the camera
+  forward axis plus the drive profile's `camera_yaw_offset_rad` (travel heading minus
+  camera heading, counter-clockwise); with the phone pointing nearly straight down,
+  the camera's left axis is used instead.
+- **camera_link** carries the phone height and pitch/roll relative to `base_link`
+  (dynamic, from each pose). **camera_optical** is the static REP 103 optical rotation
+  (z forward, x right, y down) that the point cloud and depth image use.
+
+## Server and bridge protocol (`/ws/nav`, version 1)
+
+Loopback only; one bridge at a time; other hosts get close code 1008.
+
+| Direction | Message |
+|---|---|
+| bridge -> server | `hello {version, node, nav2, controller, slam, costmap_source}` |
+| server -> bridge | `hello {version, speed_mps, turn_radps, max_v, max_w, camera_height, frame, camera_yaw_offset_rad, drive_profile}` |
+| server -> bridge | `pose {transform (16, column-major ARKit camera-to-world), tracking, source, age_ms, floor_y}` every 40 ms; `floor_y` is `-nav_camera_height` |
+| server -> bridge | binary depth: `uint32` header length, JSON header (`frame_id, width, height, fx, fy, cx, cy, transform, floor_y, source, age_ms`; intrinsics scaled to the subsampled size), `uint16` millimetres (0 = no return), at most 160 px wide |
+| server -> bridge | `range {cm, age_ms}` at 10 Hz; `intent {active, mode, goal {x, y, yaw} in odom, goal_id, target_id}` on change and every 200 ms |
+| bridge -> server | `cmd_vel {linear, angular}` (m/s, rad/s counter-clockwise) at the controller rate |
+| bridge -> server | `status {state, goal_id, path, frontiers, message, controller_hz, recoveries, nav2}` at 4 Hz; `path` and `frontiers` in odom |
+
+The bridge publishes `/odom`, TF, `/farsight/depth/points` (PointCloud2),
+`/farsight/depth/image` (32FC1 metres) with `/farsight/depth/camera_info` for nvblox,
+and `/farsight/range` (Range). It sends `NavigateToPose` for an active intent and
+cancels it 0.3 s after the intent goes inactive, so a lease hiccup does not drop
+the goal.
+
+## Nav2 configuration (`ros2/farsight_nav/config/nav2_params.yaml`)
+
+- **No static map, no AMCL, no collision monitor.** ARKit is the odometry; the
+  costmaps and the controller do obstacle avoidance, so a box that appears in front
+  of the rover is steered around instead of freezing it.
+- **Local costmap:** 5 x 5 m rolling window, 5 cm, `VoxelLayer` from the depth cloud
+  (4-45 cm obstacles, raytrace clearing to 4.5 m), updated at 15 Hz so a pop-up
+  obstacle lands on the next cycle. A second `depth_floor` source (-20..4 cm,
+  clearing only) raytraces the floor returns that the height filter would
+  otherwise drop, so free floor clears stale obstacles.
+- **Global costmap:** 40 x 40 m, not rolling, `track_unknown_space` so explored and
+  unexplored space stay distinct for frontiers and replanning.
+- **Inflation:** `robot_radius` 0.13 m, inflation 0.35 m, cost scaling 6.
+- **Planner:** `SmacPlanner2D`, `allow_unknown` (goals are often in unseen space),
+  0.25 m tolerance.
+- **Controller:** MPPI at 20 Hz (1000 samples, 2 s horizon, `vx_max` 0.30 m/s,
+  `wz_max` 1.6 rad/s) or RPP (`controller:=rpp`, 0.28 m/s) if MPPI is too heavy on
+  the Orin Nano. Both are loaded; the bridge picks one through the latched
+  `controller_selector` topic.
+- **Behavior tree** (`behavior_trees/navigate_farsight.xml`): replans at least every
+  0.4 s, immediately when the path becomes invalid or the goal moves, and recovers
+  in turn by clearing costmaps, backing up 0.25 m, spinning 90 degrees and waiting
+  1 s. Goal checks are position only (0.20 m); final heading does not matter.
+
+## Real-chassis tuning
+
+Do these in order on the rig; record each result with conditions.
+
+1. **Drive profile first.** Run `tools/calibrate_drive.py` and start with
+   `--drive-profile`. Without it, measure top speed and spin rate at `--max-pwm`
+   and pass them as `--nav-speed-mps` / `--nav-turn-radps`.
+2. **Footprint.** Measure the chassis and set `robot_radius` (both costmaps) to
+   half the widest dimension; set `inflation_radius` to at least
+   `robot_radius + 0.15`. Narrow doorways need `2 * inflation_radius` under the gap.
+3. **Obstacle band.** Check `min_obstacle_height` against the floor estimate: if the
+   floor shows up as obstacles, raise it to 0.06; if low clutter is missed, lower it.
+4. **Speed limits.** Set MPPI `vx_max` / `wz_max` (or RPP `desired_linear_vel`) at or
+   under the profile `limits`, then raise only after a clean run.
+5. **Controller rate.** Watch `controller_hz` in `/nav/status` `detail.remote`
+   while driving. If MPPI cannot hold 15 Hz on the Jetson, lower `batch_size`
+   (1000 to 600) or switch to `controller:=rpp`.
+6. **Progress checker.** If recoveries trigger while the rover is slowly turning,
+   raise `movement_time_allowance` (6 s) rather than lowering speeds.
+
+## Tests
+
+| Check | Command | Result |
+|---|---|---|
+| Server seam, gating, contract | `.venv/bin/python -m pytest -q jetson/tests/test_nav.py` | 14 pass |
+| Frame math | `.venv/bin/python -m pytest -q ros2/farsight_nav/test` | 7 pass (host and container) |
+| Bringup smoke | `bash ros2/docker/run-tests.sh smoke` | PASS in 17-19 s: Nav2 lifecycle active, topics and `map -> camera_optical` TF present |
+
+The Docker image is `ros2/docker/Dockerfile` (ROS 2 Jazzy ros-base + Nav2 on
+Apple silicon arm64). Nothing here has run on the Jetson or with real phone depth.
+
+## Jetson install
+
+`bash jetson/ros2-install.sh --check` prints the OS, disk, RAM and exact apt list
+and changes nothing. A full run (needs internet for the ROS apt source and
+packages, about 630 MB download, 3.2 GB installed) installs ROS 2 Jazzy ros-base
+and Nav2, builds `ros2/` with colcon and installs the `farsight-nav` unit,
+disabled unless `--enable`. `--with-slam` adds SLAM Toolbox. It was verified in a
+fresh Ubuntu 24.04 arm64 container, not on the Jetson.
+
 ## SLAM (optional, `ros2/farsight_slam`)
 
 `farsight_nav`'s bringup includes `ros2/farsight_slam/launch/slam.launch.py` with `slam:=true`.
