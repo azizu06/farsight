@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { DEFAULTS, SETTINGS_KEY, defaultMount, loadSettings, readSaved, resolveSettings, saveSettings } from "../src/viewer-settings.js";
+import { DEFAULTS, SETTINGS_KEY, defaultH264, defaultMount, loadSettings, readSaved, resolveSettings, saveSettings } from "../src/viewer-settings.js";
 
 const memory = (initial = {}) => {
   const data = new Map(Object.entries(initial));
@@ -60,4 +60,11 @@ test("rover health picks the default mount only when it reports camera_pan", () 
   assert.equal(defaultMount({ camera_pan: true }), "servo");
   assert.equal(defaultMount({}), null);
   assert.equal(defaultMount(null), null);
+});
+
+test("rover health turns H.264 on by default only when it offers enabled video", () => {
+  assert.equal(defaultH264({ video: { enabled: true, ready: false } }), true);
+  assert.equal(defaultH264({ video: { enabled: false } }), false);
+  assert.equal(defaultH264({}), null);
+  assert.equal(defaultH264(null), null);
 });

@@ -12,7 +12,7 @@ import { AutonomyIntent, autonomyLabel, containPoint, pickTarget, rayPanelPoint 
 import { PHRASE_LABELS, sbarLines, speakPhrase } from "./survivor-phrases.js";
 import { DRILL_TRAINS, DrillHud, endLines } from "./drill-hud.js";
 import { DetectionCache, PACKET_FRESH_MS } from "./detection-match.js";
-import { defaultMount, loadSettings, pageStorage, saveSettings } from "./viewer-settings.js";
+import { defaultH264, defaultMount, loadSettings, pageStorage, saveSettings } from "./viewer-settings.js";
 import { PanSmoother } from "./pan-smoothing.js";
 import { encounterLine, summaryLines, timelineLines } from "./mission-report.js";
 import { floorHit, goalBody, mergeNav, navActive, navLabel, parseNav, postNav } from "./nav-view.js";
@@ -143,6 +143,7 @@ export class RoverExperience {
   private h264: H264Viewer;
   private h264Enabled = false;
   private bondedJPEG = false;
+  private roverVideoAt = -Infinity;
   private digitalPan = false;
   private settings = loadSettings();
   private mountSelect!: HTMLSelectElement;
@@ -329,6 +330,22 @@ export class RoverExperience {
     this.settings.origin.mount = "rover";
     this.setMount(mount === "fixed", false);
   }
+  /** Prefer H.264 when the rover offers it and the operator has not chosen; bonded JPEG still wins. */
+  private applyRoverVideo() {
+    if (this.stopped) return;
+    if (this.settings.origin.h264 === "rover" && this.h264Enabled && !this.h264.displayedFrame &&
+        performance.now() - this.roverVideoAt > 6000) {
+      // Auto-selected H.264 never produced a verified frame here: fall back to JPEG for this page.
+      this.settings.origin.h264 = "fallback";
+      this.setVideo(false, false);
+      return;
+    }
+    if (this.settings.origin.h264 !== "default") return;
+    const h264 = defaultH264(this.sourceTruth.health);
+    if (h264 === null) return;
+    this.settings.origin.h264 = "rover"; this.roverVideoAt = performance.now();
+    this.setVideo(h264, false);
+  }
   /** Voice needs the rover's Whisper: without it hide the controls so the left trigger cannot stop the rover for a VOICE ERROR. */
   private applyVoiceAvailability() {
     if (this.stopped || !this.voice) return;
@@ -458,7 +475,7 @@ export class RoverExperience {
     this.lastHealthPoll = now;
     void this.sourceTruth.refresh().then(() => {
       if (this.stopped) return;
-      this.applyRoverMount(); this.applyVoiceAvailability(); this.applyTransportProfile();
+      this.applyRoverMount(); this.applyVoiceAvailability(); this.applyTransportProfile(); this.applyRoverVideo();
     });
   }
 

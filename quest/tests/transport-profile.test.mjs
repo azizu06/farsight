@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import ts from 'typescript';
+import * as viewerSettings from '../src/viewer-settings.js';
 
 const source = readFileSync(new URL('../src/rover.ts', import.meta.url), 'utf8');
 const code = ts.transpileModule(source, { compilerOptions: {
@@ -15,7 +16,8 @@ const documentFixture = { hidden: false };
 class ImageFixture {
   decode() { return new Promise(resolve => { decode = resolve; }); }
 }
-vm.runInNewContext(code, { exports: module.exports, require: () => ({}),
+vm.runInNewContext(code, { exports: module.exports,
+  require: name => name === './viewer-settings.js' ? viewerSettings : ({}),
   document: documentFixture, performance: { now: () => 100 },
   AbortController, Image: ImageFixture, WebSocket: { OPEN: 1 }, window: { setTimeout, clearTimeout },
   URL: { createObjectURL: () => 'blob:fixture', revokeObjectURL: () => {} },
@@ -43,6 +45,31 @@ test('bonded health forces JPEG without changing the saved user preference', () 
   view.applyTransportProfile();
   assert.equal(view.bondedJPEG, false);
   assert.equal(view.videoToggle.disabled, false);
+});
+
+test('rover-offered H.264 becomes the unsaved default, never overrides a choice, and falls back to JPEG', () => {
+  const selected = [];
+  const view = Object.create(prototype);
+  Object.assign(view, { stopped: false, h264Enabled: false, h264: { displayedFrame: null },
+    settings: { origin: { h264: 'default' } }, sourceTruth: { health: { video: { enabled: true } } },
+    setVideo(enabled, save) { selected.push([enabled, save]); this.h264Enabled = enabled; } });
+  view.applyRoverVideo();
+  assert.deepEqual(selected, [[true, false]]);
+  assert.equal(view.settings.origin.h264, 'rover');
+  view.applyRoverVideo();  // still within the grace period
+  assert.equal(selected.length, 1);
+  view.roverVideoAt = -10_000;  // no verified decoded frame for >6 s
+  view.applyRoverVideo();
+  assert.deepEqual(selected.at(-1), [false, false]);
+  assert.equal(view.settings.origin.h264, 'fallback');
+  view.applyRoverVideo();
+  assert.equal(selected.length, 2);
+  for (const origin of ['saved', 'query']) {
+    const chosen = Object.create(prototype);
+    Object.assign(chosen, { stopped: false, settings: { origin: { h264: origin } },
+      sourceTruth: { health: { video: { enabled: true } } }, setVideo: () => assert.fail('explicit choice overridden') });
+    chosen.applyRoverVideo();
+  }
 });
 
 test('H264 enable cannot bypass the explicit bonded profile or write preferences', () => {
