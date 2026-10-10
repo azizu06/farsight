@@ -17,6 +17,7 @@ import { PanSmoother } from "./pan-smoothing.js";
 import { encounterLine, summaryLines, timelineLines } from "./mission-report.js";
 import { floorHit, goalBody, mergeNav, navActive, navLabel, parseNav, postNav } from "./nav-view.js";
 import { NavOverlay, type Nav } from "./nav-overlay";
+import { frameOrder } from "./frame-order.js";
 
 /** Quest sticks drift; a slightly off-center right stick must not override Explore/Seek/go-to. */
 const XR_STICK_DEADZONE = 0.25;
@@ -95,6 +96,10 @@ export class RoverExperience {
   private navStatus: HTMLElement;
   private lastSendAt = 0;
   private lastDeadman = false;
+  private lastSentPermit: string | null = null;
+  /** Camera evidence drawn into the canvas but not yet shown by a successful render (see afterRender). */
+  private stagedView: { id: string | null; age: number; at: number } | null = null;
+  private stagedRepaint = false;
   private input = { held: false, v: 0, w: 0, pan: 0 };
   private keys = new Set<string>();
   private pointerHeld = false;
@@ -371,12 +376,10 @@ export class RoverExperience {
     this.videoToggle.checked = enabled;
     if (enabled === this.h264Enabled) return;
     this.h264Enabled = enabled;
-    if (this.h264Enabled) {
-      for (const request of this.frameRequests.values()) request.controller.abort();
-      this.frameRequests.clear();
-    }
+    // Aborted pulls keep their slot until their own fetch/decode settles (see fetchFrame).
+    if (this.h264Enabled) for (const request of this.frameRequests.values()) request.controller.abort();
     this.stop("Video format changed: release deadman");
-    this.gate.frameAt = -Infinity; this.gate.frameAge = Infinity; this.pendingFrame = null; this.lastCanvasDraw = -Infinity;
+    this.gate.frameAt = -Infinity; this.gate.frameAge = Infinity; this.pendingFrame = null; this.stagedView = null; this.stagedRepaint = false; this.lastCanvasDraw = -Infinity;
     if (this.h264Enabled) this.h264.start(); else this.h264.stop();
     this.dirty = true;
   }
@@ -452,7 +455,7 @@ export class RoverExperience {
 
   private resetSessionView() {
     for (const request of this.frameRequests.values()) request.controller.abort();
-    this.frameRequests.clear(); this.pendingFrame = null;
+    this.pendingFrame = null; this.stagedView = null; this.stagedRepaint = false;
     this.frame = null; this.frameId = ""; this.lastCanvasDraw = -Infinity;
     this.detections = null; this.detectionFrames.clear();
     this.sent.clear(); this.lastDeadman = false; this.lastSendAt = performance.now();
@@ -462,8 +465,10 @@ export class RoverExperience {
 
   /** Poll from the active display loop so immersive browsers cannot throttle the camera timer. */
   private pollCamera(now: number) {
-    for (const [id, request] of this.frameRequests) {
-      if (now - request.startedAt >= 750) { request.controller.abort(); this.frameRequests.delete(id); }
+    // A timed-out pull is aborted (which also cancels its decode) but keeps its slot until that stage
+    // has settled and its blob URL is revoked, so at most two decoders ever exist.
+    for (const request of this.frameRequests.values()) {
+      if (now - request.startedAt >= 750) request.controller.abort();
     }
     if (now - this.lastFramePoll < 100 || this.frameRequests.size >= 2) return;
     this.lastFramePoll = now;
@@ -505,21 +510,26 @@ export class RoverExperience {
       const source = response.headers.get("X-Frame-Source") ?? "Unverified camera source";
       const serverAge = ageHeader === null || !ageHeader.trim() ? Infinity : Number(ageHeader);
       if (!Number.isFinite(serverAge) || serverAge < 0) return;
-      // Counters restart with camera capture, and request start order is not capture order.
-      // Prefer the freshest conservative capture-age bound, never renew a duplicate.
+      // Request start order is not capture order: rank by capture ordinal within one source, and only
+      // fall back to the conservative capture-age bound across sources or after a counter restart.
       const retainDisplayed = (now: number) => {
-        if (source === this.frameSource && id === this.frameId) return true;
         if (!this.frame) return false;
+        const order = frameOrder(source, id, this.frameSource, this.frameId);
+        if (order !== 0) return order < 0;
         const retainedAge = this.pendingFrame ? this.pendingFrame.age + Math.max(0, now - this.pendingFrame.at) : this.gate.videoAge(now);
         return serverAge + now - start >= retainedAge;
       };
       if (controller.signal.aborted || this.gate.session !== controlSession || retainDisplayed(performance.now())) return;
       const blob = await response.blob();
       if (blob.size > 2_000_000 || !blob.type.startsWith("image/")) throw new Error("Invalid camera image");
+      if (controller.signal.aborted) return;
       url = URL.createObjectURL(blob);
       const image = new Image(); image.src = url;
+      // Abort (timeout, session reset, H.264) drops the image source, which rejects a pending decode.
+      const release = () => { image.src = ""; };
+      controller.signal.addEventListener("abort", release, { once: true });
       const decodeStart = performance.now();
-      await image.decode();
+      try { await image.decode(); } finally { controller.signal.removeEventListener("abort", release); }
       const now = performance.now();
       this.decodeMs = now - decodeStart;
       if (this.stopped || controller.signal.aborted || this.h264Enabled || this.gate.session !== controlSession ||
@@ -591,7 +601,6 @@ export class RoverExperience {
         this.cockpit.visible = !!pose;
         this.cameraScreen.visible = this.xrLive && !this.actionMenu.visible;
         this.paint(now);
-        this.pumpControl(now);
         return;
       }
       if (!leftTracked) {
@@ -692,7 +701,25 @@ export class RoverExperience {
       this.h264.update();
     }
     this.paint(now);
+  }
+  /** Periodic control renewal, called by the display loop only after renderer.render() returned: a lease is
+   * never renewed for a camera texture that has not reached a successful frame. Stops are sent at once by stop(). */
+  afterRender(now: number) {
+    // Freshness drawn into the camera canvas counts only once that canvas reached a rendered, visible frame,
+    // so a permit callback can never spend provisional pixels. The 500 ms and lease limits are unchanged.
+    const visible = !this.renderer.xr.isPresenting || (this.cockpit.visible && this.cameraScreen.visible);
+    if (visible) {
+      const staged = this.stagedView;
+      if (staged && this.gate.acceptFrame(staged.id, staged.age + Math.max(0, now - staged.at), now)) this.lastCanvasDraw = now;
+      if (this.stagedRepaint) this.lastCanvasDraw = now;
+      this.stagedView = null; this.stagedRepaint = false;
+    }
     this.pumpControl(now);
+  }
+  /** renderer.render() threw: nothing drawn this frame may renew freshness; stop and require a release. */
+  renderFailed() {
+    this.stagedView = null; this.stagedRepaint = false;
+    this.stop("Display render failed: release trigger");
   }
   /** A level screen anchored on entry/recenter, so looking around works naturally. */
   private anchorCockpit() {
@@ -889,6 +916,9 @@ export class RoverExperience {
   private send(deadman: boolean) {
     if (this.socket?.readyState !== WebSocket.OPEN || this.socket.bufferedAmount > 0) return;
     if (!this.status || typeof this.status.session_id !== "string" || this.status.session_id !== this.gate.session) return;
+    // A permit callback and the display-loop pump may both fire within one 50 ms tick: one held
+    // command per permit per tick. A release or STOP (deadman false) is never delayed.
+    if (deadman && this.lastDeadman && this.status.permit === this.lastSentPermit && performance.now() - this.lastSendAt < 50) return;
     const age = this.gate.videoAge(performance.now());
     const seq = this.seq++;
     this.sent.set(seq, performance.now());
@@ -902,7 +932,7 @@ export class RoverExperience {
       video_age_ms: Number.isFinite(age) ? Math.ceil(age) : 999999,
     }));
     this.lastSendAt = performance.now();
-    this.lastDeadman = deadman;
+    this.lastDeadman = deadman; this.lastSentPermit = this.status.permit;
   }
   private observeScanStatus(next: ControlStatus) {
     if (this.scanPending && !this.scanPendingCancelled && next.mode === "scan") this.scanReserved = true;
@@ -968,9 +998,8 @@ export class RoverExperience {
       const crop = cameraCrop(video.videoWidth, video.videoHeight, this.input.pan, this.digitalPan);
       context.drawImage(video, crop.x, crop.y, crop.width, crop.height, 0, 0, this.canvas.width, this.canvas.height);
       if (decoded) {
-        this.gate.acceptFrame(decoded.id, decoded.age, now);
+        this.stagedView = { id: decoded.id, age: decoded.age, at: now };
         this.frameSource = decoded.source; this.frameId = decoded.frame === null ? "" : String(decoded.frame);
-        this.lastCanvasDraw = now;
         this.drawDetections(crop, video.videoWidth, video.videoHeight, now);
       }
     } else if (!this.h264Enabled && this.frame) {
@@ -979,12 +1008,12 @@ export class RoverExperience {
       context.drawImage(this.frame, crop.x, crop.y, crop.width, crop.height, 0, 0, this.canvas.width, this.canvas.height);
       if (this.pendingFrame) {
         const pending = this.pendingFrame;
-        if (this.gate.acceptFrame(pending.id, pending.age + now - pending.at, now)) this.lastCanvasDraw = now;
+        this.stagedView = { id: pending.id, age: pending.age + now - pending.at, at: now };
         this.pendingFrame = null;
       }
       // Repainting a retained frame proves display-loop liveness, while its
       // original capture age continues growing; duplicate IDs never renew it.
-      if (this.gate.frameId === this.frameId) this.lastCanvasDraw = now;
+      if (this.gate.frameId === this.frameId) this.stagedRepaint = true;
       this.drawDetections(crop, this.frame.naturalWidth, this.frame.naturalHeight, now);
     } else {
       context.fillStyle = "#141c22"; context.fillRect(0, 0, this.canvas.width, this.canvas.height);

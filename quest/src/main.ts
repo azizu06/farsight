@@ -329,7 +329,9 @@ renderer.setAnimationLoop((_time, frame) => {
     renderer.setClearColor(0x393939);
   }
   if (!renderer.xr.isPresenting) controls.update();
-  renderer.render(scene, camera);
+  try { renderer.render(scene, camera); } catch (error) { rover?.renderFailed(); throw error; }
+  // Commit camera freshness and renew the control lease only after this frame rendered without throwing.
+  rover?.afterRender(performance.now());
   diagnostics?.frame(start, performance.now() - start, renderer.xr.isPresenting);
 });
 
