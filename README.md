@@ -8,3 +8,4 @@ Knight Hacks IX, October 2026.
 
 - Workflow: [AGENTS.md](AGENTS.md)
 - Message contract: [docs/interfaces.md](docs/interfaces.md)
+- Quest viewer, controls and desktop checks: [quest/README.md](quest/README.md)

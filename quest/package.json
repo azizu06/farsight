@@ -1,0 +1,25 @@
+{
+  "name": "farsight-quest",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "test": "vitest run --maxWorkers=1",
+    "test:browser": "playwright test"
+  },
+  "dependencies": {
+    "three": "^0.179.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.58.2",
+    "@types/three": "^0.179.0",
+    "@types/ws": "^8.18.2",
+    "typescript": "^5.9.3",
+    "vite": "^6.1.0",
+    "vitest": "^5.0.3",
+    "ws": "^8.22.0"
+  }
+}
