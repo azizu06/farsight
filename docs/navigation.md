@@ -243,6 +243,11 @@ and Nav2, builds `ros2/` with colcon and installs the `farsight-nav` unit,
 disabled unless `--enable`. `--with-slam` adds SLAM Toolbox. It was verified in a
 fresh Ubuntu 24.04 arm64 container, not on the Jetson.
 
+On the rig (2026-10-10) the unit is enabled and Nav2 activates on the Jetson. The unit
+waits for `/nav/status` to report a live phone pose before launching: Nav2's lifecycle
+bringup aborts if `base_link` has no TF for about 60 s, which stranded the first start
+until a manual `systemctl restart farsight-nav`.
+
 ## SLAM (optional, `ros2/farsight_slam`)
 
 `farsight_nav`'s bringup includes `ros2/farsight_slam/launch/slam.launch.py` with `slam:=true`.
