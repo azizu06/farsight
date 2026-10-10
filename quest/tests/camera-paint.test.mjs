@@ -77,5 +77,9 @@ test("the next verified H264 frame paints matching boxes and completes the pendi
   assert.equal(view.drawnBoxes.length, 1);
   assert.equal(view.dirty, false);
   assert.equal(view.cameraTexture.needsUpdate, true);
-  assert.equal(view.gate.videoAge(120), 150);
+  assert.equal(view.gate.videoAge(120), 220, "drawn but not yet rendered: freshness is only staged");
+  Object.assign(view, { renderer: { xr: { isPresenting: false } }, lastPumpAt: -Infinity, pump() {} });
+  view.afterRender(120);
+  assert.equal(view.gate.videoAge(120), 150, "a successful render commits the new frame's freshness");
+  assert.equal(view.lastCanvasDraw, 120);
 });
