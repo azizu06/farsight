@@ -23,6 +23,8 @@ from jetson.perception import PerceptionService
 from jetson.mission import Mission
 from jetson.control import ControlService
 from jetson.assistant import SceneAssistant, AssistantError
+from jetson.phrases import PhraseSpeaker, SpeechError
+from jetson.triage import TriageBusy, TriageService
 
 DIST = Path(__file__).resolve().parents[2] / "quest" / "dist"
 
@@ -30,7 +32,8 @@ DIST = Path(__file__).resolve().parents[2] / "quest" / "dist"
 def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=False,
                detector="hog", detector_model=None, h264=False, mission_dir=None, max_pwm=100, min_pwm=0,
                video_fps=10, video_bitrate=500000, assistant_url=None, whisper_bin=None, whisper_model=None,
-               piper_bin=None, piper_model=None, tts_dir=None, face_model=None, whisper_url=None):
+               piper_bin=None, piper_model=None, tts_dir=None, face_model=None, whisper_url=None,
+               piper_model_es=None, speaker_cmd="auto", triage_interval=3.0):
     if (demo or simulate_rover) and serial_port:
         raise ValueError("Simulated sources cannot be combined with a physical motor serial port")
     state = MapState(demo)
@@ -45,6 +48,10 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                                whisper_bin=whisper_bin, whisper_model=whisper_model,
                                piper_bin=piper_bin, piper_model=piper_model, output_dir=tts_dir,
                                whisper_url=whisper_url)
+    triage = TriageService(mission, server_url=assistant.server_url, min_interval=triage_interval,
+                           range_cm=lambda: control.status().get("range_cm"))
+    phrases = PhraseSpeaker(tts_dir, voices=dict(en=piper_model, es=piper_model_es), piper_bin=piper_bin,
+                            speaker_cmd=speaker_cmd)
 
     async def simulate():
         started, frame_id = time.monotonic(), 0
@@ -61,11 +68,14 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
         await camera_service.start()
         await video_service.start()
         await perception.start()
+        triage.start()
         try:
             yield
         finally:
             await asyncio.to_thread(control.close)
             await assistant.close()
+            await phrases.close()
+            await asyncio.to_thread(triage.close)
             await perception.close()
             await video_service.close()
             await camera_service.close()
@@ -83,6 +93,8 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
     app.state.perception = perception
     app.state.mission = mission
     app.state.assistant = assistant
+    app.state.triage = triage
+    app.state.phrases = phrases
     app.include_router(control.router)
 
     class AskBodyLimit:
@@ -114,7 +126,8 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                       video=dict(enabled=h264, ready=video_service.ready, error=video_service.error,
                                  fps=video_fps, bitrate=video_bitrate),
                       assistant=dict(vision_model=bool(assistant_url), whisper=bool(whisper_url or (whisper_bin and whisper_model)),
-                                     piper=bool(piper_model)))
+                                     piper=bool(piper_model)),
+                      speech=await asyncio.to_thread(phrases.status), triage=triage.status())
         return status
 
     @app.get("/map/points.bin")
@@ -273,6 +286,15 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
             raise HTTPException(422, "Drill duration must be 10..300 seconds")
         return mission.start_drill(body.duration_s)
 
+    @app.post("/mission/triage/{encounter}")
+    async def mission_triage(encounter: str):
+        try:
+            return await asyncio.to_thread(triage.generate, encounter)
+        except KeyError as exc:
+            raise HTTPException(404, "Unknown encounter; use a key from /mission/report") from exc
+        except TriageBusy as exc:
+            raise HTTPException(503, str(exc)) from exc
+
     @app.get("/mission/drill")
     async def drill_status():
         return mission.drill()
@@ -298,9 +320,24 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
         except (ValueError, UnicodeDecodeError) as exc:
             raise HTTPException(400, "Invalid question request") from exc
 
+    class SpeakRequest(BaseModel):
+        phrase: str
+        lang: str
+
+    @app.get("/speak")
+    async def speak_options():
+        return dict(phrases=phrases.phrases(), **await asyncio.to_thread(phrases.status))
+
+    @app.post("/speak")
+    async def speak(body: SpeakRequest):
+        try:
+            return await phrases.speak(body.phrase, body.lang)
+        except SpeechError as exc:
+            raise HTTPException(exc.status_code, str(exc)) from exc
+
     @app.get("/tts/{name}")
     async def speech(name: str):
-        if not assistant.output_dir or not name.startswith("reply-") or not name.endswith(".wav") or "/" in name or "\\" in name:
+        if not assistant.output_dir or not name.startswith(("reply-", "phrase-")) or not name.endswith(".wav") or "/" in name or "\\" in name:
             raise HTTPException(404, "Speech reply unavailable")
         path = assistant.output_dir / name
         if not path.is_file():
@@ -474,6 +511,10 @@ def main():
     parser.add_argument("--whisper-model")
     parser.add_argument("--piper-bin")
     parser.add_argument("--piper-model")
+    parser.add_argument("--piper-model-es", help="Spanish Piper .onnx voice for survivor phrases")
+    parser.add_argument("--speaker-cmd", default="auto",
+                        help="Rover speaker player, e.g. 'aplay -q' or 'paplay'; auto probes ALSA/Pulse; none disables")
+    parser.add_argument("--triage-interval", type=float, default=3.0, help="Minimum seconds between SBAR model calls")
     parser.add_argument("--tts-dir", default="/tmp/farsight-tts", help="Bounded locally generated speech replies")
     args = parser.parse_args()
     if args.simulate_rover and args.serial_port:
@@ -488,7 +529,8 @@ def main():
                 video_fps=args.video_fps, video_bitrate=args.video_bitrate, assistant_url=args.assistant_url,
                 whisper_bin=args.whisper_bin, whisper_model=args.whisper_model, piper_bin=args.piper_bin,
                 piper_model=args.piper_model, tts_dir=args.tts_dir, face_model=args.face_model,
-                whisper_url=args.whisper_url), host=args.host, port=args.port,
+                whisper_url=args.whisper_url, piper_model_es=args.piper_model_es,
+                speaker_cmd=args.speaker_cmd, triage_interval=args.triage_interval), host=args.host, port=args.port,
                 ssl_certfile=args.ssl_certfile, ssl_keyfile=args.ssl_keyfile,
                 ws_max_size=8 * 1024 * 1024, access_log=False,
                 timeout_graceful_shutdown=5)

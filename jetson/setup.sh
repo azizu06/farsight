@@ -39,6 +39,16 @@ build llama.cpp https://github.com/ggml-org/llama.cpp
 step "whisper.cpp with CUDA (speech to text)"
 build whisper.cpp https://github.com/ggml-org/whisper.cpp
 
+step "Piper voices (English answers, English + Spanish survivor phrases) in $MODELS/piper"
+mkdir -p "$MODELS/piper"
+for voice in en/en_US/lessac/medium/en_US-lessac-medium es/es_MX/claude/high/es_MX-claude-high; do
+  for ext in onnx onnx.json; do
+    file="$MODELS/piper/$(basename "$voice").$ext"
+    [ -s "$file" ] || curl -fsSL -o "$file" "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/$voice.$ext" \
+      || echo "WARN: could not download $(basename "$file")"
+  done
+done
+
 step "TensorRT FP16 engines from ONNX in $MODELS (cached by ONNX hash; reruns are instant)"
 if compgen -G "$MODELS/*.onnx" >/dev/null; then
   (cd "$REPO" && jetson/.venv/bin/python -m jetson.build_engine "$MODELS"/*.onnx) \

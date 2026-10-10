@@ -72,3 +72,19 @@ microphone permission, transcription, playback, CPU/RAM/temperature, and control
 lease timing with the assistant active. Leave optional models off if they cause
 video stalls. A model outage visibly falls back to the observation summary;
 missing Whisper returns 503 for audio while typed questions still work.
+
+## SBAR triage and survivor phrases
+
+The same `--assistant-url` model writes an SBAR note (Situation, Background,
+Assessment, Recommendation) for each new person track, from a crop of its
+snapshot plus confidence, `down` flag, range and time. A template note is stored
+first, so the mission report always has one; model calls run on one background
+thread at least `--triage-interval` seconds apart. Mac Metal, Qwen2.5-VL-3B Q4:
+median ~1.0 s per note. The Quest mission report shows the note under each track.
+
+Survivor phrases (`POST /speak`, see `docs/interfaces.md`) need `--piper-model`
+(English) and `--piper-model-es` (Spanish, `es_MX-claude-high` from setup.sh).
+Plug a USB speaker into the Jetson; with `--speaker-cmd auto` the server finds it
+through `aplay -l`. Without one, the headset plays the phrase. Note: the
+piper-tts macOS wheel cannot find its espeak-ng data when the venv path is very
+long (~170+ characters); use a short venv path.
