@@ -99,8 +99,10 @@ Expect a TensorRT version, `models/yolo11n-pose.engine`, and `NV Power Mode: 15W
   Re-running `setup.sh` resumes (cmake reuses the build dir). A `Unsupported gpu architecture` error means the
   compiler is not the JetPack CUDA; fix `PATH`.
 - *Low power mode / 15 W*: `grep POWER_MODEL /etc/nvpmodel.conf` lists names and ids; set one with
-  `sudo nvpmodel -m ID` or `setup.sh --power-mode NAME`. Brown-outs or sudden reboots under load on the 30 W bank
-  mean the Jetson is not in 15 W: check `sudo nvpmodel -q` and watch `tegrastats` (`VDD_IN` should stay under ~15 W).
+  `sudo nvpmodel -m ID` or `setup.sh --power-mode NAME`. For brown-outs or sudden reboots under load, check
+  `sudo nvpmodel -q`, the actual supply/cable and attached peripherals, and record `tegrastats` power rails.
+  A selected 15 W mode alone does not establish that the power bank can sustain the complete rig; measure
+  loaded behavior instead of inferring the cause from a reboot.
   `sudo jetson_clocks` only pins clocks within the active mode.
 - *Camera not found at the end checks*: step 4.
 - *Uno not found*: unplug the ESP32 camera module, try another cable, `dmesg | tail`.
