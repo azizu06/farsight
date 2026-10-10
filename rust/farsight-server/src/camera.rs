@@ -284,36 +284,19 @@ impl CameraService {
                                 break;
                             }
                         }
-                        while buf.len() >= 4 {
-                            let soi = match buf.windows(2).position(|w| w == [0xFF, 0xD8]) {
-                                Some(p) => p,
-                                None => {
-                                    buf.clear();
-                                    break;
-                                }
-                            };
-                            if soi > 0 {
-                                buf.drain(..soi);
-                            }
-                            let eoi = buf.windows(2).skip(1).position(|w| w == [0xFF, 0xD9]);
-                            match eoi {
-                                Some(e) => {
-                                    let jpeg: Vec<u8> = buf.drain(..(e + 1) * 2).collect();
-                                    let mut inner = self.inner.lock().unwrap();
-                                    inner.frame = Some(CameraFrame {
-                                        jpeg,
-                                        received: now_monotonic(),
-                                        frame_id,
-                                        source: "USB CAMERA".into(),
-                                        capture_verified: false,
-                                        capture_binding: None,
-                                    });
-                                    inner.error = None;
-                                    drop(inner);
-                                    frame_id += 1;
-                                }
-                                None => break,
-                            }
+                        while let Some(jpeg) = next_jpeg(&mut buf) {
+                            let mut inner = self.inner.lock().unwrap();
+                            inner.frame = Some(CameraFrame {
+                                jpeg,
+                                received: now_monotonic(),
+                                frame_id,
+                                source: "USB CAMERA".into(),
+                                capture_verified: false,
+                                capture_binding: None,
+                            });
+                            inner.error = None;
+                            drop(inner);
+                            frame_id += 1;
                         }
                     }
                 }
@@ -351,5 +334,83 @@ impl CameraService {
 
     pub fn close(&self) {
         self.stop.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Pull the next complete JPEG out of the MJPEG byte stream: resync on the
+/// SOI marker, cut through the EOI marker. Returns None when the buffer
+/// holds only a partial frame.
+fn next_jpeg(buf: &mut Vec<u8>) -> Option<Vec<u8>> {
+    loop {
+        if buf.len() < 4 {
+            return None;
+        }
+        let soi = match buf.windows(2).position(|w| w == [0xFF, 0xD8]) {
+            Some(p) => p,
+            None => {
+                buf.clear();
+                return None;
+            }
+        };
+        if soi > 0 {
+            buf.drain(..soi);
+        }
+        // skip(1) drops the SOI window, so e is the EOI marker index minus
+        // one: the marker sits at byte e + 1 and the frame ends at e + 3.
+        let eoi = buf.windows(2).skip(1).position(|w| w == [0xFF, 0xD9]);
+        match eoi {
+            Some(e) => return Some(buf.drain(..e + 3).collect()),
+            None => return None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod jpeg_tests {
+    use super::next_jpeg;
+
+    fn jpeg(payload: usize, tag: u8) -> Vec<u8> {
+        let mut v = vec![0xFF, 0xD8];
+        v.extend(std::iter::repeat(tag).take(payload));
+        v.extend([0xFF, 0xD9]);
+        v
+    }
+
+    #[test]
+    fn single_frame_cuts_through_eoi() {
+        let mut buf = jpeg(627, 0x11); // 631 bytes: the drain must not over-run
+        let j = next_jpeg(&mut buf).unwrap();
+        assert_eq!(j.len(), 631);
+        assert_eq!(j[..2], [0xFF, 0xD8]);
+        assert_eq!(j[629..], [0xFF, 0xD9]);
+        assert!(buf.is_empty());
+        assert!(next_jpeg(&mut buf).is_none());
+    }
+
+    #[test]
+    fn fragmented_frame_waits_for_the_rest() {
+        let full = jpeg(10, 0x22);
+        let mut buf = full[..4].to_vec();
+        assert!(next_jpeg(&mut buf).is_none());
+        buf.extend_from_slice(&full[4..]);
+        assert_eq!(next_jpeg(&mut buf).unwrap(), full);
+    }
+
+    #[test]
+    fn back_to_back_frames_each_cut() {
+        let a = jpeg(3, 0xAA);
+        let b = jpeg(5, 0xBB);
+        let mut buf = [a.clone(), b.clone()].concat();
+        assert_eq!(next_jpeg(&mut buf).unwrap(), a);
+        assert_eq!(next_jpeg(&mut buf).unwrap(), b);
+        assert!(next_jpeg(&mut buf).is_none());
+    }
+
+    #[test]
+    fn garbage_resyncs_on_soi() {
+        let mut buf = b"noise\xFF\xD9more".to_vec();
+        let frame = jpeg(2, 0x33);
+        buf.extend_from_slice(&frame);
+        assert_eq!(next_jpeg(&mut buf).unwrap(), frame);
     }
 }

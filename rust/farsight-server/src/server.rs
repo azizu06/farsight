@@ -1077,7 +1077,16 @@ async fn ws_phone(ws: WebSocketUpgrade, State(s): State<Arc<AppState>>) -> Respo
 }
 
 async fn handle_ws_phone(socket: WebSocket, s: Arc<AppState>) {
-    let (mut tx, mut rx) = socket.split();
+    let (tx, rx) = socket.split();
+    run_phone_session(tx, rx, s).await
+}
+
+async fn run_phone_session<TxErr, RxErr, Tx, Rx>(mut tx: Tx, mut rx: Rx, s: Arc<AppState>)
+where
+    Tx: futures_util::Sink<Message, Error = TxErr> + Unpin + Send + 'static,
+    Rx: futures_util::Stream<Item = Result<Message, RxErr>> + Unpin + Send + 'static,
+    TxErr: Send + 'static,
+{
     let reject = {
         let mut owned = s.phone_owner.lock().unwrap();
         if s.demo || *owned {
@@ -1174,25 +1183,31 @@ async fn handle_ws_phone(socket: WebSocket, s: Arc<AppState>) {
             }
         });
         loop {
-            match rx.next().await {
-                Some(Ok(Message::Binary(bytes))) => {
-                    if qtx.try_send(bytes.to_vec()).is_err() {
-                        s.mapping.inner.lock().unwrap().dropped += 1;
+            tokio::select! {
+                msg = rx.next() => match msg {
+                    Some(Ok(Message::Binary(bytes))) => {
+                        if qtx.try_send(bytes.to_vec()).is_err() {
+                            s.mapping.inner.lock().unwrap().dropped += 1;
+                        }
                     }
-                }
-                Some(Ok(Message::Text(text))) => {
-                    let header: Value = match serde_json::from_str(&text) {
-                        Ok(v) => v,
-                        Err(_) => return Err("Expected a pose message or binary RGB-D frame".into()),
-                    };
-                    if header.get("type").and_then(Value::as_str) != Some("pose") {
-                        return Err("Expected a pose message or binary RGB-D frame".into());
+                    Some(Ok(Message::Text(text))) => {
+                        let header: Value = match serde_json::from_str(&text) {
+                            Ok(v) => v,
+                            Err(_) => return Err("Expected a pose message or binary RGB-D frame".into()),
+                        };
+                        if header.get("type").and_then(Value::as_str) != Some("pose") {
+                            return Err("Expected a pose message or binary RGB-D frame".into());
+                        }
+                        let transform = phone::validate_pose(&header, &identity)?;
+                        s.mapping.observe_pose(&header, &transform)?;
                     }
-                    let transform = phone::validate_pose(&header, &identity)?;
-                    s.mapping.observe_pose(&header, &transform)?;
-                }
-                Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
-                _ => {}
+                    Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
+                    _ => {}
+                },
+                // First failure wins (capture_permits.run parity): a dead
+                // writer ends the session even while the receiver stays
+                // open, or the issuer stays bound and owns the camera.
+                _ = writer_opt.as_mut().unwrap() => break,
             }
         }
         worker.abort();
@@ -1224,7 +1239,16 @@ async fn ws_phone_rgb(ws: WebSocketUpgrade, State(s): State<Arc<AppState>>) -> R
 }
 
 async fn handle_ws_phone_rgb(socket: WebSocket, s: Arc<AppState>) {
-    let (mut tx, mut rx) = socket.split();
+    let (tx, rx) = socket.split();
+    run_phone_rgb_session(tx, rx, s).await
+}
+
+async fn run_phone_rgb_session<TxErr, RxErr, Tx, Rx>(mut tx: Tx, mut rx: Rx, s: Arc<AppState>)
+where
+    Tx: futures_util::Sink<Message, Error = TxErr> + Unpin + Send + 'static,
+    Rx: futures_util::Stream<Item = Result<Message, RxErr>> + Unpin + Send + 'static,
+    TxErr: Send + 'static,
+{
     let reject = {
         let mut owned = s.phone_owner.lock().unwrap();
         if s.demo || *owned || s.camera.device.is_some() {
@@ -1296,17 +1320,26 @@ async fn handle_ws_phone_rgb(socket: WebSocket, s: Arc<AppState>) {
         writer_opt = Some(writer);
         permits_opt = Some(permits.clone());
         let mut previous: i64 = -1;
-        while let Some(Ok(message)) = rx.next().await {
-            if let Message::Binary(packet) = message {
-                let packet = packet.to_vec();
-                let cam = s.camera.clone();
-                let session = hello.session_id.clone();
-                let permits_ref = permits.clone();
-                previous = tokio::task::spawn_blocking(move || {
-                    cam.accept_phone_rgb(&packet, &session, previous, Some(&permits_ref))
-                })
-                .await
-                .map_err(|_| "worker failed".to_string())??;
+        loop {
+            tokio::select! {
+                message = rx.next() => match message {
+                    Some(Ok(Message::Binary(packet))) => {
+                        let packet = packet.to_vec();
+                        let cam = s.camera.clone();
+                        let session = hello.session_id.clone();
+                        let permits_ref = permits.clone();
+                        previous = tokio::task::spawn_blocking(move || {
+                            cam.accept_phone_rgb(&packet, &session, previous, Some(&permits_ref))
+                        })
+                        .await
+                        .map_err(|_| "worker failed".to_string())??;
+                    }
+                    Some(Ok(_)) => {}
+                    _ => break,
+                },
+                // Same lifecycle race as handle_ws_phone: writer failure
+                // revokes the issuer instead of stranding the session.
+                _ = writer_opt.as_mut().unwrap() => break,
             }
         }
         Ok(())
@@ -1409,4 +1442,178 @@ impl axum::serve::Listener for NodelayListener {
 pub async fn serve_http(app: Router, addr: SocketAddr) -> std::io::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(NodelayListener(listener), app).await
+}
+
+#[cfg(test)]
+mod phone_lifecycle_tests {
+    //! The failed-send/open-receiver path: when the permit writer dies while
+    //! the client socket stays open, the session must end — revoke the
+    //! issuer and release the camera owner (Python races writer/reader
+    //! FIRST_COMPLETED and closes the issuer on either failure).
+
+    use super::*;
+    use futures_util::stream::{SplitSink, SplitStream};
+    use futures_util::{Sink, Stream};
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+    use tokio::io::DuplexStream;
+    use tokio_tungstenite::tungstenite::protocol::Role;
+    use tokio_tungstenite::tungstenite::Message as TsMsg;
+    use tokio_tungstenite::WebSocketStream;
+
+    fn test_state() -> Arc<AppState> {
+        build_state(
+            false,      // demo
+            None,       // camera_device
+            None,       // serial_port
+            false,      // simulate_rover
+            "off",      // detector
+            None, None, // detector_model, face_model
+            false,      // h264
+            None,       // mission_dir
+            100, 0,     // max_pwm, min_pwm
+            None, None, None, None, None, // assistant/whisper/piper
+            None,       // tts_dir
+            None,       // whisper_url
+            None,       // piper_model_es
+            None,       // speaker_cmd
+            5.0,        // triage_interval
+            None,       // depth_model
+            false, 120.0, None, 90.0, // scan_pan, scan_fov, scan_intrinsics, scan_turn_dps
+            15, 500_000, // video_fps, video_bitrate
+            false, None, // record, replay
+            None,       // drive_profile
+            false,      // allow_calibration
+            false,      // proximity_stop
+            "servo",    // pan_mount
+        )
+    }
+
+    fn hello_text(depth: bool) -> String {
+        format!(
+            "{{\"version\":1,\"type\":\"hello\",\"session_id\":\"t-{depth}\",\"map_epoch\":0,\
+             \"supports_scene_depth\":{depth},\"supports_capture_permits\":true}}"
+        )
+    }
+
+    fn to_ts(m: Message) -> TsMsg {
+        match m {
+            Message::Text(t) => TsMsg::Text(t.as_str().to_string().into()),
+            Message::Binary(b) => TsMsg::Binary(b),
+            Message::Ping(p) => TsMsg::Ping(p),
+            Message::Pong(p) => TsMsg::Pong(p),
+            Message::Close(cf) => TsMsg::Close(cf.map(|f| {
+                tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                    code: f.code.into(),
+                    reason: f.reason.as_str().to_string().into(),
+                }
+            })),
+        }
+    }
+
+    fn from_ts(m: TsMsg) -> Option<Message> {
+        Some(match m {
+            TsMsg::Text(t) => Message::Text(t.as_str().to_string().into()),
+            TsMsg::Binary(b) => Message::Binary(b),
+            TsMsg::Ping(p) => Message::Ping(p),
+            TsMsg::Pong(p) => Message::Pong(p),
+            TsMsg::Close(cf) => Message::Close(cf.map(|f| {
+                axum::extract::ws::CloseFrame {
+                    code: f.code.into(),
+                    reason: f.reason.as_str().to_string().into(),
+                }
+            })),
+            TsMsg::Frame(_) => return None,
+        })
+    }
+
+    struct TxA(SplitSink<WebSocketStream<DuplexStream>, TsMsg>);
+    impl Sink<Message> for TxA {
+        type Error = tokio_tungstenite::tungstenite::Error;
+        fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Pin::new(&mut self.0).poll_ready(cx)
+        }
+        fn start_send(mut self: Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
+            Pin::new(&mut self.0).start_send(to_ts(item))
+        }
+        fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Pin::new(&mut self.0).poll_flush(cx)
+        }
+        fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Pin::new(&mut self.0).poll_close(cx)
+        }
+    }
+
+    struct RxA(SplitStream<WebSocketStream<DuplexStream>>);
+    impl Stream for RxA {
+        type Item = Result<Message, tokio_tungstenite::tungstenite::Error>;
+        fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            loop {
+                match Pin::new(&mut self.0).poll_next(cx) {
+                    Poll::Ready(Some(Ok(m))) => match from_ts(m) {
+                        Some(am) => return Poll::Ready(Some(Ok(am))),
+                        None => continue,
+                    },
+                    Poll::Ready(Some(Err(e))) => return Poll::Ready(Some(Err(e))),
+                    Poll::Ready(None) => return Poll::Ready(None),
+                    Poll::Pending => return Poll::Pending,
+                }
+            }
+        }
+    }
+
+    /// A client that completes the hello then never reads again: the first
+    /// permit write saturates the tiny duplex pipe, the writer's send
+    /// budget expires, and the session must end — the old code left the
+    /// receiver open, the issuer bound, and the camera owner held.
+    async fn dead_writer_session(
+        depth: bool,
+        run: fn(TxA, RxA, Arc<AppState>) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
+    ) -> Arc<AppState> {
+        let s = test_state();
+        // 512-byte pipe: the hello fits in one write, but 20 Hz
+        // permit packets saturate it within a few ticks when the
+        // client never drains, reproducing a stalled writer.
+        let (client_io, server_io) = tokio::io::duplex(512);
+        let server_ws = WebSocketStream::from_raw_socket(server_io, Role::Server, None).await;
+        let mut client = WebSocketStream::from_raw_socket(client_io, Role::Client, None).await;
+        use futures_util::SinkExt;
+        client.send(TsMsg::Text(hello_text(depth).into())).await.unwrap();
+        // Never read the client side again; just hold it open.
+        let _hold = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            drop(client);
+        });
+        let (tx, rx) = server_ws.split();
+        let done = tokio::time::timeout(
+            Duration::from_secs(10),
+            run(TxA(tx), RxA(rx), s.clone()),
+        )
+        .await;
+        assert!(
+            done.is_ok(),
+            "a failed writer must end the session while the receiver stays open"
+        );
+        assert!(
+            !*s.phone_owner.lock().unwrap(),
+            "camera owner still held after writer death"
+        );
+        s
+    }
+
+    #[tokio::test]
+    async fn phone_rgb_dead_writer_ends_session_and_frees_owner() {
+        dead_writer_session(false, |tx, rx, s| {
+            Box::pin(run_phone_rgb_session(tx, rx, s))
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn phone_depth_dead_writer_ends_session_and_frees_owner() {
+        dead_writer_session(true, |tx, rx, s| {
+            Box::pin(run_phone_session(tx, rx, s))
+        })
+        .await;
+    }
 }
