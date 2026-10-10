@@ -255,22 +255,9 @@ pub fn encode(update: &Update, coding: RecordCoding) -> Vec<u8> {
 /// written anchor once the triangle budget is exceeded. Also enforces the
 /// lane semantics: atomic session/epoch reset, monotonic seq, and no publish
 /// between Reset and SnapshotEnd.
-/// A stored chunk: local-space mesh plus its column-major ARKit anchor
-/// transform, applied to vertices when the world-space mesh.bin is encoded.
-type StoredChunk = (ChunkMesh, [f32; 16]);
-
-/// Column-major 4x4 point transform: out[r] = m[r]x + m[r+4]y + m[r+8]z + m[r+12].
-fn xform_point(m: &[f32; 16], p: [f32; 3]) -> [f32; 3] {
-    [
-        m[0] * p[0] + m[4] * p[1] + m[8] * p[2] + m[12],
-        m[1] * p[0] + m[5] * p[1] + m[9] * p[2] + m[13],
-        m[2] * p[0] + m[6] * p[1] + m[10] * p[2] + m[14],
-    ]
-}
-
 pub struct AnchorGeometry {
     budget: usize,
-    chunks: IndexMap<[u8; 16], StoredChunk, FxBuildHasher>,
+    chunks: IndexMap<[u8; 16], ChunkMesh, FxBuildHasher>,
     count: usize,
     verts: usize,
     revision: u64,
@@ -279,7 +266,7 @@ pub struct AnchorGeometry {
     last_seq: u64,
     /// Buffered ops between Reset and SnapshotEnd — published atomically.
     /// Bounded so a hostile/buggy snapshot can't grow unboundedly.
-    pending: Option<IndexMap<[u8; 16], StoredChunk, FxBuildHasher>>,
+    pending: Option<IndexMap<[u8; 16], ChunkMesh, FxBuildHasher>>,
     pending_tri: usize,
     pending_vert: usize,
     /// Revision seen by consumers (bumps only on publishable changes).
@@ -396,13 +383,13 @@ impl AnchorGeometry {
                 if let Some(pending) = self.pending.take() {
                     self.pending_tri = 0;
                     self.pending_vert = 0;
-                    for (id, stored) in pending {
-                        self.count += stored.0.indices.len();
-                        self.verts += stored.0.positions.len();
-                        self.chunks.insert(id, stored);
+                    for (id, mesh) in pending {
+                        self.count += mesh.indices.len();
+                        self.verts += mesh.positions.len();
+                        self.chunks.insert(id, mesh);
                     }
                     while self.count > self.budget || self.verts > MAX_PUBLISHED_VERTICES {
-                        if let Some((_, (evicted, _))) = self.chunks.shift_remove_index(0) {
+                        if let Some((_, evicted)) = self.chunks.shift_remove_index(0) {
                             self.count -= evicted.indices.len();
                             self.verts -= evicted.positions.len();
                         } else {
@@ -420,7 +407,7 @@ impl AnchorGeometry {
                 if let Some(pending) = &mut self.pending {
                     let tri = mesh.indices.len();
                     let vert = mesh.positions.len();
-                    let stored: StoredChunk = (mesh, u.transform);
+
                     // Pending snapshot is bounded before insert — anchors,
                     // triangles, vertices each capped so a bad producer can't
                     // grow the buffer unboundedly.
@@ -431,15 +418,15 @@ impl AnchorGeometry {
                         self.pub_lane.dropped_malformed += 1;
                         return false;
                     }
-                    if let Some((old, _)) = pending.get(&u.anchor) {
+                    if let Some(old) = pending.get(&u.anchor) {
                         self.pending_tri -= old.indices.len();
                         self.pending_vert -= old.positions.len();
                     }
                     self.pending_tri += tri;
                     self.pending_vert += vert;
-                    pending.insert(u.anchor, stored);
+                    pending.insert(u.anchor, mesh);
                 } else {
-                    self.upsert(u.anchor, mesh, u.transform);
+                    self.upsert(u.anchor, mesh);
                 }
             }
             Op::Remove => {
@@ -454,22 +441,22 @@ impl AnchorGeometry {
         true
     }
 
-    fn upsert(&mut self, anchor_id: [u8; 16], mesh: ChunkMesh, transform: [f32; 16]) -> bool {
+    fn upsert(&mut self, anchor_id: [u8; 16], mesh: ChunkMesh) -> bool {
         if mesh.indices.is_empty()
             || mesh.indices.len() > self.budget
             || mesh.positions.len() > MAX_PUBLISHED_VERTICES
         {
             return false;
         }
-        if let Some((old, _)) = self.chunks.shift_remove(&anchor_id) {
+        if let Some(old) = self.chunks.shift_remove(&anchor_id) {
             self.count -= old.indices.len();
             self.verts -= old.positions.len();
         }
         self.count += mesh.indices.len();
         self.verts += mesh.positions.len();
-        self.chunks.insert(anchor_id, (mesh, transform));
+        self.chunks.insert(anchor_id, mesh);
         while self.count > self.budget || self.verts > MAX_PUBLISHED_VERTICES {
-            if let Some((_, (evicted, _))) = self.chunks.shift_remove_index(0) {
+            if let Some((_, evicted)) = self.chunks.shift_remove_index(0) {
                 self.count -= evicted.indices.len();
                 self.verts -= evicted.positions.len();
             } else {
@@ -481,7 +468,7 @@ impl AnchorGeometry {
     }
 
     fn remove(&mut self, anchor_id: [u8; 16]) -> bool {
-        if let Some((old, _)) = self.chunks.shift_remove(&anchor_id) {
+        if let Some(old) = self.chunks.shift_remove(&anchor_id) {
             self.count -= old.indices.len();
             self.verts -= old.positions.len();
             self.revision += 1;
@@ -497,17 +484,15 @@ impl AnchorGeometry {
     pub fn encode(&self) -> Vec<u8> {
         let index_scalars = self.count * 3;
         let mut vertex_count: u32 = 0;
-        for (mesh, _) in self.chunks.values() {
+        for mesh in self.chunks.values() {
             vertex_count += mesh.positions.len() as u32;
         }
         let mut out = Vec::with_capacity(8 + vertex_count as usize * 16 + index_scalars * 4);
         out.extend_from_slice(&vertex_count.to_le_bytes());
         out.extend_from_slice(&(index_scalars as u32).to_le_bytes());
-        // Positions are anchor-local: bake each chunk's column-major ARKit
-        // transform here so mesh.bin is a single world-space mesh.
-        for (mesh, m) in self.chunks.values() {
+        for mesh in self.chunks.values() {
             for (p, c) in mesh.positions.iter().zip(mesh.colors.iter()) {
-                for v in xform_point(m, *p) {
+                for v in p {
                     out.extend_from_slice(&v.to_le_bytes());
                 }
                 out.extend_from_slice(c);
@@ -515,7 +500,7 @@ impl AnchorGeometry {
             }
         }
         let mut offset = 0u32;
-        for (mesh, _) in self.chunks.values() {
+        for mesh in self.chunks.values() {
             for tri in &mesh.indices {
                 for &i in tri {
                     out.extend_from_slice(&(i + offset).to_le_bytes());
