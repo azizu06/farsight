@@ -198,7 +198,7 @@ class FarsightBridge(Node):
         self.create_timer(0.25, self.send_status)
         self.explore_busy = False
         self.explore_session = 0
-        self.create_timer(1.0, self.request_explore_tick)
+        self.create_timer(p("explore_tick_s", 0.5).value, self.request_explore_tick)
         self.create_timer(0.05, self.motion_tick)
 
     def check_lifecycle(self):
