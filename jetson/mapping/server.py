@@ -419,15 +419,21 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
     @app.websocket("/ws/map")
     async def viewer(ws: WebSocket):
         await ws.accept()
+        http_points = ws.query_params.get("points") == "http"
 
         async def send_snapshots():
             revision = -1
             try:
                 while True:
                     status = await asyncio.to_thread(state.status)
+                    if http_points:
+                        # Opt-in clients pull compressed HTTP snapshots at their
+                        # own pace; legacy subscribers retain binary pushes.
+                        status["points_transport"] = "http"
+                        await ws.send_json(status)
                     # Capture data and revision together; every reconnect gets
                     # a complete authoritative snapshot, including an empty map.
-                    if status["revision"] != revision:
+                    elif status["revision"] != revision:
                         def snapshot():
                             with state.lock:
                                 return state.status(), state.point_packet()

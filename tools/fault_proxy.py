@@ -13,6 +13,7 @@ import asyncio
 from contextlib import suppress
 import json
 import math
+import random
 import signal
 import socket
 import time
@@ -49,26 +50,33 @@ class Bandwidth:
 
 class FaultProxy:
     def __init__(self, upstream_port, *, port=18843, upstream_host="127.0.0.1",
-                 delay_ms=0, bandwidth_mbps=0, drop_after=0):
+                 delay_ms=0, bandwidth_mbps=0, drop_after=0,
+                 loss_rate=0, retransmit_ms=80, seed=62):
         if upstream_host not in ("127.0.0.1", "::1", "localhost"):
             raise ValueError("Fault injection upstream must be localhost simulation")
         if (type(upstream_port) is not int or not 1 <= upstream_port <= 65535
                 or type(port) is not int or not 0 <= port <= 65535 or port == upstream_port):
             raise ValueError("Choose distinct valid upstream/listen ports; zero listen port is allowed for tests")
-        for value in (delay_ms, bandwidth_mbps, drop_after):
+        for value in (delay_ms, bandwidth_mbps, drop_after, loss_rate, retransmit_ms):
             if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
                 raise ValueError("Delay, bandwidth, and drop time must be finite nonnegative numbers")
         if delay_ms > 5000 or bandwidth_mbps > 10000 or drop_after > 3600:
             raise ValueError("Limits: delay <=5000ms, bandwidth <=10000Mbps, drop time <=3600s")
+        if loss_rate > 1 or retransmit_ms > 5000:
+            raise ValueError("Loss rate must be 0..1 and retransmit delay <=5000ms")
         self.upstream_port, self.upstream_host, self.port = upstream_port, upstream_host, port
         self.delay = delay_ms / 1000
         self.bandwidth = Bandwidth(bandwidth_mbps)
         self.drop_after = drop_after
+        # TCP loss proxy: preserve bytes, charge a retry and delay this stream.
+        # This models head-of-line recovery, not real IP packet loss/congestion.
+        self.loss_rate, self.retransmit_delay = loss_rate, retransmit_ms / 1000
+        self.random = random.Random(seed)
         self.server = self.timer = None
         self.tasks, self.writers = set(), set()
         self.failed = False
         self.stats = dict(connections=0, rejected=0, bytes=0, queue_peak_chunks=0,
-                          connection_peak=0, dropped=False)
+                          connection_peak=0, dropped=False, loss_events=0, retransmitted_bytes=0)
 
     async def start(self):
         self.server = await asyncio.start_server(self.handle, "127.0.0.1", self.port,
@@ -117,6 +125,11 @@ class FaultProxy:
                 for offset in range(0, len(payload), WIRE_CHUNK):
                     packet = payload[offset:offset + WIRE_CHUNK]
                     await self.bandwidth.take(len(packet))
+                    if self.loss_rate and self.random.random() < self.loss_rate:
+                        self.stats["loss_events"] += 1
+                        self.stats["retransmitted_bytes"] += len(packet)
+                        await asyncio.sleep(self.retransmit_delay)
+                        await self.bandwidth.take(len(packet))
                     writer.write(packet)
                     await writer.drain()
                     self.stats["bytes"] += len(packet)

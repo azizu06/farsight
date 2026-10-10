@@ -100,6 +100,20 @@ class FaultProxyTests(unittest.IsolatedAsyncioTestCase):
         writer.close()
         await writer.wait_closed()
 
+    async def test_loss_model_delays_retry_without_corrupting_tcp_bytes(self):
+        proxy = await self.proxy(loss_rate=1, retransmit_ms=20, seed=62)
+        reader, writer = await asyncio.open_connection('127.0.0.1', proxy.port)
+        payload = b'reliable bytes'
+        started = time.monotonic()
+        writer.write(payload)
+        await writer.drain()
+        self.assertEqual(await asyncio.wait_for(reader.readexactly(len(payload)), 1), payload)
+        self.assertGreaterEqual(time.monotonic() - started, .035)
+        self.assertEqual(proxy.stats['loss_events'], 2)
+        self.assertEqual(proxy.stats['retransmitted_bytes'], len(payload) * 2)
+        writer.close()
+        await writer.wait_closed()
+
     async def test_unavailable_upstream_closes_instead_of_hanging(self):
         with socket.socket() as sock:
             sock.bind(("127.0.0.1", 0))
@@ -152,7 +166,8 @@ class FaultProxyTests(unittest.IsolatedAsyncioTestCase):
 
     def test_invalid_or_nonlocal_settings_rejected(self):
         for settings in ({"upstream_host": "rover.example"}, {"delay_ms": float("nan")},
-                         {"bandwidth_mbps": -1}, {"drop_after": float("inf")}, {"delay_ms": 6000}):
+                         {"bandwidth_mbps": -1}, {"drop_after": float("inf")}, {"delay_ms": 6000},
+                         {"loss_rate": 1.1}, {"retransmit_ms": -1}):
             with self.assertRaises(ValueError):
                 FaultProxy(self.upstream_port, port=0, **settings)
         with self.assertRaises(ValueError):

@@ -210,10 +210,11 @@ def fixture_app(source, *, server_options=None, scene_path=None):
 
 class Rig:
     def __init__(self, source="rgb15", delay_ms=50, bandwidth_mbps=2, *,
-                 fixture_module="tools.tests.test_demo_qualification", fixture_args=()):
+                 fixture_module="tools.tests.test_demo_qualification", fixture_args=(), proxy_options=None):
         self.source, self.delay_ms, self.bandwidth_mbps = source, delay_ms, bandwidth_mbps
         self.process = self.proxy = self.relay = self.client = None
         self.fixture_module, self.fixture_args = fixture_module, list(fixture_args)
+        self.proxy_options = proxy_options or {}
         self.temp = tempfile.TemporaryDirectory()
         self.log = open(Path(self.temp.name) / "fixture.log", "w+")
 
@@ -244,7 +245,7 @@ class Rig:
             else:
                 raise RuntimeError("Fixture did not become ready")
             self.proxy = await FaultProxy(port, port=0, delay_ms=self.delay_ms,
-                                          bandwidth_mbps=self.bandwidth_mbps).start()
+                                          bandwidth_mbps=self.bandwidth_mbps, **self.proxy_options).start()
             from aiohttp import web
             self.relay = web.AppRunner(create_relay(f"http://127.0.0.1:{self.proxy.port}"), shutdown_timeout=.25)
             await self.relay.setup()

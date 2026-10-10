@@ -217,3 +217,26 @@ If every wireless path fails, show a clearly labelled recorded run and retained
 mission data with motion disabled. This preserves an honest presentation, not
 live teleoperation. An untethered rover cannot send live video through a complete
 radio outage.
+
+## Measured software cellular budget
+
+The [issue #62 measurements](qualification-results.md#cellular-bandwidth-budget-issue-62-october-10)
+exercise the Python demo through the operator relay at shared 2 and 5 Mbps with
+real CPU pose and H.264, simulated inputs/motors and modeled retry delays. Raw
+map snapshots dominated the link. The viewer now pulls compressed HTTP map
+snapshots at most once every two seconds across points and mesh, and pauses
+map/settings-preview transfers while the deadman is held. H.264 suppresses the
+settings RGB JPEG poll. Retained geometry stays visible during the pause.
+
+Four final 20-second driving repeats used about 0.64 Mbps and sustained simulated
+motion. A populated six-person pose scene used about 0.78 Mbps. These are payload
+workload observations, with framing and real cellular variation still requiring
+headroom. Stationary maps at 2 Mbps still sometimes exceed the view-age guard;
+higher retry-delay stress and an intermediate driving repeat retained safe stops.
+Keep the existing lease/view/release gates and qualify decoded display, phones,
+Tailscale, Jetson inference and physical stop behavior on the real rig.
+
+The additive `/ws/map?points=http` acknowledgement and legacy-server fallback
+are specified in [interfaces.md](interfaces.md#cellular-map-subscription-additive).
+Use `python -m tools.budget_link --help` to reproduce or change the modeled link;
+this tool owns isolated localhost fixtures and does not change OS networking.

@@ -25,6 +25,7 @@ server.stderr.on("data", (data) => {
   serverLog += data;
 });
 let browser;
+const mapTimers = new Set();
 try {
   let ready = false;
   for (let attempt = 0; attempt < 100; attempt++) {
@@ -485,6 +486,62 @@ try {
   assert.equal(result.banners.live.kind, "LIVE");
   assert.match(result.banners.live.detail, /USB CAMERA · frame 9001 · 40 ms/);
   assert.equal(result.banners.liveExpired, "UNVERIFIED");
+  // Exercise the real main viewer's transfer scheduling with fixture packets.
+  // Deadman state is injected; this does not qualify physical input or motion.
+  let pointPulls = 0, meshPulls = 0, jpegPulls = 0, mapCloses = 0;
+  const mapUrls = [];
+  await page.route("**/map/points.bin", route => {
+    pointPulls++;
+    return route.fulfill({ contentType: "application/octet-stream", body: Buffer.alloc(4) });
+  });
+  await page.route("**/map/mesh.bin", route => {
+    meshPulls++;
+    return route.fulfill({ contentType: "application/octet-stream", body: Buffer.alloc(8) });
+  });
+  await page.route("**/camera.jpg", route => {
+    jpegPulls++;
+    return route.fulfill({ status: 503, body: "" });
+  });
+  await page.routeWebSocket("**/ws/map?points=http", socket => {
+    mapUrls.push(socket.url());
+    let revision = 0;
+    const timer = setInterval(() => socket.send(JSON.stringify({
+      type: "status", source: "SIMULATED", device: "BUDGET FIXTURE", connected: true,
+      fresh: true, generation: 1, revision: revision++, mesh_revision: revision,
+      points_transport: "http", points: 0, triangles: 0, frames: revision,
+      rejected: 0, dropped: 0, processing_ms: 0, age_ms: 0, tracking: "normal",
+      position: [0, 0, 0], transform: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+      depth_range: null, reason: null,
+    })), 50);
+    mapTimers.add(timer);
+    socket.onClose(() => { clearInterval(timer); mapTimers.delete(timer); mapCloses++; });
+  });
+  await page.locator("#settings-toggle").click();
+  await page.getByText("H.264 video", { exact: false }).locator("input").first().check();
+  await page.waitForTimeout(350);
+  const jpegBefore = jpegPulls;
+  await page.waitForTimeout(2200);
+  assert.equal(jpegPulls, jpegBefore, "H.264 suppresses both JPEG polling paths");
+  assert.ok(pointPulls > 0 && pointPulls <= 1, `bounded point pulls: ${pointPulls}`);
+  assert.ok(meshPulls > 0 && meshPulls <= 1, `bounded mesh pulls: ${meshPulls}`);
+  assert.ok(mapUrls.every(url => url.endsWith("?points=http")));
+  await page.evaluate(async () => {
+    const { RoverExperience } = await import("/src/rover.ts");
+    window.budgetDeadmanDescriptor = Object.getOwnPropertyDescriptor(RoverExperience.prototype, "deadmanHeld");
+    Object.defineProperty(RoverExperience.prototype, "deadmanHeld", { configurable: true, get: () => true });
+  });
+  await page.waitForTimeout(150);
+  const pausedPulls = [pointPulls, meshPulls];
+  await page.waitForTimeout(1200);
+  assert.deepEqual([pointPulls, meshPulls], pausedPulls, "held deadman pauses map HTTP pulls");
+  assert.ok(mapCloses > 0, "held deadman closes map status socket");
+  await page.evaluate(async () => {
+    const { RoverExperience } = await import("/src/rover.ts");
+    Object.defineProperty(RoverExperience.prototype, "deadmanHeld", window.budgetDeadmanDescriptor);
+  });
+  await page.waitForTimeout(600);
+  assert.ok(mapUrls.length >= 2, "released deadman resumes authoritative map subscription");
+  result.cellularTransfers = { pointPulls, meshPulls, jpegSuppressed: true, deadmanPause: true, resumed: true };
   const report = {
     passed: true,
     environment:
@@ -493,6 +550,7 @@ try {
   };
   console.log(JSON.stringify(report, null, 2));
 } finally {
+  for (const timer of mapTimers) clearInterval(timer);
   await browser?.close();
   server.kill("SIGTERM");
 }

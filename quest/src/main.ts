@@ -29,6 +29,7 @@ type Status = {
   transform: number[];
   reason: string | null;
   depth_range: number[] | null;
+  points_transport?: "http";
   scan?: { approximate: boolean; scan_ms: number; markers: { cls: string; position: number[] }[] } | null;
 };
 const $ = <T extends HTMLElement = HTMLElement>(id: string) =>
@@ -93,6 +94,9 @@ let generation = -1,
   appliedMesh = -1,
   pendingMesh = false;
 let connectionVersion = 0;
+let mapDriving = false, appliedPoints = -1, lastMapAt = -Infinity;
+let lastMapKind: "points" | "mesh" = "mesh";
+let pointsRequest: AbortController | null = null, meshRequest: AbortController | null = null;
 let socket: WebSocket | null = null,
   reconnectTimer = 0,
   serverOnline = false;
@@ -264,6 +268,12 @@ new ResizeObserver(() => {
 let rover: RoverExperience | undefined;
 renderer.setAnimationLoop((_time, frame) => {
   rover?.update(performance.now(), frame);
+  const driving = rover?.deadmanHeld ?? false;
+  if (driving !== mapDriving) {
+    mapDriving = driving;
+    if (driving) feedRequest?.abort();
+    syncMapConnection();
+  }
   root.visible = !rover?.vrCameraView;
   if (!renderer.xr.isPresenting) controls.update();
   renderer.render(scene, camera);
@@ -380,34 +390,55 @@ function statusLine(next: Status) {
   );
 }
 async function loadMesh(next: Status) {
-  if (!mapNeeded() || pendingMesh || appliedMesh === next.mesh_revision) return;
+  if (!mapNeeded() || pendingMesh || pointsRequest || appliedMesh === next.mesh_revision || performance.now() - lastMapAt < 2000) return;
   pendingMesh = true;
+  lastMapAt = performance.now(); lastMapKind = "mesh";
+  const abort = new AbortController(); meshRequest = abort;
   const wantedGeneration = next.generation,
     wantedRevision = next.mesh_revision,
     wantedConnection = connectionVersion;
   try {
-    const response = await fetch(api("/map/mesh.bin"), { cache: "no-store" });
+    const response = await fetch(api("/map/mesh.bin"), { cache: "no-store", signal: abort.signal });
     if (!response.ok)
       throw new Error(`Surface request failed (${response.status})`);
     const data = decodeMesh(await response.arrayBuffer());
     if (
       generation === wantedGeneration &&
-      connectionVersion === wantedConnection
+      connectionVersion === wantedConnection && mapNeeded() && !abort.signal.aborted
     ) {
       replaceGeometry(surfaces, data, data.indices);
       appliedMesh = wantedRevision;
     }
   } catch (error) {
-    notify(String(error));
+    if (!abort.signal.aborted) notify(String(error));
   } finally {
-    pendingMesh = false;
+    pendingMesh = false; meshRequest = null;
   }
+}
+async function loadPoints(next: Status) {
+  if (next.points_transport !== "http" || !mapNeeded() || pointsRequest || meshRequest || appliedPoints === next.revision || performance.now() - lastMapAt < 2000) return;
+  const abort = new AbortController(); pointsRequest = abort;
+  lastMapAt = performance.now(); lastMapKind = "points";
+  const wantedGeneration = next.generation, wantedRevision = next.revision, wantedConnection = connectionVersion;
+  try {
+    const response = await fetch(api("/map/points.bin"), { cache: "no-store", signal: abort.signal });
+    if (!response.ok) throw new Error(`Point request failed (${response.status})`);
+    const data = decodePoints(await response.arrayBuffer());
+    if (generation === wantedGeneration && connectionVersion === wantedConnection && mapNeeded() && !abort.signal.aborted) {
+      const first = !cloud.geometry.getAttribute("position")?.count;
+      replaceGeometry(cloud, data); appliedPoints = wantedRevision;
+      if (first && data.positions.length && !renderer.xr.isPresenting) frameMap();
+    }
+  } catch (error) {
+    if (!abort.signal.aborted) notify(String(error));
+  } finally { pointsRequest = null; }
 }
 function acceptStatus(next: Status) {
   if (next.generation < generation) return;
   if (next.generation !== generation) {
     generation = next.generation;
     appliedMesh = -1;
+    appliedPoints = -1;
     replaceGeometry(cloud, emptyGeometry());
     replaceGeometry(surfaces, emptyGeometry());
   }
@@ -456,25 +487,28 @@ function acceptStatus(next: Status) {
     camera.position.add(position.clone().sub(controls.target));
     controls.target.copy(position);
   }
-  void loadMesh(next);
+  // Alternate the preferred kind so a changing mesh cannot starve points.
+  if (lastMapKind === "mesh") { void loadPoints(next); void loadMesh(next); }
+  else { void loadMesh(next); void loadPoints(next); }
   visibility();
 }
 function mapNeeded() {
-  return view !== "camera" || settings.open || (renderer.xr.isPresenting && !rover?.vrCameraView);
+  return !mapDriving && (view !== "camera" || settings.open || (renderer.xr.isPresenting && !rover?.vrCameraView));
 }
 function syncMapConnection() {
   if (mapNeeded()) {
     if (!socket || socket.readyState === WebSocket.CLOSED) connect();
   } else {
+    pointsRequest?.abort(); meshRequest?.abort();
     if (socket) { socket.onclose = null; socket.close(); socket = null; }
     serverOnline = false;
-    text("cloud-status", "Map retained · transfers paused during live camera view");
+    text("cloud-status", mapDriving ? "Map retained · updates paused while deadman is held" : "Map retained · transfers paused during live camera view");
     $("cloud-status").dataset.live = "false";
   }
 }
 function connect() {
   if (!mapNeeded() || (socket && socket.readyState !== WebSocket.CLOSED)) return;
-  const nextSocket = new WebSocket(api("/ws/map").replace(/^http/, "ws"));
+  const nextSocket = new WebSocket(api("/ws/map?points=http").replace(/^http/, "ws"));
   socket = nextSocket;
   nextSocket.binaryType = "arraybuffer";
   nextSocket.onopen = () => {
@@ -483,6 +517,7 @@ function connect() {
     connectionVersion += 1;
     generation = -1;
     appliedMesh = -1;
+    appliedPoints = -1;
   };
   nextSocket.onmessage = (event) => {
     if (socket !== nextSocket) return;
@@ -619,22 +654,26 @@ window.addEventListener("keydown", (event) => {
 });
 
 let feedBusy = false;
+let feedRequest: AbortController | null = null;
 async function updateFeeds() {
   if (
     feedBusy ||
     !status?.fresh ||
     document.hidden ||
-    !settings.open
+    !settings.open ||
+    mapDriving
   )
     return;
   feedBusy = true;
+  const abort = new AbortController(); feedRequest = abort;
   await Promise.all(
     ["rgb", "depth"].map(async (id) => {
+      if (id === "rgb" && rover?.videoStreaming) return;
       const image = $<HTMLImageElement>(id);
       try {
         const response = await fetch(
           api(id === "rgb" ? "/camera.jpg" : "/depth.jpg"),
-          { cache: "no-store" },
+          { cache: "no-store", signal: abort.signal },
         );
         if (!response.ok) return;
         const url = URL.createObjectURL(await response.blob());
@@ -647,7 +686,7 @@ async function updateFeeds() {
       }
     }),
   );
-  feedBusy = false;
+  feedBusy = false; feedRequest = null;
 }
 window.setInterval(() => void updateFeeds(), 250);
 window.addEventListener("beforeunload", () => {
