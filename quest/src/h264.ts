@@ -45,7 +45,7 @@ export class H264Viewer {
     });
   }
   get displayedFrame() {
-    if (!this.callbackSupported || this.decodedAt > performance.now() || performance.now() - this.decodedAt >= 250) return null;
+    if (!this.callbackSupported || this.video.seeking || this.video.paused || this.decodedAt > performance.now() || performance.now() - this.decodedAt >= 250) return null;
     const segment = [...this.segments].reverse().find(item =>
       this.decodedMediaTime >= item.media_start_s - 0.0001 && this.decodedMediaTime < item.media_end_s);
     if (!segment) return null;
@@ -152,7 +152,7 @@ export class H264Viewer {
       this.reset("H.264 segment stalled: restarting");
     }
     if (this.displayedFrame) { this.problem = null; this.state = `${this.source} · H.264 decoded frame verified`; }
-    else this.state = this.problem ?? `${this.source} · waiting for verified decoded frame (motion disabled)`;
+    else this.state = this.problem ?? `${this.source} · waiting for verified decoded frame`;
   }
   private reset(reason: string) {
     if (this.stopped) return;
