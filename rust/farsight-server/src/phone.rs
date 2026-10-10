@@ -243,6 +243,43 @@ pub struct Mesh {
     pub indices: Vec<[u32; 3]>,
 }
 
+/// Observed native pixels with RGB; bounded samples rotate across captures.
+/// Port of measured_points: valid measured depth + confidence >= 1 at native
+/// resolution (no stride), optional `indices[phase % step :: step][:max]`
+/// rotating subsample for the bounded dense worker.
+pub fn measured_points(
+    frame: &RgbdFrame,
+    max_points: Option<usize>,
+    phase: usize,
+) -> (Vec<[f32; 3]>, Vec<[u8; 3]>) {
+    let (dw, dh) = (frame.depth_width, frame.depth_height);
+    let usable = valid_depth(&frame.depth, dw, dh, 0.15, 8.0, 0.12);
+    let mut indices: Vec<usize> = (0..dw * dh)
+        .filter(|&i| usable[i] && frame.confidence[i] >= 1)
+        .collect();
+    if let Some(max) = max_points {
+        if indices.len() > max {
+            let step = indices.len().div_ceil(max);
+            indices = indices.into_iter().skip(phase % step).step_by(step).take(max).collect();
+        }
+    }
+    let k = &frame.calibration;
+    let mut points = Vec::with_capacity(indices.len());
+    let mut colors = Vec::with_capacity(indices.len());
+    for idx in indices {
+        let (v, u) = (idx / dw, idx % dw);
+        let z = frame.depth[idx] as f64;
+        let local = [
+            (u as f64 - k.cx) * z / k.fx,
+            -((v as f64 - k.cy) * z / k.fy),
+            -z,
+        ];
+        points.push(crate::geometry::transform_point(&frame.transform, local).map(|v| v as f32));
+        colors.push([frame.rgb[idx * 3], frame.rgb[idx * 3 + 1], frame.rgb[idx * 3 + 2]]);
+    }
+    (points, colors)
+}
+
 /// Coarser grid strides kept per keyframe for the capped visual mesh export.
 /// Matches jetson/mapping/phone.py VISUAL_LODS.
 pub const VISUAL_LODS: [usize; 2] = [4, 8];
