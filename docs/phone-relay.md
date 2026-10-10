@@ -48,11 +48,31 @@ proxy. The computers do not need Tailscale for this path.
 
    `iproxy` forwards the Mac's loopback TCP port through the USB cable to the
    phone's loopback listener. No operator hotspot IP or default route is needed.
-6. Start the USB forwarding helper, then the existing operator relay using
-   `http://127.0.0.1:18443` as its upstream. Quest still opens
-   `http://localhost:8080` through ADB reverse. The precise helper command is
-   documented once its tested CLI lands; do not substitute a network-device
-   usbmux connection for the USB cable.
+6. Run a bounded USB health check first; it stops its proxy when finished:
+
+   ```sh
+   python -m tools.phone_usb --check
+   ```
+
+   Then keep the helper running in one terminal:
+
+   ```sh
+   python -m tools.phone_usb
+   ```
+
+   Start the existing operator relay in another terminal:
+
+   ```sh
+   python -m tools.demo --upstream http://127.0.0.1:18443 --quest
+   ```
+
+   Quest still opens `http://localhost:8080` through ADB reverse. When multiple
+   iOS devices are attached, add `--device DEVICE_ID` to the USB helper; obtain
+   the identifier locally and do not post it publicly. The helper always uses
+   USB-only enumeration, an explicit device selector and loopback binding.
+   It refuses old tools lacking those controls and remote usbmux daemons.
+   Its health probe does not open a control socket or request motion; success
+   proves a forwarded backend response, not the carrier path or all bridge hops.
 
 ## Required evidence
 
