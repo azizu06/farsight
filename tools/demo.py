@@ -25,6 +25,9 @@ def run(command):
 
 def free_port(port):
     with socket.socket() as sock:
+        # Match aiohttp/uvicorn restart behavior; a closed socket in TIME_WAIT
+        # must not make the next demo launch look like an active listener.
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             sock.bind(("127.0.0.1", port))
         except OSError:
@@ -69,6 +72,9 @@ def main():
     parser.add_argument("--check", action="store_true", help="Check prerequisites and exit without starting servers")
     args = parser.parse_args()
     processes = []
+    def stop_on_signal(signum, frame):
+        raise KeyboardInterrupt
+    previous_term_handler = signal.signal(signal.SIGTERM, stop_on_signal)
     try:
         packages = ["aiohttp"] + (["numpy", "cv2", "fastapi", "uvicorn"] if args.simulate else [])
         missing = [name for name in packages if importlib.util.find_spec(name) is None]
@@ -76,6 +82,12 @@ def main():
             raise RuntimeError("Missing Python packages: " + ", ".join(missing)
                 + "\nInstall into your environment: python -m pip install -r tools/requirements.txt"
                 + (" -r jetson/mapping/requirements.txt" if args.simulate else ""))
+        if args.upstream:
+            from .operator_relay import upstream_origin
+            try:
+                upstream_origin(args.upstream)
+            except ValueError as exc:
+                raise RuntimeError(str(exc))
         if args.build:
             if not shutil.which("npm") or not (ROOT / "quest/node_modules").is_dir():
                 raise RuntimeError("Build prerequisites missing; run npm --prefix quest ci before going offline")
@@ -131,6 +143,7 @@ def main():
     except (RuntimeError, subprocess.CalledProcessError) as exc:
         parser.exit(1, f"{exc}\n")
     finally:
+        signal.signal(signal.SIGTERM, previous_term_handler)
         for process in processes:
             if process.poll() is None:
                 os.killpg(process.pid, signal.SIGTERM)

@@ -5,6 +5,8 @@ from contextlib import suppress
 import json
 from pathlib import Path
 import socket
+import ssl
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -85,6 +87,7 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
             raise web.HTTPFound("https://example.com/escape")
 
         self.upstream.router.add_get("/health", health)
+        self.upstream.router.add_get("/control/status", health)
         self.upstream.router.add_post("/ask", ask)
         self.upstream.router.add_get("/camera.jpg", image)
         self.upstream.router.add_get("/stream.mjpg", stream)
@@ -133,6 +136,9 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
             result = await response.json()
             self.assertEqual(result["audio_url"], "/tts/42.wav")
             self.assertEqual(result["reference"], "https://example.com/independent")
+        async with self.client.get(self.base + "/control/status") as response:
+            self.assertEqual(response.status, 200)
+            self.assertTrue((await response.json())["camera"])
         async with self.client.post(self.base + "/ask", json={"text": "hello"}) as response:
             self.assertEqual((await response.json())["answer"], "hello")
         async with self.client.get(self.base + "/camera.jpg") as response:
@@ -192,6 +198,72 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.status, 403)
         async with self.client.get(self.base + "/health", headers={"Host": "evil.example"}) as response:
             self.assertEqual(response.status, 403)
+
+    async def test_qualification_command_sends_only_stops(self):
+        result = await asyncio.to_thread(subprocess.run,
+            [sys.executable, "-m", "tools.qualify_link", "--url", self.base, "--seconds", "0.4"],
+            cwd=ROOT, capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        report = json.loads(result.stdout)
+        self.assertTrue(report["transport_checks_passed"])
+        self.assertTrue(report["measurement_only"])
+        self.assertGreater(report["video_bytes"], 0)
+        self.assertGreater(len(self.commands), 0)
+        self.assertTrue(all(command["deadman"] is False for command in self.commands))
+
+    @unittest.skipUnless(shutil.which("openssl"), "TLS fixture needs openssl")
+    async def test_https_rejects_untrusted_certificate_and_accepts_configured_ca(self):
+        cert, key = self.dist / "cert.pem", self.dist / "key.pem"
+        await asyncio.to_thread(subprocess.run, ["openssl", "req", "-x509", "-newkey", "rsa:2048",
+            "-nodes", "-keyout", str(key), "-out", str(cert), "-days", "1", "-subj", "/CN=localhost",
+            "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1"],
+            check=True, capture_output=True, timeout=10)
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(cert, key)
+        secure_site = web.TCPSite(self.runner, "127.0.0.1", 0, ssl_context=context)
+        await secure_site.start()
+        secure_origin = f"https://127.0.0.1:{secure_site._server.sockets[0].getsockname()[1]}"
+
+        async def restart(ca=False):
+            self.process.terminate()
+            await asyncio.to_thread(self.process.wait, 3)
+            port = int(self.base.rsplit(":", 1)[1])
+            command = [sys.executable, "-m", "tools.operator_relay", "--upstream", secure_origin,
+                       "--port", str(port), "--dist", str(self.dist)]
+            if ca:
+                command += ["--ca-file", str(cert)]
+            self.process = subprocess.Popen(command, cwd=ROOT, stdout=self.log, stderr=self.log)
+            for _ in range(100):
+                try:
+                    async with self.client.get(self.base + "/relay/health") as response:
+                        if response.status == 200:
+                            return
+                except aiohttp.ClientError:
+                    pass
+                await asyncio.sleep(0.02)
+            self.fail("TLS relay did not start")
+
+        await restart()
+        loop = asyncio.get_running_loop()
+        previous_handler = loop.get_exception_handler()
+        def expected_handshake_reset(loop, context):
+            if isinstance(context.get("exception"), ConnectionResetError):
+                return
+            if previous_handler:
+                previous_handler(loop, context)
+            else:
+                loop.default_exception_handler(context)
+        loop.set_exception_handler(expected_handshake_reset)
+        try:
+            async with self.client.get(self.base + "/health") as response:
+                self.assertEqual(response.status, 502)
+            await asyncio.sleep(0)
+        finally:
+            loop.set_exception_handler(previous_handler)
+        await restart(ca=True)
+        async with self.client.get(self.base + "/health") as response:
+            self.assertEqual(response.status, 200)
+            self.assertTrue((await response.json())["camera"])
 
     def test_url_validation(self):
         for value in ("https://jetson/path", "file:///etc/passwd", "http://user:secret@jetson", "http://jetson?x=1"):
