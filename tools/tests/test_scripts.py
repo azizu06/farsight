@@ -69,6 +69,101 @@ class ScriptTests(unittest.TestCase):
         self.assertIn("jetson.launch --check --env-file /etc/farsight.env", result.stdout)
         self.assertIn("systemctl restart farsight.service", result.stdout)
 
+    def test_phone_camera_and_empty_serial_profile_renders_without_changing_a_file(self):
+        with tempfile.TemporaryDirectory(prefix="farsight profile ") as directory:
+            env_path = Path(directory) / "new config.env"
+            result = sh("jetson/install_service.sh", "--dry-run", "--no-tls", "--no-assistant",
+                        "--camera-source", "phone", "--serial-port", "", env={"FARSIGHT_ENV_FILE": str(env_path)})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("FARSIGHT_CAMERA=\n", result.stdout)
+            self.assertIn("FARSIGHT_SERIAL_PORT=\n", result.stdout)
+            self.assertFalse(env_path.exists())
+
+    def test_existing_camera_and_serial_config_refuses_explicit_mismatches_before_mutations(self):
+        with tempfile.TemporaryDirectory() as directory:
+            env_path = Path(directory) / "existing config.env"
+            content = "FARSIGHT_CAMERA=/dev/video0\nFARSIGHT_SERIAL_PORT=/dev/ttyACM0\n"
+            env_path.write_text(content)
+            result = sh("jetson/install_service.sh", "--dry-run", "--no-tls", "--no-assistant",
+                        "--camera-source", "phone", "--serial-port", "", env={"FARSIGHT_ENV_FILE": str(env_path)})
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertIn("existing camera source is usb", result.stderr)
+            self.assertIn("requested motor profile was not applied", result.stderr)
+            self.assertIn("--reset-env", result.stderr)
+            self.assertNotIn("HTTPS certificate", result.stdout)
+            self.assertNotIn("install farsight", result.stdout)
+            self.assertNotIn("systemctl", result.stdout)
+            self.assertEqual(env_path.read_text(), content)
+
+    def test_explicit_serial_disable_alone_refuses_existing_physical_port(self):
+        with tempfile.TemporaryDirectory() as directory:
+            env_path = Path(directory) / "config.env"
+            content = "FARSIGHT_CAMERA=\nFARSIGHT_SERIAL_PORT=/dev/ttyACM0\n"
+            env_path.write_text(content)
+            result = sh("jetson/install_service.sh", "--dry-run", "--serial-port", "", env={"FARSIGHT_ENV_FILE": str(env_path)})
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertNotIn("existing camera source", result.stderr)
+            self.assertNotIn("systemctl", result.stdout)
+            self.assertNotIn("HTTPS certificate", result.stdout)
+            self.assertEqual(env_path.read_text(), content)
+
+    def test_default_usb_profile_keeps_existing_phone_config_without_explicit_camera_request(self):
+        with tempfile.TemporaryDirectory() as directory:
+            env_path = Path(directory) / "config.env"
+            content = "FARSIGHT_CAMERA=\nFARSIGHT_SERIAL_PORT=\n"
+            env_path.write_text(content)
+            result = sh("jetson/install_service.sh", "--dry-run", "--no-tls", "--no-assistant", env={"FARSIGHT_ENV_FILE": str(env_path)})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("kept existing", result.stdout)
+            self.assertIn("systemctl restart farsight.service", result.stdout)
+            self.assertEqual(env_path.read_text(), content)
+
+    def test_explicit_reset_renders_requested_motor_disabled_profile(self):
+        with tempfile.TemporaryDirectory() as directory:
+            env_path = Path(directory) / "config.env"
+            original = "FARSIGHT_CAMERA=/dev/video0\nFARSIGHT_SERIAL_PORT=/dev/ttyACM0\n"
+            env_path.write_text(original)
+            result = sh("jetson/install_service.sh", "--dry-run", "--no-tls", "--no-assistant", "--reset-env",
+                        "--camera-source", "phone", "--serial-port", "", env={"FARSIGHT_ENV_FILE": str(env_path)})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("FARSIGHT_CAMERA=\n", result.stdout)
+            self.assertIn("FARSIGHT_SERIAL_PORT=\n", result.stdout)
+            self.assertIn("systemctl restart farsight.service", result.stdout)
+            self.assertEqual(env_path.read_text(), original)  # dry-run does not write
+
+    def test_prepared_small_models_enable_native_units_and_partial_override_never_falls_back(self):
+        with tempfile.TemporaryDirectory(prefix="farsight native ") as directory:
+            root = Path(directory)
+            for name in ("llama.cpp/build/bin/llama-server", "whisper.cpp/build/bin/whisper-server"):
+                binary = root / name
+                binary.parent.mkdir(parents=True, exist_ok=True)
+                binary.write_text("#!/bin/sh\nexit 0\n")
+                binary.chmod(0o755)
+            paths = {}
+            for key, name in (("--llm-model", "SmolVLM-500M-Instruct-Q8_0.gguf"),
+                              ("--llm-projector", "mmproj-SmolVLM-500M-Instruct-Q8_0.gguf"),
+                              ("--whisper-model", "ggml-tiny.en.bin")):
+                path = root / name
+                path.write_bytes(b"fixture model, not executed")
+                paths[key] = str(path)
+            options = [item for pair in paths.items() for item in pair]
+            environment = {"FARSIGHT_SRC": str(root), "FARSIGHT_ENV_FILE": str(root / "new config.env")}
+            result = sh("jetson/install_service.sh", "--dry-run", "--no-tls", *options, env=environment)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("install farsight-llm.service", result.stdout)
+            self.assertIn("install farsight-whisper.service", result.stdout)
+            self.assertIn("SmolVLM-500M-Instruct-Q8_0.gguf", result.stdout)
+            self.assertIn("ggml-tiny.en.bin", result.stdout)
+            Path(paths["--llm-projector"]).unlink()
+            partial = sh("jetson/install_service.sh", "--dry-run", "--no-tls", *options, env=environment)
+            self.assertEqual(partial.returncode, 0, partial.stderr)
+            self.assertIn("Configured vision pair is missing", partial.stdout)
+            self.assertNotIn("install farsight-llm.service", partial.stdout)
+
+    def test_camera_profile_bad_values_are_rejected(self):
+        self.assertEqual(sh("jetson/install_service.sh", "--dry-run", "--camera-source", "invalid").returncode, 2)
+        self.assertEqual(sh("jetson/install_service.sh", "--dry-run", "--camera-source").returncode, 2)
+
     def test_units_use_the_canonical_entry_point_and_templates_are_complete(self):
         service = (ROOT / "jetson/farsight.service").read_text()
         self.assertIn("-m jetson.launch", service)

@@ -22,13 +22,51 @@ The [model and projector](https://huggingface.co/ggml-org/SmolVLM-500M-Instruct-
 must be downloaded before an offline startup.
 
 Build or install llama.cpp and whisper.cpp for the actual Jetson; Mac binaries
-cannot run on Jetson Linux. `jetson/setup.sh` builds both with CUDA (`--skip-builds` to
-skip) and `jetson/install_service.sh` runs them as `farsight-llm.service` (Qwen2.5-VL-3B on
-port 8092) and `farsight-whisper.service` (whisper-server on 8091), wiring
+cannot run on Jetson Linux. Use the optional assistant/model build phase of
+`jetson/setup.sh` after the core rover path works. The installer runs native
+builds as `farsight-llm.service` (on port 8092) and `farsight-whisper.service`
+(on port 8091), wiring
 `FARSIGHT_ASSISTANT_URL`/`FARSIGHT_WHISPER_URL` in `/etc/farsight.env`; the manual
 commands below are for rehearsal on other machines. Latency commands: `python -m tools.measure ask`
 ([jetson-bringup.md](jetson-bringup.md) step 11). Avoid rebuilding or reflashing a
 working JetPack installation just to enable this optional feature.
+
+The installer now prefers the actual prepared artifacts: a **complete**
+SmolVLM-500M/Q8 pair, tiny English Whisper, and the root-level lessac-low voice.
+If absent, it supports the complete Qwen2.5-VL-3B Q4/model + Q8/projector pair,
+base or medium Whisper, and the existing `models/piper/en_US-lessac-medium.onnx`
+layout. It never pairs the Smol model with the Qwen projector. It only enables a
+model unit when the selected files and target-native executable exist; path
+checks are not evidence of successful Jetson inference.
+
+For the initial phone-camera service pass with physical motors disabled:
+
+```sh
+bash jetson/install_service.sh --camera-source phone --serial-port ''
+```
+
+`phone` blanks `FARSIGHT_CAMERA`, so the launcher omits `--camera` and does not
+wait for `/dev/video0`; `/phone/rgb` can then own the camera. Default `usb`
+behavior is preserved. Existing `/etc/farsight.env` is kept: if an **explicitly
+requested** camera or serial selection differs, the installer refuses to modify
+or start services until you edit the config or repeat the same profile with
+`--reset-env`, which backs up the old file before rendering that profile.
+Leaving `--camera-source` unspecified does not reject an existing phone config
+just because the automatic default is USB. After
+lifted-wheel firmware and motor tests, select the **identified** real serial
+port explicitly and use `--reset-env` if changing an existing config.
+
+Model overrides are `--llm-model PATH`, `--llm-projector PATH`,
+`--whisper-model PATH`, and `--piper-model PATH`. Corresponding config keys are
+`FARSIGHT_LLM_MODEL`, `FARSIGHT_LLM_MMPROJ`, `FARSIGHT_WHISPER_SERVER_MODEL` (or
+the existing `FARSIGHT_WHISPER_MODEL`), and `FARSIGHT_PIPER_MODEL`. Nonempty
+explicit paths override automatic choices; an incomplete/mixed known vision
+pair is reported and is never silently replaced. A recognized model with no
+explicit projector searches only for its matching projector in the same folder.
+For renamed/custom artifacts, provide both paths and validate their compatibility
+on the Jetson. Re-run the installer after changing unit model selection, since
+the selected paths become quoted unit defaults. Spaces in repo, build, config,
+and model paths remain separate arguments; no env file is sourced as shell code.
 
 Run the local model server on the Jetson:
 

@@ -155,8 +155,14 @@ curl -s -o /tmp/f.jpg -w '%{http_code} %{size_download}\n' localhost:8000/camera
 ```sh
 cd ~/farsight
 bash jetson/install_service.sh --dry-run      # read it once
-bash jetson/install_service.sh
+bash jetson/install_service.sh --camera-source phone --serial-port ''
 ```
+
+For a UVC webcam, substitute `--camera-source usb`. The initial empty serial
+argument keeps physical motors disabled. With an existing config, explicitly
+requested camera/serial mismatches are refused before service changes; edit the
+file or add `--reset-env` to back it up and apply the chosen profile. Do not
+interpret an unchanged existing configuration as a successful profile switch.
 
 It generates a private CA and a server certificate in `/etc/farsight/tls` (names: `farsight.local`, the hostname,
 `192.168.55.1`, current LAN IPs, the Tailscale name), renders `/etc/farsight.env` from what exists (pose engine,
@@ -220,7 +226,10 @@ ls /dev/ttyACM* /dev/ttyUSB*       # edit FARSIGHT_SERIAL_PORT in /etc/farsight.
 sudo nano /etc/farsight.env && sudo systemctl restart farsight
 ```
 
+Identify the Uno port manually and keep `FARSIGHT_CAMERA` blank for the phone.
 Wheels raised first ([rover/README.md](../rover/README.md), [transport-setup.md](transport-setup.md)).
+Complete direction, range, deadman, watchdog and disconnect checks before floor
+driving; a connected serial port alone does not pass these checks.
 **Check (Mac):** `python -m tools.ready --url https://farsight.local:8443 --ca-file ~/farsight-ca.pem` reaches `READY` with
 `rover OK Uno connected`. **If it fails:** `rover WAIT`: cable, `groups` shows `dialout`, `dmesg | grep tty`.
 
@@ -234,6 +243,14 @@ python -m tools.demo --upstream https://farsight.local:8443 --ca-file ~/farsight
 Open `http://localhost:8080` in the Quest Browser (USB-C to the Mac, approve USB debugging; `adb devices`).
 **Check:** prints `Open http://localhost:8080`, `adb reverse --list` shows `tcp:8080`, the page shows live video and
 the HUD with video age. **If it fails:** [demo-checklist.md](demo-checklist.md) "If something is not READY".
+
+For the constrained cellular path, enable `FARSIGHT_H264=1` in the rover env and
+restart the service, then choose compressed video in Quest settings. Confirm
+actual MediaSource decoding and displayed age on the Quest before driving.
+Defaults remain 640x480, 10 fps, 500 kbps; the 250 ms permit and 500 ms view
+guards remain unchanged. The software-only comparisons in
+[qualification-results.md](qualification-results.md) include failed loaded runs
+and do not qualify the real connection.
 
 ## 10. Detector on the GPU: issue #9 (Jetson, then Mac)
 

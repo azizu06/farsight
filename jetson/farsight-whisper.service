@@ -3,13 +3,15 @@
 Description=Farsight speech to text (whisper.cpp whisper-server, CUDA)
 After=network.target
 ConditionPathExists=@SRC@/whisper.cpp/build/bin/whisper-server
-ConditionPathExists=@REPO@/models/ggml-base.en.bin
 
 [Service]
 Type=simple
 User=@USER@
 WorkingDirectory=@REPO@
-ExecStart=@SRC@/whisper.cpp/build/bin/whisper-server -m @REPO@/models/ggml-base.en.bin --host 127.0.0.1 --port 8091
+Environment="FARSIGHT_SELECTED_WHISPER_MODEL=@WHISPER_MODEL@"
+EnvironmentFile=@ENV_FILE@
+ExecStartPre=/usr/bin/test -s "${FARSIGHT_SELECTED_WHISPER_MODEL}"
+ExecStart=@SRC@/whisper.cpp/build/bin/whisper-server -m "${FARSIGHT_SELECTED_WHISPER_MODEL}" --host 127.0.0.1 --port 8091
 Restart=on-failure
 RestartSec=3
 StandardOutput=journal
