@@ -45,9 +45,11 @@ end to end), Design, Wow. See `docs/hackers-guide.md`.
 - Feature freeze Sun 4 AM.
 
 ## Owners
-| Area | Owner | Issues |
+Load is weighted on purpose: hardest and most work first.
+
+| Owner | Tier | Issues |
 |---|---|---|
-| Jetson perception | @azizu06 | #1 #9 #14 |
-| Rover control + hardware | @GodlyDonuts | #3 #6 #7 #13 |
-| Quest WebXR | @mchdich | #4 #8 #10 #16 |
-| Integration, data, pitch | @chang-pro | #2 #5 #11 #12 #15 #17 |
+| @azizu06 | 1 | #1 Jetson bring-up, #9 TensorRT detection, #7 control + safety, #11 launcher, #13 Seek, #14 depth |
+| @GodlyDonuts | 2 | #3 Uno firmware, #6 power + mount, #5 network + HTTPS, #17 mission log |
+| @mchdich | 3 | #4 WebXR shell, #8 controls, #10 HUD, #16 rescue drill |
+| @chang-pro | 3 | #2 mock server, #12 measurements, #15 video + Devpost + diagram |
