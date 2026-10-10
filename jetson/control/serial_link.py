@@ -8,10 +8,12 @@ LOG = logging.getLogger(__name__)
 
 
 class SerialPump:
-    def __init__(self, state, port=None, simulate=False, factory=None):
+    def __init__(self, state, port=None, simulate=False, factory=None, simulated_range=None):
         if port and simulate:
             raise ValueError("Choose a real serial port OR simulated rover")
         self.state, self.port, self.simulate, self.factory = state, port, simulate, factory
+        # Simulated ultrasonic in cm (None = no echo); a fixed clear 120 cm without a world.
+        self.simulated_range = simulated_range
         self.quit = threading.Event()
         self.thread = None
 
@@ -35,7 +37,11 @@ class SerialPump:
             LOG.warning("SIMULATED ROVER: no motor hardware is connected")
             self.state.set_connected(True)
             while not self.quit.is_set():
-                self.state.update_range(120)
+                try:
+                    cm = self.simulated_range() if self.simulated_range else 120
+                except Exception:
+                    cm = None
+                self.state.update_range(-1 if cm is None else cm)
                 self.state.output()
                 self.quit.wait(0.05)
             self.state.set_connected(False, "shutdown")

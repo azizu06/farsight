@@ -18,7 +18,7 @@ Rover iPhone Tailscale IP:8081 -> fixed local USB upstream
 Jetson Orin Nano (on the rover)  -- the brain
    camera -> TensorRT YOLO -> detections
    camera -> Depth Anything V2 (stretch) -> point cloud
-   control server: 20 Hz pump, 250 ms lease, ultrasonic e-stop
+   control server: 20 Hz pump, 250 ms lease, ultrasonic e-stop (opt-out)
    |  USB serial 115200
    v
 Arduino Uno (ELEGOO V4 board) -> motors, ultrasonic (pan servo optional; the phone camera is fixed, look-around is digital)
@@ -138,7 +138,7 @@ Optional pose fields (YOLO11-pose), present when the detector is a pose model:
 ```
 
 - `v` forward speed and `w` turn rate, both -1..1. `pan` camera yaw in degrees, -80..80, 0 = forward.
-- `mode`: `"teleop"`, `"seek"` (also sends `"target_id"`), `"explore"` or `"scan"`; the last two are specified below.
+- `mode`: `"teleop"`, `"seek"` (also sends `"target_id"`), `"explore"`, `"scan"`, or `"goto"` (with `--nav2`); the last three are specified below.
 - No valid message for 250 ms, or `deadman: false` -> motors zero. Always.
 - One socket owns control. A new connection starts stopped. First send an
   ordered release `{"session_id":"...","seq":0,"deadman":false}`; then a new
@@ -207,14 +207,20 @@ Autonomy never renews a permit or lease itself. Example held-deadman heartbeat:
   latched against further autonomous heartbeats until a deadman release or an
   explicit `teleop` message. Release/repress or select teleop then reselect
   autonomy to retry an arrived/lost target.
-- Autonomy centres pan at zero. Missing/stale front range stops all autonomous
-  motion. Range below 25 cm also stops autonomous turns; normal teleop reverse
-  and turn escape remain available. The PWM ceiling and camera guard still apply.
+- Autonomy centres pan at zero. The PWM ceiling and camera guard still apply.
+- The proximity stop is **on by default**: missing/stale front range stops all
+  autonomous motion, range below 25 cm also stops autonomous turns, and forward
+  translation is blocked; reverse and turn escape remain available. Turning it off
+  is an explicit opt-in (server `--proximity-stop off` / `FARSIGHT_PROXIMITY_STOP=0`,
+  Uno built with `-DFARSIGHT_DISABLE_PROXIMITY_STOP`) for runs where navigation
+  steers around obstacles. Then range never stops motion, and the reactive policy
+  keeps its 70 cm turn cue and estimates Seek arrival from the box width when there
+  is no range.
 
 Status replies add optional `autonomy_state` and `target_id` fields; `mode`
 reports the active mode, including automatic Explore-to-Seek handover. States
 are `idle`, `forward`, `turning`, `tracking`, `target_missing`, `target_lost`,
-`arrived`, `estop`, and `stick_override`. `estop` and `requires_release` retain
+`arrived`, `estop`, `stick_override`, and `goto` (see the navigation extension). `estop` and `requires_release` retain
 their existing safety meanings. Public status never grants a usable permit.
 
 Jetson replies on the same socket, 40 Hz (20 Hz before 2026-10-10; mission
@@ -227,39 +233,75 @@ replay still samples control at 20 Hz):
  "left_pwm":40,"right_pwm":20,"pan_deg":90,"max_pwm":100,"min_pwm":0}
 ```
 
-`estop` also covers unknown/stale range and an ultrasonic pan outside ±10°.
-Those conditions block forward translation; camera/link failure stops all
-motion. `link_ms` is permit age at command arrival; the browser's acknowledged
+`estop` reports a blocked forward translation: unknown/stale range, range below
+25 cm and an ultrasonic pan outside ±10° (the range conditions only while the
+proximity stop is on, the default).
+Camera/link failure stops all motion regardless. `link_ms` is permit age at command arrival; the browser's acknowledged
 sequence RTT is a different measurement. Optional autonomy fields follow below.
 
-### Optional navigation status and go-to goals
+### Optional navigation status and go-to goals (Nav2)
 
-Servers with the ROS 2 / Nav2 planner (or its fallback) add an optional `nav`
-object to `/control/status` and every `/ws/control` status. Coordinates are
-voxel-map world metres: map `x, z` (ROS `x, y`) on the floor plane.
+Opt-in: the Python server only navigates with `--nav2` (`FARSIGHT_NAV2=1`) and the
+ROS 2 stack from [navigation.md](navigation.md) running on the Jetson. Without the
+flag, Explore/Seek are exactly the reactive policy above, `nav` is absent from
+status and `/health`, `POST /nav/goal` answers 409 and `POST /nav/cancel` returns an
+`idle` nav object with `backend: null` (the Rust server answers the same way).
+
+Servers with the planner add an optional `nav` object to `/control/status` and
+every `/ws/control` status. Coordinates are voxel-map world metres: map `x, z`
+(ROS odom `-y, -x`, see [navigation.md](navigation.md)) on the floor plane.
 
 ```json
 "nav": {"state":"driving","mode":"goto","goal":{"x":2.0,"z":-1.5},
         "path":[[0,0],[1.1,-0.6],[2.0,-1.5]],"frontiers":[[3.2,0.4]],
-        "backend":"nav2","message":""}
+        "backend":"nav2","message":"2.9 m to go"}
 ```
 
-- `state`: `idle`, `planning`, `driving`, `recovering`, `arrived`, `failed` or
-  `unavailable`. `mode`: `explore`, `seek`, `goto` or `null`. `backend`: `nav2`
-  or `fallback`. `path` has at most 200 points, `frontiers` at most 50.
+- `state`: `idle` (no goal, deadman not held, or Nav2 ready but idle), `planning`,
+  `driving`, `recovering` (back-up/spin/wait/costmap clearing), `arrived` (latched
+  stopped), `failed` (Nav2 aborted, e.g. no path) or `unavailable` (no bridge, a
+  silent bridge whose commands are ignored, or missing navigation sensors; the
+  rover stops).
+- Navigation sensors: Nav2 only drives with a normal-tracking ARKit pose at most
+  0.5 s old and LiDAR depth at most 1 s old, both from the current phone session
+  and map epoch. A fresh RGB camera alone never qualifies. Losing either while
+  driving stops the rover even with a live lease and fresh Nav2 command, with
+  control `reason` `nav_pose_lost`, `nav_tracking_limited`, `nav_depth_lost` or
+  `nav_sensor_reset` and `requires_release`; it resumes only after the sensors
+  recover and the operator presses again. A new phone session or map epoch also
+  disarms the goal (Nav2's goal and costmaps are reset).
+- `mode`: `explore`, `seek`, `goto` or `null`. `backend`: `nav2` when Nav2 drives the
+  current mode, `fallback` when the reactive policy does (Explore/Seek without a
+  bridge), `null` when nothing can. `message`: short human-readable detail.
+- `path`: at most 200 `[x, z]` points of the current Nav2 plan (Douglas-Peucker
+  reduced to 3 cm); empty when not navigating. `frontiers`: at most 50 `[x, z]`.
 - `POST /nav/goal` with exactly `{"x": 2.0, "z": -1.5}` (metres, millimetre
-  precision) returns `202` with the nav object, or `409` with a nav object or
-  `{"message"}` explaining the refusal. `POST /nav/cancel` (no body) cancels and
-  returns the nav object.
-- Viewer (`quest/src/nav-view.js`, `nav-overlay.ts`): an unknown `state` hides
-  the overlay, and a path with any non-finite point is not drawn at all. Only a
-  `202` arms go-to; held-deadman heartbeats then carry `mode: "goto"` (no
-  `target_id`, `v: 0`, `w: 0`), and releases still carry `mode: "teleop"`. All
-  permit, sequence, deadman and fresh-video rules above still apply; a release or
-  view change needs a new deadman press but keeps the goal armed. Stick input,
-  STOP and cancel disarm it and send `POST /nav/cancel`. Servers that do not
-  accept `mode: "goto"` stop with `unsupported_mode`; return `409` from
-  `/nav/goal` until they do.
+  precision) returns `202` with the nav object, or `409` `{"nav": <nav object>,
+  "message": reason}` when the backend is unavailable, navigation sensors are
+  missing, no live operator permit is held (deadman not held, release required,
+  camera stale) or a scan is running;
+  `422` for non-finite values. `POST /nav/cancel` (no body) cancels and returns the
+  nav object. `GET /nav/status` adds a diagnostic `detail` object.
+- `mode: "goto"` heartbeats are accepted like `explore`/`seek`: same session,
+  ordered sequence, server-issued permit, held deadman and fresh-video checks, and
+  any nonzero `v`/`w` latches stick override. A `202` only arms the goal: it never
+  changes the drive mode, so the rover moves only once the operator's own held
+  heartbeats carry `mode: "goto"` (no `target_id`, `v: 0`, `w: 0`); releases still
+  carry `mode: "teleop"`, and a zero-stick `teleop` heartbeat in flight during the
+  POST simply leaves the goal armed. A release or view change needs a new deadman
+  press but keeps the goal armed; the next held `goto` heartbeat resumes it, using
+  only Nav2 commands computed after that press. Stick input, STOP, cancel, a new
+  goal, selecting Explore/Seek, the controller socket closing (or a new one taking
+  over) and a serial disconnect disarm it.
+- Viewer (`quest/src/nav-view.js`, `nav-overlay.ts`): an unknown `state` hides the
+  overlay, and a path with any non-finite point is not drawn at all. Stick input,
+  STOP and cancel send `POST /nav/cancel`. Servers that do not accept
+  `mode: "goto"` stop with `unsupported_mode` and return `409` from `/nav/goal`.
+- Nav2 velocity commands move the rover only through ControlState: a live held
+  lease in an autonomy mode, the PWM ceiling, the camera guard and the pan rule
+  apply as for every other mode, and a command older than 250 ms stops the motors.
+- `/ws/nav` is the ROS bridge's loopback-only socket; other hosts are closed with
+  1008. The operator relay never needs it.
 
 ## H264 over WebSocket `/ws/video`
 

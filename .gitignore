@@ -13,3 +13,6 @@ models/*
 !models/README.md
 *.egg-info/
 rust/target/
+ros2/build/
+ros2/install/
+ros2/log/

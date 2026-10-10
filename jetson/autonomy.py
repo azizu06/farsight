@@ -12,8 +12,17 @@ def valid_person(box):
 
 
 class Autonomy:
-    def __init__(self, choose_turn=None):
+    """Reactive fallback used when the navigation stack is unavailable.
+
+    With ``proximity_stop`` (the default) the ultrasonic is a hard gate: unknown
+    range stops and below 25 cm latches ``estop``. Without it (explicit opt-out)
+    unknown range only removes the obstacle cue: Explore keeps its timed turns
+    and Seek estimates arrival from the box width.
+    """
+
+    def __init__(self, choose_turn=None, proximity_stop=True):
         self.choose_turn = choose_turn or (lambda: random.choice((-1, 1)))
+        self.proximity_stop = proximity_stop
         self.reset()
 
     def reset(self):
@@ -29,18 +38,20 @@ class Autonomy:
         if (mode, target_id) != self.request:
             self.request = mode, target_id
             self.mode, self.target_id = mode, target_id
-            self.phase = "forward" if mode == "explore" else "tracking"
+            self.phase = {"explore": "forward", "goto": "goto"}.get(mode, "tracking")
             self.phase_at = now
             self.last_seen = now
 
     def step(self, now, range_cm, snapshot):
-        if self.phase in ("arrived", "target_lost"):
-            return 0, 0
-        if range_cm is None or not math.isfinite(range_cm) or range_cm <= 0:
-            return 0, 0
-        if range_cm < 25:
-            self.phase = "estop"
-            return 0, 0
+        if self.phase in ("arrived", "target_lost") or self.mode == "goto":
+            return 0, 0  # go-to-point exists only with the navigation backend
+        known = range_cm is not None and math.isfinite(range_cm) and range_cm > 0
+        if self.proximity_stop:
+            if not known:
+                return 0, 0
+            if range_cm < 25:
+                self.phase = "estop"
+                return 0, 0
         age = snapshot.get("age_ms")
         boxes = (snapshot.get("boxes", []) if snapshot.get("fresh") and not snapshot.get("error")
                  and isinstance(age, (int, float)) and 0 <= age < 1000 else [])
@@ -55,7 +66,7 @@ class Autonomy:
                     if now - self.phase_at < 1:
                         return 0, self.direction * .35
                     self.phase, self.phase_at = "forward", now
-                if range_cm < 70 or now - self.phase_at >= 4:
+                if (known and range_cm < 70) or now - self.phase_at >= 4:
                     self.phase, self.phase_at = "turning", now
                     self.direction = self.choose_turn()
                     return 0, self.direction * .35
@@ -68,8 +79,15 @@ class Autonomy:
             return 0, 0
         self.last_seen = now - age / 1000
         self.phase = "tracking"
+        error = target["x"] + target["w"] / 2 - .5
+        turn = max(-.45, min(.45, error * 1.5))
+        if not known:
+            # No range: a box half the frame wide is roughly an arm's length away.
+            if target["w"] >= .5:
+                self.phase = "arrived"
+                return 0, 0
+            return min(.35, (.5 - target["w"]) * .8), turn
         if range_cm <= 60:
             self.phase = "arrived"
             return 0, 0
-        error = target["x"] + target["w"] / 2 - .5
-        return min(.35, (range_cm - 60) / 200), max(-.45, min(.45, error * 1.5))
+        return min(.35, (range_cm - 60) / 200), turn

@@ -42,6 +42,10 @@ class MapState:
         self.depth_range = None
         self.pose_history = OrderedDict()
         self.scan = None
+        # Called with every accepted RGB-D frame before fusion (navigation costmaps
+        # need the newest depth, not only fused geometry). Must be cheap: keep a
+        # reference and return.
+        self.frame_observers = []
 
     def start_session(self, identity, device):
         with self.lock:
@@ -131,6 +135,11 @@ class MapState:
                         and self.tracking == "normal")
             self.reason = ("Fusion paused" if self.paused else "ARKit tracking limited; fusion frozen"
                            if not may_fuse else None)
+        for observer in self.frame_observers:
+            try:
+                observer(frame)
+            except Exception:
+                pass  # navigation must never break mapping or camera publication
         if not may_fuse:
             return
         points, colors, mesh = reconstruct(frame)

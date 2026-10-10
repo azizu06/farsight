@@ -40,6 +40,15 @@ def test_forward_blocked_by_close_obstacle():
     assert uno.motors == (0, 0)
 
 
+def test_disabled_proximity_build_drives_forward_near_obstacle_but_keeps_pan_rule():
+    uno = st.FakeUno(range_cm=10, proximity_stop=False)
+    assert ask(uno, "M 50 50") == "OK"
+    assert uno.motors == (50, 50)
+    assert ask(uno, "P 120") == "OK"
+    assert ask(uno, "M 50 50") == "OK"
+    assert uno.motors == (0, 0)
+
+
 def test_watchdog_stops_after_300ms():
     uno = st.FakeUno()
     ask(uno, "M 50 50")

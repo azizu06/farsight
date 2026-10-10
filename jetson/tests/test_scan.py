@@ -120,7 +120,7 @@ class DepthModelTests(unittest.TestCase):
 class ScanSafetyTests(unittest.TestCase):
     def setUp(self):
         self.now = 10
-        self.state = ControlState(simulated=True, clock=lambda: self.now)
+        self.state = ControlState(simulated=True, clock=lambda: self.now, proximity_stop=True)
         self.state.set_connected(True)
         self.session = self.state.begin()
         self.seq = 0

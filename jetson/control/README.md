@@ -59,8 +59,11 @@ monotonic time before each write. HTTP/inference work cannot extend its lease.
 The server supplies a camera freshness callback (capture age at most 500 ms);
 its failure stops **all** motion even if a client claims it sees fresh video.
 Camera recovery still requires a new deadman release before motion resumes.
-Uncertain or stale (>350 ms) range data and a pan head outside ±10 degrees
-block forward translation; turns and reverse remain usable. Motion defaults
+Uncertain or stale (>350 ms) range data, range below 25 cm and a pan head
+outside ±10 degrees block forward translation; turns and reverse remain usable.
+The range part is the proximity stop, on by default; `proximity_stop=False`
+(server `--proximity-stop off`) is an explicit opt-in for navigation runs that
+steer around obstacles. The pan rule always applies. Motion defaults
 to maximum PWM 100 for a small demo area. This does not replace hardware tests
 or a person ready to power off the rover.
 

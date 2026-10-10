@@ -1,0 +1,23 @@
+# costmap_source:=nvblox overlay (applied after nav2_params.yaml). Replaces the point-cloud voxel/obstacle
+# layers with NVIDIA Isaac ROS nvblox's costmap layer; the nvblox node and its Jetson install belong to the
+# nvblox package/owner. Plugin and topic names follow nvblox_nav2; confirm them against the installed release.
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      plugins: ["nvblox_layer", "inflation_layer"]
+      nvblox_layer:
+        plugin: "nvblox::nav2::NvbloxCostmapLayer"
+        enabled: True
+        nav2_costmap_global_frame: odom
+        nvblox_map_slice_topic: "/nvblox_node/static_map_slice"
+        convert_to_binary_costmap: True
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      plugins: ["nvblox_layer", "inflation_layer"]
+      nvblox_layer:
+        plugin: "nvblox::nav2::NvbloxCostmapLayer"
+        enabled: True
+        nav2_costmap_global_frame: map
+        nvblox_map_slice_topic: "/nvblox_node/static_map_slice"
+        convert_to_binary_costmap: True
