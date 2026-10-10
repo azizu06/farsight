@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { SourceTruth } from "./source-banner.js";
+import { explainStop } from "./stop-reason.js";
 import { ControlSafety, stick } from "./control-safety.js";
 import { H264Viewer } from "./h264";
 import { cameraCrop, croppedBox } from "./camera-view.js";
@@ -25,6 +26,10 @@ export class RoverExperience {
   private bannerCanvas = document.createElement("canvas");
   private bannerTexture = new THREE.CanvasTexture(this.bannerCanvas);
   private bannerPanel = new THREE.Mesh(new THREE.PlaneGeometry(2.8, 0.35), new THREE.MeshBasicMaterial({ map: this.bannerTexture, transparent: true, toneMapped: false, depthTest: false }));
+  private stopCanvas = document.createElement("canvas");
+  private stopTexture = new THREE.CanvasTexture(this.stopCanvas);
+  private stopPanel = new THREE.Mesh(new THREE.PlaneGeometry(2.8, 0.3), new THREE.MeshBasicMaterial({ map: this.stopTexture, transparent: true, toneMapped: false, depthTest: false }));
+  private stopKey = "";
   private voiceCanvas = document.createElement("canvas");
   private voiceTexture = new THREE.CanvasTexture(this.voiceCanvas);
   private voicePanel = new THREE.Mesh(new THREE.PlaneGeometry(1.2, 0.8), new THREE.MeshBasicMaterial({ map: this.voiceTexture, transparent: true, toneMapped: false, depthTest: false }));
@@ -125,7 +130,7 @@ export class RoverExperience {
     document.querySelector("main")!.append(panel);
     this.sourceBanner = document.createElement("div");
     this.sourceBanner.className = "source-banner"; this.sourceBanner.setAttribute("role", "status");
-    this.sourceBanner.innerHTML = "<strong></strong><span></span>";
+    this.sourceBanner.innerHTML = '<strong></strong><span></span><p class="stop-reason" hidden><b></b><em></em></p>';
     document.querySelector("main")!.append(this.sourceBanner);
     this.message = panel.querySelector("#rover-message")!;
     this.details = panel.querySelector("#rover-details")!;
@@ -164,10 +169,13 @@ export class RoverExperience {
     this.bannerCanvas.width = 1024; this.bannerCanvas.height = 128;
     this.bannerTexture.colorSpace = THREE.SRGBColorSpace;
     this.bannerPanel.position.set(0, 1.45, -2.32); this.bannerPanel.renderOrder = 13;
+    this.stopCanvas.width = 1024; this.stopCanvas.height = 110;
+    this.stopTexture.colorSpace = THREE.SRGBColorSpace;
+    this.stopPanel.position.set(0, 1.09, -2.31); this.stopPanel.renderOrder = 13; this.stopPanel.visible = false;
     this.voiceCanvas.width = 768; this.voiceCanvas.height = 512;
     this.voiceTexture.colorSpace = THREE.SRGBColorSpace;
     this.voicePanel.position.set(-2.15, 0.15, -2.1); this.voicePanel.rotation.y = 0.35; this.voicePanel.renderOrder = 12; this.voicePanel.visible = false;
-    this.cockpit.add(screen, hud, this.drillPanel, this.bannerPanel, this.voicePanel); this.cockpit.visible = false;
+    this.cockpit.add(screen, hud, this.drillPanel, this.bannerPanel, this.stopPanel, this.voicePanel); this.cockpit.visible = false;
     this.cameraScreen = screen;
     this.scene.add(this.cockpit);
     this.h264 = new H264Viewer(() => {
@@ -686,6 +694,9 @@ export class RoverExperience {
     c.fillText(this.scanMessage.slice(0, 84), 28, 202);
     this.hudTexture.needsUpdate = true;
     this.drawSource(source);
+    this.drawStop(explainStop({ unsafe: ready, reason: this.gate.reason, latched: this.gate.needsRelease, cause: this.gate.cause, status: this.status,
+      xr: this.renderer.xr.isPresenting, held: this.input.held, autonomyArmed: this.autonomy.mode !== "teleop",
+      detectorStale: !this.detections || now - this.detectionsAt > 500 }));
     this.drawVoice();
     const drawn = this.drillHud.draw(now);
     this.drillPanel.visible = drawn; this.drillHud.canvas.hidden = !drawn;
@@ -703,6 +714,24 @@ export class RoverExperience {
     c.fillStyle = colors[1]; c.font = "bold 54px system-ui"; c.fillText(source.title, 28, 62);
     c.font = "26px system-ui"; c.fillText(source.detail.slice(0, 72), 28, 106);
     this.bannerTexture.needsUpdate = true;
+  }
+  /** Why motion stopped and the one action that recovers it, under the source banner. */
+  private drawStop(stop: ReturnType<typeof explainStop>) {
+    const key = stop ? `${stop.tone}|${stop.cause}|${stop.recovery}` : "";
+    if (key === this.stopKey) return;
+    this.stopKey = key;
+    const line = this.sourceBanner.querySelector<HTMLElement>(".stop-reason")!;
+    line.hidden = !stop; this.stopPanel.visible = !!stop;
+    if (!stop) return;
+    line.dataset.tone = stop.tone;
+    line.querySelector("b")!.textContent = stop.cause;
+    line.querySelector("em")!.textContent = stop.recovery;
+    const c = this.stopCanvas.getContext("2d")!, warn = stop.tone === "warn";
+    c.clearRect(0, 0, 1024, 110); c.fillStyle = warn ? "#4a3606ee" : "#3b0d0dee"; c.fillRect(0, 0, 1024, 110);
+    c.fillStyle = warn ? "#ffe08a" : "#ffb3a8"; c.font = "bold 36px system-ui";
+    c.fillText(`${warn ? "⚠" : "■"} ${stop.cause}`.slice(0, 54), 24, 44);
+    c.fillStyle = "#ffffff"; c.font = "28px system-ui"; c.fillText(`→ ${stop.recovery}`.slice(0, 66), 24, 90);
+    this.stopTexture.needsUpdate = true;
   }
   private drawVoice() {
     const voice = this.voice, action = voice?.pendingAction ?? null;
@@ -854,7 +883,7 @@ export class RoverExperience {
     window.removeEventListener("blur", this.blur); window.removeEventListener("click", this.click); document.removeEventListener("visibilitychange", this.visibility);
     document.removeEventListener("keydown", this.escapeStop);
     this.cameraTexture.dispose(); this.hudTexture.dispose(); this.drillTexture.dispose(); this.drillHud.canvas.remove();
-    this.bannerTexture.dispose(); this.voiceTexture.dispose(); this.sourceBanner.remove();
+    this.bannerTexture.dispose(); this.stopTexture.dispose(); this.voiceTexture.dispose(); this.sourceBanner.remove();
   }
 }
 

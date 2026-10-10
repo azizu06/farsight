@@ -4,6 +4,10 @@ function inputFresh(now, sampledAt) {
     now >= sampledAt && now - sampledAt < 150);
 }
 
+/** Latch causes that only restate "release first"; a specific cause may replace them. */
+const GENERIC_CAUSES = new Set(["Waiting for live camera and rover", "Release deadman to continue",
+  "Connected: release deadman", "New control session: release deadman", "release_required", "deadman_released"]);
+
 export class ControlSafety {
   constructor() {
     this.needsRelease = true;
@@ -14,8 +18,11 @@ export class ControlSafety {
     this.frameAge = Infinity;
     this.frameId = null;
     this.reason = "Waiting for live camera and rover";
+    /** First specific cause of the current release latch, kept for display only. */
+    this.cause = this.reason;
   }
   invalidate(reason = "Release deadman to continue") {
+    if (!this.needsRelease || this.cause === null || GENERIC_CAUSES.has(this.cause)) this.cause = reason;
     this.needsRelease = true;
     this.reason = reason;
   }
@@ -65,7 +72,7 @@ export class ControlSafety {
     const unsafe = this.readiness(now, connected, sampledAt);
     if (unsafe) this.invalidate(unsafe);
     // Missing tracking cannot prove a physical trigger release.
-    if (!held && inputFresh(now, sampledAt)) this.needsRelease = false;
+    if (!held && inputFresh(now, sampledAt)) { this.needsRelease = false; this.cause = null; }
     const moving = held && !unsafe && !this.needsRelease;
     if (!unsafe) this.reason = this.needsRelease ? "Release deadman to continue" : moving ? "Driving" : "Ready: hold deadman to drive";
     return moving;

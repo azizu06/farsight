@@ -47,6 +47,14 @@ Do not confuse an old server already on that port with a freshly launched demo.
   the missing proof. SIMULATED and REPLAY stay shown through disconnects until
   the server explicitly reports otherwise. Its camera source, frame and age are
   display truth only, not sensor or display qualification.
+- Directly under the source banner (headset and desktop), a stop panel names
+  why motion stopped and the one action that recovers it, e.g. "Command lease
+  expired (link lag > 250 ms) → Check Wi-Fi/USB link, then release and hold
+  right trigger". `src/stop-reason.js` maps every server `control_status.reason`
+  code, `ControlSafety` readiness block and client latch; it is display only and
+  hidden while ready or driving. A latch keeps its first specific cause, so an
+  echoed `deadman_released` does not hide the real one. Add a mapping there
+  (and a test) when adding a server stop code or client latch.
 - Desktop: select Live rover, hold Space, then use WASD. The on-screen hold button
   can replace Space. STOP, Escape, opening settings, losing focus, or a connection
   failure stop driving.
