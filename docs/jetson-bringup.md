@@ -6,9 +6,19 @@ by a human; no script stores one. `--dry-run` on `tools/bootstrap_jetson.sh`, `t
 `jetson/setup.sh`, `jetson/install_service.sh` and `jetson/make_cert.sh` prints what they would do.
 
 Issues covered: #1 camera stream (steps 4, 7), #9 detector (step 10), #11 one command boot (steps 5, 12),
-#19 assistant (step 11), #14 depth engine (step 11b). JetPack 7.2.1 is already flashed
-([flash handoff](jetson-flash-handoff.md), latest state in [jetson-setup-handoff.md](jetson-setup-handoff.md)); do not reflash.
-`USER` below is the account created at flash time (`farsight` in the handoff).
+#19 assistant (step 11), #14 depth engine (step 11b). Start this provisioning pass
+only after Ubuntu boots and SSH works. The latest [setup handoff](jetson-setup-handoff.md)
+reports failed flash prechecks and **no completed storage flash**; the older
+[flash handoff](jetson-flash-handoff.md) is history, not proof of a booted board.
+`USER` below is the account actually created on the board (`farsight` is intended).
+
+For the intended JetPack 7.2.1 installation, follow NVIDIA's
+[current Orin Nano quick start](https://docs.nvidia.com/jetson/orin-nano-devkit/user-guide/quick_start.html):
+confirm the required JetPack 6.x-generation UEFI/QSPI firmware first, write the
+installer ISO to a USB stick, and install onto the separate microSD/NVMe target.
+The ISO is not an SD-card image. The guide also requires confirming the capsule
+update prompt when it appears. These prerequisites do not diagnose our reported
+USB transfer timeout; finish the physical recovery/boot checks in the handoff.
 
 Needs: Jetson booted to Ubuntu with an SSH-capable user, USB-C data cable to the Mac, UVC webcam on a
 Jetson USB-A port, internet for the Jetson during setup (venue Wi-Fi, a phone hotspot, or macOS
@@ -47,18 +57,24 @@ python3 -m tools.fetch_models --groups piper,face,whisper,vlm,export --check
 
 ```sh
 tools/bootstrap_jetson.sh --dry-run USER@192.168.55.1          # read it once
-tools/bootstrap_jetson.sh --setup-args "--with-vlm" USER@192.168.55.1
+tools/bootstrap_jetson.sh --setup-args "--core-only" USER@192.168.55.1
 ```
 
 It checks SSH, clones or fast-forwards `~/farsight` (branch `main`; `--branch NAME` for another), rsyncs `models/`
 (never `*.engine`), then attaches to tmux session `setup` running `jetson/setup.sh`. Type the sudo password once when
-prompted. First run takes about 45 to 75 minutes, mostly the llama.cpp and whisper.cpp CUDA builds. Detach with
-Ctrl-b d; re-run the same command to re-attach. It is safe to re-run end to end.
+prompted. `--core-only` installs the runtime and builds the copied detector engines;
+it skips optional model downloads, Piper installation, depth engines, and llama.cpp /
+whisper.cpp builds. Confirm camera/control/video first. Once that path works, run
+`bash jetson/setup.sh --with-vlm` on the Jetson to add those features. Native CUDA
+builds may take 45 to 75 minutes; this has not been timed on our board. Detach with
+Ctrl-b d; re-run the same command to re-attach. Bootstrap stops if tracked remote
+files have uncommitted changes; commit or stash them before updating.
 
 `setup.sh` does: apt packages and `nvidia-jetpack`, hostname `farsight`, `dialout`/`video` groups, the 15 W power
-mode, `jetson/.venv` (with system site packages so TensorRT imports), Piper voices (English and Spanish), face
-model and whisper from Hugging Face if missing, llama.cpp and whisper.cpp with `-DCMAKE_CUDA_ARCHITECTURES=87`,
-TensorRT FP16 engines for `models/yolo11n*.onnx` (and the depth model if present).
+mode, `jetson/.venv` (with system site packages so TensorRT imports), and TensorRT
+FP16 engines for `models/yolo11n*.onnx`. The full pass additionally prepares voices,
+face and speech weights, depth engines, and native CUDA assistant builds with
+`-DCMAKE_CUDA_ARCHITECTURES=87`.
 
 **Check:** it ends with `Finished with no warnings.` (or a list of warnings you understand), then in a new shell:
 
@@ -74,7 +90,7 @@ Expect a TensorRT version, `models/yolo11n-pose.engine`, and `NV Power Mode: 15W
   An engine from another TensorRT version refuses to load: `jetson/.venv/bin/python -m jetson.build_engine --force models/yolo11n-pose.onnx`.
 - *`no apt candidate for nvidia-jetpack`*: the NVIDIA Jetson apt source is not configured on this image.
   `ls /etc/apt/sources.list.d | grep -i nvidia`; with internet, `sudo apt-get update` and re-run. If it stays absent,
-  CUDA/TensorRT must come from SDK Manager (the [flash handoff](jetson-flash-handoff.md) flashed Jetson Linux only):
+  CUDA/TensorRT must be installed through the supported JetPack compute-stack path:
   that is a blocker for steps 10 and 11, not for steps 4 to 9 (use `FARSIGHT_DETECTOR=hog`).
 - *CUDA build failure*: `nvcc --version` must work (`export PATH=/usr/local/cuda/bin:$PATH`). A build killed with
   `c++: fatal error: Killed` or `nvcc error: ... out of memory` is RAM: the script already uses RAM/2 jobs; retry
@@ -90,6 +106,25 @@ Expect a TensorRT version, `models/yolo11n-pose.engine`, and `NV Power Mode: 15W
 - *Uno not found*: unplug the ESP32 camera module, try another cable, `dmesg | tail`.
 
 ## 4. First light: camera only, no service yet (Jetson) (#1)
+
+For the rover iPhone, use [ios/README.md](../ios/README.md) to install the signed
+capture app and establish USB tethering. Start without `--camera` so the phone
+can own the source:
+
+```sh
+cd ~/farsight
+jetson/.venv/bin/python -m jetson.server --host 0.0.0.0 --port 8443 --detector none --simulate-rover --h264
+```
+
+Enter the Jetson's actual phone-USB interface IP in the app, choose RGB only,
+and start capture. Confirm `/health` reports `camera=true`, `camera_source=PHONE RGB`,
+and `control.simulated=true`; check `/camera.jpg` and the operator view. Phone
+trust, Linux tethering, device signing, and sensor/display latency need the rig.
+Stop this temporary server before installing the service. For this source,
+`FARSIGHT_CAMERA` must stay blank in `/etc/farsight.env`; selecting `/dev/video0`
+reserves the camera for UVC and rejects the phone connection.
+
+For a UVC webcam, use the following alternative first-light check:
 
 ```sh
 ssh USER@192.168.55.1

@@ -65,7 +65,7 @@ remote '
   if [ ! -d "$dir/.git" ]; then git clone -q "$url" "$dir"; fi
   cd "$dir"
   if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
-    echo "Uncommitted edits in $dir: leaving the checkout alone (commit or stash them on the Jetson)"; exit 0
+    echo "Uncommitted edits in $dir: stopping bootstrap (commit or stash them on the Jetson)"; exit 1
   fi
   git fetch -q origin "$branch"
   git checkout -q "$branch" 2>/dev/null || git checkout -q -b "$branch" FETCH_HEAD

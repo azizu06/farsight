@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # One-time Jetson setup after the JetPack 7.2 install. Safe to re-run: every step skips finished work.
 # Usage (on the Jetson, in tmux so SSH drops do not kill it):
-#   bash ~/farsight/jetson/setup.sh [--dry-run] [--skip-builds] [--skip-engines] [--with-vlm] [--power-mode 15W|none]
+#   bash ~/farsight/jetson/setup.sh [--dry-run] [--core-only] [--skip-builds] [--skip-engines] [--with-vlm] [--power-mode 15W|none]
 # sudo asks for your password once at the start (type it yourself; nothing is stored).
 # --dry-run prints every state-changing command instead of running it.
 set -euo pipefail
@@ -10,10 +10,11 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 SRC="${FARSIGHT_SRC:-$HOME/src}"
 MODELS="$REPO/models"
 VENV="${FARSIGHT_VENV:-$REPO/jetson/.venv}"
-DRY=0 BUILDS=1 ENGINES=1 VLM=0 POWER=15W
+DRY=0 BUILDS=1 ENGINES=1 VLM=0 CORE=0 POWER=15W
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY=1 ;;
+    --core-only) CORE=1 ;;
     --skip-builds) BUILDS=0 ;;
     --skip-engines) ENGINES=0 ;;
     --with-vlm) VLM=1 ;;
@@ -23,6 +24,10 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+if [ "$CORE" = 1 ]; then
+  [ "$VLM" = 0 ] || { echo "--core-only cannot be combined with --with-vlm"; exit 2; }
+  BUILDS=0
+fi
 export PATH="/usr/local/cuda/bin:$PATH"
 
 WARNINGS=""
@@ -88,7 +93,9 @@ if [ -f "$VENV/pyvenv.cfg" ] && grep -q 'include-system-site-packages = false' "
   run sed -i 's/include-system-site-packages = false/include-system-site-packages = true/' "$VENV/pyvenv.cfg"
 fi
 run "$VENV/bin/pip" install -q -e "$REPO/jetson[dev,onnx]"
-run "$VENV/bin/pip" install -q piper-tts || warn "piper-tts failed to install: the headset falls back to browser speech"
+if [ "$CORE" = 0 ]; then
+  run "$VENV/bin/pip" install -q piper-tts || warn "piper-tts failed to install: the headset falls back to browser speech"
+fi
 if [ "$DRY" = 0 ]; then
   "$VENV/bin/python" -c "import tensorrt as t; print('TensorRT', t.__version__)" \
     || warn "tensorrt python bindings not importable (try: sudo apt install python3-libnvinfer; dpkg -l | grep nvinfer)"
@@ -98,12 +105,16 @@ if [ "$DRY" = 0 ]; then
     || warn "trtexec not found (find / -name trtexec 2>/dev/null); jetson.build_engine needs it"
 fi
 
+if [ "$CORE" = 0 ]; then
 step "Models that can be downloaded (Piper English + Spanish voices, face model, whisper base.en)"
 groups=piper,face,whisper
 [ "$VLM" = 0 ] || groups="$groups,vlm"
 fetch_flags=(); [ "$DRY" = 0 ] || fetch_flags=(--dry-run)
 (cd "$REPO" && python3 -m tools.fetch_models --groups "$groups" ${fetch_flags[@]+"${fetch_flags[@]}"}) \
   || warn "some downloads failed (offline?). Push them from a laptop instead: tools/push_models.sh --fetch $USER@farsight.local"
+else
+  step "Optional model downloads skipped (--core-only); use the detector artifacts already copied from the laptop"
+fi
 
 build() {  # build <name> <git url> <cmake target...>: skips when the first target's binary exists
   local name="$1" url="$2" dir="$SRC/$1"; shift 2
@@ -141,7 +152,7 @@ elif compgen -G "$MODELS/yolo11n*.onnx" >/dev/null; then
   # YOLO detection/pose engines. Failures are not fatal: the server runs the .onnx on CPU until the engine exists.
   (cd "$REPO" && run "$VENV/bin/python" -m jetson.build_engine "$MODELS"/yolo11n*.onnx) \
     || warn "a YOLO engine build failed (see above); the server still runs the .onnx on CPU until it is fixed"
-  if compgen -G "$MODELS/depth_anything*.onnx" >/dev/null; then  # metric depth for 3D scans (#14)
+  if [ "$CORE" = 0 ] && compgen -G "$MODELS/depth_anything*.onnx" >/dev/null; then  # metric depth for 3D scans (#14)
     (cd "$REPO" && run "$VENV/bin/python" -m jetson.build_engine "$MODELS"/depth_anything*.onnx) \
       || warn "the depth engine build failed (see above); 3D scans fall back to the .onnx on CPU"
   fi
