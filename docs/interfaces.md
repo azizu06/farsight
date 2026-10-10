@@ -942,7 +942,10 @@ With `?stereo=1` the viewer opens `/ws/macview?layout=sbs-left-right` and shows
 a segment as a stereo pair only when it carries `stereo: true`,
 `layout: "sbs-left-right"` and positive `eye_width`/`eye_height`; each half is
 placed from the matching sent eye pose and projection. A segment with neither
-field is shown flat; one with an invalid pair is not shown.
+field is shown flat. A pair is not shown, and the local map returns at once, when
+its layout is invalid or its echo lacks this page's `session_id`, names an unknown
+`pose_id`, or has no valid left and right eye pose and projection. Any echo naming
+another `session_id` is rejected, flat or stereo.
 
 The viewer finds a frame's render pose by the echoed `pose_id`, or failing
 that by an exact `sent_mono_ms`. It sizes the picture from the echoed
