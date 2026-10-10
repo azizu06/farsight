@@ -627,3 +627,63 @@ Opt-in `--lidar-drive` (`FARSIGHT_LIDAR_DRIVE=1`, default off) makes
 while that `/phone` session is connected with ARKit tracking `normal`. It does
 not mark the frame `camera_capture_verified`, and no wire field changes. The
 lease, deadman, release, camera-stale and disconnect stops are unchanged.
+
+
+## Phone-built mesh lane (v1, implementation in progress)
+
+The rover iPhone constructs ARKit mesh anchors. The Mac assembles their latest
+replacements and serves Quest map snapshots locally. Jetson retains camera,
+fresh measured depth and pose for inference/control/Nav2; `--fusion-bypass`
+skips its visual map reconstruction. ARKit mesh updates are reconstruction,
+not a replacement for live navigation depth.
+
+The dedicated phone geometry port is **8083**, separate from control/video
+8081 and bonded fallback 8082. Native operator-phone USB forwarding uses Mac
+**18445 → operator phone 8083 → rover phone tailnet 8083**. Direct tailnet
+consumers may pull the rover phone endpoint. The stream path is
+`/geometry/stream`; one WebSocket binary message is one complete record.
+The standalone Mac assembler binds loopback **8484** by default. These port
+reservations describe the pipeline being implemented; they do not prove an
+installed phone is serving it yet. Existing demo routes remain available.
+
+The fixed **124-byte** header matches `rust/farsight-geometry` and
+`ios/FarsightCapture/GeometryWire.swift`. All numeric values are little-endian:
+
+| Offset | Field |
+|---|---|
+| 0 | u8 version, 1 |
+| 1 | u8 operation: replace 0, remove 1, reset 2, snapshot-end 3 |
+| 2 | u16 flags: 0 raw, bit 0 zlib-framed DEFLATE, bit 1 standard Brotli; compression bits are mutually exclusive |
+| 4 | u64 wire sequence |
+| 12 | u64 capture map epoch |
+| 20 | 16 raw UUID bytes: capture session |
+| 36 | 16 raw UUID bytes: anchor (zero for reset/snapshot-end) |
+| 52 | 16 f32 values: column-major anchor-to-ARSession-world transform |
+| 116 | u32 vertex count |
+| 120 | u32 scalar index count (three per triangle) |
+
+Payload is `vertex_count * 12` bytes of local f32 XYZ, then `index_count * 4`
+bytes of u32 indices; v1 has neutral vertex colors. Coordinates are metres,
+ARKit X right/Y up/negative Z forward, in the same sensor world as the existing
+camera transform. No headset origin is implicitly substituted. Phone encoding
+uses public native `COMPRESSION_BROTLI` (fixed level 2, iOS 15+).
+Apple `COMPRESSION_ZLIB` is raw DEFLATE and **does not** match the zlib-framed
+flag; use an explicitly compatible encoder if selecting that flag.
+
+Records are at most 256 KiB including the header, with at most 65,536 vertices
+and 65,536 scalar indices. Replace requires a nonempty triangle mesh, finite
+coordinates/transform and indices in range; other operations carry no payload.
+Decode output must be bounded to the declared size before allocation/read,
+and trailing/missing bytes fail the whole record. Producer oversize rejects
+are counted rather than presented as complete geometry.
+
+The producer coalesces dirty state by anchor before assigning wire sequence.
+Sequence increases across geometry transport reconnects within the same
+capture session/epoch. A reconnect sends reset, a complete bounded snapshot
+of retained anchors, then snapshot-end before live deltas. Consumers stage
+that snapshot atomically, reject stale sequence values and discard incomplete
+staging on disconnect. A new capture session/epoch clears prior coordinates.
+Pending and published geometry both have vertex/triangle/anchor budgets;
+assembled packets must stay inside Quest decoder limits (600,000 vertices,
+160,000 triangles). Geometry traffic has bounded bulk pacing and never shares
+or delays the control permit lane. Network recovery grants no motion intent.
