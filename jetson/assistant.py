@@ -56,6 +56,7 @@ class SceneAssistant:
         self.piper_bin, self.piper_model = piper_bin, piper_model
         self.output_dir = Path(output_dir).resolve() if output_dir else None
         self._processes = set()
+        self._voice, self._voice_path = None, None
         self._lock = asyncio.Lock()
 
     @staticmethod
@@ -163,7 +164,7 @@ class SceneAssistant:
                 except (httpx.HTTPError, asyncio.TimeoutError, ValueError, KeyError, TypeError, IndexError):
                     warning = "Local vision model unavailable; showing the observation summary"
                 timings["vlm"] = round((time.monotonic() - stage) * 1000)
-            answer = guard_answer(answer, action)
+            answer = guard_answer(answer, action, 2 if model == "local-vision-model" else None)
             result = dict(question=question, answer=answer, action=action, model=model,
                           source=facts["source"], simulated=facts["simulated"],
                           observation=facts)
@@ -185,7 +186,7 @@ class SceneAssistant:
     async def _vision(self, question, facts, jpeg):
         if not isinstance(jpeg, bytes) or not jpeg.startswith(b"\xff\xd8") or not 0 < len(jpeg) <= 2 * 1024 * 1024:
             raise ValueError("No bounded camera JPEG is available")
-        payload = dict(model="local", temperature=0, max_tokens=220, stream=False,
+        payload = dict(model="local", temperature=0, max_tokens=120, stream=False,
             messages=[dict(role="system", content=(
                 "You assist a first responder searching a room through a rover camera. "
                 "Answer in one or two short plain sentences using only the supplied camera image and observed facts. "
@@ -288,8 +289,9 @@ class SceneAssistant:
     async def speak(self, text):
         if not self.piper_bin and not self.piper_model:
             return None
-        program, model = self._program(self.piper_bin), self._model(self.piper_model)
-        if not program or not model or self.output_dir is None:
+        # Without a Piper executable, the piper-tts package keeps the voice loaded in-process.
+        program, model = self._program(self.piper_bin) if self.piper_bin else None, self._model(self.piper_model)
+        if (self.piper_bin and not program) or not model or self.output_dir is None:
             raise AssistantUnavailable("Local speech requires Piper, a voice model, and an output directory")
         self.output_dir.mkdir(parents=True, exist_ok=True)
         # Keep only the most recent 30 replies; filenames are generated here,
@@ -300,8 +302,12 @@ class SceneAssistant:
         filename = f"reply-{uuid.uuid4().hex}.wav"
         path = self.output_dir / filename
         try:
-            await self._run([program, "--model", model, "--output_file", str(path)],
-                            self.SPEECH_TIMEOUT, input_bytes=(text[:4000] + "\n").encode("utf-8"))
+            if program:
+                await self._run([program, "--model", model, "--output_file", str(path)],
+                                self.SPEECH_TIMEOUT, input_bytes=(text[:4000] + "\n").encode("utf-8"))
+            else:
+                await asyncio.wait_for(asyncio.to_thread(self._synthesize, model, text[:4000], path),
+                                       self.SPEECH_TIMEOUT)
             if not path.is_file() or not 44 < path.stat().st_size <= 8 * 1024 * 1024:
                 raise AssistantUnavailable("Piper did not produce a bounded WAV reply")
             with wave.open(str(path), "rb") as recording:
@@ -311,6 +317,20 @@ class SceneAssistant:
         except BaseException:
             path.unlink(missing_ok=True)
             raise
+
+    @staticmethod
+    def _load_voice(model):
+        try:
+            from piper import PiperVoice
+        except ImportError as exc:
+            raise AssistantUnavailable("Local speech requires pip install piper-tts or --piper-bin") from exc
+        return PiperVoice.load(model)
+
+    def _synthesize(self, model, text, path):
+        if self._voice is None or self._voice_path != model:
+            self._voice, self._voice_path = self._load_voice(model), model
+        with wave.open(str(path), "wb") as output:
+            self._voice.synthesize_wav(text, output)
 
     async def close(self):
         for process in tuple(self._processes):

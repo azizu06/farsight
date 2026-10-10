@@ -313,6 +313,29 @@ class AssistantTests(unittest.IsolatedAsyncioTestCase):
                 await service.speak("cancelled")
             self.assertEqual(list(root.glob("reply-*.wav")), [root / filename])
 
+    async def test_in_process_piper_voice_loads_once_when_no_cli_is_given(self):
+        loads = []
+
+        class Voice:
+            def synthesize_wav(self, text, output):
+                output.setnchannels(1)
+                output.setsampwidth(2)
+                output.setframerate(16000)
+                output.writeframes(b"\1\0" * 1600)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            model = root / "voice.onnx"
+            model.write_bytes(b"test-model")
+            service = self.service(piper_model=str(model), output_dir=root)
+            with patch.object(SceneAssistant, "_load_voice", side_effect=lambda path: loads.append(path) or Voice()):
+                first = await service.speak("one")
+                second = await service.speak("two")
+            self.assertEqual(loads, [str(model.resolve())])
+            for filename in (first, second):
+                with wave.open(str(root / filename), "rb") as recording:
+                    self.assertEqual(recording.getnframes(), 1600)
+
     async def test_busy_service_rejects_backlog_and_input_is_bounded(self):
         service = self.service()
         await service._lock.acquire()

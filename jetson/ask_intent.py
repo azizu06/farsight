@@ -48,10 +48,11 @@ def summarize_boxes(boxes):
     return "; ".join(words) or "nothing detected"
 
 
-def guard_answer(answer, action):
-    """Drop sentences where the model claims to move the rover, then name any pending proposal."""
+def guard_answer(answer, action, max_sentences=2):
+    """Drop sentences claiming the rover moves, keep the first few, then name any pending proposal."""
     sentences = re.split(r"(?<=[.!?])\s+", answer.replace("’", "'").strip())
-    kept = " ".join(sentence for sentence in sentences if sentence and not CLAIM.search(sentence))
+    # Spoken in the headset, so model answers stay short.
+    kept = " ".join([sentence for sentence in sentences if sentence and not CLAIM.search(sentence)][:max_sentences])
     kept = kept or "I can't move the rover myself."
     if action and action["type"] == "seek":
         kept += f' Confirm on the headset to seek person #{action["target_id"]}.'

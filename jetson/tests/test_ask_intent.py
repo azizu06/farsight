@@ -48,8 +48,13 @@ class GuardTests(unittest.TestCase):
             self.assertEqual(guard_answer(f"One person on the left. {claim}", None), "One person on the left.")
 
     def test_scene_motion_is_kept(self):
-        text = "The person is heading toward the door. A cart is moving. I see a person moving."
+        text = "The person is heading toward the door. I see a cart moving."
         self.assertEqual(guard_answer(text, None), text)
+
+    def test_spoken_answers_are_capped_at_two_sentences(self):
+        self.assertEqual(guard_answer("One. Two! Three? Four.", None), "One. Two!")
+        self.assertEqual(guard_answer("One. Two. Three.", {"type": "scan"}),
+                         "One. Two. Confirm on the headset to scan the room.")
 
     def test_only_claim_becomes_neutral_and_proposals_need_confirmation(self):
         answer = guard_answer("I'm heading towards the person.", {"type": "seek", "target_id": 5})
