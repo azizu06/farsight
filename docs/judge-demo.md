@@ -33,20 +33,26 @@ server never tracks that person. XR controller paths are covered separately by
 On a heavily loaded machine a headless render stall can trip the viewer's 250 ms display guard
 (a FAIL whose HUD says "Release deadman to continue"); re-run once before treating it as a regression.
 
-**Known open bugs (found by this test, not fixed here), so `scan` fails often:**
+**Scan bugs this test found:**
 
-- *Viewer cancels a completed scan.* The sweep ends with `stop("scan_finished")`
-  (`jetson/control/state.py` `end_scan`); the operator's next held heartbeat then hits
-  `requires_release` and overwrites the reason with `release_required` before the 50 ms status tick
-  (`jetson/control/service.py`). `quest/src/rover.ts` only sets `scanCompleting` for reason
-  `scan_finished`, so it shows "Scan cancelled" and never opens the 3D map even though `/scan` says
-  `complete`. Timing does not depend on scan length, so the real rig is affected too. FAIL text:
+- *Fixed (#57): viewer cancelled a completed scan.* The sweep ends with `stop("scan_finished")`
+  (`jetson/control/state.py` `end_scan`), but the operator's next held heartbeat hits
+  `requires_release` and overwrites the reason with `release_required` before most 50 ms status
+  ticks. `quest/src/rover.ts` only accepted `scan_finished`, so it showed "Scan cancelled" and never
+  opened the 3D map (sim and rig alike). It now also enters scan completion on `release_required`
+  and lets `/scan` decide complete vs aborted. Regression FAIL text:
   `viewer cancelled a scan the server completed`.
-- *Server aborts at view 0 (seen less often).* `server aborted scan after 0 views: Scan cancelled:
-  operator lease, override, or safety stop`, with the control reason back at `active`. Likely cause:
+- *Open (rare): server aborts at view 0* with `server aborted scan after 0 views: Scan cancelled:
+  operator lease, override, or safety stop` and the control reason back at `active`. Likely cause:
   the zero-stick `teleop` heartbeat sent just before `POST /scan` reaches the rover after
   `begin_scan` (separate WebSocket and HTTP paths through the relay) and is treated as
-  `scan_override`.
+  `scan_override`. Press Y again.
+
+**Open: boxes render on only a fraction of frames.** `matchingDetections` in `quest/src/rover.ts`
+draws boxes only when a detector packet matches the displayed frame id exactly. In `--demo` the
+camera id advances ~15 Hz while the detector runs ~3 fps, so only ~1 in 5 displayed frames has a
+packet (measured 8 of 37 ids over 6 s); the `detections render` step prints how many of 20 HUD
+samples showed the box. The same applies on the rig whenever detector fps < camera fps.
 
 ## Roles (4 people)
 

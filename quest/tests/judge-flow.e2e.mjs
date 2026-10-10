@@ -212,7 +212,10 @@ async function main() {
       await waitFor("no /ws/detections packets from the server", () => counters.detections - real >= 3, 5000);
       inject = true;
       await waitFor("HUD never showed the injected box", async () => (await roverDetails(page)).match(/(\d+) detections/)?.[1] === "1", 5000);
-      return `${counters.detections - real} real detector packets (ray-cast room: 0 people); synthetic box #${SYNTHETIC_ID} rendered → HUD "1 detections"`;
+      // Boxes only draw when a packet matches the displayed frame id exactly; sample how often they show.
+      let shownSamples = 0;
+      for (let i = 0; i < 20; i++) { if (/\b1 detections/.test(await roverDetails(page))) shownSamples++; await sleep(100); }
+      return `${counters.detections - real} real detector packets (ray-cast room: 0 people); synthetic box #${SYNTHETIC_ID} rendered → HUD "1 detections" in ${shownSamples}/20 samples over 2 s`;
     });
 
     await step("deadman + drive moves rover, release stops it", async () => {
@@ -302,15 +305,15 @@ async function main() {
       await page.locator("#rover-scan").click();
       const done = await waitFor("scan never completed", async () => {
         const r = await json(`${simOrigin}/scan`);
-        // Known intermittent bug (docs/judge-demo.md): server aborts at view 0 when a teleop heartbeat lands after POST /scan.
+        // Known open race (docs/judge-demo.md): server can abort at view 0 when a teleop heartbeat lands after POST /scan.
         if (r.state === "aborted") throw Object.assign(new Error(`server aborted scan after ${r.views?.length ?? 0} views: ${r.error}`), { fatal: true });
         return r.state === "complete" && r;
       }, 30000, 100);
       // The viewer reports completion and opens the map before the operator lets go.
       await waitFor("viewer never reported the completed scan", async () => {
         const details = await roverDetails(page);
-        // Known bug (docs/judge-demo.md): the viewer only treats status reason "scan_finished" as completion,
-        // but the next held heartbeat overwrites it with "release_required" before most status ticks.
+        // Regression (docs/judge-demo.md): the next held heartbeat replaces "scan_finished" with
+        // "release_required" before most status ticks; the viewer must still treat the scan as complete.
         if (/Scan cancelled/.test(details)) throw Object.assign(new Error("viewer cancelled a scan the server completed (status reason release_required replaced scan_finished)"), { fatal: true });
         return /points/.test(details) || /View changed/.test(await roverMessage(page));
       }, 3000);

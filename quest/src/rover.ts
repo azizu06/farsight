@@ -267,7 +267,8 @@ export class RoverExperience {
         const next = JSON.parse(event.data) as ControlStatus;
         if (this.gate.acceptStatus(next, performance.now())) {
           this.status = next;
-          if (this.scanning && next.requires_release && next.reason === "scan_finished") this.scanCompleting = true;
+          // The next held heartbeat after end_scan reports release_required before most status ticks; pollScan decides complete vs aborted.
+          if (this.scanning && next.requires_release && (next.reason === "scan_finished" || next.reason === "release_required")) this.scanCompleting = true;
           if (typeof next.seq === "number" && this.sent.has(next.seq)) this.ackMs = performance.now() - this.sent.get(next.seq)!;
           if (next.requires_release) this.gate.invalidate(next.reason ?? "Release deadman to continue");
         }
