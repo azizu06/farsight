@@ -15,6 +15,16 @@ def health(**changes):
 
 
 class EvaluateTests(unittest.TestCase):
+    def test_physical_camera_gate_rejects_missing_unverified_stale_and_simulated(self):
+        for changes in ({}, {"camera_drive_ready": False},
+                        {"camera_drive_ready": True, "camera": False},
+                        {"camera_drive_ready": True, "control": {"simulated": True}},
+                        {"camera_drive_ready": True, "replay": True}):
+            with self.subTest(changes=changes):
+                self.assertFalse(ready.is_ready(ready.evaluate(health(**changes), require_drive_camera=True)))
+        self.assertTrue(ready.is_ready(ready.evaluate(health(camera_drive_ready=True), require_drive_camera=True)))
+        self.assertTrue(ready.is_ready(ready.evaluate(OK)))
+
     def states(self, h):
         return {name: state for name, state, _ in ready.evaluate(h)}
 
@@ -90,6 +100,13 @@ class Handler(BaseHTTPRequestHandler):
 
 
 class ProbeTests(unittest.TestCase):
+    def test_http_probe_does_not_promote_view_only_camera_to_physical_ready(self):
+        url = self.serve([health(camera_drive_ready=False)])
+        out = StringIO()
+        self.assertEqual(ready.probe(url, timeout=0, out=out, require_drive_camera=True), 1)
+        self.assertIn("drive_camera", out.getvalue())
+        self.assertIn("NOT READY", out.getvalue())
+
     def serve(self, bodies):
         Handler.bodies = list(bodies)
         server = HTTPServer(("127.0.0.1", 0), Handler)

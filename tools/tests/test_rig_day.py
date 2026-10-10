@@ -45,6 +45,12 @@ class DryRunTests(unittest.TestCase):
         _, text = run_main(*ARGS, "--out", "/tmp/unused", "--dry-run", "--allow-cpu-detector")
         self.assertNotIn("--require-tensorrt", text.splitlines()[1])
 
+    def test_physical_capture_gate_is_explicitly_forwarded(self):
+        _, text = run_main(*ARGS, "--out", "/tmp/unused", "--dry-run", "--require-drive-camera")
+        self.assertIn("--require-drive-camera", text.splitlines()[1])
+        _, text = run_main(*ARGS, "--out", "/tmp/unused", "--dry-run")
+        self.assertNotIn("--require-drive-camera", text.splitlines()[1])
+
     def test_default_path_never_drives_or_holds_a_permit(self):
         _, text = run_main(*ARGS, "--out", "/tmp/unused", "--dry-run")
         self.assertNotIn("--hold-permit", text)
