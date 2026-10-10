@@ -26,8 +26,8 @@ through AVFoundation. RGB-only mode is also the default on a Pro.
 It does **not** supply measured scene depth or create a LiDAR map. On a
 LiDAR-capable Pro model, deselecting “Send RGB only” checks ARKit scene-depth
 support at runtime and sends synchronized RGB + Float32 depth + confidence +
-same-frame camera pose to `/phone`. That mode is explicitly view-only for
-physical driving until its capture clock has a supported qualification path. The UI and backend clearly
+same-frame camera pose to `/phone`. That mode is view-only for physical
+driving unless the server runs with `FARSIGHT_LIDAR_DRIVE=1`. The UI and backend clearly
 identify the current source. Runtime support, rather than the typed phone model,
 selects the mode.
 
@@ -187,7 +187,9 @@ the original timestamp, report `capture_clock: "arkit_unverified"`,
 `capture_clock_verified: false`, `capture_bound: false`, and show an explicit
 view-only diagnostic. A numeric AR/host delta is displayed for investigation;
 it is not treated as a clock conversion or a driving qualification. The backend
-can view/fuse those real sensor frames but must keep physical motion disabled.
+views and fuses those frames; physical motion on them needs the server's opt-in
+`--lidar-drive` (`FARSIGHT_LIDAR_DRIVE=1`), which accepts fresh frames with
+normal tracking without a verified capture clock.
 
 The unsigned build and deterministic Swift tests prove compilation, permit
 parsing, exposure ordering and bounds; they do not prove phone sensor timing,
