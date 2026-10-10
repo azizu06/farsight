@@ -20,6 +20,7 @@ VALUE_FLAGS = (
     ("FARSIGHT_MISSION_DIR", "--mission-dir"), ("FARSIGHT_SSL_CERTFILE", "--ssl-certfile"),
     ("FARSIGHT_SSL_KEYFILE", "--ssl-keyfile"), ("FARSIGHT_MAX_PWM", "--max-pwm"),
     ("FARSIGHT_MIN_PWM", "--min-pwm"), ("FARSIGHT_AUTONOMY_MAX_PWM", "--autonomy-max-pwm"),
+    ("FARSIGHT_DRIVE_PROFILE", "--drive-profile"),
     ("FARSIGHT_ASSISTANT_URL", "--assistant-url"), ("FARSIGHT_WHISPER_URL", "--whisper-url"),
     ("FARSIGHT_WHISPER_BIN", "--whisper-bin"), ("FARSIGHT_WHISPER_MODEL", "--whisper-model"),
     ("FARSIGHT_PIPER_BIN", "--piper-bin"), ("FARSIGHT_PIPER_MODEL", "--piper-model"),
@@ -35,7 +36,8 @@ VALUE_FLAGS = (
     ("FARSIGHT_NAV_CAMERA_HEIGHT", "--nav-camera-height"),
 )
 BOOL_FLAGS = (("FARSIGHT_H264", "--h264"), ("FARSIGHT_SIMULATE_ROVER", "--simulate-rover"),
-              ("FARSIGHT_SCAN_PAN", "--scan-pan"), ("FARSIGHT_RECORD", "--record"), ("FARSIGHT_NAV2", "--nav2"))
+              ("FARSIGHT_SCAN_PAN", "--scan-pan"), ("FARSIGHT_RECORD", "--record"), ("FARSIGHT_NAV2", "--nav2"),
+              ("FARSIGHT_ALLOW_CALIBRATION", "--allow-calibration"))
 INT_VARS = ("FARSIGHT_PORT", "FARSIGHT_MAX_PWM", "FARSIGHT_MIN_PWM", "FARSIGHT_AUTONOMY_MAX_PWM", "FARSIGHT_WAIT_SECONDS",
             "FARSIGHT_VIDEO_FPS", "FARSIGHT_VIDEO_BITRATE")
 FLOAT_VARS = ("FARSIGHT_TRIAGE_INTERVAL", "FARSIGHT_SCAN_FOV", "FARSIGHT_SCAN_TURN_DPS",
@@ -43,7 +45,8 @@ FLOAT_VARS = ("FARSIGHT_TRIAGE_INTERVAL", "FARSIGHT_SCAN_FOV", "FARSIGHT_SCAN_TU
               "FARSIGHT_NAV_MAX_V", "FARSIGHT_NAV_MAX_W", "FARSIGHT_NAV_CAMERA_HEIGHT")
 # Variables whose value is a file that must exist for the feature to work.
 FILE_VARS = ("FARSIGHT_DETECTOR_MODEL", "FARSIGHT_FACE_MODEL", "FARSIGHT_PIPER_MODEL", "FARSIGHT_PIPER_MODEL_ES",
-             "FARSIGHT_WHISPER_MODEL", "FARSIGHT_DEPTH_MODEL", "FARSIGHT_SSL_CERTFILE", "FARSIGHT_SSL_KEYFILE")
+             "FARSIGHT_WHISPER_MODEL", "FARSIGHT_DEPTH_MODEL", "FARSIGHT_SSL_CERTFILE", "FARSIGHT_SSL_KEYFILE",
+             "FARSIGHT_DRIVE_PROFILE")
 
 
 def _get(env, name):

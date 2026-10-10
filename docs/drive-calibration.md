@@ -63,8 +63,18 @@ python -m tools.calibrate_drive --simulate       # fit against a virtual rover, 
   when you hold again. `--auto-permit` instead holds the permit for the whole
   sequence; use it only with the floor cleared and a hand on the switch.
 - `--allow-calibration` is required on the server and is off by default. Calibrate
-  mode keeps the permit, held deadman, fresh camera, lease, and the forward
-  ultrasonic stop (forward motion needs >= 25 cm clear and a fresh range reading).
+  mode keeps the permit, held deadman, fresh camera and lease. With the proximity
+  stop on, it also keeps the forward range stop; the rig as built has no ultrasonic
+  and runs `--proximity-stop off`.
+- Under `farsight.service`, set `FARSIGHT_ALLOW_CALIBRATION=1` in `/etc/farsight.env`
+  for the run, then blank it and set `FARSIGHT_DRIVE_PROFILE=/path/drive-profile.json`.
+  Both take effect on a service restart.
+- **Camera prerequisite.** With `--serial-port`, every motion heartbeat needs
+  `camera_drive_ready`: a USB camera on the Jetson, or the phone's capture-bound RGB
+  stream. The tool also needs the ARKit pose, which only the phone's LiDAR stream
+  (`/phone`) provides. Those LiDAR frames are not drive-ready until the `/phone`
+  capture binding lands, so for now run calibration with a USB drive camera
+  (`FARSIGHT_CAMERA`) while the phone streams ARKit.
 - The test ceiling is the server's `--max-pwm` (or lower `--max-pwm` on the tool).
   The measured curves only cover up to that ceiling.
 - Pose time is `now - age_ms` of a polled `/health` (about 20 Hz, 50 ms jitter);
