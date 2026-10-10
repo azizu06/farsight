@@ -35,8 +35,8 @@ qualification. The scoped redesign measurement is saved in
 
 ## Controls
 
-- Quest: hold the right trigger, then use the left thumbstick to drive. If only
-  the right controller is present, its thumbstick works instead. Release the
+- Quest: hold the right trigger, then use the right thumbstick to drive. The
+  left controller is optional for driving and handles the extra actions. Release the
   trigger to stop. Forward speed is capped at 45% of the server's PWM ceiling;
   calibrate that ceiling on the actual car so motor stiction does not prevent motion.
 - Right A always switches camera/map. Right B stops and cancels navigation.
@@ -58,13 +58,15 @@ qualification. The scoped redesign measurement is saved in
   browser speech recognition. Listening, processing, the answer and errors show
   on a panel left of the camera. A proposed Seek or scan acts only after a fresh
   left-trigger press (X dismisses), and still needs the held deadman.
-- Both controllers must be connected with fresh grip poses each frame, and the
+- The right controller must be connected with a fresh grip pose each frame, and the
   newest XR sample must be under 150 ms old (`performance.now()` observation
   time, never the predicted display time). Losing tracking, a missing XR frame,
-  a hidden or blurred session, or removing/replacing a controller stops driving.
+  a hidden or blurred session, or removing/replacing the right controller stops driving.
   The trigger and every button then need an observed release before acting
   again, so a button held through tracking loss never fires on recovery. The
   camera and stop reason stay visible when only controller tracking is lost.
+  Left-controller tracking loss cancels voice and latches its action buttons,
+  while a tracked right controller can continue steering.
 - A large source banner sits above the camera in the headset and at the top of
   the desktop page. It reads LIVE only while fresh `/health` reports
   `replay: false`, `control.simulated: false`, a connected rover, a fresh real

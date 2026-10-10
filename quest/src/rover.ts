@@ -51,9 +51,11 @@ export class RoverExperience {
   private detectionsSocket: WebSocket | null = null;
   private timers: number[] = [];
   private stopped = false;
-  private frameBusy = false;
+  private frameRequests = new Map<number, { controller: AbortController; startedAt: number }>();
+  private frameRequestSeq = 0;
   private lastFramePoll = -Infinity;
-  private request: AbortController | null = null;
+  private lastHealthPoll = -Infinity;
+  private lastPumpAt = -Infinity;
   private frameId = "";
   private pendingFrame: { id: string | null; age: number; at: number } | null = null;
   private lastCanvasDraw = -Infinity;
@@ -112,7 +114,7 @@ export class RoverExperience {
   private scanPollAt = 0;
   private lastXRAt = -Infinity;
   private rightSource: XRInputSource | null = null;
-  private movementSource: XRInputSource | null = null;
+  private leftSource: XRInputSource | null = null;
   private canvas = document.createElement("canvas");
   private ctx: CanvasRenderingContext2D;
   private hudCanvas = document.createElement("canvas");
@@ -168,7 +170,7 @@ export class RoverExperience {
       <button id="rover-explore" aria-pressed="false">Explore (E)</button>
       <button id="rover-nav-cancel">Cancel nav (C)</button>
       <p id="rover-nav" class="rover-nav" role="status" hidden></p>
-      <p class="rover-help">Quest: hold right trigger + left stick. A: camera/map. B: stop. X: recenter view. Y: actions menu. Point with the right controller and squeeze right grip to select an action or a person. Left grip: start rescue drill. Map view: point at the floor, right grip sets a go-to goal; right stick click cancels nav.<span id="rover-voice-help" hidden> Hold left trigger: ask by voice (enable in Settings first).</span><br>Desktop: hold Space + WASD in camera view; click a person to seek; E explores; double-click the map floor for go-to, C cancels. Stick/WASD takes back control.</p>`;
+      <p class="rover-help">Quest: hold right trigger + right stick. A: camera/map. B: stop. X: recenter view. Y: actions menu. Point with the right controller and squeeze right grip to select an action or a person. Left grip: start rescue drill. Map view: point at the floor, right grip sets a go-to goal; right stick click cancels nav.<span id="rover-voice-help" hidden> Hold left trigger: ask by voice (enable in Settings first).</span><br>Desktop: hold Space + WASD in camera view; click a person to seek; E explores; double-click the map floor for go-to, C cancels. Stick/WASD takes back control.</p>`;
     document.querySelector("main")!.append(panel);
     this.sourceBanner = document.createElement("div");
     this.sourceBanner.className = "source-banner"; this.sourceBanner.setAttribute("role", "status");
@@ -240,7 +242,7 @@ export class RoverExperience {
     this.renderer.xr.addEventListener("sessionstart", () => {
       this.stop("VR session started: release trigger");
       this.lastXRAt = -Infinity;
-      this.rightSource = null; this.movementSource = null;
+      this.rightSource = null; this.leftSource = null;
       this.inputValid = false; this.keys.clear(); this.pointerHeld = false;
       this.recenter = true; this.xrLive = true; this.actionMenu.visible = false; this.setView("camera");
       this.renderer.xr.getSession()?.addEventListener("visibilitychange", () => {
@@ -252,7 +254,7 @@ export class RoverExperience {
       this.voice?.stopListening("VR session ended: voice question cancelled");
       this.stop("VR session ended: release deadman"); this.suspended = false;
       this.lastXRAt = -Infinity;
-      this.rightSource = null; this.movementSource = null;
+      this.rightSource = null; this.leftSource = null;
       this.inputValid = false; this.keys.clear(); this.pointerHeld = false;
       this.actionMenu.visible = false; this.pointer.visible = false;
     });
@@ -266,10 +268,7 @@ export class RoverExperience {
     this.setMount(this.settings.values.mount === "fixed", false);
     this.connectControl(); this.connectDetections();
     if (this.settings.values.h264) this.setVideo(true, false);
-    const refreshHealth = () => void this.sourceTruth.refresh().then(() => { this.applyRoverMount(); this.applyVoiceAvailability(); this.applyTransportProfile(); });
-    refreshHealth();
-    this.timers.push(window.setInterval(refreshHealth, 2000));
-    this.timers.push(window.setInterval(() => this.pump(), 50));
+    this.pollHealth(performance.now());
     void this.fetchFrame();
     this.addAssistant();
   }
@@ -304,7 +303,9 @@ export class RoverExperience {
   };
   private keyUp = (event: KeyboardEvent) => { this.keys.delete(event.code); };
   private blur = () => { this.keys.clear(); this.pointerHeld = false; this.stop("Window inactive: release deadman"); };
-  private visibility = () => { if (document.hidden) this.blur(); };
+  private visibility = () => {
+    if (document.hidden && !(this.renderer.xr.isPresenting && this.renderer.xr.getSession()?.visibilityState === "visible")) this.blur();
+  };
   /** Fixed: show the full measured frame and command pan 0. Servo: send head yaw as pan. */
   private setMount(fixed: boolean, save: boolean) {
     if (save) { this.settings.origin.mount = "saved"; saveSettings(pageStorage(), { mount: fixed ? "fixed" : "servo" }); }
@@ -346,7 +347,10 @@ export class RoverExperience {
     this.videoToggle.checked = enabled;
     if (enabled === this.h264Enabled) return;
     this.h264Enabled = enabled;
-    if (this.h264Enabled) this.request?.abort();
+    if (this.h264Enabled) {
+      for (const request of this.frameRequests.values()) request.controller.abort();
+      this.frameRequests.clear();
+    }
     this.stop("Video format changed: release deadman");
     this.gate.frameAt = -Infinity; this.gate.frameAge = Infinity; this.pendingFrame = null; this.lastCanvasDraw = -Infinity;
     if (this.h264Enabled) this.h264.start(); else this.h264.stop();
@@ -423,7 +427,8 @@ export class RoverExperience {
   }
 
   private resetSessionView() {
-    this.request?.abort(); this.pendingFrame = null;
+    for (const request of this.frameRequests.values()) request.controller.abort();
+    this.frameRequests.clear(); this.pendingFrame = null;
     this.frame = null; this.frameId = ""; this.lastCanvasDraw = -Infinity;
     this.detections = null; this.detectionFrames.clear();
     this.sent.clear(); this.lastDeadman = false; this.lastSendAt = performance.now();
@@ -433,29 +438,58 @@ export class RoverExperience {
 
   /** Poll from the active display loop so immersive browsers cannot throttle the camera timer. */
   private pollCamera(now: number) {
-    if (now - this.lastFramePoll < 160) return;
+    for (const [id, request] of this.frameRequests) {
+      if (now - request.startedAt >= 750) { request.controller.abort(); this.frameRequests.delete(id); }
+    }
+    if (now - this.lastFramePoll < 100 || this.frameRequests.size >= 2) return;
     this.lastFramePoll = now;
     void this.fetchFrame();
+  }
+
+  private pollHealth(now: number) {
+    if (this.stopped || now - this.lastHealthPoll < 2000) return;
+    this.lastHealthPoll = now;
+    void this.sourceTruth.refresh().then(() => {
+      if (this.stopped) return;
+      this.applyRoverMount(); this.applyVoiceAvailability(); this.applyTransportProfile();
+    });
+  }
+
+  private pumpControl(now: number) {
+    if (now - this.lastPumpAt < 50) return;
+    this.lastPumpAt = now;
+    this.pump();
   }
 
   private async fetchFrame() {
     const session = this.renderer.xr.isPresenting ? this.renderer.xr.getSession() : null;
     const xrVisible = !!session && session.visibilityState !== "hidden";
-    if (this.h264Enabled || this.frameBusy || (document.hidden && !xrVisible) || this.stopped ||
+    if (this.h264Enabled || this.frameRequests.size >= 2 || (document.hidden && !xrVisible) || this.stopped ||
         (!this.renderer.xr.isPresenting && this.getView() !== "camera")) return;
-    this.frameBusy = true;
     const start = performance.now();
     const controlSession = this.gate.session;
-    const controller = new AbortController(); this.request = controller;
+    const requestId = this.frameRequestSeq++;
+    const controller = new AbortController(); this.frameRequests.set(requestId, { controller, startedAt: start });
     const timeout = window.setTimeout(() => controller.abort(), 750);
     let url = "";
+    let response: Response | undefined;
     try {
-      const response = await fetch("/camera.jpg", { cache: "no-store", signal: controller.signal });
+      response = await fetch("/camera.jpg", { cache: "no-store", signal: controller.signal });
       if (!response.ok) throw new Error(`Camera HTTP ${response.status}`);
       const id = response.headers.get("X-Frame-Id");
       const ageHeader = response.headers.get("X-Frame-Age-Ms");
       const source = response.headers.get("X-Frame-Source") ?? "Unverified camera source";
-      if (id === this.frameId) return;
+      const serverAge = ageHeader === null || !ageHeader.trim() ? Infinity : Number(ageHeader);
+      if (!Number.isFinite(serverAge) || serverAge < 0) return;
+      // Counters restart with camera capture, and request start order is not capture order.
+      // Prefer the freshest conservative capture-age bound, never renew a duplicate.
+      const retainDisplayed = (now: number) => {
+        if (source === this.frameSource && id === this.frameId) return true;
+        if (!this.frame) return false;
+        const retainedAge = this.pendingFrame ? this.pendingFrame.age + Math.max(0, now - this.pendingFrame.at) : this.gate.videoAge(now);
+        return serverAge + now - start >= retainedAge;
+      };
+      if (controller.signal.aborted || this.gate.session !== controlSession || retainDisplayed(performance.now())) return;
       const blob = await response.blob();
       if (blob.size > 2_000_000 || !blob.type.startsWith("image/")) throw new Error("Invalid camera image");
       url = URL.createObjectURL(blob);
@@ -464,44 +498,52 @@ export class RoverExperience {
       await image.decode();
       const now = performance.now();
       this.decodeMs = now - decodeStart;
-      if (this.stopped || controller.signal.aborted || this.h264Enabled || this.gate.session !== controlSession) return;
+      if (this.stopped || controller.signal.aborted || this.h264Enabled || this.gate.session !== controlSession ||
+          retainDisplayed(now)) return;
       this.frame = image; this.frameSource = source;
       this.frameId = id ?? "";
       // Server capture age + full request/decode time bounds transit age without synchronized clocks.
-      this.pendingFrame = { id, age: ageHeader === null ? Infinity : Number(ageHeader) + now - start, at: now };
+      this.pendingFrame = { id, age: serverAge + now - start, at: now };
       this.dirty = true;
     } catch {
       // Keep the last frame visible; its monotonically growing age stops motion.
     } finally {
       if (url) URL.revokeObjectURL(url);
-      window.clearTimeout(timeout); this.frameBusy = false; this.request = null;
+      if (response?.body && !response.bodyUsed) void response.body.cancel().catch(() => {});
+      controller.abort(); window.clearTimeout(timeout); this.frameRequests.delete(requestId);
     }
   }
 
   update(now: number, frame?: XRFrame) {
     const xr = this.renderer.xr.isPresenting;
     this.pollCamera(now);
+    this.pollHealth(now);
     const session = this.renderer.xr.getSession();
     if (xr && session) {
       const sources = [...session.inputSources];
       const right = sources.find(source => source.handedness === "right" && source.gamepad);
       const left = sources.find(source => source.handedness === "left" && source.gamepad);
-      const movement = left ?? right;
-      if ((right ?? null) !== this.rightSource || (movement ?? null) !== this.movementSource) {
+      if ((right ?? null) !== this.rightSource) {
         this.voice?.stopListening("Controller changed: voice question cancelled");
         this.stop("Controller changed: release trigger");
-        this.rightSource = right ?? null; this.movementSource = movement ?? null;
+        this.rightSource = right ?? null;
         this.latchButtons();
+      }
+      if ((left ?? null) !== this.leftSource) {
+        this.voice?.stopListening("Left controller changed: voice question cancelled");
+        this.leftSource = left ?? null;
+        this.latchLeftButtons();
       }
       const reference = this.renderer.xr.getReferenceSpace();
       let pose: XRViewerPose | null = null;
       let tracked = false;
+      let leftTracked = false;
       try {
         if (session.visibilityState === "visible" && frame && reference) pose = frame.getViewerPose(reference) ?? null;
         tracked = Boolean(pose && frame && reference &&
-          right?.gamepad?.connected && movement?.gamepad?.connected &&
-          right.gripSpace && movement.gripSpace &&
-          frame.getPose(right.gripSpace, reference) && frame.getPose(movement.gripSpace, reference));
+          right?.gamepad?.connected && right.gripSpace && frame.getPose(right.gripSpace, reference));
+        leftTracked = Boolean(pose && frame && reference && left?.gamepad?.connected &&
+          left.gripSpace && frame.getPose(left.gripSpace, reference));
       } catch { /* An ended/inactive frame cannot provide current tracking. */ }
       if (pose) {
         const orientation = pose.transform.orientation, position = pose.transform.position;
@@ -523,18 +565,23 @@ export class RoverExperience {
         this.cockpit.visible = !!pose;
         this.cameraScreen.visible = this.xrLive && !this.actionMenu.visible;
         this.paint(now);
+        this.pumpControl(now);
         return;
       }
+      if (!leftTracked) {
+        this.voice?.stopListening("Left controller tracking unavailable: voice question cancelled");
+        this.latchLeftButtons();
+      }
       this.lastXRAt = now;
-      const gamepad = movement?.gamepad;
+      const gamepad = right?.gamepad;
       const axes = gamepad?.axes ?? [];
       const held = !!right?.gamepad?.buttons[0]?.pressed;
-      const scan = !!left?.gamepad?.buttons[5]?.pressed;
+      const scan = leftTracked && !!left?.gamepad?.buttons[5]?.pressed;
       const toggle = !!right?.gamepad?.buttons[4]?.pressed;
       const explore = !!right?.gamepad?.buttons[5]?.pressed;
-      const center = !!left?.gamepad?.buttons[4]?.pressed;
-      const drill = !!left?.gamepad?.buttons[1]?.pressed;
-      const talk = !!left?.gamepad?.buttons[0]?.pressed;
+      const center = leftTracked && !!left?.gamepad?.buttons[4]?.pressed;
+      const drill = leftTracked && !!left?.gamepad?.buttons[1]?.pressed;
+      const talk = leftTracked && !!left?.gamepad?.buttons[0]?.pressed;
       // Free on the right controller: grip (squeeze) sets a go-to goal, thumbstick click cancels nav.
       const goal = !!right?.gamepad?.buttons[1]?.pressed;
       const cancel = !!right?.gamepad?.buttons[3]?.pressed;
@@ -555,10 +602,10 @@ export class RoverExperience {
       this.goalDown = goal; this.cancelDown = cancel;
       if (talk && !this.talkDown) this.talkPressed();
       else if (!talk && this.talkDown) this.voice?.pushEnd();
-      this.talkDown = talk;
+      if (leftTracked) this.talkDown = talk;
       if (center && !this.recenterDown && this.voice?.pendingAction) this.voice.dismissAction();
       if (drill && !this.drillDown) void this.startDrill();
-      this.drillDown = drill;
+      if (leftTracked) this.drillDown = drill;
       if (toggle && !this.toggleDown) {
         this.actionMenu.visible = false;
         this.xrLive = !this.xrLive; this.stop("View changed: release trigger");
@@ -570,7 +617,8 @@ export class RoverExperience {
         if (navActive(this.nav)) void this.cancelNav("Stopped: navigation cancelled");
       }
       if (center && !this.recenterDown) { this.stop("View recentered: release trigger"); this.recenter = true; }
-      this.toggleDown = toggle; this.exploreDown = explore; this.recenterDown = center;
+      this.toggleDown = toggle; this.exploreDown = explore;
+      if (leftTracked) this.recenterDown = center;
       this.euler.setFromQuaternion(this.quat, "YXZ");
       if (this.recenter && pose) this.anchorCockpit();
       const yaw = Math.atan2(Math.sin(this.euler.y - this.baseYaw), Math.cos(this.euler.y - this.baseYaw));
@@ -584,7 +632,7 @@ export class RoverExperience {
         this.actionMenu.visible = !this.actionMenu.visible;
         this.inputValid = !this.actionMenu.visible;
       }
-      this.scanDown = scan;
+      if (leftTracked) this.scanDown = scan;
     } else {
       this.inputValid = true;
       this.input = {
@@ -612,6 +660,7 @@ export class RoverExperience {
       this.h264.update();
     }
     this.paint(now);
+    this.pumpControl(now);
   }
   /** A level screen anchored on entry/recenter, so looking around works naturally. */
   private anchorCockpit() {
@@ -757,7 +806,8 @@ export class RoverExperience {
     const now = performance.now();
     const connected = this.socket?.readyState === WebSocket.OPEN;
     const contextActive = this.renderer.xr.isPresenting ? this.xrLive && !this.actionMenu.visible && !this.suspended : this.getView() === "camera" && !document.querySelector("dialog[open]");
-    const available = this.inputValid && contextActive && !document.hidden && !this.contextLost && now - this.lastCanvasDraw < 250;
+    const displayVisible = this.renderer.xr.isPresenting ? this.renderer.xr.getSession()?.visibilityState === "visible" : !document.hidden;
+    const available = this.inputValid && contextActive && displayVisible && !this.contextLost && now - this.lastCanvasDraw < 250;
     // No motion while the microphone is requested or open; release is required afterwards.
     if (this.voice?.capturing) this.gate.invalidate("Voice question: release trigger");
     const moving = this.gate.decide(this.input.held, now, connected, available,
@@ -951,7 +1001,11 @@ export class RoverExperience {
   }
   /** Held buttons from a lost or replaced controller act only after an observed release. */
   private latchButtons() {
-    this.toggleDown = this.exploreDown = this.recenterDown = this.scanDown = this.drillDown = this.talkDown = this.goalDown = this.cancelDown = true;
+    this.toggleDown = this.exploreDown = this.goalDown = this.cancelDown = true;
+    this.latchLeftButtons();
+  }
+  private latchLeftButtons() {
+    this.recenterDown = this.scanDown = this.drillDown = this.talkDown = true;
   }
   private createCameraTexture() {
     const texture = new THREE.CanvasTexture(this.canvas);
@@ -1020,7 +1074,7 @@ export class RoverExperience {
     c.font = "bold 32px system-ui"; c.fillText((mapView ? "3D MAP · driving paused" : stop?.cause ?? headline).slice(0, 58), 28, 46);
     c.font = "24px system-ui"; c.fillStyle = "#dce5ee";
     c.font = "32px system-ui"; c.fillStyle = "#f3f9fc";
-    const instruction = mapView ? "Point at floor + RIGHT GRIP to select a goal" : stop?.recovery ?? "Hold RIGHT TRIGGER + LEFT STICK to drive";
+    const instruction = mapView ? "Point at floor + RIGHT GRIP to select a goal" : stop?.recovery ?? "Hold RIGHT TRIGGER + RIGHT STICK to drive";
     c.font = `${stop ? 27 : 32}px system-ui`; c.fillText(instruction.slice(0, 74), 28, 94);
     c.font = "30px system-ui"; c.fillStyle = "#ffb3a8";
     c.fillText("B  STOP", 28, 143);
@@ -1230,7 +1284,9 @@ export class RoverExperience {
   dispose() {
     this.stop("Viewer closed"); this.stopped = true;
     this.timers.forEach(timer => { window.clearInterval(timer); window.clearTimeout(timer); });
-    this.socket?.close(); this.detectionsSocket?.close(); this.request?.abort(); this.h264.stop(); this.voice?.dispose();
+    this.socket?.close(); this.detectionsSocket?.close();
+    for (const request of this.frameRequests.values()) request.controller.abort();
+    this.frameRequests.clear(); this.h264.stop(); this.voice?.dispose();
     window.removeEventListener("keydown", this.keyDown); window.removeEventListener("keyup", this.keyUp);
     window.removeEventListener("blur", this.blur); window.removeEventListener("click", this.click);
     this.renderer.domElement.removeEventListener("dblclick", this.mapGoal); this.navOverlay.dispose(); document.removeEventListener("visibilitychange", this.visibility);

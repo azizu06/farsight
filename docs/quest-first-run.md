@@ -133,7 +133,7 @@ Press **Enter VR**. With the car lifted or otherwise unable to travel:
    panel names the cause and the right trigger must be released and pressed again.
 2. Hold the right trigger: the HUD headline should become ready/driving once
    camera and control are fresh. Release: it stops.
-3. Hold the trigger and move the left stick: check the wheel direction for
+3. Hold the trigger and move the right stick: check the wheel direction for
    forward, reverse and both turns. Calibrate starting PWM on the real car
    ([rover/README.md](../rover/README.md)).
 4. Turn your head: the screen stays anchored. Servo pan follows only in servo

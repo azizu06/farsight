@@ -34,6 +34,28 @@ test("LIVE only with fresh health proving real camera, real rover, and a fresh d
   assert.equal(truth.state(view(7000)).kind, "UNVERIFIED");
 });
 
+test("a delayed health response remains fresh for five seconds after successful receipt", async t => {
+  let now = 1000;
+  t.mock.method(performance, "now", () => now);
+  const truth = new SourceTruth();
+  const delayed = async () => {
+    now = 1500;
+    return { ok: true, json: async () => { now = 2500; return liveHealth; } };
+  };
+  await truth.refresh(delayed);
+  assert.equal(truth.state(view(6000)).kind, "LIVE", "request latency must not consume received health freshness");
+  assert.equal(truth.state(view(7499)).kind, "LIVE");
+  assert.match(truth.state(view(7500)).detail, /rover health unavailable/);
+});
+
+test("an explicitly supplied health timestamp is preserved, including zero", async t => {
+  t.mock.method(performance, "now", () => 2500);
+  const truth = new SourceTruth();
+  await truth.refresh(reply(liveHealth), 0);
+  assert.equal(truth.state(view(4999)).kind, "LIVE");
+  assert.match(truth.state(view(5000)).detail, /rover health unavailable/);
+});
+
 test("REPLAY is sticky through disconnects and outranks everything", async () => {
   const truth = new SourceTruth();
   await truth.refresh(reply({ ...liveHealth, replay: true }), 0);
