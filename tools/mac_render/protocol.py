@@ -45,6 +45,43 @@ def quaternion(value):
     return [item / length for item in raw]
 
 
+def eye_views(eyes, require_pair=False):
+    if not isinstance(eyes, list) or len(eyes) > 2:
+        raise ValueError("invalid eye views")
+    result = []
+    for eye in eyes:
+        if not isinstance(eye, dict):
+            raise ValueError("invalid eye view")
+        view = dict(position=vec(eye.get("position"), 3),
+                    quaternion=quaternion(eye.get("quaternion")), projection=vec(eye.get("projection"), 16))
+        if require_pair:
+            matrix = view["projection"]
+            scale = max(map(abs, matrix))
+            if not scale:
+                raise ValueError("singular eye projection")
+            rows = [[matrix[col * 4 + row] / scale for col in range(4)] for row in range(4)]
+            for col in range(4):
+                pivot = max(range(col, 4), key=lambda row: abs(rows[row][col]))
+                if abs(rows[pivot][col]) < 1e-12:
+                    raise ValueError("singular eye projection")
+                rows[col], rows[pivot] = rows[pivot], rows[col]
+                for row in range(col + 1, 4):
+                    factor = rows[row][col] / rows[col][col]
+                    for at in range(col, 4):
+                        rows[row][at] -= factor * rows[col][at]
+        if "eye" in eye:
+            if eye["eye"] not in ("left", "right"):
+                raise ValueError("invalid eye label")
+            view["eye"] = eye["eye"]
+        result.append(view)
+    labels = [view.get("eye") for view in result]
+    if len([label for label in labels if label]) != len(set(label for label in labels if label)):
+        raise ValueError("duplicate eye label")
+    if require_pair and (len(result) != 2 or set(labels) != {"left", "right"}):
+        raise ValueError("stereo requires labeled left and right eyes")
+    return result
+
+
 def parse_pose(message, now_mono_ms):
     """Validate a pose. Returns the applied record, or raises ValueError."""
     if not isinstance(message, dict) or message.get("type") not in ("pose", "pose_untracked"):
@@ -102,14 +139,13 @@ def parse_pose(message, now_mono_ms):
             raise ValueError("invalid map revision")
         pose["map_revision"] = value
     if "eyes" in message:
-        eyes = message["eyes"]
-        if not isinstance(eyes, list) or len(eyes) > 2:
-            raise ValueError("invalid eye views")
-        pose["eyes"] = [{"position": vec(eye.get("position"), 3),
-                         "quaternion": quaternion(eye.get("quaternion")),
-                         "projection": vec(eye.get("projection"), 16)} for eye in eyes if isinstance(eye, dict)]
-        if len(pose["eyes"]) != len(eyes):
-            raise ValueError("invalid eye view")
+        pose["eyes"] = eye_views(message["eyes"])
+    if "stereo" in message:
+        if type(message["stereo"]) is not bool:
+            raise ValueError("invalid stereo request")
+        pose["stereo"] = message["stereo"]
+        if message["stereo"]:
+            eye_views(pose.get("eyes"), require_pair=True)
     ray = message.get("ray", None)
     if ray is not None:
         if not isinstance(ray, dict):
