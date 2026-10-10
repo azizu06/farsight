@@ -76,7 +76,7 @@ Procedure, per trial:
    judge will drive it), drive straight and hold steady speed for about 1 m.
 3. Release the deadman. Film from the side (60 fps+) or mark where the front
    mark first stops moving.
-4. Stop distance = rover position at release minus position at rest. Release
+4. Stop distance = rover position at rest minus position at release. Release
    is the frame the controller button/key lifts; rest is the first frame with
    no motion.
 
