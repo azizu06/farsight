@@ -49,7 +49,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                depth_model=None, scan_pan=False, scan_fov=70, scan_intrinsics=None, scan_turn_dps=90,
                record=False, replay=None, proximity_stop=True, pan_mount="servo", nav2=False, nav_speed_mps=0.45,
                nav_turn_radps=3.0, nav_max_v=0.7, nav_max_w=0.8, nav_camera_height=0.15, bulk_limit_mbps=0, drive_profile=None,
-               allow_calibration=False, sim_world=None):
+               allow_calibration=False, sim_world=None, bonded_control=False):
     if sim_world is not None:  # closed-loop simulator: a moving ray-cast rover in a test floor plan
         if serial_port or camera_device is not None or replay is not None:
             raise ValueError("--sim-world is simulated; it cannot drive real motors, cameras or replays")
@@ -65,6 +65,8 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
         raise ValueError("Simulated sources cannot be combined with a physical motor serial port")
     if nav2 and replay is not None:
         raise ValueError("Replay is read-only; navigation cannot be combined with it")
+    if bonded_control and replay is not None:
+        raise ValueError("Replay is read-only; bonded control cannot be combined with it")
     if scan_pan and pan_mount == "none":
         raise ValueError("--scan-pan needs a physical pan servo (--pan-mount servo)")
     state = MapState(demo)
@@ -82,7 +84,8 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                              camera_ready=lambda: camera_service.status()["camera_drive_ready" if serial_port else "camera"],
                              detections=sim.detections if sim else perception.snapshot,
                              simulated_range=sim.sim.ultrasonic_cm if sim else None,
-                             proximity_stop=proximity_stop, pan_mount=pan_mount, navigator=nav)
+                             proximity_stop=proximity_stop, pan_mount=pan_mount, navigator=nav,
+                             bonded=bonded_control)
     if nav is not None:
         nav.attach(control.state)
         state.frame_observers.append(nav.offer_frame)
@@ -158,6 +161,8 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                     with suppress(asyncio.CancelledError):
                         await stream_task
             await asyncio.to_thread(mission.finish_recording)
+            if isinstance(control, ControlService):
+                await control.close_bonded()
             await asyncio.to_thread(control.close)
             await assistant.close()
             await phrases.close()
@@ -588,7 +593,11 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
             if not hello.supports_scene_depth:
                 raise ValueError("This mapper requires measured scene depth")
             identity = hello.session_id, hello.map_epoch
-            permits = CapturePermits(*identity, enabled=hello.supports_capture_permits)
+            # ARKit RGB-D has no supported sensor-to-host clock contract yet.
+            # In particular, claiming the RGB-only AVCapture clock on this
+            # endpoint cannot make an ARKit frame eligible for physical drive.
+            permits = CapturePermits(*identity, enabled=hello.supports_capture_permits,
+                                     supported_clocks=())
             camera_service.phone_rgb = None
             await asyncio.to_thread(state.start_session, identity, hello.device)
 
@@ -598,7 +607,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                     try:
                         frame = await asyncio.to_thread(decode_frame, packet, identity)
                         frame.header["_received_monotonic"] = received_at
-                        await asyncio.to_thread(state.process, frame)
+                        await asyncio.to_thread(state.process, frame, permits=permits)
                     except (ValueError, TypeError, KeyError, ValidationError) as exc:
                         with state.lock:
                             state.rejected += 1
@@ -708,6 +717,8 @@ def main():
     parser.add_argument("--camera", help="USB camera index or /dev/video path; default is phone RGB-D input")
     parser.add_argument("--serial-port", help="Uno serial path; omitted means physical motors disabled")
     parser.add_argument("--simulate-rover", action="store_true", help="Explicit virtual rover; never opens serial")
+    parser.add_argument("--bonded-control", action="store_true",
+                        help="Opt-in experimental dual-route logical controller; default off")
     parser.add_argument("--max-pwm", type=int, default=100, help="Initial motor PWM ceiling, 1..255")
     parser.add_argument("--min-pwm", type=int, default=0, help="Measured wheel starting PWM floor; default 0 until calibrated")
     parser.add_argument("--drive-profile", help="Opt-in measured drive profile (tools.calibrate_drive output); enables mode \"velocity\" in m/s, rad/s")
@@ -789,7 +800,8 @@ def main():
                 proximity_stop=args.proximity_stop, pan_mount=args.pan_mount,
                 nav2=args.nav2, nav_speed_mps=args.nav_speed_mps, nav_turn_radps=args.nav_turn_radps,
                 nav_max_v=args.nav_max_v, nav_max_w=args.nav_max_w,
-                nav_camera_height=args.nav_camera_height, sim_world=args.sim_world), host=args.host, port=args.port,
+                nav_camera_height=args.nav_camera_height, sim_world=args.sim_world,
+                bonded_control=args.bonded_control), host=args.host, port=args.port,
                 ssl_certfile=args.ssl_certfile, ssl_keyfile=args.ssl_keyfile,
                 ws_max_size=8 * 1024 * 1024, access_log=False,
                 timeout_graceful_shutdown=5)

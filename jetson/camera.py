@@ -81,8 +81,12 @@ class CameraService:
         if self.device is None:
             if self.phone_rgb is not None:
                 return self.phone_rgb
-            jpeg, received, frame_id, source = self.mapping.camera_snapshot()
-            return CameraFrame(jpeg, received, frame_id, source) if jpeg is not None else None
+            if hasattr(self.mapping, "camera_capture_snapshot"):
+                jpeg, received, frame_id, source, verified, binding = self.mapping.camera_capture_snapshot()
+            else:
+                jpeg, received, frame_id, source = self.mapping.camera_snapshot()
+                verified, binding = False, None
+            return CameraFrame(jpeg, received, frame_id, source, verified, binding) if jpeg is not None else None
         with self.lock:
             return self.frame
 

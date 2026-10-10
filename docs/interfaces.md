@@ -533,3 +533,73 @@ latches are unchanged.
 | `OK` / `ERR <msg>` | Ack |
 
 Uno watchdog: no `M` for 300 ms -> motors stop on its own.
+
+## Opt-in bonded upstream control (experimental v1)
+
+Server flag `--bonded-control` adds `/ws/control/bonded`; default `/ws/control`
+and its single-owner/replay behavior remain unchanged. This endpoint is for
+trusted operator-relay upstreams, not a second Quest controller. At most two
+paths attach to one logical owner. Prototype software tests are not permission
+to activate physical driving or a claim of cellular continuity qualification.
+
+The first frame, within 3 seconds, is a JSON attachment request:
+
+```json
+{"type":"attach","version":1}
+```
+
+A second path joins the live owner with its private credential:
+
+```json
+{"type":"attach","version":1,"secret":"64 hexadecimal characters"}
+```
+
+The private reply has `type:"attached"`, `version:1`, `session_id`, `secret`
+(a random 256-bit hex credential) and `path_id`. The relay consumes this reply;
+it must never forward it to Quest, put the credential in a URL, log it or save
+it in qualification artifacts. Public session IDs are not attachment secrets.
+A wrong secret or third path is rejected without revoking the existing owner.
+A retired secret cannot create a new owner. New ownership still requires release.
+
+After attachment, the original control command schema applies. The relay
+constructs each fresh command once and sends identical copies on live paths;
+it does not retry or queue motion for recovery. The receiver uses a bounded
+256-entry canonical-payload history. Known identical copies and obsolete copies,
+including an old release arriving after a newer press, do not call the control
+state again or renew its lease. A conflicting known sequence stops with
+`conflicting_duplicate` and requires a fresh release. Expired copied motion is
+discarded; the existing output/permit expiry still stops motion at its deadline.
+Malformed inputs retain existing fault behavior. Deduplication applies only to
+this authenticated opt-in transport, not the legacy control socket.
+
+One logical 40 Hz publisher issues each status and permit once, then copies the
+same status to attached paths. Status adds a safe integer `status_seq` that
+strictly increases; the relay forwards each ordinal once and rejects older
+copies without treating them as fresh. Each path has a single-slot status queue
+and a 100 ms send deadline. A congested path is detached independently. Losing
+one attachment preserves the owner; losing the last immediately ends it and
+revokes the credential. Camera, displayed view, serial, proximity, lease and
+release guards remain authoritative throughout. Evidence recording remains
+once per logical stream at 20 Hz and contains no attachment credential.
+
+The associated relay and phone dual-listener mode are under integration. Initial
+redundant view delivery uses complete bounded JPEG responses, with original age
+headers and Quest decode/display checks. H.264 streams cannot be spliced across
+routes and are not included in this continuity claim. The full two-path software
+fault harness and actual phone/Quest/wheels-up rehearsal remain required.
+
+### RGB-D receiver binding propagation
+
+`/phone` now checks frame provenance against that socket's live capture-permit
+issuer before publishing camera data. Supported bindings carry both the
+conservative server-issued origin and issuer identity in the same immutable
+camera snapshot; producer encoding delay can only make its age older. Closing
+the issuer immediately revokes camera drive eligibility even if JPEG viewing
+remains fresh. Reconnection/reset clears retained binding evidence.
+
+The ARKit RGB-D endpoint currently has **no supported verified capture clock**.
+It rejects attempts to claim the RGB-only `avcapture_sync_to_host` contract on
+that endpoint. `arkit_unverified` remains view-only. Binding propagation prepares
+the receiver for a supported producer contract; it does not qualify the current
+ARKit clock or fabricate camera/pose timestamps. The AVFoundation `/phone/rgb`
+clock and capture-permit rules are unchanged.

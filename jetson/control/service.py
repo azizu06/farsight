@@ -20,7 +20,7 @@ class ControlService:
 
     def __init__(self, serial_port=None, simulate=False, max_pwm=100, camera_ready=None, min_pwm=0,
                  detections=None, proximity_stop=True, navigator=None, simulated_range=None,
-                 drive_profile=None, allow_calibration=False, pan_mount="servo"):
+                 drive_profile=None, allow_calibration=False, pan_mount="servo", bonded=False):
         self.on_status = None
         self.state = ControlState(simulated=simulate, max_pwm=max_pwm, camera_ready=camera_ready,
                                   min_pwm=min_pwm, detections=detections, proximity_stop=proximity_stop,
@@ -30,6 +30,78 @@ class ControlService:
         self.router = APIRouter()
         self.router.add_api_websocket_route("/ws/control", self.websocket)
         self.router.add_api_route("/control/status", self.public_status, methods=["GET"])
+        self.bonded = None
+        if bonded:
+            from .bonded import BondedControlHub
+            self.bonded = BondedControlHub(self.state, on_status=self._record_bonded_status)
+            self.router.add_api_websocket_route("/ws/control/bonded", self.bonded_websocket)
+
+    async def _record_bonded_status(self, status):
+        if self.on_status:
+            await asyncio.to_thread(self.on_status, status)
+
+    async def close_bonded(self):
+        if self.bonded is not None:
+            await self.bonded.close()
+
+    async def bonded_websocket(self, ws: WebSocket):
+        """Private upstream transport; the operator relay strips attachment data."""
+        await ws.accept()
+        attachment = None
+        tasks = []
+        try:
+            text = await asyncio.wait_for(ws.receive_text(), 3)
+            if len(text) > 2048:
+                raise ValueError("Oversized attachment")
+            message = json.loads(text)
+            if (not isinstance(message, dict) or message.get("type") != "attach"
+                    or type(message.get("version")) is not int or message["version"] != 1
+                    or set(message) - {"type", "version", "secret"}):
+                raise ValueError("Expected v1 attachment")
+            secret = message.get("secret")
+            if secret is not None and (not isinstance(secret, str) or len(secret) != 64):
+                raise ValueError("Invalid attachment secret")
+            attachment = await self.bonded.attach(secret)
+            await asyncio.wait_for(ws.send_json({"type": "attached", "version": 1,
+                "session_id": attachment.session_id, "secret": attachment.secret,
+                "path_id": attachment.path_id}), 0.1)
+
+            async def publish():
+                while True:
+                    status = await attachment.queue.get()
+                    if status is None:
+                        return
+                    await asyncio.wait_for(ws.send_json(status), 0.1)
+
+            async def receive():
+                while True:
+                    envelope = await ws.receive()
+                    if envelope["type"] == "websocket.disconnect":
+                        return
+                    text = envelope.get("text")
+                    if text is None or len(text) > 2048:
+                        self.state.stop("binary_control_rejected" if text is None else "oversized_command")
+                        return
+                    try:
+                        command = json.loads(text)
+                        self.bonded.accept(command, attachment.path_id)
+                    except (ValueError, TypeError):
+                        self.state.stop("invalid_json")
+
+            tasks = [asyncio.create_task(publish()), asyncio.create_task(receive())]
+            done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                task.result()
+        except (ValueError, TypeError, WebSocketDisconnect, OSError, RuntimeError, asyncio.TimeoutError):
+            pass
+        finally:
+            if attachment is not None:
+                await self.bonded.detach(attachment.path_id)
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            with suppress(RuntimeError, OSError, WebSocketDisconnect, asyncio.TimeoutError):
+                await asyncio.wait_for(ws.close(), 0.25)
 
     def start(self):
         self.pump.start()
