@@ -9,3 +9,5 @@ dist/
 .env
 *.pem
 .DS_Store
+models/*
+!models/README.md

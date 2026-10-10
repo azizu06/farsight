@@ -1,0 +1,23 @@
+[project]
+name = "farsight-jetson"
+version = "0.1.0"
+description = "Farsight rover server: camera, perception, control. Runs on the Jetson; falls back to mocks elsewhere."
+requires-python = ">=3.10"
+dependencies = [
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.29",
+  "opencv-python-headless>=4.9",
+  "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "httpx>=0.27"]
+
+[project.scripts]
+farsight = "farsight.app:main"
+
+[tool.setuptools.packages.find]
+include = ["farsight*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
