@@ -15,7 +15,7 @@ Arguments:
   slam_params      SLAM Toolbox parameter file
   use_sim_time     true under a simulator publishing /clock
   autostart        configure and activate SLAM Toolbox (a lifecycle node in Jazzy) from this launch
-  use_lifecycle_manager  true when a Nav2 lifecycle_manager owns slam_toolbox instead; autostart is then ignored
+  use_lifecycle_manager  true when a Nav2 lifecycle_manager owns slam_toolbox; autostart is then ignored
 """
 
 from launch import LaunchDescription

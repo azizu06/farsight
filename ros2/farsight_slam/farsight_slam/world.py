@@ -123,6 +123,12 @@ def loop_world():
     return World(8.0, 6.0, boxes)
 
 
+def toward(x0, y0, x1, y1, d):
+    """Point `d` metres from (x0, y0) toward (x1, y1)."""
+    length = math.hypot(x1 - x0, y1 - y0)
+    return x0 + (x1 - x0) * d / length, y0 + (y1 - y0) * d / length
+
+
 def loop_route():
     """Closed rounded-rectangle route around the island, counter-clockwise."""
     corners = [(-2.6, -1.8), (2.6, -1.8), (2.6, 1.8), (-2.6, 1.8)]
@@ -132,9 +138,6 @@ def loop_route():
         px, py = corners[i - 1]
         nx, ny = corners[(i + 1) % len(corners)]
         # Points `radius` before and after the corner, joined by a 5-point arc.
-        def toward(x0, y0, x1, y1, d):
-            length = math.hypot(x1 - x0, y1 - y0)
-            return x0 + (x1 - x0) * d / length, y0 + (y1 - y0) * d / length
         start = toward(cx, cy, px, py, radius)
         end = toward(cx, cy, nx, ny, radius)
         for k in range(5):
