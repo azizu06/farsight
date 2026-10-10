@@ -21,12 +21,32 @@ arduino-cli compile --fqbn arduino:avr:uno rover/farsight_uno
 arduino-cli upload --fqbn arduino:avr:uno --port /dev/ttyACM0 rover/farsight_uno
 ```
 
-**Compile status: not run to completion.** On 2026-10-10 `arduino-cli` 1.5.2 and
-`arduino:avr@1.8.8` installed without sudo, but `arduino-cli compile --fqbn
-arduino:avr:uno rover/farsight_uno` failed on the Apple-silicon dev Mac with
-`avr-g++: bad CPU type in executable` (the AVR toolchain is x86_64-only and Rosetta
-is not installed). The firmware has therefore still not been compiled; run the
-command above on an x86_64/Linux host or the Jetson and record the sketch size here.
+**Compile status: compiled and flashed (2026-10-10).** `Sketch uses 6066 bytes
+(18%) ... Global variables use 306 bytes (14%)` with `arduino-cli` 1.5.1,
+`arduino:avr@1.8.8`, Servo 1.3.0. On Apple silicon the macOS AVR toolchain is
+x86_64-only (`avr-g++: bad CPU type`), so use the Linux arm64 build instead,
+either in Docker or on the Jetson. The Jetson has no internet on the rig, so
+stage everything on the Mac in an arm64 container and copy it over:
+
+```sh
+# Mac: arduino-cli_1.5.1_Linux_ARM64.tar.gz from github.com/arduino/arduino-cli/releases, unpacked into work/
+docker run --rm --platform linux/arm64 -v $PWD/work:/work \
+  -v /etc/ssl/cert.pem:/etc/ssl/certs/ca-certificates.crt:ro \
+  -e ARDUINO_DIRECTORIES_DATA=/work/arduino15 -e ARDUINO_DIRECTORIES_USER=/work/Arduino \
+  ubuntu:24.04 sh -c 'cd /work && ./arduino-cli core update-index &&
+    ./arduino-cli core install arduino:avr && ./arduino-cli lib install Servo'
+tar -czf arduino-offline.tgz -C work arduino-cli arduino15 Arduino   # ~143 MB
+scp arduino-offline.tgz jetson: && ssh jetson 'mkdir -p arduino-offline && tar -xzf arduino-offline.tgz -C arduino-offline'
+# Jetson (nothing else may hold the port; farsight.service runs with FARSIGHT_SERIAL_PORT blank)
+cd ~/arduino-offline && export ARDUINO_DIRECTORIES_DATA=$PWD/arduino15 ARDUINO_DIRECTORIES_USER=$PWD/Arduino
+./arduino-cli compile --fqbn arduino:avr:uno --output-dir ~/farsight_uno-build ~/farsight/rover/farsight_uno
+./arduino-cli upload --fqbn arduino:avr:uno --port /dev/ttyUSB0 --input-dir ~/farsight_uno-build ~/farsight/rover/farsight_uno
+```
+
+The ELEGOO Uno uses a CH340 USB-serial chip, so it appears as `/dev/ttyUSB0`, not
+`/dev/ttyACM0`; on the Jetson kernel that needs the `ch341` module
+([jetson-bringup.md](../docs/jetson-bringup.md#8-wire-the-rover-jetson)). The stock
+ELEGOO firmware is silent to `M 0 0` at 115200; `farsight_uno` answers `OK`.
 
 Remove the ESP camera module or put its switch in Upload mode: it shares the
 Uno UART. Do not run the serial monitor at the same time as the Jetson.
@@ -63,6 +83,19 @@ Enter when the wheels stop; `--tolerance-ms` (default 500) absorbs reaction time
 so this only catches a watchdog that is missing or grossly late. Keep the forward
 sensor clear or the firmware removes the forward component. `--selftest` and the
 tests run against an in-process model of the sketch and are software evidence only.
+
+`--allow-motion` needs the person watching the wheels at the same terminal. When
+the observer is elsewhere and reports back, use `rover/wheel_bench.py` instead:
+it prints exactly what it commands, renews the watchdog while a side spins,
+caps PWM at 120, and sends `M 0 0` after every step. Forward steps read `R` first
+and are skipped below 25 cm or with no echo, because the firmware would otherwise
+turn a one-side forward command into a half-power pivot.
+
+```sh
+python rover/wheel_bench.py --port /dev/ttyUSB0 sides --pwm 80 --seconds 2      # L fwd, R fwd, L rev, R rev
+python rover/wheel_bench.py --port /dev/ttyUSB0 ramp --side left --dir rev --start 30 --stop 100 --step 10
+python rover/wheel_bench.py --port /dev/ttyUSB0 watchdog --pwm 80               # one M, then 4 s of silence
+```
 
 Bench qualification is required before floor driving:
 
