@@ -7,6 +7,7 @@ pub mod autonomy;
 pub mod camera;
 pub mod control;
 pub mod demo;
+pub mod drill;
 pub mod depth;
 #[cfg(feature = "detector")]
 pub mod detector;
@@ -15,6 +16,7 @@ pub mod mission;
 pub mod perception;
 pub mod phone;
 pub mod phrases;
+pub mod replay;
 pub mod scan;
 pub mod server;
 pub mod state;

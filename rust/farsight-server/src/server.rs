@@ -24,6 +24,7 @@ use crate::perception::PerceptionService;
 use crate::phone::{self, Hello};
 use crate::assistant::SceneAssistant;
 use crate::phrases::{PhraseSpeaker, SpeechError};
+use crate::replay::{ReplayControl, ReplaySession};
 use crate::scan::ScanService;
 use crate::state::{now_monotonic, MapState};
 use crate::triage::{TriageError, TriageService};
@@ -48,6 +49,12 @@ pub struct AppState {
     pub triage: Arc<TriageService>,
     pub phrases: Arc<PhraseSpeaker>,
     pub scanner: Arc<ScanService>,
+    pub record: bool,
+    pub replay: Option<Arc<ReplaySession>>,
+    /// Read-only control packet source when --replay is active.
+    pub replay_control: Option<Arc<ReplayControl>>,
+    /// Per-status-emission telemetry sink (control.on_status in Python).
+    pub control_on_status: Option<Arc<dyn Fn(&Value) + Send + Sync>>,
 }
 
 pub fn build_state(
@@ -78,7 +85,14 @@ pub fn build_state(
     scan_turn_dps: f64,
     video_fps: u32,
     video_bitrate: u32,
+    record: bool,
+    replay: Option<PathBuf>,
 ) -> Arc<AppState> {
+    if replay.is_some()
+        && (serial_port.is_some() || camera_device.is_some() || demo || simulate_rover || record)
+    {
+        panic!("Replay cannot be combined with serial, live/simulated sources, or recording");
+    }
     if (demo || simulate_rover) && serial_port.is_some() {
         panic!("Simulated sources cannot be combined with a physical motor serial port");
     }
@@ -88,14 +102,19 @@ pub fn build_state(
     video.fps = video_fps;
     video.bitrate = video_bitrate;
     let video = Arc::new(video);
-    let mission = Arc::new(Mission::new(mission_dir));
+    let mission = Arc::new(Mission::new(mission_dir, record).unwrap_or_else(|e| panic!("{e}")));
     let m = mission.clone();
+    let on_detection: Option<Box<dyn Fn(&Value, &crate::camera::CameraFrame) + Send + Sync>> = if replay.is_some() {
+        None // ReplayPerception never calls back into the mission.
+    } else {
+        Some(Box::new(move |packet, frame| m.detect(packet, frame)))
+    };
     let perception = Arc::new(PerceptionService::new(
         camera.clone(),
-        detector,
-        Some(Box::new(move |packet, frame| m.detect(packet, frame))),
-        detector_model.as_deref(),
-        face_model.as_deref(),
+        if replay.is_some() { "replay" } else { detector },
+        on_detection,
+        if replay.is_some() { None } else { detector_model.as_deref() },
+        if replay.is_some() { None } else { face_model.as_deref() },
     ));
     let cam = camera.clone();
     let perc = perception.clone();
@@ -113,6 +132,27 @@ pub fn build_state(
         .expect("PWM bounds"),
     );
     let pump = Arc::new(SerialPump::new(control.clone(), serial_port, simulate_rover));
+    let replay_control = replay.as_ref().map(|_| Arc::new(ReplayControl::new()));
+    let replay_session = match (&replay, &replay_control) {
+        (Some(dir), Some(rc)) => Some(Arc::new(
+            ReplaySession::new(dir, camera.clone(), perception.clone(), rc.clone())
+                .unwrap_or_else(|e| panic!("{e}")),
+        )),
+        _ => None,
+    };
+    // Live control loops feed the drill scorer; recorded replays have no
+    // live loop (hasattr(control, "state") in Python).
+    if replay_session.is_none() {
+        let m2 = mission.clone();
+        *control.on_output.lock().unwrap() =
+            Some(Box::new(move |v, w, blocked| m2.drill_motion(v, w, blocked)));
+    }
+    let control_on_status: Option<Arc<dyn Fn(&Value) + Send + Sync>> = if record {
+        let m3 = mission.clone();
+        Some(Arc::new(move |packet| m3.record("control", packet, None)))
+    } else {
+        None
+    };
     let assistant_whisper = whisper_url.is_some() || (whisper_bin.is_some() && whisper_model.is_some());
     let assistant_piper = piper_model.is_some();
     let assistant = SceneAssistant::new(
@@ -174,6 +214,10 @@ pub fn build_state(
         triage,
         phrases,
         scanner,
+        record,
+        replay: replay_session,
+        replay_control,
+        control_on_status,
     })
 }
 
@@ -185,6 +229,53 @@ pub fn start_services(state: &Arc<AppState>) {
     state.video.clone().start();
     state.perception.clone().start();
     state.triage.clone().start();
+    if let Some(session) = &state.replay {
+        let session = session.clone();
+        std::thread::spawn(move || loop {
+            let started = now_monotonic();
+            session.publish(None); // Clear all streams at the loop boundary.
+            for event in &session.run.events {
+                let wait = started + event["t"].as_f64().unwrap_or(0.0) - now_monotonic();
+                if wait > 0.0 {
+                    std::thread::sleep(Duration::from_secs_f64(wait));
+                }
+                session.publish(Some(event));
+            }
+            let tail = started + session.run.duration - now_monotonic();
+            if tail > 0.0 {
+                std::thread::sleep(Duration::from_secs_f64(tail));
+            }
+        });
+    }
+    if state.record {
+        let state = state.clone();
+        std::thread::spawn(move || {
+            let mut previous: Option<(String, i64, i64)> = None;
+            let mut next_status = 0.0f64;
+            loop {
+                let frame = state.camera.snapshot();
+                let identity = frame
+                    .as_ref()
+                    .map(|f| (f.source.clone(), f.frame_id, f.received.to_bits() as i64));
+                if let Some(f) = &frame {
+                    if identity != previous {
+                        state.mission.record("frame", &json!(null), Some(f));
+                        previous = identity;
+                    }
+                }
+                if now_monotonic() >= next_status {
+                    let status = if let Some(rc) = &state.replay_control {
+                        rc.status()
+                    } else {
+                        state.control.status(false)
+                    };
+                    state.mission.record("control", &status, None);
+                    next_status = now_monotonic() + 0.1;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        });
+    }
     if state.demo {
         let mapping = state.mapping.clone();
         std::thread::spawn(move || {
@@ -209,12 +300,18 @@ pub fn start_services(state: &Arc<AppState>) {
 async fn health(State(s): State<Arc<AppState>>) -> Json<Value> {
     let mut status = s.mapping.status();
     let cam = s.camera.status();
-    let rover = s.control.status(false);
+    let rover = s
+        .replay_control
+        .as_ref()
+        .map(|rc| rc.status())
+        .unwrap_or_else(|| s.control.status(false));
     let video_err = s.video.error.lock().unwrap().clone();
     let obj = status.as_object_mut().unwrap();
     for (k, v) in cam.as_object().unwrap() {
         obj.insert(k.clone(), v.clone());
     }
+    obj.insert("replay".into(), json!(s.replay.is_some()));
+    obj.insert("recording".into(), json!(s.record));
     obj.insert("scan".into(), s.scanner.result());
     for (k, v) in s.perception.health().as_object().unwrap() {
         obj.insert(k.clone(), v.clone());
@@ -386,7 +483,11 @@ async fn mission_drill_start(State(s): State<Arc<AppState>>, Json(body): Json<Va
     if !(10.0..=300.0).contains(&duration) {
         return (StatusCode::UNPROCESSABLE_ENTITY, "Drill duration must be 10..300 seconds").into_response();
     }
-    Json(s.mission.start_drill(duration)).into_response()
+    let victims = body["victims"].as_i64().unwrap_or(3);
+    if !(1..=20).contains(&victims) {
+        return (StatusCode::UNPROCESSABLE_ENTITY, "Drill victims must be 1..20").into_response();
+    }
+    Json(s.mission.start_drill(duration, victims)).into_response()
 }
 
 async fn mission_drill_status(State(s): State<Arc<AppState>>) -> Json<Value> {
@@ -508,6 +609,9 @@ async fn tts(State(s): State<Arc<AppState>>, Path(name): Path<String>) -> Respon
 }
 
 async fn control_status(State(s): State<Arc<AppState>>) -> Json<Value> {
+    if let Some(rc) = &s.replay_control {
+        return Json(rc.public_status());
+    }
     Json(s.control.public_status())
 }
 
@@ -548,6 +652,29 @@ async fn ws_control(ws: WebSocketUpgrade, State(s): State<Arc<AppState>>) -> Res
 }
 
 async fn handle_ws_control(socket: WebSocket, s: Arc<AppState>) {
+    // ReplayControl.websocket: replays the recorded packet at ~10 Hz and
+    // intentionally never executes commands.
+    if let Some(rc) = s.replay_control.clone() {
+        let (mut tx, mut rx) = socket.split();
+        let sender = tokio::spawn(async move {
+            loop {
+                let status = rc.status();
+                match tokio::time::timeout(
+                    Duration::from_millis(500),
+                    tx.send(Message::Text(status.to_string().into())),
+                )
+                .await
+                {
+                    Ok(Ok(_)) => {}
+                    _ => return,
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        });
+        while rx.next().await.is_some() {}
+        sender.abort();
+        return;
+    }
     let Some(session_id) = s.control.begin() else {
         let mut socket = socket;
         let _ = socket
@@ -560,16 +687,22 @@ async fn handle_ws_control(socket: WebSocket, s: Arc<AppState>) {
     };
     let (mut tx, mut rx) = socket.split();
     let control = s.control.clone();
+    let on_status = s.control_on_status.clone();
     let sender = tokio::spawn(async move {
         loop {
             // A congested status path makes continued control unsafe; a send
             // timeout closes the socket rather than queueing permits.
+            let started = now_monotonic();
             let status = control.status(true);
             match tokio::time::timeout(Duration::from_millis(100), tx.send(Message::Text(status.to_string().into()))).await {
                 Ok(Ok(_)) => {}
                 _ => return,
             }
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            if let Some(hook) = &on_status {
+                hook(&status);
+            }
+            // 20 Hz target accounting for emit cost, per control/service.py.
+            tokio::time::sleep(Duration::from_secs_f64((0.05 - (now_monotonic() - started)).max(0.0))).await;
         }
     });
     while let Some(Ok(message)) = rx.next().await {

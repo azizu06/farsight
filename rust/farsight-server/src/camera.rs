@@ -212,7 +212,8 @@ impl CameraService {
                     }
                 }
                 Err(e) => {
-                    self.inner.lock().unwrap().error = Some(format!("Camera {} cannot be opened: {e}", dev));
+                    self.inner.lock().unwrap().error = Some(format!(
+                        "Camera {} cannot be opened (check: v4l2-ctl --list-devices; another process may hold it): {e}", dev));
                 }
             }
             std::thread::sleep(Duration::from_secs(1));
