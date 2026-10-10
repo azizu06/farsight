@@ -178,7 +178,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                 await asyncio.wait_for(ws.send_json(metadata), .5)
                 await asyncio.wait_for(ws.send_bytes(fragment["payload"]), .5)
         except (WebSocketDisconnect, RuntimeError, OSError, asyncio.TimeoutError, ValueError):
-            with suppress(RuntimeError):
+            with suppress(RuntimeError, WebSocketDisconnect):
                 await ws.close(code=1013)
         finally:
             video_service.subscribers.discard(queue)
@@ -297,9 +297,10 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
 
             async def consume():
                 while True:
-                    packet = await queue.get()
+                    packet, received_at = await queue.get()
                     try:
                         frame = await asyncio.to_thread(decode_frame, packet, identity)
+                        frame.header["_received_monotonic"] = received_at
                         await asyncio.to_thread(state.process, frame)
                     except (ValueError, TypeError, KeyError, ValidationError) as exc:
                         with state.lock:
@@ -315,14 +316,14 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                     if queue.full():
                         queue.get_nowait()
                         state.dropped += 1
-                    queue.put_nowait(message["bytes"])
+                    queue.put_nowait((message["bytes"], time.monotonic()))
                 elif message.get("text"):
                     header = json.loads(message["text"])
                     if header.get("type") != "pose":
                         raise ValueError("Expected a pose message or binary RGB-D frame")
                     state.observe_pose(header, validate_pose(header, identity))
         except (ValueError, TypeError, KeyError, ValidationError, asyncio.TimeoutError) as exc:
-            with suppress(RuntimeError):
+            with suppress(RuntimeError, WebSocketDisconnect):
                 await ws.close(code=1008, reason=str(exc)[:100])
         except WebSocketDisconnect:
             pass
@@ -352,11 +353,12 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
             camera_service.phone_rgb = None
             while True:
                 packet = await ws.receive_bytes()
-                previous = await asyncio.to_thread(camera_service.accept_phone_rgb, packet, hello.session_id, previous)
+                previous = await asyncio.to_thread(camera_service.accept_phone_rgb, packet, hello.session_id,
+                                                   previous, time.monotonic())
         except WebSocketDisconnect:
             pass
         except (ValueError, TypeError, KeyError, ValidationError, asyncio.TimeoutError) as exc:
-            with suppress(RuntimeError):
+            with suppress(RuntimeError, WebSocketDisconnect):
                 await ws.close(code=1008, reason=str(exc)[:100])
         finally:
             if app.state.phone_owner is owner:

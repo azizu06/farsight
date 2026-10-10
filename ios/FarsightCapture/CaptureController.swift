@@ -179,6 +179,7 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
     }
 
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
+        let producerStarted = ContinuousClock.now
         guard let id = generation, helloSent, let task = socket else { return }
         if inFlight {
             skippedCount += 1
@@ -244,6 +245,12 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
                 header["height"] = height
                 header["tracking"] = state
             }
+            // ARFrame.timestamp's clock origin is not specified by Apple's
+            // public contract. Measure a local interval instead of subtracting
+            // it from systemUptime and claiming a complete capture age.
+            let elapsed = producerStarted.duration(to: ContinuousClock.now).components
+            header["producer_delay_ms"] = max(0, (Double(elapsed.seconds)
+                + Double(elapsed.attoseconds) / 1_000_000_000_000_000_000) * 1000)
             let packet = try WirePacket.bundle(header: header, payloads: payloads)
             frameID += 1
             armTimeout(id: id, seconds: 0.5, message: "Frame send stalled for 500 ms; closed to discard stale frames.")

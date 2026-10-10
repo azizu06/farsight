@@ -3,13 +3,22 @@ import shutil
 import time
 import unittest
 
-from jetson.camera import CameraFrame, CameraService
+from jetson.camera import CameraFrame, CameraService, adjusted_receipt
 from jetson.mapping.demo import simulated_frame
 from jetson.mapping.state import MapState
 from jetson.video import VideoService, codec_from_init
 
 
 class FreshnessTests(unittest.TestCase):
+    def test_producer_encoding_and_receiver_queue_delay_do_not_renew_freshness(self):
+        state = MapState(demo=True)
+        frame = simulated_frame(0, 0)
+        frame.header.update(producer_delay_ms=300, _received_monotonic=time.monotonic() - .3)
+        state.process(frame)
+        self.assertGreater(CameraService(state).snapshot().age_ms, 550)
+        for delay in (-1, float("nan"), True, "10"):
+            with self.assertRaises(ValueError):
+                adjusted_receipt({"producer_delay_ms": delay})
     def test_pose_heartbeat_does_not_refresh_camera(self):
         state = MapState(demo=True)
         frame = simulated_frame(0, 0)

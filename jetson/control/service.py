@@ -79,5 +79,5 @@ class ControlService:
                 task.cancel()
                 with suppress(asyncio.CancelledError, WebSocketDisconnect, OSError, RuntimeError, asyncio.TimeoutError):
                     await task
-            with suppress(RuntimeError, OSError):
+            with suppress(RuntimeError, OSError, WebSocketDisconnect):
                 await ws.close()
