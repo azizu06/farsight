@@ -11,6 +11,14 @@ and the Python servers under `jetson/` remain available as a fallback.
 |---|---|---|
 | `farsight-server` | `jetson/mapping/server.py`, `jetson/{camera,video,perception,mission,assistant,tracker}.py`, `jetson/control/{state,serial_link,service}.py`, `jetson/autonomy.py` | RGB-D fusion (voxel map + surface mesh), camera/JPEG + H.264/fMP4 video, person detection tracking, mission log, rover control state machine + Uno serial pump, explore/seek autonomy, `/ask` scene Q&A (Whisper + local vision model + Piper TTS) |
 | `farsight-relay` | `tools/operator_relay.py` | Loopback-only relay on the MacBook: static `quest/dist`, HTTP proxy, WebSocket proxy with the same deadman safety enforcement |
+| `farsight-forward` | `jetson/tailnet_forward.py` | Thread-per-connection TCP pump on the Jetson's Tailscale address → local server (direct operator path). Same socket tuning, CLI and close semantics |
+
+## Run — direct operator path (Jetson)
+
+```bash
+./target/release/farsight-forward --listen-port 8081 --upstream 127.0.0.1:8443
+# binds `tailscale ip -4` (100.x), retrying until tailscaled has one; --listen-host for tests only
+```
 
 ## Build
 

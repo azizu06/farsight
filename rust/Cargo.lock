@@ -550,6 +550,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "farsight-forward"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "socket2",
+]
+
+[[package]]
 name = "farsight-relay"
 version = "0.1.0"
 dependencies = [
