@@ -164,4 +164,3 @@ TERM=xterm-256color screen /dev/cu.usbmodem14202250042963 115200
 The device name is specific to this board; enumerate `/dev/cu.usbmodem*` on a
 different host. Root-shell and password-reset actions were performed on the
 Jetson, not on the Mac.
-
