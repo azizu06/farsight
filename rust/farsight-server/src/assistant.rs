@@ -19,6 +19,8 @@ const MAX_SECONDS: u64 = 20;
 const MODEL_TIMEOUT: u64 = 12;
 const TRANSCRIBE_TIMEOUT: u64 = 35;
 const SPEECH_TIMEOUT: u64 = 20;
+// Biases whisper toward the rover vocabulary ("hurt", not "heard").
+const WHISPER_PROMPT: &str = "Questions to a rescue rover: What do you see? Is that person hurt? Scan the room. Go to that person.";
 
 #[derive(Debug)]
 pub struct AssistantError {
@@ -44,6 +46,7 @@ pub struct SceneAssistant {
     perception: Arc<PerceptionService>,
     control: Arc<ControlState>,
     pub server_url: Option<String>,
+    whisper_url: Option<String>,
     whisper_bin: Option<String>,
     whisper_model: Option<String>,
     piper_bin: Option<String>,
@@ -84,9 +87,9 @@ fn model_path(value: &Option<String>) -> Option<String> {
     }
 }
 
-fn local_url(url: &str) -> Result<String, AssistantError> {
+fn loopback(url: &str) -> Result<url::Url, AssistantError> {
     let parsed = url::Url::parse(url)
-        .map_err(|_| AssistantError::unavailable("Scene model URL must be HTTP(S) on localhost"))?;
+        .map_err(|_| AssistantError::unavailable("Local model URLs must be HTTP(S) on localhost/127.0.0.1/::1"))?;
     let host_ok = matches!(parsed.host_str(), Some("localhost") | Some("127.0.0.1") | Some("::1"));
     if !(parsed.scheme() == "http" || parsed.scheme() == "https")
         || !host_ok
@@ -96,16 +99,26 @@ fn local_url(url: &str) -> Result<String, AssistantError> {
         || parsed.fragment().is_some()
     {
         return Err(AssistantError::unavailable(
-            "Scene model URL must be HTTP(S) on localhost/127.0.0.1/::1",
+            "Local model URLs must be HTTP(S) on localhost/127.0.0.1/::1",
         ));
     }
     let mut p = parsed.clone();
+    p.set_query(None);
+    p.set_fragment(None);
+    Ok(p)
+}
+
+fn local_url(url: &str) -> Result<String, AssistantError> {
+    let parsed = loopback(url)?;
     let path = parsed.path().trim_end_matches('/').to_string();
-    let new_path = if path == "/v1" || !path.ends_with("/v1/chat/completions") {
+    let new_path = if path == "/v1" {
+        format!("{path}/chat/completions")
+    } else if !path.ends_with("/v1/chat/completions") {
         format!("{path}/v1/chat/completions")
     } else {
         path
     };
+    let mut p = parsed.clone();
     p.set_path(&new_path);
     Ok(p.to_string())
 }
@@ -128,13 +141,20 @@ impl SceneAssistant {
         piper_bin: Option<String>,
         piper_model: Option<String>,
         output_dir: Option<PathBuf>,
+        whisper_url: Option<String>,
     ) -> Result<Self, AssistantError> {
         let server_url = server_url.as_deref().map(local_url).transpose()?;
+        // A running whisper-server keeps the model loaded; whisper-cli reloads it per question.
+        let whisper_url = whisper_url
+            .as_deref()
+            .map(|u| loopback(u).map(|p| format!("{}/inference", p.as_str().trim_end_matches('/'))))
+            .transpose()?;
         Ok(Self {
             camera,
             perception,
             control,
             server_url,
+            whisper_url,
             whisper_bin,
             whisper_model,
             piper_bin,
@@ -148,7 +168,7 @@ impl SceneAssistant {
         })
     }
 
-    pub fn observations(&self) -> (Map<String, Value>, Option<crate::camera::CameraFrame>) {
+    pub fn observations(&self) -> (Map<String, Value>, Option<crate::camera::CameraFrame>, Vec<Value>) {
         let frame = self.camera.snapshot();
         let camera = self.camera.status();
         let detection = self.perception.snapshot();
@@ -164,11 +184,13 @@ impl SceneAssistant {
         let detector_fresh = detection["fresh"].as_bool().unwrap_or(false)
             && detection["error"].is_null()
             && matches;
+        let boxes: Vec<Value> = if detector_fresh {
+            detection["boxes"].as_array().cloned().unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         let people: Value = if detector_fresh {
-            json!(detection["boxes"]
-                .as_array()
-                .map(|b| b.iter().filter(|x| x["cls"] == "person").count())
-                .unwrap_or(0))
+            json!(boxes.iter().filter(|x| x["cls"] == "person").count())
         } else {
             Value::Null
         };
@@ -186,11 +208,16 @@ impl SceneAssistant {
         facts.insert("detector".into(), json!(detection["detector"].as_str().unwrap_or("disabled").chars().take(80).collect::<String>()));
         facts.insert("detector_fresh".into(), json!(detector_fresh));
         facts.insert("range_cm".into(), range_cm);
+        facts.insert("detections".into(), if detector_fresh {
+            json!(crate::ask_intent::summarize_boxes(&boxes))
+        } else {
+            json!("no fresh detections")
+        });
         facts.insert("forward_blocked".into(), json!(rover["estop"].as_bool().unwrap_or(true)));
         facts.insert("rover_connected".into(), json!(rover["rover"].as_bool().unwrap_or(false)));
         facts.insert("simulated".into(), json!(source == "SIMULATED" || rover["simulated"].as_bool().unwrap_or(false)));
         facts.insert("observation_time".into(), json!(epoch()));
-        (facts, if fresh { frame } else { None })
+        (facts, if fresh { frame } else { None }, boxes)
     }
 
     pub fn summary(facts: &Map<String, Value>) -> String {
@@ -232,8 +259,11 @@ impl SceneAssistant {
             .try_lock()
             .map_err(|_| AssistantError::unavailable("Assistant is busy; try again after the current answer"))?;
         let started = now_monotonic();
+        let mut timings = json!({"stt": Value::Null, "vlm": Value::Null, "tts": Value::Null});
         let question = if let Some(audio) = audio {
-            self.transcribe(&audio).await?
+            let q = self.transcribe(&audio).await?;
+            timings["stt"] = json!(((now_monotonic() - started) * 1000.0).round() as i64);
+            q
         } else {
             text.unwrap_or_default()
         };
@@ -241,12 +271,14 @@ impl SceneAssistant {
         if question.is_empty() || question.len() > 2000 {
             return Err(AssistantError::input("Ask a nonempty question of at most 2000 characters"));
         }
-        let (facts, frame) = self.observations();
+        let (facts, frame, boxes) = self.observations();
+        let action = crate::ask_intent::propose_action(question, &boxes);
         let mut answer = Self::summary(&facts);
         let mut model = "local-observation-summary";
         let mut warning: Option<String> = None;
         if self.server_url.is_some() {
             if let Some(frame) = &frame {
+                let stage = now_monotonic();
                 match tokio::time::timeout(
                     Duration::from_secs(MODEL_TIMEOUT),
                     self.vision(question, &facts, &frame.jpeg),
@@ -261,12 +293,18 @@ impl SceneAssistant {
                         warning = Some("Local vision model unavailable; showing the observation summary".into());
                     }
                 }
+                timings["vlm"] = json!(((now_monotonic() - stage) * 1000.0).round() as i64);
             }
         }
+        let answer = crate::ask_intent::guard_answer(
+            &answer,
+            action.as_ref(),
+            if model == "local-vision-model" { Some(2) } else { None },
+        );
         let mut result = json!({
             "question": question,
             "answer": answer,
-            "action": Value::Null,
+            "action": action,
             "model": model,
             "source": facts["source"],
             "simulated": facts["simulated"],
@@ -275,6 +313,7 @@ impl SceneAssistant {
         if let Some(w) = warning {
             result["assistant_warning"] = json!(w);
         }
+        let stage = now_monotonic();
         match self.speak(&answer).await {
             Ok(Some(filename)) => {
                 result["audio_url"] = json!(format!("/tts/{filename}"));
@@ -284,6 +323,10 @@ impl SceneAssistant {
                 result["speech_warning"] = json!("Local speech unavailable; use browser speech synthesis");
             }
         }
+        if self.piper_bin.is_some() || self.piper_model.is_some() {
+            timings["tts"] = json!(((now_monotonic() - stage) * 1000.0).round() as i64);
+        }
+        result["timings"] = timings;
         result["ms"] = json!(((now_monotonic() - started) * 1000.0).round() as i64);
         drop(guard);
         Ok(result)
@@ -297,11 +340,13 @@ impl SceneAssistant {
         let payload = json!({
             "model": "local",
             "temperature": 0,
-            "max_tokens": 220,
+            "max_tokens": 120,
             "stream": false,
             "messages": [
                 {"role": "system", "content": concat!(
-                    "Answer briefly using only the supplied camera image and observed facts. ",
+                    "You assist a first responder searching a room through a rover camera. ",
+                    "Answer in one or two short plain sentences using only the supplied camera image and observed facts. ",
+                    "Never claim that you moved, are moving, or will move the rover. ",
                     "The image is a snapshot at question time, not a guarantee of current safety. ",
                     "Say when evidence is uncertain, missing, stale, or simulated. ",
                     "Do not invent measured depth, identities, detections, or obstacle clearance. ",
@@ -393,17 +438,26 @@ impl SceneAssistant {
             "wav"
         } else if audio.starts_with(b"\x1a\x45\xdf\xa3") {
             "matroska"
+        } else if audio.starts_with(b"OggS") {
+            "ogg"
+        } else if audio.get(4..8) == Some(b"ftyp".as_slice()) {
+            "mov" // ffmpeg's mp4/m4a demuxer
         } else {
-            return Err(AssistantError::input("Audio must be WAV or WebM"));
+            return Err(AssistantError::input("Audio must be WAV, WebM, Ogg, or MP4"));
         };
         let whisper = program(&self.whisper_bin);
         let model = model_path(&self.whisper_model);
         let ffmpeg = which("ffmpeg").ok().and_then(|p| p.to_str().map(String::from));
-        let (Some(whisper), Some(model), Some(ffmpeg)) = (whisper, model, ffmpeg) else {
+        let Some(ffmpeg) = ffmpeg else {
             return Err(AssistantError::unavailable(
                 "Audio questions require local ffmpeg, whisper-cli, and an installed Whisper model",
             ));
         };
+        if self.whisper_url.is_none() && (whisper.is_none() || model.is_none()) {
+            return Err(AssistantError::unavailable(
+                "Audio questions require local ffmpeg, whisper-cli, and an installed Whisper model",
+            ));
+        }
         let directory = tempfile::Builder::new()
             .prefix("farsight-ask-")
             .tempdir()
@@ -453,6 +507,14 @@ impl SceneAssistant {
         {
             return Err(AssistantError::unavailable("Audio conversion did not produce 16 kHz mono WAV"));
         }
+        if let Some(url) = &self.whisper_url {
+            return self.transcribe_server(url, &wav).await;
+        }
+        let (Some(whisper), Some(model)) = (whisper, model) else {
+            return Err(AssistantError::unavailable(
+                "Audio questions require local ffmpeg, whisper-cli, and an installed Whisper model",
+            ));
+        };
         self.run(
             &[
                 whisper,
@@ -487,18 +549,59 @@ impl SceneAssistant {
         Ok(text)
     }
 
+    async fn transcribe_server(&self, url: &str, wav: &[u8]) -> AResult<String> {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(TRANSCRIBE_TIMEOUT))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|_| AssistantError::unavailable("Local whisper-server failed; check that it is running"))?;
+        let part = reqwest::multipart::Part::bytes(wav.to_vec())
+            .file_name("audio.wav")
+            .mime_str("audio/wav")
+            .map_err(|_| AssistantError::unavailable("Local whisper-server failed; check that it is running"))?;
+        let form = reqwest::multipart::Form::new()
+            .part("file", part)
+            .text("response_format", "json")
+            .text("temperature", "0")
+            .text("prompt", WHISPER_PROMPT);
+        let decoded: Value = async {
+            let resp = client.post(url).multipart(form).send().await?;
+            let resp = resp.error_for_status()?;
+            resp.json::<Value>().await
+        }
+        .await
+        .map_err(|_: reqwest::Error| {
+            AssistantError::unavailable("Local whisper-server failed; check that it is running")
+        })?;
+        let text = decoded["text"].as_str().unwrap_or_default();
+        if text.len() > 8192 || !decoded["text"].is_string() {
+            return Err(AssistantError::unavailable("Whisper did not produce a bounded transcript"));
+        }
+        let text = text.trim();
+        if text.is_empty() {
+            return Err(AssistantError::input("No speech was recognized in the recording"));
+        }
+        Ok(text.to_string())
+    }
+
     pub async fn speak(&self, text: &str) -> AResult<Option<String>> {
         if self.piper_bin.is_none() && self.piper_model.is_none() {
             return Ok(None);
         }
-        let program = program(&self.piper_bin);
+        // Without a Piper executable, piper-tts keeps the voice loaded
+        // in-process in Python; the Rust port has no in-proc TTS, so a
+        // model-only config resolves the voice then fails like a missing
+        // piper-tts install.
+        let program = self.piper_bin.as_ref().and_then(|_| program(&self.piper_bin));
         let model = model_path(&self.piper_model);
-        let (Some(program), Some(model), Some(dir)) =
-            (program, model, self.output_dir.clone())
-        else {
+        let dir = self.output_dir.clone();
+        if (self.piper_bin.is_some() && program.is_none()) || model.is_none() || dir.is_none() {
             return Err(AssistantError::unavailable(
                 "Local speech requires Piper, a voice model, and an output directory",
             ));
+        }
+        let (Some(program), Some(model), Some(dir)) = (program, model, dir) else {
+            return Err(AssistantError::unavailable("Local speech requires pip install piper-tts or --piper-bin"));
         };
         std::fs::create_dir_all(&dir).map_err(|e| AssistantError::unavailable(e.to_string()))?;
         // Keep only the most recent 30 replies; filenames are generated here.
