@@ -358,3 +358,30 @@ canvas:focus-visible {
     max-height: calc(100dvh - 20px);
   }
 }
+/* The operator controls stay readable outside VR; the same state is drawn inside VR. */
+#full-camera > img { display: none; }
+#rover-camera { width: 100%; height: 100%; object-fit: contain; }
+.rover-controls {
+  position: absolute; left: 18px; bottom: 18px; width: min(420px, calc(100vw - 36px));
+  padding: 14px; background: #101a24ed; border: 1px solid #405065;
+  border-radius: 9px; font-size: 12px; box-shadow: 0 8px 30px #0005;
+}
+.rover-controls button { border: 1px solid #506177; background: #243345; border-radius: 5px; padding: 9px 12px; font-size: 12px; }
+.rover-tabs { display: flex; gap: 8px; }
+.rover-tabs button { flex: 1; }
+.rover-tabs #rover-stop { color: #ffd2ca; border-color: #be7569; background: #512b2b; }
+#rover-message { color: #b8d9f4; margin: 12px 0 6px; font-weight: 600; }
+#rover-message[data-state="unsafe"] { color: #ffb3a8; }
+#rover-message[data-state="moving"] { color: #8dffa9; }
+#rover-details { font-size: 11px; line-height: 1.5; color: #a9b9ca; margin: 0 0 10px; }
+.rover-controls .hold-button { width: 100%; touch-action: none; user-select: none; }
+.rover-controls .hold-button.engaged { background: #24573b; border-color: #8dffa9; }
+.rover-help { margin: 10px 0 0; font-size: 10px; line-height: 1.6; color: #afbbc8; }
+.navigation-hint { bottom: 255px; }
+.local-assistant { border-top: 1px solid #505050; margin-top: 18px; padding-top: 10px; }
+.local-assistant h2 { font-size: 12px; }
+.local-assistant form { display: flex; gap: 5px; }
+.local-assistant input { min-width: 0; width: 100%; border: 1px solid #555; background: #242424; color: #eee; padding: 8px; border-radius: 3px; }
+.local-assistant p { font-size: 11px; line-height: 1.5; color: #bbc8d4; }
+.local-assistant a { color: #a6c9ec; font-size: 11px; }
+@media (max-width: 600px) { .rover-controls { bottom: 10px; left: 10px; width: calc(100vw - 20px); padding: 10px; } }

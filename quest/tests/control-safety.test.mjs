@@ -1,0 +1,60 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { ControlSafety, stick } from "../src/control-safety.js";
+const status = { session_id: "one", permit: "issued-on-rover", permit_ms: 250, rover: true };
+function ready() {
+  const gate = new ControlSafety();
+  gate.acceptStatus(status, 100);
+  gate.acceptFrame("1", 10, 100);
+  gate.decide(false, 100);
+  return gate;
+}
+test("fresh camera and echoed permit still require deadman release", () => {
+  const gate = new ControlSafety();
+  gate.acceptStatus(status, 100);
+  gate.acceptFrame("1", 10, 100);
+  assert.equal(gate.decide(true, 110), false);
+  assert.equal(gate.decide(false, 120), false);
+  assert.equal(gate.decide(true, 130), true);
+});
+test("stale video stops and recovery while held never resumes", () => {
+  const gate = ready();
+  assert.equal(gate.decide(true, 110), true);
+  gate.acceptStatus(status, 590);
+  assert.equal(gate.decide(true, 590), false);
+  gate.acceptFrame("2", 10, 600);
+  gate.acceptStatus(status, 600);
+  assert.equal(gate.decide(true, 601), false);
+  gate.decide(false, 610);
+  assert.equal(gate.decide(true, 611), true);
+});
+test("duplicate decoded images and malformed freshness cannot renew video", () => {
+  const gate = ready();
+  assert.equal(gate.acceptFrame("1", 0, 1000), false);
+  assert.equal(gate.acceptFrame("2", NaN, 1000), false);
+  assert.equal(gate.acceptFrame(null, 0, 1000), false);
+  assert.equal(gate.videoAge(1000), 910);
+});
+test("disconnect, server session changes, rover loss, and permit silence require release", () => {
+  for (const fault of [
+    gate => gate.decide(true, 110, false),
+    gate => gate.acceptStatus({ ...status, session_id: "two" }, 110),
+    gate => gate.acceptStatus({ ...status, rover: false }, 110),
+    gate => gate.decide(true, 310),
+  ]) {
+    const gate = ready();
+    fault(gate);
+    gate.acceptStatus({ ...status, session_id: gate.session }, 320);
+    gate.acceptFrame("2", 0, 320);
+    assert.equal(gate.decide(true, 320), false);
+    gate.decide(false, 321);
+    assert.equal(gate.decide(true, 322), true);
+  }
+});
+test("stick ignores invalid values and drift, scales bounded travel", () => {
+  assert.equal(stick(NaN), 0);
+  assert.equal(stick(0.1), 0);
+  assert.equal(stick(-1), -1);
+  assert.equal(stick(2), 1);
+  assert.ok(stick(0.5) > 0 && stick(0.5) < 0.5);
+});
