@@ -35,19 +35,36 @@ qualification. The scoped redesign measurement is saved in
 
 ## Controls
 
-- Quest: everything is on the right controller. Hold the right trigger, then use
-  the right thumbstick to drive; release the trigger to stop. The left stick is
-  ignored, and the left controller may be idle, asleep or missing without stopping
-  the rover. Right-stick input inside a 0.25 deadzone counts as centered, so slight
-  drift does not cancel Explore, Seek or go-to. Forward speed is capped at 45% of the server's PWM ceiling;
-  calibrate that ceiling on the actual car so motor stiction does not prevent motion.
-- Tap right A to switch camera/map (on release). Hold right A for 0.6 s to open
-  the actions menu instead (left Y also opens it). Right B stops and cancels
-  navigation. Left X recenters the anchored view. In the actions menu, point the
-  right controller and squeeze its grip to select Explore, Scan or Drill. The
-  menu stops driving. In camera view, right grip selects a pointed person for
-  Seek. Release and press the trigger after changing views or selecting an action.
+- Quest, right hand only. The headset starts in **MANUAL**: hold the right trigger
+  and the right thumbstick drives the rover; release the trigger to stop. The
+  trigger has hysteresis (engages above 0.6, releases below 0.25). The left stick
+  is ignored, and the left controller may be idle, asleep or missing. Right-stick
+  input inside a 0.25 deadzone counts as centered. Forward speed is capped at 45%
+  of the server's PWM ceiling; calibrate that ceiling on the actual car.
+- **Tap right A** to switch to **AUTO**. Explore drives the rover, the 3D map
+  becomes a 1:1 walk-through (`mapWalk`), and the right stick only moves you
+  through it (forward/back along your gaze, a sideways flick snap-turns 30°). It
+  never sends physical v/w and cannot cancel autonomy. The live camera stays in a
+  small upper-right window: it is still the motion freshness source and the rover's
+  sensor provenance. Tap A again for MANUAL: autonomy and navigation are cancelled
+  and the trigger needs a fresh release. **B** stops at once, cancels navigation and
+  returns to MANUAL. A mode switch briefly enlarges the mode chip.
+- **Hold right A** (0.6 s) opens the actions menu (Controls, Scan, Rescue drill,
+  Close). Point and press the trigger or grip; the chosen card flashes green and
+  the menu closes. In MANUAL, right grip on a pointed person selects Seek; in AUTO,
+  right grip on the floor sets a go-to goal; a right stick click cancels go-to.
+  Left Y shows the controller diagram again; left X recenters the view.
   Head turns command pan only with a servo mount; fixed mode shows the full frame.
+- **Demo mode** (`src/demo-config.js`) is ON by default; `?demo=0` restores every
+  client guard. While immersive it removes the client 500 ms camera-stale block
+  (a VIDEO STALE cue warns instead), rides out right-controller blips or a
+  re-enumerated controller for up to 1 s, and replaces the forced trigger re-press
+  after a transient stop with one client-sent release. AUTO is hands-free:
+  Explore heartbeats carry deadman=true without the trigger until A or B. Hard
+  stops (B, a MANUAL/AUTO switch, session start/end, viewer closed) still need a
+  real release. Server permits, leases, `video_stale`/`camera_stale` and link-loss
+  stops are unchanged, and `video_fresh` stays truthful, so the rover itself may
+  still refuse stale-video motion. The desktop page keeps every guard.
 - Voice controls appear only when the rover's `/health` reports `assistant.whisper`;
   otherwise they stay hidden and the left trigger only confirms a pending proposal.
   With a Whisper model, hold the left trigger to ask the local assistant by voice;
@@ -61,28 +78,24 @@ qualification. The scoped redesign measurement is saved in
   browser speech recognition. Listening, processing, the answer and errors show
   on a panel left of the camera. A proposed Seek or scan acts only after a fresh
   left-trigger press (X dismisses), and still needs the held deadman.
-- Both controllers must be connected with fresh grip poses each frame, and the
-  newest XR sample must be under 150 ms old (`performance.now()` observation
-  time, never the predicted display time). Losing tracking, a missing XR frame,
-  a hidden or blurred session, or removing/replacing a controller stops driving.
-  The trigger and every button then need an observed release before acting
-  again, so a button held through tracking loss never fires on recovery. The
-  camera and stop reason stay visible when only controller tracking is lost.
-- A large source banner sits above the camera in the headset and at the top of
-  the desktop page. It reads LIVE only while fresh `/health` reports
-  `replay: false`, `control.simulated: false`, a connected rover, a fresh real
-  camera source and a fresh displayed frame; otherwise NOT VERIFIED LIVE with
-  the missing proof. SIMULATED and REPLAY stay shown through disconnects until
-  the server explicitly reports otherwise. Its camera source, frame and age are
-  display truth only, not sensor or display qualification.
-- Directly under the source banner (headset and desktop), a stop panel names
-  why motion stopped and the one action that recovers it, e.g. "Command lease
-  expired (link lag > 250 ms) → Check Wi-Fi/USB link, then release and hold
-  right trigger". `src/stop-reason.js` maps every server `control_status.reason`
-  code, `ControlSafety` readiness block and client latch; it is display only and
-  hidden while ready or driving. A latch keeps its first specific cause, so an
-  echoed `deadman_released` does not hide the real one. Add a mapping there
-  (and a test) when adding a server stop code or client latch.
+- With guards on (`?demo=0`, or the desktop page), the right controller must be
+  connected with a fresh grip pose each frame, and the newest XR sample must be
+  under 150 ms old (`performance.now()` observation time, never the predicted
+  display time). Losing tracking, a missing XR frame, a hidden or blurred session,
+  or replacing the right controller stops driving; the trigger and every button
+  then need an observed release, so a button held through tracking loss never
+  fires on recovery. Control is renewed only after `renderer.render()` returns
+  (`afterRender`), and new camera freshness counts only once a visible render
+  showed it.
+- Headset HUD, minimal by design: a tiny chip above the view with a motion dot
+  (green moving, amber waiting, red blocked), MANUAL/AUTO and the truthful source
+  (LIVE, NOT VERIFIED, SIMULATED, REPLAY; see `src/source-banner.js`), and, only
+  when something needs the operator, one icon with 1-3 words under the view
+  (`src/vr-hud.js` maps every stop, e.g. NO VIDEO, LINK LOST, RELEASE TRIGGER).
+  An icon controller diagram shows for 8 s on entry. Full cause/recovery text and
+  telemetry stay on the desktop page (`src/stop-reason.js` maps every server
+  `control_status.reason` code and client latch; add a mapping and a test there
+  when adding one).
 - Desktop: select Live rover, hold Space, then use WASD. The on-screen hold button
   can replace Space. STOP, Escape, opening settings, losing focus, or a connection
   failure stop driving.
@@ -129,10 +142,9 @@ The controls layer drives it:
   to the gaze heading, and radians where positive turns left about the head.
 - `mapWalk.reset()`: return to the rover start pose.
 
-`?walk=1` starts in walk mode for testing. Until AUTO drives it, a temporary test
-input in `main.ts` lets the left stick click toggle walk mode in VR (resetting to the
-start pose) and the left stick move the viewer at up to 1.5 m/s. A new map generation resets the
-viewer. Display only: this module sends no commands and gates no motion.
+`?walk=1` starts in walk mode for testing. AUTO drives it from the right stick
+(`RoverExperience.roamStep`, 1.5 m/s, 30° snap turns); entering VR resets to the
+start pose, and a new map generation resets the viewer. Display only: this module sends no commands and gates no motion.
 
 When the server reports `capped: true` for a Jetson mesh, the 3D view pulls
 `/map/points.bin` too, alternating with `/map/mesh.bin` under the same 5 s,

@@ -37,7 +37,7 @@ Farsight is a ground rover you inhabit from a Quest 2.
 
 - **See.** The rover's phone camera streams to the headset as H.264 video. Turn your head and the
   view pans with you (digital look-around over the phone's wide frame; the camera is fixed on the chassis).
-- **Drive.** One hand: hold the right trigger and push the right stick. Let go and the rover stops. The trigger is a
+- **Drive.** One hand: hold the right trigger and push the right stick. Tap A and the rover explores on its own while you walk through its 3D map; tap A again to take back control. Let go and the rover stops. The trigger is a
   deadman: the Jetson issues a short permit that the headset must keep echoing, so a dropped link,
   a stale picture or a lost controller all end in a stop that needs a fresh press to clear.
 - **Find people.** A YOLO11 pose model on the Jetson boxes every person, tracks them with stable

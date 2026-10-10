@@ -19,6 +19,7 @@ import { floorHit, goalBody, mergeNav, navActive, navLabel, parseNav, postNav } 
 import { NavOverlay, type Nav } from "./nav-overlay";
 import { frameOrder } from "./frame-order.js";
 import { mapWalk } from "./map-walk.js";
+import { DEMO_BLIP_MS, DEMO_MODE } from "./demo-config.js";
 import { cueFor, drawChip, drawControllerHint, drawCue, motionTone } from "./vr-hud.js";
 
 /** Quest sticks drift; a slightly off-center right stick must not override Explore/Seek/go-to. */
@@ -66,7 +67,7 @@ export class RoverExperience {
   private voiceTexture = new THREE.CanvasTexture(this.voiceCanvas);
   private voicePanel = new THREE.Mesh(new THREE.PlaneGeometry(1.2, 0.8), new THREE.MeshBasicMaterial({ map: this.voiceTexture, transparent: true, toneMapped: false, depthTest: false }));
   private talkDown = false;
-  private gate = new ControlSafety();
+  private gate = new ControlSafety({ demo: DEMO_MODE });
   private socket: WebSocket | null = null;
   private detectionsSocket: WebSocket | null = null;
   private timers: number[] = [];
@@ -198,7 +199,7 @@ export class RoverExperience {
       <button id="rover-explore" aria-pressed="false">Explore (E)</button>
       <button id="rover-nav-cancel">Cancel nav (C)</button>
       <p id="rover-nav" class="rover-nav" role="status" hidden></p>
-      <p class="rover-help">Quest (right hand only): starts in MANUAL, hold the trigger and the right stick drives the rover. Tap A: AUTO, the rover explores on its own while the trigger is held and the stick flies you through the map (live camera stays in a corner window); tap A again for MANUAL. B: stop (back to MANUAL). Hold A: actions menu. Grip: pick a person (MANUAL) or set a floor goal (AUTO); click the stick to cancel go-to. Left Y: show the controller diagram. Left X: recenter.<span id="rover-voice-help" hidden> Hold left trigger: ask by voice (enable in Settings first).</span><br>Desktop: hold Space + WASD in camera view; click a person to seek; E explores; double-click the map floor for go-to, C cancels. Stick/WASD takes back control.</p>`;
+      <p class="rover-help">Quest (right hand only): starts in MANUAL, hold the trigger and the right stick drives the rover. Tap A: AUTO, the rover explores on its own (hands-free in the demo build) and the stick walks you through the 3D map, with the live camera in a corner window; tap A again for MANUAL. B: stop, back to MANUAL. Hold A: actions menu (point, then trigger or grip). Grip: pick a person (MANUAL) or set a floor goal (AUTO); click the stick to cancel go-to. Left Y: controller diagram. Left X: recenter. Add ?demo=0 to restore every client guard.<span id="rover-voice-help" hidden> Hold left trigger: ask by voice (enable in Settings first).</span><br>Desktop: hold Space + WASD in camera view; click a person to seek; E explores; double-click the map floor for go-to, C cancels. Stick/WASD takes back control.</p>`;
     document.querySelector("main")!.append(panel);
     this.sourceBanner = document.createElement("div");
     this.sourceBanner.className = "source-banner"; this.sourceBanner.setAttribute("role", "status");
@@ -211,7 +212,7 @@ export class RoverExperience {
     panel.querySelector<HTMLButtonElement>("#live-rover")!.onclick = () => this.setView("camera");
     panel.querySelector<HTMLButtonElement>("#rover-map")!.onclick = () => { this.stop("Map view: release deadman"); this.setView("3d"); };
     panel.querySelector<HTMLButtonElement>("#rover-stop")!.onclick = () => {
-      this.stop("Stopped: release deadman");
+      this.stop("Stopped: release deadman", true);
       if (this.autonomy.mode === "goto" || navActive(this.nav)) void this.cancelNav("Stopped: navigation cancelled");
     };
     panel.querySelector<HTMLButtonElement>("#rover-nav-cancel")!.onclick = () => void this.cancelNav();
@@ -264,7 +265,7 @@ export class RoverExperience {
     this.videoToggle = videoOption.querySelector("input")!;
     this.videoToggle.onchange = () => this.setVideo(this.videoToggle.checked, true);
     this.renderer.xr.addEventListener("sessionstart", () => {
-      this.stop("VR session started: release trigger");
+      this.stop("VR session started: release trigger", true);
       this.lastXRAt = -Infinity;
       this.rightSource = null; this.leftSource = null;
       this.inputValid = false; this.keys.clear(); this.pointerHeld = false;
@@ -277,7 +278,7 @@ export class RoverExperience {
     });
     this.renderer.xr.addEventListener("sessionend", () => {
       this.voice?.stopListening("VR session ended: voice question cancelled");
-      this.stop("VR session ended: release deadman"); this.suspended = false;
+      this.stop("VR session ended: release deadman", true); this.suspended = false;
       this.lastXRAt = -Infinity;
       this.rightSource = null; this.leftSource = null;
       this.inputValid = false; this.keys.clear(); this.pointerHeld = false;
@@ -396,9 +397,11 @@ export class RoverExperience {
     this.dirty = true;
   }
 
-  private escapeStop = (event: KeyboardEvent) => { if (event.key === "Escape") this.stop("Stopped: release deadman"); };
+  private escapeStop = (event: KeyboardEvent) => { if (event.key === "Escape") this.stop("Stopped: release deadman", true); };
 
-  stop(reason: string) {
+  /** `hard`: a deliberate stop (B, MANUAL/AUTO switch, session start/end, viewer closed) that needs a real
+   * trigger release even in demo mode. Every other stop is transient. */
+  stop(reason: string, hard = false) {
     // An accepted go-to goal stays armed (see AutonomyIntent.release); motion still needs a fresh deadman press.
     this.autonomy.release();
     this.scanGeneration++; this.scanReserved = false;
@@ -406,7 +409,7 @@ export class RoverExperience {
     this.scanArmed = false;
     this.scanning = false;
     this.scanCompleting = false;
-    this.input = this.gate.stop(this.input, reason);
+    this.input = this.gate.stop(this.input, reason, hard);
     this.send(false);
   }
   private endpoint(path: string) { return new URL(path, location.origin).href.replace(/^http/, "ws"); }
@@ -565,6 +568,8 @@ export class RoverExperience {
     this.pollCamera(now);
     this.pollHealth(now);
     const session = this.renderer.xr.getSession();
+    // Demo relaxations (demo-config.js) apply only while immersive; the desktop page keeps every guard.
+    this.gate.demo = DEMO_MODE && xr;
     if (xr && session) {
       const sources = [...session.inputSources];
       const right = sources.find(source => source.handedness === "right" && source.gamepad);
@@ -573,7 +578,8 @@ export class RoverExperience {
       // idle, sleeping or swapped left controller never stops the rover or cancels autonomy.
       if ((right ?? null) !== this.rightSource) {
         this.voice?.stopListening("Controller changed: voice question cancelled");
-        this.stop("Controller changed: release trigger");
+        // Demo: a re-enumerated right controller is not a stop; a missing one is (after DEMO_BLIP_MS, below).
+        if (!this.gate.demo) this.stop("Controller changed: release trigger");
         this.rightSource = right ?? null;
         this.latchButtons();
       }
@@ -599,6 +605,15 @@ export class RoverExperience {
         this.position.set(position.x, position.y, position.z);
         if (this.recenter) this.anchorCockpit();
       }
+      if (!tracked && this.gate.demo && pose && session.visibilityState === "visible" && now - this.lastXRAt < DEMO_BLIP_MS) {
+        // Demo: ride out a short right-controller tracking blip without a stop or re-press. The deadman
+        // state carries over, but manual v/w go to 0 until tracking returns; > DEMO_BLIP_MS still stops.
+        this.input = { ...this.input, v: 0, w: 0 };
+        this.navOverlay.setReticle(null); this.pointer.visible = false;
+        this.cockpit.visible = true; this.cameraScreen.visible = !this.actionMenu.visible;
+        this.paint(now);
+        return;
+      }
       if (!tracked) {
         this.inputValid = false;
         this.voice?.stopListening("XR tracking lost: voice question cancelled");
@@ -621,7 +636,9 @@ export class RoverExperience {
       }
       this.lastXRAt = now;
       const axes = right?.gamepad?.axes ?? [];
-      const held = triggerHeld(this.input.held, right?.gamepad?.buttons[0]);
+      // Hands-free AUTO (demo): Explore heartbeats carry deadman=true without the trigger; A or B ends AUTO.
+      const handsFree = this.auto && this.gate.demo;
+      const held = handsFree || triggerHeld(this.input.held, right?.gamepad?.buttons[0]);
       const scan = leftTracked && !!left?.gamepad?.buttons[5]?.pressed;
       const toggle = !!right?.gamepad?.buttons[4]?.pressed;
       const explore = !!right?.gamepad?.buttons[5]?.pressed;
@@ -663,7 +680,7 @@ export class RoverExperience {
       if (explore && !this.exploreDown) {
         // B always lands in MANUAL so nothing re-arms Explore behind the stop.
         this.actionMenu.visible = false; this.auto = false; mapWalk.setMode("overview"); this.autonomy.clear();
-        this.stop("Stopped: release trigger");
+        this.stop("Stopped: release trigger", true);
         if (navActive(this.nav)) void this.cancelNav("Stopped: navigation cancelled");
       }
       if (center && !this.recenterDown) { this.stop("View recentered: release trigger"); this.recenter = true; }
@@ -688,7 +705,7 @@ export class RoverExperience {
       }
       if (scan && !this.scanDown) this.showHint(now >= this.hintUntil);
       // Explore stays armed in AUTO (re-armed only while released); the held deadman still gates every heartbeat.
-      if (this.auto && this.autonomy.mode === "teleop" && !held) this.autonomy.toggleExplore();
+      if (this.auto && this.autonomy.mode === "teleop" && (handsFree || !held)) this.autonomy.toggleExplore();
       if (leftTracked) this.scanDown = scan;
     } else {
       this.inputValid = true;
@@ -890,7 +907,9 @@ export class RoverExperience {
     if (auto === this.auto) return;
     this.actionMenu.visible = false; this.auto = auto; this.dirty = true; this.modeFlashUntil = performance.now() + 1500;
     mapWalk.setMode(auto ? "walk" : "overview"); this.lastRoamAt = -Infinity; this.roamTurnArmed = true;
-    this.stop(auto ? "Auto: release trigger" : "Manual: release trigger");
+    // Leaving AUTO always needs a real release before manual driving. Entering it is hard only when the
+    // trigger must be held (demo off); hands-free AUTO sends its own release, then Explore heartbeats.
+    this.stop(auto ? "Auto: release trigger" : "Manual: release trigger", !auto || !this.gate.demo);
     this.autonomy.clear();
     if (!auto && navActive(this.nav)) void this.cancelNav("Manual: navigation cancelled");
     if (auto) this.autonomy.toggleExplore();
@@ -933,7 +952,7 @@ export class RoverExperience {
     // XR motion needs the live camera painted (full view in MANUAL, the window in AUTO) and no menu in front.
     const contextActive = this.renderer.xr.isPresenting ? !this.actionMenu.visible && !this.suspended : this.getView() === "camera" && !document.querySelector("dialog[open]");
     const displayVisible = this.renderer.xr.isPresenting ? this.renderer.xr.getSession()?.visibilityState === "visible" : !document.hidden;
-    const available = this.inputValid && contextActive && displayVisible && !this.contextLost && now - this.lastCanvasDraw < 250;
+    const available = this.inputValid && contextActive && displayVisible && !this.contextLost && (this.gate.demo || now - this.lastCanvasDraw < 250);
     // No motion while the microphone is requested or open; release is required afterwards.
     if (this.voice?.capturing) this.gate.invalidate("Voice question: release trigger");
     const moving = this.gate.decide(this.input.held, now, connected, available,
@@ -1189,7 +1208,8 @@ export class RoverExperience {
     const stop = explainStop({ unsafe: ready, reason: this.gate.reason, latched: this.gate.needsRelease, cause: this.gate.cause, status: this.status,
       xr: this.renderer.xr.isPresenting, held: this.input.held, autonomyArmed: this.autonomy.mode !== "teleop",
       detectorStale: !this.detections || now - this.detectionsAt > 500 });
-    const cue = cueFor(stop, !!ready);
+    // Demo mode lifts the client stale-camera block, so stale video becomes a warning instead of a stop.
+    const cue = cueFor(stop, !!ready) ?? (this.gate.demo && videoAge >= 500 ? { tone: "wait" as const, icon: "camera", words: "VIDEO STALE" } : null);
     this.drawSource(source, now, motionTone({ moving, unsafe: !!ready, cue }));
     this.drawStop(stop, cue);
     this.drawVoice();
@@ -1220,7 +1240,7 @@ export class RoverExperience {
   /** Full cause and recovery on the 2D page; one icon and 1-3 words in the headset, only when relevant. */
   private drawStop(stop: ReturnType<typeof explainStop>, cue: ReturnType<typeof cueFor>) {
     this.stopPanel.visible = !!cue && this.renderer.xr.isPresenting && !this.actionMenu.visible;
-    const key = stop ? `${stop.tone}|${stop.cause}|${stop.recovery}|${cue?.tone}|${cue?.icon}|${cue?.words}` : "";
+    const key = `${stop ? `${stop.tone}|${stop.cause}|${stop.recovery}` : ""}|${cue ? `${cue.tone}|${cue.icon}|${cue.words}` : ""}`;
     if (key === this.stopKey) return;
     this.stopKey = key;
     const line = this.sourceBanner.querySelector<HTMLElement>(".stop-reason")!;
@@ -1391,7 +1411,7 @@ export class RoverExperience {
     if (label) label.textContent = line;
   }
   dispose() {
-    this.stop("Viewer closed"); this.stopped = true;
+    this.stop("Viewer closed", true); this.stopped = true;
     this.timers.forEach(timer => { window.clearInterval(timer); window.clearTimeout(timer); });
     this.socket?.close(); this.detectionsSocket?.close();
     for (const request of this.frameRequests.values()) request.controller.abort();
