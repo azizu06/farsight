@@ -21,6 +21,8 @@ The issue branch and review are [PR #153](https://github.com/azizu06/farsight/pu
 | A reconnect guard also rejects every frame after Reset map | Separate socket authority from the fusion reset counter; real endpoint tests cover both pose and RGB-D continuing after reset |
 | Local HTTP 200 hides an unreachable backend, empty geometry or missing dense lane | Add bounded GET-only selected-route checks and exact origin inventory; require matching usable geometry and actual dense GPU drawing when requested |
 | A silent geometry WebSocket prevents trying another source and keeps status claiming a live connection | Bound the full handshake and heartbeat writes; require matching Pong replies; withdraw connection authority on error or cancellation. Loopback tests cover silent TCP/WS sources, blocked writes and healthy idle geometry |
+| A cancelled session initializer overwrites a new phone, or cancelled cleanup leaves the stream permanently busy | Shield/drain both mutations through repeated cancellation, then release ownership; actual endpoint regressions cover the interleavings |
+| Render capture reports geometry but outputs black idle pictures, or drops the tracked pose at the Python/JS field boundary | Integrate upstream's same-task capture draw and field adapter; preserve real-browser pixel tests and add a Node regression executing the actual producer expression and renderer camera/ray code |
 
 The frame and motion age cutoffs are preserved. Repairs do not grant face
 recognition or model text authority over motors, synthesize metric geometry, or

@@ -238,7 +238,10 @@ class RenderSocketTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(message.type, aiohttp.WSMsgType.CLOSE)
 
     async def test_dedicated_pool_remains_available_when_jetson_pools_are_full(self):
-        for path, count in (("/ws/video", 16), ("/ws/control", 4)):
+        # Camera has its own bounded pool after #157. Fill its actual capacity,
+        # rather than waiting for a fifth socket while all four slots are held.
+        for path, count in (("/ws/video", self.relay_app["video"].connector.limit),
+                            ("/ws/control", self.relay_app["control"].connector.limit)):
             for _ in range(count):
                 socket = await self.connect(path)
                 self.assertEqual(await socket.receive_str(), "jetson-fixture")
@@ -246,6 +249,7 @@ class RenderSocketTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("opaque", await pose.receive_str())
         await pose.send_bytes(b"pose"); self.assertEqual(await pose.receive_bytes(), b"pose")
         self.assertIsNot(self.relay_app["render"].connector, self.relay_app["http"].connector)
+        self.assertIsNot(self.relay_app["render"].connector, self.relay_app["video"].connector)
         self.assertIsNot(self.relay_app["render"].connector, self.relay_app["control"].connector)
 
     async def test_admission_is_bounded_and_close_does_not_reconnect_or_replay(self):
