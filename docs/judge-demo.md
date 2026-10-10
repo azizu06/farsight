@@ -61,7 +61,7 @@ box shows in fewer than 18 of 20 HUD samples (exact-frame matching gave 1-7/20).
 
 | Role | Does | Hands |
 |---|---|---|
-| **Operator** | Wears the Quest, drives, selects the person | Right trigger, left stick, right A |
+| **Operator** | Wears the Quest, drives, selects the person | Right hand only: trigger, stick, A, B, grip |
 | **Spotter** | Plays the person to find; lies down on cue | Stays out of the rover's path |
 | **Presenter** | Talks, runs the MacBook browser (`localhost:8080`) for Ask and Report | MacBook |
 | **Rig tech** | Rover reset, power, E-stop reach, watches `tools.ready` and the HUD | Next to the rover, hand near battery switch |
@@ -84,16 +84,17 @@ Do the cold boot in [demo-checklist.md](demo-checklist.md) until `tools.ready` p
 | Input | Action |
 |---|---|
 | **Right trigger (hold)** | Deadman. Release stops the rover; Jetson lease is 250 ms |
-| **Left stick** | Drive (forward capped at 45% of the PWM ceiling) |
+| **Right stick** | Drive (forward capped at 45% of the PWM ceiling). The left stick does nothing, so its drift cannot cancel Explore/Seek/go-to |
 | **Head turn** | Pans a servo camera; fixed mode retains the full image |
 | **Right grip**, controller ray on a tracked person's box | **Seek** that person |
-| **Right A** | Toggle live camera / 3D map (stops driving; re-press trigger) |
+| **Right A (tap)** | Toggle live camera / 3D map on release (stops driving; re-press trigger) |
+| **Right A (hold 0.6 s)** | Open the actions menu; point and right grip to select Explore, Scan or Drill |
 | **Right B** | Stop and cancel navigation |
 | **Left X** | Recenter the anchored view |
-| **Left Y** | Open actions menu; point and right grip to select Explore, Scan or Drill |
+| **Left Y** | Optional: also opens the actions menu |
 | **Left grip** | Start the 90 s rescue drill |
 | **Left trigger (hold)** | Only when the voice services are up (`/health` `assistant.whisper`): ask the local assistant by voice; release to send. Enable in Settings first. Without Whisper the voice controls stay hidden and the trigger only confirms a pending proposal |
-| Any stick input during Seek/Explore | Takes over; autonomy stays off until trigger release |
+| Right stick pushed past its deadzone during Seek/Explore/go-to | Takes over; autonomy stays off until trigger release |
 
 `quest/README.md` and `README.md` match this table; `quest/src/rover.ts` stays authoritative,
 so re-check it right before rehearsal.
@@ -104,7 +105,7 @@ so re-check it right before rehearsal.
 |---|---|---|---|
 | 0:00-0:10 | Put on / already in headset, trigger **released** | "This is a rover you inhabit. The Jetson on its back does the seeing and the safety." | Live camera on the panel, HUD freshness |
 | 0:10-0:25 | Turn head left and right | "My head pans the camera." Spotter steps in view. "Each box is a tracked person with a stable id and a pose." | Boxes and keypoints on the displayed frame (older ones faded); id stays while spotter walks |
-| 0:25-0:40 | Hold **right trigger**, nudge **left stick** forward, then **release** | "Deadman: let go and the Jetson cuts the motors. A bad link does the same." | Rover moves, stops on release |
+| 0:25-0:40 | Hold **right trigger**, nudge the **right stick** forward, then **release** | "Deadman: let go and the Jetson cuts the motors. A bad link does the same." | Rover moves, stops on release |
 | 0:40-0:55 | Hold trigger, aim right controller at the spotter's box, squeeze **right grip** | "Seek: I choose a person, the rover drives itself, slows near them, and stops on arrival." | HUD autonomy state `tracking` then `arrived`; rover stops ~60 cm out |
 | 0:55-1:05 | Release trigger. Spotter lies down | "Pose flags a person who looks down." | `down` flag on the box (pose detector only) |
 | 1:05-1:20 | (Operator hands headset to a judge, or keeps it on) Presenter opens Settings on the MacBook, types **"What do you see?"** | "Local assistant, no internet. It answers from live detections, and a small vision model if loaded." | Text answer with timing; says it is offline |

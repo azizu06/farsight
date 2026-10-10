@@ -22,9 +22,15 @@ fn epoch() -> f64 {
 struct Inner {
     packet: Value,
     tracker: crate::tracker::Tracker,
-    last_inference: Option<f64>,
+    // Monotonic inference completions in the last FPS_WINDOW seconds (#118).
+    completions: std::collections::VecDeque<f64>,
     error: Option<String>,
 }
+
+/// The rate between only the last two inferences swung 2-30 with phone
+/// frame-arrival jitter at a steady ~6 fps; a 2 s window measures
+/// throughput, not jitter.
+const FPS_WINDOW: f64 = 2.0;
 
 pub struct PerceptionService {
     pub camera: Arc<CameraService>,
@@ -94,7 +100,7 @@ impl PerceptionService {
             inner: Mutex::new(Inner {
                 packet: json!({"ts": 0, "frame": -1, "fps": 0, "boxes": [], "detector": "disabled", "source": "WAITING"}),
                 tracker: crate::tracker::Tracker::new(),
-                last_inference: None,
+                completions: std::collections::VecDeque::new(),
                 error: None,
             }),
             stop: AtomicBool::new(false),
@@ -179,9 +185,16 @@ impl PerceptionService {
                             let completed = now_monotonic();
                             let rate = {
                                 let mut inner = self.inner.lock().unwrap();
-                                let r = inner.last_inference.map(|l| 1.0 / (completed - l)).unwrap_or(0.0);
-                                inner.last_inference = Some(completed);
-                                r
+                                inner.completions.push_back(completed);
+                                while completed - inner.completions[0] > FPS_WINDOW {
+                                    inner.completions.pop_front();
+                                }
+                                let span = completed - inner.completions[0];
+                                if span > 0.0 {
+                                    (inner.completions.len() - 1) as f64 / span
+                                } else {
+                                    0.0
+                                }
                             };
                             self.track(&mut boxes, now_monotonic());
                             let mut inner = self.inner.lock().unwrap();
