@@ -570,7 +570,10 @@ bounded for display: `FARSIGHT_MAP_POINTS_CAP` (`--map-points-cap`, default 3000
 `FARSIGHT_MAP_TRIANGLES_CAP` (`--map-triangles-cap`, default 40000); `0` disables. Python and
 Rust decimate identically at encode time: points keep records `i*N/cap`; the mesh keeps
 triangles `i*T/cap`, then sends only their vertices in first-use order with remapped indices.
-Binary layouts are unchanged; the PLY follows the capped points. Map status (`/health`,
+Python's phone-fusion mesh instead prefers connected coarse copies of each keyframe (depth grid
+stride 4, then 8): the finest level at which every keyframe fits the cap, else the newest whole
+keyframes at stride 8. It falls back to the triangle stride when a keyframe has no coarse copy,
+and Rust still uses the stride, so capped mesh bytes differ between the two servers. Binary layouts are unchanged; the PLY follows the capped points. Map status (`/health`,
 `/ws/map`) gains `capped: true` while either cap is decimating; `points` and `triangles` still
 count the full map. Fusion, Nav2 depth/occupancy and scan results keep full resolution.
 

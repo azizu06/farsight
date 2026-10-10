@@ -15,6 +15,7 @@ from jetson.mapping.server import create_app
 from jetson.mapping.state import MapState
 from jetson.mapping.surfaces import SurfaceMap
 from jetson.mapping.voxel import VoxelMap
+from jetson.mapping.wire import decimate_mesh_bin
 
 
 def bundle(frame, **changes):
@@ -116,6 +117,42 @@ class GeometryTests(unittest.TestCase):
         encoded = surfaces.encode()
         vertex_count, index_count = struct.unpack_from('<II', encoded)
         self.assertEqual(len(encoded), 8 + 16 * vertex_count + 4 * index_count)
+
+    def test_capped_visual_mesh_keeps_connected_coarse_keyframes(self):
+        surfaces = SurfaceMap()
+        for i in range(4):
+            frame = simulated_frame(0, i, scan_yaw=i * 30)
+            _, _, mesh, lods = reconstruct(frame, lods=(4, 8))
+            surfaces.integrate(mesh, frame.transform, lods)
+        self.assertEqual(len(surfaces.keyframes), 4)
+        coarse = sum(len(lod[8][2]) for lod in surfaces.lods)
+        self.assertLess(coarse, surfaces.count // 8)
+
+        def shared_edges(faces):
+            edges = np.sort(np.concatenate((faces[:, :2], faces[:, 1:], faces[:, ::2])), axis=1)
+            return 1 - len(np.unique(edges, axis=0)) / len(edges)
+
+        # The finest level where every keyframe fits, as whole triangulated grids.
+        state = MapState()
+        state.surfaces, state.triangles_cap = surfaces, coarse
+        packed = state.mesh_packet()
+        vertices, indices = struct.unpack_from('<II', packed)
+        self.assertEqual(indices // 3, coarse)
+        self.assertEqual(len(packed), 8 + 16 * vertices + 4 * indices)
+        faces = np.frombuffer(packed, '<u4', indices, 8 + 16 * vertices).reshape(-1, 3)
+        self.assertLess(faces.max(), vertices)
+        # Uniform triangle deletion at the same budget leaves mostly isolated faces.
+        strided = decimate_mesh_bin(surfaces.encode(), coarse)
+        sv, si = struct.unpack_from('<II', strided)
+        self.assertGreater(shared_edges(faces), 2 * shared_edges(
+            np.frombuffer(strided, '<u4', si, 8 + 16 * sv).reshape(-1, 3)))
+        # Below the coarsest level: newest whole keyframes only.
+        state.triangles_cap = len(surfaces.lods[-1][8][2]) + 1
+        _, indices = struct.unpack_from('<II', state.mesh_packet())
+        self.assertEqual(indices // 3, len(surfaces.lods[-1][8][2]))
+        # Keyframes stored without levels fall back to the Rust-parity stride decimation.
+        surfaces.lods[0] = {}
+        self.assertEqual(state.mesh_packet(), decimate_mesh_bin(surfaces.encode(), state.triangles_cap))
 
 
 class StateTests(unittest.TestCase):

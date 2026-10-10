@@ -7,7 +7,7 @@ import cv2
 import numpy as np
 
 from .geometry import encode_points, export_ply
-from .phone import reconstruct
+from .phone import VISUAL_LODS, reconstruct
 from .surfaces import SurfaceMap
 from .voxel import VoxelMap
 from .wire import decimate_mesh_bin, decimate_points_bin
@@ -157,13 +157,13 @@ class MapState:
                 pass  # navigation must never break mapping or camera publication
         if not may_fuse:
             return
-        points, colors, mesh = reconstruct(frame)
+        points, colors, mesh, lods = reconstruct(frame, lods=VISUAL_LODS)
         with self.lock:
             if (generation != self.processing_generation or not self.connected
                     or self.paused or self.tracking != "normal"):
                 return
             self.cloud.integrate(points, colors)
-            self.surfaces.integrate(mesh, frame.transform)
+            self.surfaces.integrate(mesh, frame.transform, lods)
             self.frames += 1
             self.revision += 1
             duration = time.monotonic() - started
@@ -221,6 +221,11 @@ class MapState:
 
     def mesh_packet(self):
         with self.lock:
+            if 0 < self.triangles_cap < self.surfaces.count:
+                meshes = self.surfaces.visual(self.triangles_cap)
+                if meshes is not None:
+                    return self.surfaces.pack(meshes)
+            # Keyframes without stored LODs keep the stride fallback (Rust parity).
             return decimate_mesh_bin(self.surfaces.encode(), self.triangles_cap)
 
     def ply(self):
