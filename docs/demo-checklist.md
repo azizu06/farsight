@@ -43,3 +43,47 @@ Step 5 prints seconds since boot when run on the Jetson (`ssh farsight.local`); 
 | 1 | | | |
 | 2 | | | |
 | 3 | | | |
+
+## Recorded-run fallback (Python server, part of #18)
+
+Record one good **real** camera/rover run before Sun 4 AM. On the qualified rig:
+
+```sh
+python -m jetson.server --camera 0 --serial-port /dev/ttyACM0 --h264 --record --mission-dir runs
+```
+
+For the native phone camera, omit `--camera 0`. Drive the normal Quest demo with
+people, detections and changing range visible, then stop the server with Ctrl-C.
+Copy the complete `runs/<UTC timestamp>/` directory to each demo laptop. It
+contains the existing mission evidence plus `frames/*.jpg`, `replay.jsonl`
+(timestamped frames, inference and control telemetry), and `replay.json`
+(duration/version). Permits and control session tokens are excluded. Recording
+is opt-in and uses disk for every captured JPEG; check free space, keep the run
+short, and verify it before relying on it. Graceful shutdown preserves the final pause/duration. A truncated JSONL
+record must be removed before recovering a run after an unclean shutdown.
+
+```sh
+python -m jetson.server --replay runs/<UTC timestamp> --h264
+# For Quest USB/relay, in another terminal:
+python -m tools.demo --upstream http://127.0.0.1:8443 --quest
+```
+
+The normal JPEG, MJPEG, H.264 and detection endpoints play recorded data in real
+time and loop. H.264 is re-encoded from the archived JPEGs and needs FFmpeg.
+`/health` must show `replay: true`; both the page and headset HUD must show
+**REPLAY**. Control/status reports recorded range, `replay: true`, no usable
+permit, zero motor output and a read-only reason. Replay never constructs a
+serial pump and rejects serial ports, other camera sources and recording flags.
+Controls are ignored. This is retained evidence, not a live rescue or a new drill.
+The Python implementation is the fallback; Rust replay parity is not implemented.
+
+Software rehearsal only (does **not** satisfy the real-run acceptance):
+
+```sh
+python -m jetson.server --demo --simulate-rover --record --mission-dir runs
+# Stop after several seconds, then use --replay on that run.
+```
+
+The short checked-in `tools/fixtures/replay-demo` run was captured from `--demo`
+and is labelled SIMULATED as well as REPLAY. Use it to check the fallback plumbing,
+never as physical rover evidence. The real recording remains outstanding in #18.

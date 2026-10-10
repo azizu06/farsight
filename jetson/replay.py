@@ -28,7 +28,7 @@ class ReplayRun:
                 if not path.is_relative_to(root):
                     raise ValueError("Replay frame escapes mission directory")
                 if not path.is_file():
-                    raise ValueError(f"Missing replay frame: {event["file"]}")
+                    raise ValueError(f"Missing replay frame: {event['file']}")
                 event["path"] = path
         self.frame_span = 1 + max(event["frame"] for event in self.events if event["kind"] == "frame")
         self.duration = max(manifest["duration_s"], self.events[-1]["t"] + .1)
