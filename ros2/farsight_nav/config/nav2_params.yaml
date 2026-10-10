@@ -58,10 +58,10 @@ controller_server:
       vx_std: 0.15
       vy_std: 0.0
       wz_std: 0.5
-      vx_max: 0.50                   # AUTONOMY_MAX_PWM 150 on the 2026-10-10 drive profile: 0.55 m/s, 3.5 rad/s
+      vx_max: 0.70                   # AUTONOMY_MAX_PWM 200 on the 2026-10-10 drive profile: 0.74 m/s, 3.8 rad/s
       vx_min: -0.12
       vy_max: 0.0
-      wz_max: 2.0                    # faster spins smear ARKit tracking; the profile allows 3.5
+      wz_max: 2.5                    # faster spins smear ARKit tracking; the profile allows 3.8
       iteration_count: 1
       prune_distance: 1.5
       transform_tolerance: 0.3
@@ -128,28 +128,28 @@ controller_server:
         mode: 0
     RPP:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-      desired_linear_vel: 0.50        # under the profile's 0.55 m/s at AUTONOMY_MAX_PWM 150
-      lookahead_dist: 0.35            # short: pure pursuit cuts corners by about the lookahead
-      min_lookahead_dist: 0.2
-      max_lookahead_dist: 0.6
+      desired_linear_vel: 0.70        # under the profile's 0.74 m/s at AUTONOMY_MAX_PWM 200 (captain: roam at speed)
+      lookahead_dist: 0.45            # short: pure pursuit cuts corners by about the lookahead
+      min_lookahead_dist: 0.25
+      max_lookahead_dist: 0.9
       lookahead_time: 1.0
-      rotate_to_heading_angular_vel: 1.8
+      rotate_to_heading_angular_vel: 2.2
       transform_tolerance: 0.3
       use_velocity_scaled_lookahead_dist: true
-      min_approach_linear_velocity: 0.06
-      approach_velocity_scaling_dist: 0.5
+      min_approach_linear_velocity: 0.25   # Explore goals are waypoints: barely slow for them
+      approach_velocity_scaling_dist: 0.2
       use_collision_detection: false   # no stop zone: replanning steers around new obstacles
       max_allowed_time_to_collision_up_to_carrot: 1.0
       use_regulated_linear_velocity_scaling: true
       use_fixed_curvature_lookahead: false
       curvature_lookahead_dist: 0.6
-      use_cost_regulated_linear_velocity_scaling: true
+      use_cost_regulated_linear_velocity_scaling: false   # no slow zone near obstacles; the planner keeps clearance
       regulated_linear_scaling_min_radius: 0.5
-      regulated_linear_scaling_min_speed: 0.08
+      regulated_linear_scaling_min_speed: 0.25
       use_rotate_to_heading: true
       allow_reversing: false
       rotate_to_heading_min_angle: 0.6
-      max_angular_accel: 3.0
+      max_angular_accel: 4.0
       max_robot_pose_search_dist: 4.0
       interpolate_curvature_after_goal: false
       cost_scaling_dist: 0.22
@@ -329,10 +329,12 @@ farsight_bridge:
     explore_clutter_weight: 3.0
     explore_revisit_weight: 3.0
     explore_revisit_decay_s: 60.0
-    explore_commitment_s: 4.0
+    explore_commitment_s: 2.0          # quick decisions (captain)
+    explore_goal_timeout_s: 15.0       # skip a frontier Nav2 has not reached in 15 s
+    explore_tick_s: 0.5                # frontier re-score / goal decision period
     explore_switch_margin: 0.8
     explore_transition_distance: 0.6
-    explore_creep_mps: 0.25          # above both wheel floors (PWM 70/40) on the drive profile
+    explore_creep_mps: 0.3           # above both wheel floors (PWM 70/40) on the drive profile
     explore_scan_radps: 0.82
     explore_gap_budget_s: 4.0
     explore_scan_budget_s: 10.0
