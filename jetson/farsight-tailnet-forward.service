@@ -3,8 +3,8 @@
 # connections made while the server is down fail fast and succeed again once it is back.
 [Unit]
 Description=Farsight tailnet forwarder (Jetson Tailscale address :8081 -> local server :8443)
-Wants=network-online.target
-After=network-online.target tailscaled.service
+# Not network-online.target (it could hold boot for 2 min): the forwarder waits for its Tailscale IPv4 itself.
+After=network.target tailscaled.service
 StartLimitIntervalSec=0
 
 [Service]
