@@ -16,7 +16,8 @@ reachable over SSH ([jetson-setup-handoff.md](jetson-setup-handoff.md)). Update 
 - [ ] Opt into: NVIDIA Best Use of Jetson Nano, Full Sail Pathways & Perception, Encompass Data Capturing Hardware, Hugging Face Best Use of Open Source AI. (Tracks and Overall are automatic.)
 - [ ] **Public** repo link (https://github.com/azizu06/farsight).
 - [ ] Demo video attached (#15). It must label any simulated or replayed segment on screen and in the voiceover.
-- [ ] Architecture diagram from [architecture.md](architecture.md); screenshots (HUD with boxes, mission report, map).
+- [ ] Architecture diagram ([assets/architecture.png](assets/architecture.png), source in [architecture.md](architecture.md)); screenshots per the shot list in [devpost-draft.md](devpost-draft.md#screenshot-shot-list).
+- [ ] Write-up from [devpost-draft.md](devpost-draft.md) with every `TODO` resolved or removed.
 - [ ] Judging appointments claimed on the Hacker Dashboard: General room **and** each sponsor room.
 - [ ] Licence note: YOLO artifacts are Ultralytics AGPL-3.0; UltraFace per [models/README.md](../models/README.md).
 - [ ] Final push by 11:00 AM; no repo changes after.

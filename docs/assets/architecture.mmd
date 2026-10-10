@@ -1,0 +1,64 @@
+---
+config:
+  flowchart:
+    wrappingWidth: 420
+    nodeSpacing: 28
+    rankSpacing: 55
+---
+%% Source for docs/assets/architecture.svg and .png; keep in sync with docs/architecture.md.
+flowchart TB
+  subgraph RV["ROVER KIT · drives freely"]
+    direction LR
+    RPh["<b>Rover phone</b>, mounted · Farsight Capture app<br/>RGB, or measured LiDAR RGB-D + pose<br/>Personal Hotspot is the rover uplink"]
+    subgraph JS["<b>Jetson Orin Nano</b> · python -m jetson.server"]
+      direction LR
+      Cam["<b>CameraService</b><br/>/phone/rgb, /phone, or USB camera"]
+      Perc["<b>PerceptionService</b><br/>YOLO11n-pose, TensorRT FP16<br/>IoU tracker, optional UltraFace faces"]
+      Vid["<b>VideoService</b><br/>H.264 fMP4 via FFmpeg, JPEG"]
+      Map["<b>MapState + ScanService</b><br/>LiDAR fusion, or Depth Anything V2<br/>five-view scan (estimated depth)"]
+      Mis["<b>Mission</b><br/>drill score, SBAR triage,<br/>report + snapshots, record / replay"]
+      Asst["<b>SceneAssistant + PhraseSpeaker</b><br/>Whisper, local VLM, Piper EN / ES"]
+      Ctl["<b>ControlService</b><br/>250 ms permit lease · 500 ms view guard<br/>ultrasonic stop · Explore / Seek"]
+      API["<b>FastAPI app</b> · HTTP + WebSocket routes"]
+      Cam --> Perc
+      Cam --> Vid
+      Cam --> Map
+      Perc --> Mis
+      Perc -->|Seek target| Ctl
+      Vid --> API
+      Perc --> API
+      Map --> API
+      Mis --> API
+      Asst <--> API
+      Ctl <--> API
+    end
+    Uno["<b>Arduino Uno</b> · rover/farsight_uno<br/>300 ms motor watchdog<br/>drive motors, pan servo, ultrasonic"]
+    RPh -->|"camera frames,<br/>local USB network"| Cam
+    Ctl <-->|"USB serial 115200<br/>PWM, pan · range"| Uno
+  end
+
+  TS{{"<b>Tailscale tunnel</b><br/>rover-phone cellular ⇄<br/>operator-phone cellular<br/>no venue Wi-Fi"}}
+
+  subgraph OP["OPERATOR KIT · judging table"]
+    direction LR
+    OPh["<b>Operator phone</b><br/>USB tether, cellular data"]
+    Mac["<b>MacBook</b> · tools/operator_relay.py<br/>127.0.0.1:8080 serves quest/dist,<br/>proxies every HTTP + WebSocket route"]
+    Quest["<b>Quest 2</b> · Quest Browser, WebXR (quest/src)<br/>main.ts · rover.ts · h264.ts<br/>detection-match.js · control-safety.js<br/>pose-hud.js · assistant-voice.ts"]
+    OPh ---|USB| Mac
+    Mac <-->|"USB + adb reverse :8080"| Quest
+  end
+
+  API ==>|"<b>DOWN</b><br/>video: /ws/video<br/>detections: /ws/detections<br/>map: /ws/map, Brotli HTTP<br/>permits, status: /ws/control<br/>report: /mission/report<br/>answers + Piper audio"| TS
+  TS ==>|"<b>UP</b><br/>deadman, v, w, pan, mode<br/>+ permit echo, 20 Hz<br/>voice: /ask audio<br/>Scan, drill, Seek requests"| API
+  TS <==>|"every stream<br/>through the relay"| Mac
+
+  classDef op fill:#e8f1ff,stroke:#2f6fd6,color:#0b2547
+  classDef rv fill:#eaf7ee,stroke:#2e8b57,color:#0d2e1a
+  classDef safe fill:#fff1e6,stroke:#d9661f,color:#3d1a05
+  classDef net fill:#f4ecff,stroke:#7a4cc2,color:#26104a
+  classDef hub fill:#ffffff,stroke:#2e8b57,color:#0d2e1a,stroke-width:2px
+  class Quest,Mac,OPh op
+  class RPh,Cam,Vid,Perc,Map,Mis,Asst rv
+  class Ctl,Uno safe
+  class TS net
+  class API hub
