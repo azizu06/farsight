@@ -151,3 +151,18 @@ test("XR input age uses monotonic observation time, not the predicted XR display
   // The frame start may be held in a local (diagnostics timing) as long as it is performance.now().
   assert.match(main, /setAnimationLoop\(\(_time, frame\) => \{\s*(?:rover\?\.update\(performance\.now\(\), frame\)|const (\w+) = performance\.now\(\);\s*rover\?\.update\(\1, frame\))/);
 });
+
+test("deadman trigger hysteresis: a held trigger hovering near the pressed threshold never flickers", async () => {
+  const { triggerHeld } = await import("../src/control-safety.js");
+  let held = false;
+  const step = (value, pressed = value > 0.1) => (held = triggerHeld(held, { value, pressed }));
+  assert.equal(step(0.5), false, "a light touch does not engage");
+  assert.equal(step(0.7), true, "engages above 0.6");
+  // The rig log showed 26 deadman flips while the trigger was held: analog wobble around the browser threshold.
+  for (const value of [0.45, 0.3, 0.55, 0.26, 0.4, 0.28]) assert.equal(step(value), true, `still held at ${value}`);
+  assert.equal(step(0.2), false, "release is immediate below 0.25");
+  assert.equal(step(0.5), false, "re-engaging needs the high threshold again");
+  assert.equal(triggerHeld(true, undefined), false, "a missing trigger releases");
+  assert.equal(triggerHeld(false, { pressed: true }), true, "digital-only buttons still work");
+  assert.equal(triggerHeld(true, { pressed: false }), false);
+});
