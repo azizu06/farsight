@@ -46,7 +46,7 @@ try {
     ],
   });
   const page = await browser.newPage();
-  await page.routeWebSocket("**/ws/**", socket => socket.close());
+  await page.routeWebSocket("**/ws/**", (socket) => socket.close());
   await page.route("**/camera.jpg", (route) =>
     route.fulfill({ status: 503, body: "" }),
   );
@@ -120,14 +120,19 @@ try {
     xr.getSession = () => session;
     xr.getReferenceSpace = () => reference;
     xr.getCamera = () => camera;
-    let loseLeft = false;
+    let loseLeft = false,
+      viewerY = 0,
+      viewerOn = true;
     const frame = {
-      getViewerPose: () => ({
-        transform: {
-          orientation: { x: 0, y: 0, z: 0, w: 1 },
-          position: { x: 0, y: 0, z: 0 },
-        },
-      }),
+      getViewerPose: () =>
+        viewerOn
+          ? {
+              transform: {
+                orientation: { x: 0, y: 0, z: 0, w: 1 },
+                position: { x: 0, y: viewerY, z: 0 },
+              },
+            }
+          : null,
       getPose: (space) => (loseLeft && space === left.gripSpace ? null : {}),
     };
     subject.update(100, frame);
@@ -137,6 +142,7 @@ try {
       sampledAt: subject.lastXRAt,
     };
     loseLeft = true;
+    viewerY = 0.25;
     subject.update(110, frame);
     const lost = {
       valid: subject.inputValid,
@@ -145,6 +151,7 @@ try {
       needsRelease: subject.gate.needsRelease,
       stale: !Number.isFinite(subject.lastXRAt),
       displayVisible: subject.cockpit.visible,
+      headY: subject.cockpit.position.y,
     };
     loseLeft = false;
     subject.update(120, frame);
@@ -224,6 +231,13 @@ try {
       ),
       needsRelease: subject.gate.needsRelease,
     };
+    viewerOn = false;
+    subject.update(210, frame);
+    const missingViewer = {
+      valid: subject.inputValid,
+      displayVisible: subject.cockpit.visible,
+      v: subject.input.v,
+    };
     xr.isPresenting = false;
     subject.dispose();
     renderer.dispose();
@@ -237,6 +251,7 @@ try {
       missingFrame,
       removedLeft,
       replacedRight,
+      missingViewer,
     };
   });
   assert.ok(result.first.pixel[0] > 200);
@@ -252,6 +267,7 @@ try {
     needsRelease: true,
     stale: true,
     displayVisible: true,
+    headY: 0.25,
   });
   assert.deepEqual(result.recovered, {
     valid: true,
@@ -269,6 +285,11 @@ try {
     rearmed: true,
     moving: false,
     needsRelease: true,
+  });
+  assert.deepEqual(result.missingViewer, {
+    valid: false,
+    displayVisible: false,
+    v: 0,
   });
   const report = {
     passed: true,

@@ -288,15 +288,21 @@ export class RoverExperience {
         this.rightSource = right ?? null; this.movementSource = movement ?? null;
       }
       const reference = this.renderer.xr.getReferenceSpace();
-      let viewerTracked = false;
+      let pose: XRViewerPose | null = null;
       let tracked = false;
       try {
-        viewerTracked = Boolean(session.visibilityState === "visible" && frame && reference && frame.getViewerPose(reference));
-        tracked = Boolean(viewerTracked && frame && reference &&
+        if (session.visibilityState === "visible" && frame && reference) pose = frame.getViewerPose(reference) ?? null;
+        tracked = Boolean(pose && frame && reference &&
           right?.gamepad?.connected && movement?.gamepad?.connected &&
           right.gripSpace && movement.gripSpace &&
           frame.getPose(right.gripSpace, reference) && frame.getPose(movement.gripSpace, reference));
       } catch { /* An ended/inactive frame cannot provide current tracking. */ }
+      if (pose) {
+        const orientation = pose.transform.orientation, position = pose.transform.position;
+        this.quat.set(orientation.x, orientation.y, orientation.z, orientation.w);
+        this.position.set(position.x, position.y, position.z);
+        this.cockpit.position.copy(this.position); this.cockpit.quaternion.copy(this.quat);
+      }
       if (!tracked) {
         this.inputValid = false;
         if (Number.isFinite(this.lastXRAt) || this.input.held)
@@ -304,13 +310,8 @@ export class RoverExperience {
         else this.gate.invalidate("XR tracking unavailable: release trigger");
         this.lastXRAt = -Infinity;
         // Keep the camera and stop reason visible when only a controller is lost.
-        this.cockpit.visible = viewerTracked;
+        this.cockpit.visible = !!pose;
         this.cameraScreen.visible = this.xrLive;
-        if (viewerTracked) {
-          const xrCamera = this.renderer.xr.getCamera();
-          xrCamera.getWorldQuaternion(this.quat); xrCamera.getWorldPosition(this.position);
-          this.cockpit.position.copy(this.position); this.cockpit.quaternion.copy(this.quat);
-        }
         if (this.dirty || now - this.lastCanvasDraw > 100) this.drawCamera(now);
         if (now - this.lastHudAt > 100) { this.drawHUD(now); this.lastHudAt = now; }
         return;
@@ -324,16 +325,6 @@ export class RoverExperience {
       if (toggle && !this.toggleDown) { this.xrLive = !this.xrLive; this.stop("View changed: release trigger"); this.setView(this.xrLive ? "camera" : "3d"); }
       if (center && !this.recenterDown) this.recenter = true;
       this.toggleDown = toggle; this.recenterDown = center;
-      let pose: XRViewerPose | null = null;
-      try { if (frame && reference) pose = frame.getViewerPose(reference) ?? null; } catch { /* Tracking loss stops controls below. */ }
-      if (pose) {
-        const orientation = pose.transform.orientation, position = pose.transform.position;
-        this.quat.set(orientation.x, orientation.y, orientation.z, orientation.w);
-        this.position.set(position.x, position.y, position.z);
-      } else {
-        const xrCamera = this.renderer.xr.getCamera();
-        xrCamera.getWorldQuaternion(this.quat); xrCamera.getWorldPosition(this.position);
-      }
       this.euler.setFromQuaternion(this.quat, "YXZ");
       if (this.recenter && pose) { this.baseYaw = this.euler.y; this.recenter = false; }
       const yaw = Math.atan2(Math.sin(this.euler.y - this.baseYaw), Math.cos(this.euler.y - this.baseYaw));
