@@ -33,7 +33,7 @@ from tools.qualify_link import capture_receipt_bound, measure, percentile
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def fixture_app(source):
+def fixture_app(source, *, server_options=None, scene_path=None):
     """The production services with an explicitly synthetic RGB producer."""
     import cv2
     import numpy as np
@@ -41,8 +41,12 @@ def fixture_app(source):
     from jetson.camera import CameraFrame
     from jetson.mapping.server import create_app
 
-    app = create_app(demo=source == "map5", simulate_rover=True, detector="none",
-                     h264=True, video_fps=10, video_bitrate=500000)
+    options = dict(demo=source == "map5", simulate_rover=True, detector="none",
+                   h264=True, video_fps=10, video_bitrate=500000)
+    options.update(server_options or {})
+    if options.get("serial_port") or not options.get("simulate_rover"):
+        raise ValueError("Qualification requires simulated motors")
+    app = create_app(**options)
     original_lifespan = app.router.lifespan_context
     stop_events = []
     command_events, status_events = [], []
@@ -134,6 +138,11 @@ def fixture_app(source):
         # a repeated black image. Timestamps include JPEG generation latency.
         rng = np.random.default_rng(20261010)
         base = rng.integers(0, 256, (120, 160, 3), np.uint8).repeat(4, 0).repeat(4, 1)
+        if scene_path:
+            base = cv2.imread(str(scene_path))
+            if base is None:
+                raise ValueError("Cannot read profiling scene")
+            base = cv2.resize(base, (640, 480))
         frame_id = 0
         while True:
             captured = time.monotonic()
@@ -199,9 +208,11 @@ def fixture_app(source):
 
 
 class Rig:
-    def __init__(self, source="rgb15", delay_ms=50, bandwidth_mbps=2):
+    def __init__(self, source="rgb15", delay_ms=50, bandwidth_mbps=2, *,
+                 fixture_module="tools.tests.test_demo_qualification", fixture_args=()):
         self.source, self.delay_ms, self.bandwidth_mbps = source, delay_ms, bandwidth_mbps
         self.process = self.proxy = self.relay = self.client = None
+        self.fixture_module, self.fixture_args = fixture_module, list(fixture_args)
         self.temp = tempfile.TemporaryDirectory()
         self.log = open(Path(self.temp.name) / "fixture.log", "w+")
 
@@ -210,8 +221,8 @@ class Rig:
             reserved.bind(("127.0.0.1", 0))
             port = reserved.getsockname()[1]
         self.direct = f"http://127.0.0.1:{port}"
-        self.process = subprocess.Popen([sys.executable, "-m", "tools.tests.test_demo_qualification",
-            "--serve-fixture", self.source, "--port", str(port)], cwd=ROOT,
+        self.process = subprocess.Popen([sys.executable, "-m", self.fixture_module,
+            "--serve-fixture", self.source, "--port", str(port), *self.fixture_args], cwd=ROOT,
             stdout=self.log, stderr=self.log, start_new_session=True)
         self.client = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5))
         try:
