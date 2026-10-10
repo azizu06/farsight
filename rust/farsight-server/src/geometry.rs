@@ -89,14 +89,14 @@ pub const POINT_RECORD: usize = 16;
 /// uint32 count followed by 16-byte XYZ/RGB records, little endian.
 /// Port of encode_points.
 pub fn encode_points(points: &[[f32; 3]], colors: &[[u8; 3]]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(4 + points.len() * POINT_RECORD);
-    out.extend_from_slice(&(points.len() as u32).to_le_bytes());
-    for (p, c) in points.iter().zip(colors.iter()) {
-        for v in p {
-            out.extend_from_slice(&v.to_le_bytes());
-        }
-        out.extend_from_slice(c);
-        out.push(0);
+    let n = points.len();
+    let mut out = vec![0u8; 4 + n * POINT_RECORD];
+    out[..4].copy_from_slice(&(n as u32).to_le_bytes());
+    for ((p, c), rec) in points.iter().zip(colors.iter()).zip(out[4..].chunks_exact_mut(POINT_RECORD)) {
+        rec[..4].copy_from_slice(&p[0].to_le_bytes());
+        rec[4..8].copy_from_slice(&p[1].to_le_bytes());
+        rec[8..12].copy_from_slice(&p[2].to_le_bytes());
+        rec[12..15].copy_from_slice(c);
     }
     out
 }
@@ -107,13 +107,13 @@ pub fn export_ply(points: &[[f32; 3]], colors: &[[u8; 3]]) -> Vec<u8> {
         "ply\nformat binary_little_endian 1.0\nelement vertex {}\nproperty float x\nproperty float y\nproperty float z\nproperty uchar red\nproperty uchar green\nproperty uchar blue\nend_header\n",
         points.len()
     );
-    let mut out = Vec::with_capacity(header.len() + points.len() * 15);
-    out.extend_from_slice(header.as_bytes());
-    for (p, c) in points.iter().zip(colors.iter()) {
-        for v in p {
-            out.extend_from_slice(&v.to_le_bytes());
-        }
-        out.extend_from_slice(c);
+    let mut out = vec![0u8; header.len() + points.len() * 15];
+    out[..header.len()].copy_from_slice(header.as_bytes());
+    for ((p, c), rec) in points.iter().zip(colors.iter()).zip(out[header.len()..].chunks_exact_mut(15)) {
+        rec[..4].copy_from_slice(&p[0].to_le_bytes());
+        rec[4..8].copy_from_slice(&p[1].to_le_bytes());
+        rec[8..12].copy_from_slice(&p[2].to_le_bytes());
+        rec[12..15].copy_from_slice(c);
     }
     out
 }
