@@ -1,0 +1,82 @@
+{
+  "schema": 1,
+  "recorded_date": "2026-10-10",
+  "purpose": "Preserve both positive and negative desktop Mac-view evidence for owners on other machines. These runs do not qualify real-room mapping, Quest performance, stereo VR, or rover controls.",
+  "checks": [
+    {
+      "name": "production-cf7cbd0",
+      "client_sha": "cf7cbd079c8e5fa87c57a913fe3353f769863653",
+      "loaded_producer_sha": "1b65ac43abf3880c7663b5e83e57e6e7a82ac4ef",
+      "scope": "Smooth flat desktop playback; no headset qualification.",
+      "source": "SIMULATED",
+      "stereo": false,
+      "hardware": "Desktop Apple M1 / ANGLE Metal / Chromium; not Quest",
+      "runtime_intervention": "none",
+      "callback_hz": 29.34858627239857,
+      "seeking_count": 0,
+      "matched_pose_echoes": 81,
+      "artifacts": {
+        "evidence.json": {
+          "sha256": "c5a01a48179ad7f103f7c12b0df34b466c01316aed4847ace1761b9de302fa2e",
+          "bytes": 14243
+        },
+        "screenshot.png": {
+          "sha256": "ce14f4a1b25521e92adb1c5591bcd7b017f4e61b265d3a1fc259a5f180a79478",
+          "bytes": 251231
+        }
+      },
+      "served_build_sha256": {
+        "assets/VRButton-DwYla17G.js": "97864b4a575f2464a7bbf3c3e7c5cf09cf3e67fc048efa6c3aaa89681002b61d",
+        "assets/macview-Cc_tQeuz.js": "a24617b6114e60abb1572c44316b56621e9e926e6418f2041e184f2fbaf82a2d",
+        "assets/main-DxNvDC7a.css": "234a49d21d6e4e6af115408573dd534aae88f577195c72291d57004125065481",
+        "assets/main-jaO9EkUJ.js": "337ffb311d19d6ce146bc965ec429e322ac90e9aa026f02f97ae0584e30ccd62",
+        "index.html": "504bdabf4346c5f9540e225fc8a5484b353dbf71978dd42e583e245dbc6e963c",
+        "macview.html": "5523699c98ef2c71798adc8cfde73db4d48ece7272a5e8a15221b3d1920b9f0b"
+      },
+      "visual_delivery_passed": true,
+      "hardware_qualified": false
+    },
+    {
+      "name": "production-320553d",
+      "client_sha": "320553d688f2761801dc439a6a9fd1e7c5957ae5",
+      "loaded_producer_sha": "a1349742d6860cdae0fc367dff3d9e41f1fb8913",
+      "scope": "Decode cadence passed, but rendered pose and visual delivery FAILED.",
+      "source": "SIMULATED",
+      "stereo": false,
+      "hardware": "Desktop Apple M1 / ANGLE Metal / Chromium; not Quest",
+      "runtime_intervention": "none",
+      "callback_hz": 29.178512644152267,
+      "seeking_count": 0,
+      "matched_pose_echoes": 0,
+      "artifacts": {
+        "evidence.json": {
+          "sha256": "a9d443fe8cbc396fec07ecf5ae4f166808ef2b6458ada22f296ca2295605cc0e",
+          "bytes": 13770
+        },
+        "screenshot.png": {
+          "sha256": "83b9a0396a8f7efd9ea7ec98484ec19cc3c458fc96ae27d5f3b7b1388133dbd6",
+          "bytes": 16621
+        }
+      },
+      "served_build_sha256": {
+        "assets/VRButton-B6fJNAgX.js": "755012dc05c2b3f29318904dce90c34d7bd943c2ea26aa8fec4902eb80daf7b8",
+        "assets/macview-jAqxeCBH.js": "770dba5e7951a1b18b0ddc432262a00fa7be9a4d6d45e7c5821e3066f666c9c4",
+        "assets/main-CWsdCTmv.js": "1d8763ac817397aa4265cd5c6a876de721682ab6951cb240d91cc51d45c2b46a",
+        "assets/main-DxNvDC7a.css": "234a49d21d6e4e6af115408573dd534aae88f577195c72291d57004125065481",
+        "index.html": "03b3b323930f607d10366989c9626049c33616fd42892837caef47818d4ddac2",
+        "macview.html": "d3d878b03c92644d9607d2250cfa752131bd897d25e2d7953040498937703bd9"
+      },
+      "visual_delivery_passed": false,
+      "hardware_qualified": false
+    }
+  ],
+  "known_failures": [
+    "The a134974 atomic capture path forwards snake_case pose fields to a renderer expecting camelCase, so all 503 sent poses lacked matching echoes.",
+    "The a134974 screenshot shows black scene pixels despite roughly 29 Hz decoded video and positive coarse geometry metadata.",
+    "The producer revisions differ; do not attribute this comparison solely to the client."
+  ],
+  "board_evidence": [
+    "https://github.com/azizu06/farsight/issues/24#issuecomment-6103109006",
+    "https://github.com/azizu06/farsight/issues/24#issuecomment-6103135912"
+  ]
+}
