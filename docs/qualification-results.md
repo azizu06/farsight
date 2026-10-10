@@ -277,8 +277,10 @@ probe, and all four intermediate 10 Hz camera trials (one combined failure).
 | After | combined | 1 | 502.5 ms | 1124.2 ms | 40.6 ms | 7.0% |
 | After | quiet | 2 | 321.4 ms | 435.6 ms | 44.2 ms | 100.0% |
 | After | combined | 2 | 336.4 ms | 497.4 ms | 37.1 ms | 100.0% |
+| After rebase | quiet | 1 | 314.9 ms | 451.2 ms | 22.3 ms | 100.0% |
+| After rebase | quiet | 2 | 322.2 ms | 432.1 ms | 26.1 ms | 100.0% |
 
-The final quiet runs fused 106/106 frames, so the improvement did not disable
+The first two fixed quiet runs fused 106/106 frames; the rebased runs fused 105/106, so the improvement did not disable
 map work. Quiet process CPU p95 increased from 72.9–73.2% to 95.1–95.9% as the
 synthetic camera generated more frames. The combined failure recorded a 126.8 ms
 client loop pause and a 157.7 ms command gap; the backend lease expired and
@@ -319,3 +321,10 @@ To reproduce the original baseline, run the quiet-only command from #41 at
 `4bfb044`; apply only the profiler diff there for the additional lock/CPU probes.
 `--pause-fusion` is a fixture-only diagnostic switch. No profiler routes or
 instrumentation are installed in the production app.
+
+After integrating main through `5b3f087`, all required suites passed:
+`pytest jetson/control/tests jetson/mapping/tests jetson/tests tools/tests -q`
+(380 tests, 94 subtests, 5 skipped), `npm --prefix quest test` (80 tests) and
+`npm --prefix quest run build`. The final packaging-only main change passed its
+13 tests and 10 subtests separately; the camera/control runtime did not change.
+The two additional 20-second quiet map5 repeats above both sustained 100% motion.
