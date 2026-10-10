@@ -1379,6 +1379,7 @@ mod fixture_tests {
             ping_interval: Duration::from_secs(10),
             stale_after: Duration::from_secs(20),
             closures: Arc::new(crate::closures::ControlClosures::new()),
+            demo_mode: false,
         });
         let listener = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0))).await.unwrap();
         let port = listener.local_addr().unwrap().port();

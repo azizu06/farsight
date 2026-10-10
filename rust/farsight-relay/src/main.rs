@@ -96,6 +96,11 @@ struct Args {
     /// Opt-in second route to the same --bonded-control Jetson; JPEG only
     #[arg(long)]
     bonded_upstream: Option<String>,
+    /// Explicit single-route demo configuration (17d3b2d): skip the relay's
+    /// displayed-video zeroing so the server sees the actual freshness
+    /// fields. Cannot combine with --bonded-upstream.
+    #[arg(long)]
+    demo_mode: bool,
 }
 
 struct AppState {
@@ -117,6 +122,9 @@ struct AppState {
     /// tools/control_closures.py parity: bounded single-route /ws/control
     /// connection diagnostics surfaced at /relay/health.
     closures: Arc<closures::ControlClosures>,
+    /// Explicit single-route demo mode: deadman commands keep the reported
+    /// video freshness untouched instead of being zeroed (17d3b2d).
+    demo_mode: bool,
 }
 
 pub(crate) fn upstream_origin(value: &str) -> Result<Url, String> {
@@ -211,6 +219,7 @@ async fn relay_health(State(s): State<Arc<AppState>>) -> Response {
         // eab0c88: enabled only while the single upstream route exists;
         // bonded-control is excluded from these counters by contract.
         "control_closures": s.closures.status(s.bonded.is_none()),
+        "demo_mode": s.demo_mode,
     });
     if let Some(bond) = &s.bonded {
         packet["transport"] = bond.status().await;
@@ -370,6 +379,9 @@ async fn relay_ws(local: WebSocket, s: Arc<AppState>, target: &str, control: boo
         let local_tx = local_tx.clone();
         let local_seen = local_seen.clone();
         let attempt = attempt.clone();
+        // Explicit demo mode leaves reported video freshness untouched
+        // (operator_relay.py --demo-mode); default still zeros it.
+        let demo_mode = s.demo_mode;
         tokio::spawn(async move {
             while let Some(Ok(message)) = local_rx.next().await {
                 local_seen.store(now_ms(), Ordering::Relaxed);
@@ -379,7 +391,7 @@ async fn relay_ws(local: WebSocket, s: Arc<AppState>, target: &str, control: boo
                         if control {
                             match serde_json::from_str::<Value>(&data) {
                                 Ok(mut command) if command.is_object() => {
-                                    if command["deadman"] == Value::Bool(true) {
+                                    if command["deadman"] == Value::Bool(true) && !demo_mode {
                                         let age = command["video_age_ms"].as_f64();
                                         if command["video_fresh"] != Value::Bool(true)
                                             || !age.map(|a| (0.0..=500.0).contains(&a)).unwrap_or(false)
@@ -772,6 +784,9 @@ async fn main() {
             std::process::exit(2);
         }
     };
+    if args.demo_mode && args.bonded_upstream.is_some() {
+        panic!("--demo-mode supports single-route control only; cannot combine with --bonded-upstream");
+    }
     let second = match &args.bonded_upstream {
         Some(value) => match upstream_origin(value) {
             Ok(o) if o == origin => {
@@ -857,6 +872,7 @@ async fn main() {
         ping_interval: Duration::from_secs(10),
         stale_after: Duration::from_secs(20),
         closures: Arc::new(closures::ControlClosures::new()),
+        demo_mode: args.demo_mode,
     });
     let app = build_router(state.clone());
     let addr = SocketAddr::from(([127, 0, 0, 1], args.port));
@@ -1051,6 +1067,7 @@ mod recovery_tests {
             ping_interval: Duration::from_millis(ping_ms),
             stale_after: Duration::from_millis(stale_ms),
             closures: Arc::new(closures::ControlClosures::new()),
+            demo_mode: false,
         })
     }
 
