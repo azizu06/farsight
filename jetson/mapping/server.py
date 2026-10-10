@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ValidationError
 import uvicorn
 
+from .compress import EncodedCache
 from .demo import simulated_frame
 from .phone import Hello, decode_frame, validate_pose
 from .state import MapState
@@ -187,19 +188,35 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
 
+    map_cache = EncodedCache()
+
+    def map_version():
+        return state.generation, state.revision, state.surfaces.revision
+
+    def map_response(route, packet, accept_encoding, headers=None):
+        def build():
+            with state.lock:  # version and bytes from the same fused frame
+                return map_version(), packet()
+        body, coding = map_cache.get(route, map_version, build, accept_encoding)
+        headers = dict(headers or {}, Vary="Accept-Encoding")
+        if coding:
+            headers["Content-Encoding"] = coding
+        return Response(body, media_type="application/octet-stream", headers=headers)
+
     @app.get("/map/points.bin")
-    async def points():
-        return Response(await asyncio.to_thread(state.point_packet), media_type="application/octet-stream")
+    async def points(request: Request):
+        return await asyncio.to_thread(map_response, "points", state.point_packet,
+                                       request.headers.get("accept-encoding"))
 
     @app.get("/map/mesh.bin")
-    async def mesh():
-        return Response(await asyncio.to_thread(state.mesh_packet), media_type="application/octet-stream",
-                        headers={"Cache-Control": "no-store"})
+    async def mesh(request: Request):
+        return await asyncio.to_thread(map_response, "mesh", state.mesh_packet,
+                                       request.headers.get("accept-encoding"), {"Cache-Control": "no-store"})
 
     @app.get("/map/export.ply")
-    async def export():
-        return Response(await asyncio.to_thread(state.ply), media_type="application/octet-stream",
-                        headers={"Content-Disposition": 'attachment; filename="farsight-scan.ply"'})
+    async def export(request: Request):
+        return await asyncio.to_thread(map_response, "ply", state.ply, request.headers.get("accept-encoding"),
+                                       {"Content-Disposition": 'attachment; filename="farsight-scan.ply"'})
 
     @app.post("/map/reset")
     async def reset():

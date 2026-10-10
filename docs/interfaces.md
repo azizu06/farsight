@@ -290,6 +290,14 @@ exact-source/frame-matched sweep detections, projected at estimated box-centre d
 The existing viewer renders yellow marker points and toggles live camera / scan
 with Quest A; trigger + left Y requests a scan. See [scan setup and evidence](scan.md).
 
+### Map route compression (additive)
+
+`GET /map/points.bin`, `/map/mesh.bin` and `/map/export.ply` honour `Accept-Encoding`: `br` is
+preferred, then `gzip`; `q=0` refuses a coding. Bodies under 1 KiB and requests without a
+supported coding stay identity. Responses always carry `Vary: Accept-Encoding`. The Python server
+encodes once per map version (generation, revision, mesh revision) and reuses it across clients.
+Decoded bytes are identical to the uncompressed body; no other route is compressed.
+
 ## Serial (Jetson <-> Uno), 115200 baud, newline-terminated ASCII
 
 | Jetson sends | Meaning |
