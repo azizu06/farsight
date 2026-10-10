@@ -10,7 +10,7 @@ struct FarsightCaptureApp: App {
 struct CaptureView: View {
     @StateObject private var capture = CaptureController()
     @StateObject private var bridge = PhoneBridge()
-    @State private var bridgeRole: PhoneBridgeRole = .off
+    @AppStorage("bridgeRole") private var bridgeRole: PhoneBridgeRole = .off
     @AppStorage("bridgeLocalTailIP") private var localTailIP = ""
     @AppStorage("bridgeRoverPeerIP") private var roverPeerIP = ""
     @AppStorage("bridgeFallbackEnabled") private var fallbackEnabled = false
@@ -18,7 +18,9 @@ struct CaptureView: View {
     @AppStorage("bridgeFallbackPeerIP") private var fallbackPeerIP = "100.103.169.40"
     @AppStorage("bridgeJetsonUSBIP") private var jetsonUSBIP = "172.20.10.3"
     @AppStorage("jetsonEndpoint") private var endpoint = "ws://172.20.10.3:8443"
-    @State private var rgbOnly = true
+    @AppStorage("rgbOnly") private var rgbOnly = false
+    @AppStorage("phoneMeshEnabled") private var phoneMeshEnabled = true
+    @AppStorage("operatorGeometryEnabled") private var operatorGeometryEnabled = true
     @Environment(\.scenePhase) private var phase
 
     var body: some View {
@@ -37,6 +39,8 @@ struct CaptureView: View {
                             .font(.caption)
                     } else {
                         bridgeAddress("Primary rover phone's Tailscale IPv4", text: $roverPeerIP)
+                        Toggle("Forward phone 3D over USB", isOn: $operatorGeometryEnabled)
+                            .disabled(bridge.running || bridge.operatorRecoveryWanted)
                         Toggle("Enable fallback Jetson path", isOn: $fallbackEnabled)
                             .disabled(bridge.running || bridge.operatorRecoveryWanted || dualRoutes)
                         Toggle("Pinned dual routes for host broker", isOn: $dualRoutes)
@@ -50,11 +54,13 @@ struct CaptureView: View {
                         else { bridge.start(role: bridgeRole, localTailIP: localTailIP,
                                             roverPeerIP: roverPeerIP, jetsonUSBIP: jetsonUSBIP,
                                             fallbackPeerIP: bridgeRole == .operator && (fallbackEnabled || dualRoutes) ? fallbackPeerIP : nil,
-                                            dualRoutes: bridgeRole == .operator && dualRoutes) }
+                                            dualRoutes: bridgeRole == .operator && dualRoutes,
+                                            geometry: bridgeRole == .operator && operatorGeometryEnabled) }
                         updateIdleTimer()
                     }.buttonStyle(.borderedProminent).tint(bridge.running ? .red : .green)
                     Text(bridge.status).font(.callout)
                     Text(bridge.counters).font(.caption.monospaced())
+                    if bridgeRole == .operator && operatorGeometryEnabled { Text(bridge.geometryStatus).font(.caption.monospaced()) }
                     if bridgeRole == .operator && dualRoutes {
                         Text(bridge.primaryRouteStatus).font(.caption.monospaced())
                         Text(bridge.secondaryRouteStatus).font(.caption.monospaced())
@@ -80,6 +86,9 @@ struct CaptureView: View {
                 }
                 if capture.supportsDepth {
                     Toggle("Send RGB only", isOn: $rgbOnly).disabled(capture.running)
+                    if capture.supportsMesh && bridgeRole == .rover {
+                        Toggle("Build 3D on this phone", isOn: $phoneMeshEnabled).disabled(capture.running)
+                    }
                 }
                 Button(capture.running ? "Stop" : "Start capture") {
                     if capture.running { capture.stop() }
@@ -88,7 +97,8 @@ struct CaptureView: View {
                             _ = try PhoneBridgeConfig.make(role: .rover, localTailIP: localTailIP,
                                 roverPeerIP: roverPeerIP, jetsonUSBIP: jetsonUSBIP)
                             let host = jetsonUSBIP.trimmingCharacters(in: .whitespacesAndNewlines)
-                            capture.start(endpoint: "ws://\(host):8443", rgbOnly: rgbOnly)
+                            capture.start(endpoint: "ws://\(host):8443", rgbOnly: rgbOnly,
+                                          meshHost: phoneMeshEnabled && !rgbOnly ? localTailIP : nil)
                         } catch { capture.status = error.localizedDescription }
                     } else { capture.start(endpoint: endpoint, rgbOnly: rgbOnly) }
                     updateIdleTimer()
@@ -97,6 +107,7 @@ struct CaptureView: View {
                 .tint(capture.running ? .red : .green)
                 Text(capture.source).font(.caption.bold())
                 Text(capture.status).font(.callout)
+                Text(capture.geometryStatus).font(.caption.monospaced())
                 Text(capture.clockDiagnostic).font(.caption.monospaced()).foregroundStyle(.secondary)
                 if !capture.resolvedEndpoint.isEmpty {
                     Text(capture.resolvedEndpoint).font(.caption.monospaced()).textSelection(.enabled)
