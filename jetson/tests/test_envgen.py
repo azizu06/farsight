@@ -203,6 +203,9 @@ class RenderTests(unittest.TestCase):
             self.assertEqual(file_line.partition("=")[2], envfile)
             working = next(line for line in text.splitlines() if line.startswith("WorkingDirectory="))
             self.assertEqual(working.partition("=")[2], repo)
+            # Boot must not wait on network-online.target (networkd-wait-online held it for 2 min).
+            self.assertFalse([line for line in text.splitlines()
+                              if line.startswith(("After=", "Wants=", "Requires=")) and "network-online" in line])
             defaults = {}
             for line in text.splitlines():
                 if line.startswith("Environment="):

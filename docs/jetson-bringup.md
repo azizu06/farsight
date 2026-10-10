@@ -178,6 +178,9 @@ else ONNX, else HOG; face model; Piper voices; llama/whisper URLs only if their 
 `farsight.service` (plus `farsight-llm.service` and `farsight-whisper.service` when built), runs
 `python -m jetson.launch --check`, and starts it. An existing `/etc/farsight.env` is kept (`--reset-env` backs it
 up and re-renders).
+The units order after `network.target`, not `network-online.target`, and the installer disables
+`systemd-networkd-wait-online` when networkd manages no links (NetworkManager does). Otherwise that
+wait runs to its 2-minute timeout on every power-on and delays the server by about 2 minutes.
 
 **Check:** `systemctl is-active farsight` prints `active`, and:
 
