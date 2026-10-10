@@ -33,7 +33,7 @@ export class H264Viewer {
   /** Decoder processing time of the last presented frame, for diagnostics only. */
   decodeMs: number | null = null;
 
-  constructor(private onFrame: () => void, private onReset: () => void) {
+  constructor(private onFrame: () => void, private onReset: () => void, readonly streamPath = "/ws/video") {
     this.video.muted = true; this.video.autoplay = true; this.video.playsInline = true;
     this.video.onerror = () => this.reset("Decoder error: restarting H.264");
   }
@@ -64,7 +64,7 @@ export class H264Viewer {
     if (this.stopped || this.connecting) return;
     if (!("MediaSource" in window)) { this.state = "H.264 unavailable: MediaSource unsupported"; this.stopped = true; return; }
     this.connecting = true;
-    const socket = new WebSocket(new URL("/ws/video", location.origin).href.replace(/^http/, "ws"));
+    const socket = new WebSocket(new URL(this.streamPath, location.origin).href.replace(/^http/, "ws"));
     this.socket = socket; socket.binaryType = "arraybuffer";
     socket.onmessage = event => {
       if (typeof event.data === "string") {

@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Farsight Mac render</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #080f16; overflow: hidden; }
+      canvas { display: block; }
+      #banner {
+        position: fixed; left: 12px; bottom: 12px; color: #d7e2ea;
+        font: 13px/1.3 ui-monospace, monospace; pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="banner">MAC RENDER · loading map</div>
+    <script>window.__mac = { ready: false, error: null };</script>
+    <script type="module" src="./render.mjs"></script>
+  </body>
+</html>

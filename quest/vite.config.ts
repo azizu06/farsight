@@ -1,6 +1,14 @@
 import { defineConfig } from "vite";
 
 export default defineConfig({
+  build: {
+    rollupOptions: {
+      input: {
+        main: "index.html",
+        macview: "macview.html",
+      },
+    },
+  },
   server: {
     port: 5173,
     proxy: Object.fromEntries(
