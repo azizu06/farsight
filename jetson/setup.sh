@@ -143,7 +143,8 @@ fi
 build() {  # build <name> <git url> <cmake target...>: skips when the first target's binary exists
   local name="$1" url="$2" dir="$SRC/$1"; shift 2
   local binary="$dir/build/bin/$1"
-  if [ -x "$binary" ]; then echo "$name: $1 already built"; return 0; fi
+  if [ -x "$binary" ] && compgen -G "$dir/build/bin/libggml-cuda.so*" >/dev/null; then echo "$name: $1 already built (CUDA)"; return 0; fi
+  [ ! -x "$binary" ] || warn "$name: existing $1 has no libggml-cuda (CPU-only build, about 10x slower); rebuilding with CUDA"
   if [ ! -d "$dir/.git" ]; then
     run rm -rf "$dir.partial"
     run git clone --depth 1 "$url" "$dir.partial" || { warn "$name: git clone failed (internet?)"; return 0; }

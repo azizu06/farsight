@@ -62,6 +62,51 @@ includes mapped weights and Metal buffers, so it does not by itself show the Jet
 process stays near 2 GB; measure that on the rig. Keep SmolVLM as the speed fallback;
 Qwen2.5-VL-3B only if the Jetson has memory headroom and its terse answers are preferred.
 
+### Jetson memory profiles (measured on the Orin Nano 8 GB)
+
+Measured 2026-10-10 with CUDA (`sm_87`) builds of llama.cpp and whisper.cpp, `-c 2048 -ngl 99
+--parallel 1 --image-max-tokens 256`, `farsight.service` running (about 0.9 GB RSS), a saved
+camera frame (the phone was unplugged, so not the live camera), `max_tokens` 80. TTFT is time
+to the first streamed token; RSS is the whole process (Jetson memory is unified, so it includes
+the GPU buffers). Free RAM is `free -m` "available" after dropping caches.
+
+| Vision model (Q4_K_M + Q8 projector) | RSS | TTFT | Full answer | Verdict |
+|---|---|---|---|---|
+| Qwen3-VL-2B (default) | 2.77 GB | 0.24 to 0.78 s | 1.3 to 3.1 s | runs with the desktop on or off |
+| Qwen2.5-VL-3B | 3.75 GB | 0.5 to 1.2 s | 1.2 to 2.7 s (terse) | loads only with the desktop off, alone |
+| Qwen3-VL-4B | 4.29 GB | 0.4 to 1.5 s | 2.6 to 6.3 s | loads only with the desktop off, alone; misses the 4 s target |
+
+| Whisper | RSS after use | Short clip (warm / cold) |
+|---|---|---|
+| `ggml-base.en.bin` (default) | 0.6 to 0.8 GB | 0.24 s / 0.76 s |
+| `ggml-small.en.bin` | 1.0 to 1.2 GB | 0.42 s / 0.52 s |
+
+End to end through `SceneAssistant.ask()` (Qwen3-VL-2B + base.en + Piper lessac-low, desktop on):
+STT 0.22 to 0.35 s, vision 1.3 to 2.0 s, Piper 0.3 to 1.1 s, total 2.0 to 3.4 s warm.
+
+Memory math (7.49 GB total):
+
+- Desktop off, `farsight.service` and ROS tooling idle, no assistant: 4.9 GB available.
+- Plus the default 2B + base.en pair: 2.8 GB available. Nav2 (about 1 GB) and nvblox (about
+  1 GB) fit with roughly 0.8 GB spare.
+- Same with the desktop on: 0.7 to 1.6 GB available, so Nav2 and nvblox do not fit. Run the rover headless.
+- `headless` profile (2B + `small.en`): 0.4 GB less than the default, so about 0.4 GB spare
+  after Nav2 and nvblox. Better transcription, still 0.42 s.
+- 3B and 4B are not a profile: they fit only alone. 4B plus `small.en` plus `farsight.service`
+  (about 7 GB) pushed the Jetson into swap-less thrash until it stopped answering ssh and
+  needed a power cycle. Do not run them next to Whisper, the server, or ROS.
+
+`bash jetson/assistant_profile.sh default|headless|status` switches the Whisper model with a
+systemd drop-in and restarts only `farsight-whisper`/`farsight-llm`. `headless` refuses to
+run while the desktop is up. Turn the desktop off with `sudo systemctl isolate multi-user.target`
+(this leaves the USB `192.168.55.1` bridge without a DHCP lease for the Mac; give the Mac
+interface a manual `192.168.55.100/24`).
+
+Both servers must be CUDA builds. An existing `llama-server`/`whisper-server` without
+`build/bin/libggml-cuda.so*` runs on the CPU (about 13 prompt tokens/s for the VLM) and
+`setup.sh`/`install_service.sh` now say so; rebuild with `-DGGML_CUDA=ON
+-DCMAKE_CUDA_ARCHITECTURES=87` and `-j2` while ROS or the server is running.
+
 Models are in the ignored `models/` directory; copying the source repository
 alone does not copy them. Use `tools/push_models.sh USER@JETSON` or a USB drive.
 The [model and projector](https://huggingface.co/ggml-org/SmolVLM-500M-Instruct-GGUF/tree/main),

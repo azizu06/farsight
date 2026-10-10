@@ -77,6 +77,10 @@ if [ "$ASSISTANT" = 1 ]; then
     && [ -s "$LLM_MODEL" ] && [ -s "$LLM_MMPROJ" ] && LLM=1
   [ "$(selected whisper_ready)" = 1 ] && [ -x "$SRC/whisper.cpp/build/bin/whisper-server" ] && [ -s "$WHISPER_MODEL" ] && WHISPER=1
 fi
+for tool in llama.cpp whisper.cpp; do
+  [ ! -d "$SRC/$tool/build/bin" ] || compgen -G "$SRC/$tool/build/bin/libggml-cuda.so*" >/dev/null \
+    || echo "WARN: $SRC/$tool is a CPU-only build (no libggml-cuda); the assistant will run far slower than on the GPU. Rebuild: jetson/setup.sh or docs/assistant-setup.md"
+done
 echo "Vision model: ${LLM_MODEL:-not selected}; projector: ${LLM_MMPROJ:-not selected}"
 echo "Whisper model: ${WHISPER_MODEL:-not selected}"
 

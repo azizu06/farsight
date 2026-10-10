@@ -48,7 +48,7 @@ must follow the final implementation, not an earlier plan.
 | Quest | `quest/src/main.ts`, `quest/src/rover.ts`, `quest/README.md`; headset bring-up and frame budget in `docs/quest-first-run.md` |
 | iPhone capture | `ios/README.md`; RGB on ordinary phones, measured RGB-D only with scene-depth support |
 | Motor firmware and control | `rover/README.md`, `jetson/control/README.md`; drive calibration (PWM to m/s, rad/s): `docs/drive-calibration.md` |
-| Inference and models | `docs/inference-setup.md`, `models/README.md`; models are ignored artifacts copied separately |
+| Inference and models | `docs/inference-setup.md`, `models/README.md`; models are ignored artifacts copied separately. Voice/VLM memory profiles and CUDA-build check: `docs/assistant-setup.md` |
 | Mapping and scan | `docs/mapping.md`, `docs/scan.md`; distinguish measured and estimated geometry |
 | ROS 2 navigation and SLAM | `docs/navigation.md`; Nav2 is opt-in (`--nav2`, `ros2/farsight_nav`, Docker tests `ros2/docker/run-tests.sh`); SLAM is optional (`ros2/farsight_slam`, its `test/run_docker.sh`); simulation only so far |
 | Rust services | `rust/README.md`; verify feature and wire parity before changing the demo runtime |
