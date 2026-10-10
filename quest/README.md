@@ -147,6 +147,39 @@ The controls layer drives it:
 (`RoverExperience.roamStep`, 1.5 m/s, 30° snap turns); entering VR resets to the
 start pose, and a new map generation resets the viewer. Display only: this module sends no commands and gates no motion.
 
+### Mac render in AUTO (`?macview=1`, flat)
+
+Opt-in. With `?macview=1`, AUTO in VR plays the Mac-rendered map
+(`tools/mac_render`, PR #132) in place of the local walk-through map. It runs on
+the same page, under the same `RoverExperience` and its single `/ws/control`.
+Manual right-stick driving and the stick's virtual locomotion are unchanged.
+`src/mac-auto.ts` opens only `/ws/macview` (via `H264Viewer`) and
+`/ws/macview-pose`. Both are served at the page origin through the relay's
+`--render-upstream`.
+
+- **Pose.** The headset pose is mapped into AR-map coordinates, the inverse of
+  the walk transform: `p_map = Ry(-yaw) * p_world + (x, floorY + lift, z)`,
+  `q_map = Ry(-yaw) * q`. This is what lets the Mac camera follow both head
+  tracking and right-stick roam. Poses are latest-only (one in flight, at most
+  72 Hz). The math is in `src/mac-auto-pose.js` and the message in
+  `docs/interfaces.md`.
+- **Picture.** The decoded stream is a flat quad 3 m in front of the head pose
+  the frame was rendered from, matched by the renderer's pose echo. The picture
+  stays world-locked as the head turns. Without an echo it is head-locked. Its
+  size matches the renderer's vertical FOV (50°, or the echoed `fov_y_deg`).
+  It is labelled `MAC RENDER · FLAT`. It is not stereo.
+- **Fallback.** While Mac frames are fresh (under 1 s old), the local map
+  geometry (points, mesh, scan markers) is hidden and its `/ws/map` transfers
+  pause. People markers and nav goals stay drawn over the picture. When frames
+  stop, the local map and its transfers return under a `MAC VIEW LOST · LOCAL MAP` label. Leaving AUTO
+  closes both Mac sockets.
+- **Desk proof** (Chrome, sim map, PR #132 renderer bc155e8, no headset): 1280x720
+  decoded and shown 0.8–1.6 s after AUTO entry. After the first frame (which can echo a
+  previous session's pose and is head-locked), every displayed frame matched a sent
+  pose. Pose-to-display was about 0.9–1.1 s p50, of which 0.6–0.7 s is the
+  renderer's segment age at send and about 0.2 s is player buffering. It has not
+  been run on a headset.
+
 When the server reports `capped: true` for a Jetson mesh, the 3D view pulls
 `/map/points.bin` too, alternating with `/map/mesh.bin` under the same 5 s,
 one-at-a-time gate. It no longer derives points from the sparse capped mesh.

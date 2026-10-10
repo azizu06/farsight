@@ -142,14 +142,19 @@ def world_grid(frame):
     return (local @ frame.transform[:3, :3].T + frame.transform[:3, 3]).astype(np.float32)
 
 
-def reconstruct(frame, stride=2, min_confidence=1):
-    """Project measured samples and build triangles only across observed surfaces."""
+def measured_points(frame):
+    """Every valid native depth pixel with its associated RGB; no mesh stride."""
     usable = valid_depth(frame.depth, near=0.15, far=8, edge_ratio=0.12)
-    usable &= frame.confidence >= min_confidence
-    positions = world_grid(frame)[::stride, ::stride]
-    colors = frame.rgb[::stride, ::stride]
-    usable = usable[::stride, ::stride]
-    depths = frame.depth[::stride, ::stride]
+    usable &= frame.confidence >= 1
+    return world_grid(frame)[usable], frame.rgb[usable]
+
+
+# Coarser grid strides kept per keyframe for the capped visual mesh export.
+VISUAL_LODS = (4, 8)
+
+
+def grid_mesh(positions, colors, usable, depths):
+    """Triangulate one structured depth grid, only across observed, continuous surfaces."""
     h, w = usable.shape
     vertices = np.arange(h * w).reshape(h, w)
     a, b, c, d = (vertices[:-1, :-1], vertices[:-1, 1:], vertices[1:, :-1], vertices[1:, 1:])
@@ -161,6 +166,23 @@ def reconstruct(frame, stride=2, min_confidence=1):
     triangles = triangles[mask]
     # Remove unreferenced and invalid vertices from the mesh.
     referenced, indices = np.unique(triangles, return_inverse=True)
-    mesh = (positions.reshape(-1, 3)[referenced], colors.reshape(-1, 3)[referenced],
+    return (positions.reshape(-1, 3)[referenced], colors.reshape(-1, 3)[referenced],
             indices.astype(np.uint32).reshape(-1, 3))
-    return positions[usable], colors[usable], mesh
+
+
+def reconstruct(frame, stride=2, min_confidence=1, lods=()):
+    """Project measured samples and build triangles only across observed surfaces.
+
+    With `lods`, also returns {stride: mesh} triangulated from coarser samplings of
+    the same grid (same depth-edge rule), for a connected low-detail visual export.
+    """
+    usable = valid_depth(frame.depth, near=0.15, far=8, edge_ratio=0.12)
+    usable &= frame.confidence >= min_confidence
+    grid = world_grid(frame)
+    sample = lambda step: (grid[::step, ::step], frame.rgb[::step, ::step],
+                           usable[::step, ::step], frame.depth[::step, ::step])
+    positions, colors, fine, depths = sample(stride)
+    mesh = grid_mesh(positions, colors, fine, depths)
+    if not lods:
+        return positions[fine], colors[fine], mesh
+    return positions[fine], colors[fine], mesh, {step: grid_mesh(*sample(step)) for step in lods}

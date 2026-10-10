@@ -15,12 +15,13 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ValidationError
 import uvicorn
 
-from .compress import EncodedCache
+from .compress import EncodedCache, negotiate, encode
 from .wire import DEFAULT_POINTS_CAP, DEFAULT_TRIANGLES_CAP, POINTS_ENV, TRIANGLES_ENV, cap_from_env
 from .demo import stream_demo
 from jetson.sim.stream import SimFeed, stream_world
 from jetson.sim.world import RoverSim
 from jetson.sim.worlds import WORLDS, load as load_world
+from .people import PersonLocator
 from .phone import Hello, decode_frame, validate_pose
 from .state import MapState
 from jetson.camera import CameraService
@@ -91,7 +92,9 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
     # Opt-in ROS 2 Nav2 backend (ros2/farsight_nav); without --nav2 autonomy is unchanged.
     nav = NavService(state, speed_mps=nav_speed_mps, turn_radps=nav_turn_radps, max_v=nav_max_v,
                      max_w=nav_max_w, camera_height=nav_camera_height) if nav2 else None
-    perception = ReplayPerception(camera_service) if replay is not None else PerceptionService(camera_service, model=detector_model, mode=detector, on_detection=mission.detect, face_model=face_model)
+    people = PersonLocator()
+    state.frame_observers.append(people.offer_frame)
+    perception = ReplayPerception(camera_service) if replay is not None else PerceptionService(camera_service, model=detector_model, mode=detector, on_detection=mission.detect, face_model=face_model, annotate=people.annotate)
     control = ReplayControl() if replay is not None else ControlService(serial_port=serial_port, simulate=simulate_rover, max_pwm=max_pwm, min_pwm=min_pwm,
                              drive_profile=drive_profile, allow_calibration=allow_calibration,
                              camera_ready=lambda: camera_service.status()["camera_drive_ready" if serial_port else "camera"],
@@ -294,6 +297,24 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
     async def points(request: Request):
         return await asyncio.to_thread(map_response, "points", state.point_packet,
                                        request.headers.get("accept-encoding"))
+
+    @app.get("/map/dense.bin")
+    async def dense(request: Request, epoch: str | None = None, after: int = 0,
+                    snapshot: bool = False, anchor: int | None = None, limit: int = 8192):
+        if after < 0 or limit < 1:
+            raise HTTPException(400, "Invalid dense cursor or limit")
+        def build_dense():
+            try:
+                body = state.dense.delta(epoch, after, snapshot, limit, anchor)
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+            coding = negotiate(request.headers.get("accept-encoding"))
+            headers = {"Cache-Control": "no-store", "Vary": "Accept-Encoding"}
+            if coding:
+                body = encode(coding, body)
+                headers["Content-Encoding"] = coding
+            return bulk_response(body, bulk, media_type="application/octet-stream", headers=headers)
+        return await asyncio.to_thread(build_dense)
 
     @app.get("/map/mesh.bin")
     async def mesh(request: Request):

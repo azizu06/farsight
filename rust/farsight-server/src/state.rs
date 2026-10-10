@@ -333,7 +333,8 @@ impl MapState {
         if !may_fuse {
             return Ok(());
         }
-        let (points, colors, mesh) = crate::phone::reconstruct(frame, 2, 1);
+        let (points, colors, mesh, lods) =
+            crate::phone::reconstruct_lods(frame, 2, 1, &crate::phone::VISUAL_LODS);
         let point_count = points.len();
         let mut s = self.inner.lock().unwrap();
         if generation != s.processing_generation
@@ -344,7 +345,7 @@ impl MapState {
             return Ok(());
         }
         s.cloud.integrate(&points, &colors);
-        s.surfaces.integrate(mesh, &frame.transform);
+        s.surfaces.integrate(mesh, &frame.transform, lods);
         s.frames += 1;
         s.revision += 1;
         let _ = self.revision_tx.send(s.revision);
@@ -439,6 +440,22 @@ impl MapState {
             // 16 B/point byte expansion must not stall frame fusion.
             let (points, colors) = s.cloud.snapshot();
             let mesh = s.surfaces.encode();
+            // Connected coarse keyframes at cap (bd28508 parity): when the
+            // wire cap bites, serve the finest stored LOD level at which all
+            // keyframes fit, else the newest whole keyframes at stride 8 —
+            // faces stay connected patches instead of stride-deleted scraps.
+            // Keyframes without stored LODs keep the stride fallback. Runs
+            // under the same lock that already owns the encode() copy.
+            let (mesh, visual_packed) = if self.triangles_cap > 0
+                && self.triangles_cap < s.surfaces.count
+            {
+                match s.surfaces.visual(self.triangles_cap) {
+                    Some(meshes) => (crate::surfaces::SurfaceMap::pack(&meshes), true),
+                    None => (mesh, false),
+                }
+            } else {
+                (mesh, false)
+            };
             drop(s);
             // Visual wire caps bound only the exported payload; the
             // internal map keeps full resolution (board-agreed 30k/40k
@@ -446,7 +463,11 @@ impl MapState {
             // capped points since it derives from pts.raw).
             let pts = crate::geometry::decimate_points_bin(
                 &encode_points(&points, &colors), self.points_cap);
-            let mesh = crate::geometry::decimate_mesh_bin(&mesh, self.triangles_cap);
+            let mesh = if visual_packed {
+                mesh // already a capped connected-keyframe packet
+            } else {
+                crate::geometry::decimate_mesh_bin(&mesh, self.triangles_cap)
+            };
             // PLY is derived lazily from the cached points.bin records on
             // first request — running export_ply eagerly every map version
             // cost ~10-30 ms under this mutex even when nobody downloads it.

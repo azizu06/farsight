@@ -1,6 +1,10 @@
 import { mapResponseRevision } from "./map-response.js";
 import { chooseMapTransfer, MAP_TRANSFER_INTERVAL_MS } from "./map-transfer.js";
 import { floorHeight, mapWalk } from "./map-walk.js";
+import { PersonMarkers } from "./person-markers.js";
+import { DenseMapView } from "./dense-map";
+import { macViewEnabled } from "./mac-auto-pose.js";
+import { MacAutoView } from "./mac-auto";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { VRButton } from "three/addons/webxr/VRButton.js";
@@ -255,6 +259,9 @@ markerMesh.rotation.x = -Math.PI / 2;
 marker.add(markerMesh);
 root.add(marker);
 marker.visible = false;
+// Live person detections with a LiDAR position, drawn in the map frame but never fused into it.
+const personMarkers = new PersonMarkers();
+root.add(personMarkers.group);
 
 const xrButton = VRButton.createButton(renderer);
 xrButton.removeAttribute("style");
@@ -287,6 +294,8 @@ let vrMapSpan = 4;
 // Walk-through: 1:1 map, its floor on the headset floor, viewer moved by mapWalk.
 const headPosition = new THREE.Vector3(), headDirection = new THREE.Vector3(), yAxis = new THREE.Vector3(0, 1, 0);
 let wasWalking = false;
+// ?macview=1: in AUTO the Mac-rendered picture replaces the local map while its frames are fresh.
+let macView: MacAutoView | null = null, macShown = false;
 function walkingNow() { return mapWalk.walking && renderer.xr.isPresenting; }
 function placeWalk() {
   const head = renderer.xr.getCamera();
@@ -310,9 +319,12 @@ renderer.setAnimationLoop((_time, frame) => {
   if (walking !== wasWalking) { wasWalking = walking; visibility(); syncMapConnection(); }
   root.visible = walking || !rover?.vrCameraView;
   if (walking) placeWalk(); else rover?.placeMapOverview(root, vrMapCenter, vrMapSpan);
+  const shown = macView?.update(start, walking && (rover?.freeRoam.active ?? false)) ?? false;
+  if (shown !== macShown) { macShown = shown; visibility(); syncMapConnection(); }
   // Nav goals/path/reticle sit on the map's floor in walk mode (the floor is on the headset
   // floor there); the layer only moves in y, so /nav/goal keeps AR-world x/z.
   if (rover) rover.navLayer.position.y = walking ? mapWalk.floorY : 0;
+  if (rover) { const { packet, at } = rover.latestDetections; personMarkers.update(packet, at, start); }
   mapAxes.visible = !renderer.xr.isPresenting;
   grid.visible = !walking;
   if (renderer.xr.isPresenting) {
@@ -324,6 +336,10 @@ renderer.setAnimationLoop((_time, frame) => {
     renderer.setClearColor(0x393939);
   }
   if (!renderer.xr.isPresenting) controls.update();
+  denseView.update(start, renderer.xr.isPresenting ? renderer.xr.getCamera() : camera,
+    (renderer.xr.isPresenting || !document.hidden) && mapNeeded());
+  if (denseView.active) { cloud.visible = false; surfaces.visible = false; }
+  else visibility();
   try { renderer.render(scene, camera); } catch (error) { rover?.renderFailed(); throw error; }
   // Commit camera freshness and renew the control lease only after this frame rendered without throwing.
   rover?.afterRender(performance.now());
@@ -331,6 +347,7 @@ renderer.setAnimationLoop((_time, frame) => {
 });
 
 rover = new RoverExperience(renderer, scene, camera, () => view, setView);
+if (macViewEnabled(location.search)) macView = new MacAutoView(renderer, scene, () => appliedPoints >= 0 ? appliedPoints : null);
 root.add(rover.navLayer);
 diagnostics = new DiagnosticsOverlay(() => rover!.diagnostics());
 rover.addCockpitPanel(diagnostics.panel);
@@ -369,11 +386,17 @@ function emptyGeometry() {
     count: 0,
   };
 }
+const denseView = new DenseMapView(root, renderer, (bounds, floor) => {
+  bounds.getCenter(vrMapCenter); bounds.getSize(vrMapSize);
+  vrMapSpan = Math.max(vrMapSize.x, vrMapSize.z, 4);
+  mapWalk.setFloor(floor);
+});
 function visibility() {
   const walking = walkingNow();
-  scanMarkers.visible = walking || view !== "camera";
-  cloud.visible = walking || view !== "camera";
-  surfaces.visible = !pointsOnly && (walking || view === "3d");
+  // The Mac picture replaces the map geometry only; people and nav goals stay drawn over it.
+  scanMarkers.visible = !macShown && (walking || view !== "camera");
+  cloud.visible = !macShown && (walking || view !== "camera");
+  surfaces.visible = !macShown && !pointsOnly && (walking || view === "3d");
 }
 function frameMap() {
   const positions = cloud.geometry.getAttribute("position");
@@ -518,6 +541,7 @@ function acceptStatus(next: Status) {
     mapWalk.reset();
     replaceGeometry(cloud, emptyGeometry());
     replaceGeometry(surfaces, emptyGeometry());
+    personMarkers.clear();
   }
   status = next;
   if (!scanMarkers.parent) root.add(scanMarkers);
@@ -575,6 +599,8 @@ function acceptStatus(next: Status) {
 /** Server stride-capped Jetson mesh; phone-built (geometry_source) meshes are not capped this way. */
 function cappedMesh(next: Status) { return next.capped === true && !next.geometry_source; }
 function mapNeeded() {
+  // The Mac picture is the map while it is fresh: skip local geometry transfers and draws.
+  if (macShown) return false;
   // Walk-through keeps the map live while the rover drives or explores.
   if (walkingNow()) return true;
   return !mapDriving && (view !== "camera" || (renderer.xr.isPresenting && !rover?.vrCameraView));
@@ -586,7 +612,7 @@ function syncMapConnection() {
     pointsRequest?.abort(); meshRequest?.abort();
     if (socket) { socket.onclose = null; socket.close(); socket = null; }
     serverOnline = false;
-    text("cloud-status", mapDriving ? "Map retained · updates paused while deadman is held" : "Map retained · transfers paused during live camera view");
+    text("cloud-status", macShown ? "Map retained · Mac render shown in AUTO" : mapDriving ? "Map retained · updates paused while deadman is held" : "Map retained · transfers paused during live camera view");
     $("cloud-status").dataset.live = "false";
   }
 }
@@ -781,5 +807,6 @@ window.addEventListener("beforeunload", () => {
   }
   rover?.dispose();
   diagnostics?.dispose();
+  denseView.dispose();
   renderer.dispose();
 });

@@ -62,7 +62,8 @@ def find(grid, resolution, origin, min_cells=MIN_CELLS):
 
 
 def choose(frontiers, robot, blacklist=(), blacklist_radius=0.5, min_distance=0.25):
-    """Legacy geometric chooser (comparison/compatibility); runtime uses Explorer."""
+    """Geometric chooser: near, big, ahead. Explore's fallback when Explorer's
+    measured-approach checks reject every frontier (Nav2 plans through unknown)."""
     best, best_score = None, math.inf
     for frontier in frontiers:
         dx, dy = frontier.goal[0] - robot[0], frontier.goal[1] - robot[1]
@@ -191,6 +192,34 @@ class SweptFootprint:
         return result
 
 
+class ProgressWindow:
+    """Low-net-progress detector over a bounded window of rover positions.
+
+    Stuck means every position of the last ``window_s`` stayed within ``min_m``
+    of the position ``window_s`` ago: spinning in place, dithering or pushing
+    against something all count, whatever the commands were.
+    """
+
+    def __init__(self, window_s=8.0, min_m=0.4):
+        if not all(math.isfinite(v) and v > 0 for v in (window_s, min_m)):
+            raise ValueError("Progress window needs a positive duration and distance")
+        self.window_s, self.min_m = window_s, min_m
+        self.samples = deque()
+
+    def reset(self):
+        self.samples.clear()
+
+    def update(self, now, xy):
+        self.samples.append((now, float(xy[0]), float(xy[1])))
+        # Keep exactly one sample at least window_s old as the reference.
+        while len(self.samples) > 1 and now - self.samples[1][0] >= self.window_s:
+            self.samples.popleft()
+        start_t, x0, y0 = self.samples[0]
+        if now - start_t < self.window_s:
+            return False
+        return all(math.hypot(x - x0, y - y0) < self.min_m for _, x, y in self.samples)
+
+
 def observed_window(grid, resolution, origin, margin=4.0):
     """Discard distant all-unknown map padding, retaining the full gain horizon.
 
@@ -239,7 +268,12 @@ class Explorer:
             self.visits[tuple(np.floor(point / 0.25).astype(int))] = now
         self.last_robot = robot[:2]
 
-    def choose(self, candidates, robot, grid, resolution, origin, now, blacklist=()):
+    RELAXED_HALF_WIDTH = 0.18  # the rover body (~0.35 m wide) physically fits
+    RELAXED_APPROACH = 0.6
+
+    def choose(self, candidates, robot, grid, resolution, origin, now, blacklist=(), relaxed=False):
+        """Best goal, or None. ``relaxed`` accepts rover-width corridors and short approaches:
+        Explore falls back to it rather than stopping while any reachable frontier remains."""
         cfg = self.config
         grid = np.asarray(grid)
         if grid.ndim != 2 or resolution <= 0:
@@ -251,7 +285,8 @@ class Explorer:
         clearance = clearance_map(grid >= 99, resolution)
         support = clearance_map(~free, resolution)
         thin = thin_obstacles(grid >= 99, resolution)
-        half_width = cfg.min_corridor_width / 2
+        half_width = self.RELAXED_HALF_WIDTH if relaxed else cfg.min_corridor_width / 2
+        approach_length = min(cfg.approach_length, self.RELAXED_APPROACH) if relaxed else cfg.approach_length
         scored = []
         # Boundary samples/centroids move as the camera clears cells. Keep the
         # exact active waypoint as an independent candidate and revalidate its
@@ -277,8 +312,8 @@ class Explorer:
                 continue
             approach_distance = math.dist(goal, robot[:2])
             approach_direction = (goal - robot[:2]) / approach_distance
-            start = goal - approach_direction * min(cfg.approach_length, approach_distance)
-            approach = np.linspace(start, goal, max(2, math.ceil(cfg.approach_length / resolution) + 1))
+            start = goal - approach_direction * min(approach_length, approach_distance)
+            approach = np.linspace(start, goal, max(2, math.ceil(approach_length / resolution) + 1))
             rc = np.floor((approach - origin) / resolution).astype(int)[:, ::-1]
             if (rc < 0).any() or (rc[:, 0] >= grid.shape[0]).any() or (rc[:, 1] >= grid.shape[1]).any():
                 continue

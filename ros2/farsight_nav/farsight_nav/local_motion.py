@@ -1,6 +1,6 @@
-"""Bounded Explore planning-gap motion, using current measured depth and costmap.
+"""Explore motion whenever Nav2 is not moving the rover, using current measured depth and costmap.
 
-No ROS dependency. Nav2 remains the driver whenever its plan/controller is live.
+No ROS dependency. Nav2 remains the driver whenever its controller is moving.
 This policy never stores a velocity to replay after a sensor or operator fault.
 """
 
@@ -21,8 +21,11 @@ class LocalMotion:
         self.scan_budget_s = scan_budget_s
         self.reset()
 
+    BACKOFF_M = 0.35  # at most this far back per episode, only over observed free or driven floor
+
     def reset(self):
         self.gap_since = None
+        self.backoff_from = None
         self.heading = 0.0
         self.scan_since = None
         self.scan_yaw = None
@@ -50,21 +53,20 @@ class LocalMotion:
         measured = depth[v, u]
         return bool((np.isfinite(measured) & (measured >= z + 0.1) & (measured <= 4.0)).all())
 
-    def command(self, *, now, active, planning, nav_command, nav_at, robot,
-                pose_at, depth, header, depth_at, support, resolution, origin, map_at, to_map=None, body_clear=None, scan_only=False):
+    def command(self, *, now, active, nav_command, nav_at, robot,
+                pose_at, depth, header, depth_at, support, resolution, origin, map_at, to_map=None, body_clear=None):
         """SI (m/s, rad/s CCW). None means the existing Nav2 forwarding owns output.
 
-        A zero with a live plan is a controller stop and is never overridden.
-        Planning gaps get <=4 s of creep, then at most one measured full turn
-        (10 s ceiling) to populate the costmap. Missing sensor evidence, measured
-        body obstacles and exhausted scan produce an explicit stop.
+        A fresh moving Nav2 command is forwarded. Anything else never stands still
+        (captain's order): planning gaps, goal changes, a controller zero or a
+        recovery hand-off creep along the most open measured arc, or turn in place
+        to look when none is open. Something inside the body disc backs off over
+        observed floor, then turns away. Only missing sensor evidence (stale pose,
+        depth or map) produces a stop.
         """
         if not active:
             self.reset()
             return None
-        if not planning:
-            self.reset()
-            return nav_command if now - nav_at <= 0.2 else (0.0, 0.0)
         if nav_command is not None and now - nav_at <= 0.2 and any(nav_command):
             self.reset()
             return nav_command
@@ -99,17 +101,30 @@ class LocalMotion:
         near = (np.linalg.norm(odom[:, :2] - (x, y), axis=1) < radius) & body_height
         obstacles = odom[body_height, :2]
         if not body_clear or near.any():
-            return 0.0, 0.0
+            # Something is inside the body disc: never freeze (captain's order). Back straight
+            # off over floor the costmap has seen or the rover has driven, then turn away from it.
+            if self.backoff_from is None:
+                self.backoff_from = (x, y)
+            behind = [(x - d * math.cos(yaw), y - d * math.sin(yaw)) for d in np.arange(0.1, 0.51, 0.1)]
+            if math.dist(self.backoff_from, (x, y)) < self.BACKOFF_M and supported(behind):
+                return -self.creep_mps, 0.0
+            if near.any():
+                dx, dy = (odom[near, :2] - (x, y)).T
+                left = float(np.mean(-math.sin(yaw) * dx + math.cos(yaw) * dy))
+                self.heading = -1.0 if left > 0 else 1.0  # obstacle on the left: turn right
+            return 0.0, math.copysign(self.turn_radps, self.heading or 1)
+        self.backoff_from = None
         if self.scan_yaw is not None:
             delta = yaw - self.scan_yaw
             self.scan_angle += abs(math.atan2(math.sin(delta), math.cos(delta)))
             self.scan_yaw = yaw
         if self.scan_since is not None:
             self.scan_exhausted = self.scan_angle >= 2 * math.pi or now - self.scan_since >= self.scan_budget_s
-        if self.scan_exhausted:
-            return 0.0, 0.0
+        if self.scan_exhausted:  # a full look around found no open arc: start another, never stop
+            self.scan_since, self.scan_yaw, self.scan_angle, self.scan_exhausted = None, None, 0.0, False
         choices = []
-        angles = () if scan_only or now - self.gap_since >= self.budget_s else (-0.4, -0.2, 0.0, 0.2, 0.4)
+        # Wander: with or without a frontier, creep along the most open measured arc.
+        angles = (-0.4, -0.2, 0.0, 0.2, 0.4)
         for angle in angles:
             angular = 0.5 * angle
 

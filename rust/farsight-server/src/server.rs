@@ -196,6 +196,15 @@ pub fn build_state(
         if replay.is_some() { None } else { detector_model.as_deref() },
         if replay.is_some() { None } else { face_model.as_deref() },
     ));
+    // Tracked-person 3D markers (f1b883c): MapState offers RGB-D frames to
+    // the locator; perception annotates tracked boxes detected on held
+    // frames. Replay path skips it like Python (ReplayPerception has no
+    // annotate hook).
+    let people = Arc::new(crate::people::PersonLocator::new());
+    if replay.is_none() {
+        let pl = people.clone();
+        perception.set_annotate(Box::new(move |boxes, frame| pl.annotate(boxes, frame)));
+    }
     let cam = camera.clone();
     let perc = perception.clone();
     // Physical serial requires verified drive eligibility (camera_drive_ready);
@@ -250,6 +259,16 @@ pub fn build_state(
             .unwrap()
             .push(Arc::new(move |frame: &crate::phone::RgbdFrame| {
                 observer.offer_frame(frame)
+            }));
+    }
+    {
+        let pl = people.clone();
+        mapping
+            .frame_observers
+            .lock()
+            .unwrap()
+            .push(Arc::new(move |frame: &crate::phone::RgbdFrame| {
+                pl.offer_frame(frame)
             }));
     }
     let replay_control = replay.as_ref().map(|_| Arc::new(ReplayControl::new()));
@@ -658,6 +677,12 @@ fn packet_response(body: impl Into<bytes::Bytes>, coding: &'static str) -> Respo
 
 async fn map_export(State(s): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     map_packet_response(&s, crate::state::PacketKind::Ply, &headers, true)
+}
+
+/// Read-only map state for geometry relays/renderers (real-backend contract;
+/// Codex's Python state.status mirror).
+async fn map_status(State(s): State<Arc<AppState>>) -> Json<Value> {
+    Json(s.mapping.status())
 }
 
 async fn map_reset(State(s): State<Arc<AppState>>) -> Json<Value> {
@@ -1228,15 +1253,19 @@ async fn handle_ws_control(socket: WebSocket, s: Arc<AppState>) {
     // #110 opt-in nav revision lane, latched per socket (control/service.py).
     let lane = Arc::new(std::sync::Mutex::new(None::<crate::nav::NavLane>));
     let send_lane = lane.clone();
+    let sender_sid = session_id.clone();
     let sender = tokio::spawn(async move {
         // Mission recording keeps its 20 Hz control sampling
         // (control/service.py RECORD_INTERVAL), while status publishes at 40 Hz.
         let mut recorded = f64::NEG_INFINITY;
         loop {
-            // A congested status path makes continued control unsafe; a send
-            // timeout closes the socket rather than queueing permits.
+            // #139: a newer controller replaced this session after it went
+            // silent — stop publishing so the socket closes (service.py).
             let started = now_monotonic();
             let status = control.status(true);
+            if status["session_id"].as_str() != Some(sender_sid.as_str()) {
+                return;
+            }
             let status = send_lane
                 .lock()
                 .unwrap()
@@ -1852,6 +1881,7 @@ pub fn router(state: Arc<AppState>, dist: Option<PathBuf>) -> Router {
         .route("/health", get(health))
         // Raw 16 B/point payloads crossing a cellular link; compressed
         // variants are cached per map version inside MapState.
+        .route("/map/status", get(map_status))
         .route("/map/points.bin", get(map_points))
         .route("/map/mesh.bin", get(map_mesh))
         .route("/map/export.ply", get(map_export))

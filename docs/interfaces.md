@@ -130,6 +130,7 @@ Optional pose fields (YOLO11-pose), present when the detector is a pose model:
 
 - `kpts`: 17 COCO keypoints (nose, eyes, ears, shoulders, elbows, wrists, hips, knees, ankles), each `[x, y, conf]`. Omitted if the detector has no pose.
 - `down`: true when the person looks fallen (body axis more than 60 degrees from vertical, or a wide box when keypoints are unreliable). Omitted fields mean false/absent; clients must ignore unknown fields.
+- `world` (optional): `[x, y, z]` metres in the map frame (ARKit world, Y up) of a tracked person's torso, from the median confident LiDAR depth in the box centre of the exact RGB-D frame it was detected on. Absent for RGB-only or estimated-depth sources and when too few depth samples are valid. The Quest draws a labeled, expiring `PERSON #id` capsule there (`quest/src/person-markers.js`); it is never fused into the map.
 - `id` is stable across frames: the server runs a small IoU + velocity tracker (`jetson/tracker.py`) over every detector mode, keeping an id through brief dropouts (about 5 frames or 2 s) and never reusing one. Clients may rely on it for `target_id`.
 
 ## WebSocket `/ws/control` (Quest -> Jetson), JSON, 20 Hz timer plus one per new permit while the deadman is held
@@ -570,7 +571,10 @@ bounded for display: `FARSIGHT_MAP_POINTS_CAP` (`--map-points-cap`, default 3000
 `FARSIGHT_MAP_TRIANGLES_CAP` (`--map-triangles-cap`, default 40000); `0` disables. Python and
 Rust decimate identically at encode time: points keep records `i*N/cap`; the mesh keeps
 triangles `i*T/cap`, then sends only their vertices in first-use order with remapped indices.
-Binary layouts are unchanged; the PLY follows the capped points. Map status (`/health`,
+Python's phone-fusion mesh instead prefers connected coarse copies of each keyframe (depth grid
+stride 4, then 8): the finest level at which every keyframe fits the cap, else the newest whole
+keyframes at stride 8. It falls back to the triangle stride when a keyframe has no coarse copy,
+and Rust still uses the stride, so capped mesh bytes differ between the two servers. Binary layouts are unchanged; the PLY follows the capped points. Map status (`/health`,
 `/ws/map`) gains `capped: true` while either cap is decimating; `points` and `triangles` still
 count the full map. Fusion, Nav2 depth/occupancy and scan results keep full resolution.
 
@@ -688,6 +692,40 @@ not mark the frame `camera_capture_verified`, and no wire field changes. The
 lease, deadman, release, camera-stale and disconnect stops are unchanged.
 
 
+## Fine measured RGB-D visual lane
+
+`GET /map/dense.bin` on Jetson is separate from the legacy capped map and
+navigation geometry. The Mac mounts `/dense/manifest`, `/dense/chunk.bin`,
+`/dense/delta.bin`, `/dense/status` and `POST /dense/metrics` on relay 8080.
+See `docs/dense-map.md` for launch, budgets and evidence limits.
+
+Delta query: `epoch` (opaque server/capture-generation token), `after` (last
+cursor, initially zero), `limit` (1–8192), `snapshot` (boolean), and `anchor`
+(snapshot-start revision, echoed while paging). Response body is little-endian
+u32 JSON byte length, UTF-8 JSON, then zero or more **16-byte** records:
+signed i32 XYZ in millimetres, u8 RGB, u8 operation (1 upsert, 0 removal).
+The fine-cell key is floor(XYZ_mm / 10) on every axis, including negatives.
+Positions are quantized measured samples, not voxel centers or interpolated
+geometry. RGB remains sRGB on wire and is converted to linear in the viewer.
+
+Metadata: `format: "xyz_mm_rgb8_op"`, `epoch`, `source`, `cursor`, `reset`,
+`snapshot`, `anchor`, `more`, `points` (current retained unique cells),
+`voxel_m: 0.01`, `ttl_s: 30`. A mismatched epoch or journal gap returns
+`reset:true` once at bootstrap start: clear the consumer, then follow
+`snapshot`/`anchor`/`cursor` until `snapshot:false`. The final snapshot cursor
+returns to its start anchor so normal deltas replay updates/removals concurrent
+with bootstrap. A transport reconnect alone never changes capture identity.
+Jetson working-cache budget eviction emits no deletion; expiry, explicit
+removal and reset do. Mac enforces its own retention/expiry bound.
+
+The endpoints negotiate Brotli/gzip over bounded records; no complete
+multi-million-point body is transferred. Chunk replies use the same framing
+with only upserts plus `chunk`, `revision`, `lod`, `sample_voxel_m` and
+`points` (selected count). A chunk is an authoritative bounded replacement,
+not an addition to its previous version. Mac renderer full-detail deltas use
+the delta contract above. The gray ARKit source is selected separately with
+`source=geometry`; it never overwrites calibrated RGB-D colors.
+
 ## Phone-built mesh lane (v1)
 
 The rover iPhone constructs ARKit mesh anchors. The Mac assembles their latest
@@ -747,6 +785,46 @@ assembled packets must stay inside Quest decoder limits (600,000 vertices,
 160,000 triangles). Geometry traffic has bounded bulk pacing and never shares
 or delays the control permit lane. Network recovery grants no motion intent.
 
+### Dense chunked delta feed: `GET /geometry/chunks` (Mac accumulator)
+
+The standalone assembler also serves the retained cloud as an incremental
+delta for the Mac dense-reconstruction lane, which accumulates millions of
+points beyond the Quest-packet budget. `after=<seq>` pages the journal as
+concatenated v1 wire records; `limit=<n>` caps the journaled-ops page at
+512. Records use coding 0 (raw) and identity transforms — positions are
+already baked into ARSession world coordinates at ingest. Every emitted
+record stays inside the 256 KiB packet bound: a Replace whose raw payload
+would exceed it is split into fragments sharing the same (seq, anchor);
+consumers concatenate all fragments of a (seq, anchor) group in order
+before applying the replacement.
+
+Op codes on this feed: replace, remove, reset, and **evict (4)** — an
+assembler-outbound marker emitted when the publisher drops an anchor for
+its memory budget. Evict is not a geometry removal: dense accumulators
+may retain the chunk (this is how the million-point set accumulates past
+the publisher's window), while bounded consumers apply it like remove.
+Real remove ops are genuine producer removals. Snapshot-end stays a
+staging signal and is never replayed.
+
+Consumers page until a response is empty, then track the cursor in the
+`X-Geometry-Next-Seq` header; `X-Geometry-Remaining` reports journaled
+ops still to read, and `X-Geometry-Session`/`X-Geometry-Epoch` mirror the
+current capture session so consumers can detect a session swap even on
+empty pages. The journal is bounded at 8192 ops. A bootstrap is sent when
+`after=0`, when `after` precedes the oldest journal entry, or when
+`after` exceeds the producer's current seq (a cursor left over from a
+previous session/epoch, since seqs restart per session): a synthetic
+reset record first, then every retained chunk, then the journaled tail —
+the complete snapshot always arrives in one response, never truncated by
+`limit`. `X-Geometry-Truncated: 1` marks a bootstrap where coverage was
+lost (`after` was nonzero).
+
+`GET /geometry/status` additionally reports `retained` with the actual
+published counts `{anchors, vertices, triangles, points, bytes}` and
+`observed` with cumulative published counts `{anchors, vertices,
+triangles}` since session start — retained unique points reported
+separately from historical observation count, per the density audit.
+
 ## Local Mac render transport (opt-in)
 
 `tools.demo` and `tools.operator_relay` accept `--render-upstream` with a
@@ -769,3 +847,24 @@ encoding, headset display or stereo. The initial renderer contract uses the
 `stereo: false`; renderer message semantics and pose validation belong to the
 renderer/viewer owners. Render/pose timestamps do not establish physical
 camera freshness and never enter `/ws/control` through this transport.
+
+The Quest AUTO viewer (`?macview=1`, `quest/src/mac-auto.ts`) sends pose
+version 1 unchanged: `type`, `version`, `sent_mono_ms`, `sent_wall_ms`, `head`,
+and `ray` (currently `null`). `head` is in **AR-map coordinates**, not raw
+headset coordinates. It adds these optional fields, which a v1 renderer may
+ignore:
+
+| Field | Meaning |
+|---|---|
+| `pose_id` | Monotonic per Quest page. Renderers should echo it in `video_segment.pose`. |
+| `space` | `"ar_map"`. |
+| `session_id` | New per AUTO entry. |
+| `map_revision` | Point revision of the Quest's local map, or `null`. |
+| `viewer` | `{x, y, z, yaw}` of `mapWalk`. |
+| `eyes[]` | `{position, quaternion, projection[16]}` per XR eye, in map coordinates. `projection` is column-major. |
+| `fov_y_deg`, `aspect` | The picture the Quest would like to receive. |
+| `stereo` | `false`. |
+
+The viewer finds a frame's render pose by the echoed `pose_id`, or failing
+that by an exact `sent_mono_ms`. It sizes the picture from the echoed
+`video_segment.fov_y_deg`, which defaults to 50.
