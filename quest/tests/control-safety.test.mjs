@@ -58,3 +58,30 @@ test("stick ignores invalid values and drift, scales bounded travel", () => {
   assert.equal(stick(2), 1);
   assert.ok(stick(0.5) > 0 && stick(0.5) < 0.5);
 });
+
+test("XR samples expire at 150 ms even while video and control permits remain fresh", () => {
+  const gate = ready();
+  assert.equal(gate.decide(true, 110, true, 100), true);
+  gate.acceptStatus(status, 249);
+  gate.acceptFrame("2", 0, 249);
+  assert.equal(gate.decide(true, 249, true, 100), true);
+  assert.equal(gate.decide(true, 250, true, 100), false);
+  assert.match(gate.reason, /XR input stale/);
+});
+
+test("missing XR tracking cannot masquerade as a released trigger", () => {
+  const gate = ready();
+  assert.equal(gate.decide(true, 110, true, 100), true);
+  assert.equal(gate.decide(false, 120, true, -Infinity), false);
+  assert.equal(gate.decide(true, 130, true, 130), false);
+  assert.equal(gate.decide(false, 140, true, 140), false);
+  assert.equal(gate.decide(true, 150, true, 150), true);
+});
+
+test("invalid or future XR sample timestamps cannot authorize motion", () => {
+  for (const sampledAt of [NaN, Infinity, -1, 201]) {
+    const gate = ready();
+    assert.equal(gate.decide(true, 200, true, sampledAt), false);
+    assert.equal(gate.needsRelease, true);
+  }
+});

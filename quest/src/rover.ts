@@ -35,12 +35,14 @@ export class RoverExperience {
   private toggleDown = false;
   private recenterDown = false;
   private xrLive = true;
+  private lastXRAt = -Infinity;
   private canvas = document.createElement("canvas");
   private ctx: CanvasRenderingContext2D;
   private hudCanvas = document.createElement("canvas");
   private hudContext: CanvasRenderingContext2D;
   private hudTexture: THREE.CanvasTexture;
   private cameraTexture: THREE.CanvasTexture;
+  private cameraMaterial: THREE.MeshBasicMaterial;
   private cockpit = new THREE.Group();
   private message: HTMLElement;
   private details: HTMLElement;
@@ -91,11 +93,11 @@ export class RoverExperience {
 
     this.hudCanvas.width = 1024; this.hudCanvas.height = 220;
     this.hudContext = this.hudCanvas.getContext("2d")!;
-    this.cameraTexture = new THREE.CanvasTexture(this.canvas);
-    this.cameraTexture.colorSpace = THREE.SRGBColorSpace;
+    this.cameraTexture = this.createCameraTexture();
     this.hudTexture = new THREE.CanvasTexture(this.hudCanvas);
     this.hudTexture.colorSpace = THREE.SRGBColorSpace;
-    const screen = new THREE.Mesh(new THREE.PlaneGeometry(2.8, 2.1), new THREE.MeshBasicMaterial({ map: this.cameraTexture, toneMapped: false, depthTest: false }));
+    this.cameraMaterial = new THREE.MeshBasicMaterial({ map: this.cameraTexture, toneMapped: false, depthTest: false });
+    const screen = new THREE.Mesh(new THREE.PlaneGeometry(2.8, 2.1), this.cameraMaterial);
     screen.position.set(0, 0.15, -2.35); screen.renderOrder = 10;
     const hud = new THREE.Mesh(new THREE.PlaneGeometry(2.8, 0.60), new THREE.MeshBasicMaterial({ map: this.hudTexture, transparent: true, toneMapped: false, depthTest: false }));
     hud.position.set(0, -1.10, -2.30); hud.renderOrder = 11;
@@ -103,6 +105,7 @@ export class RoverExperience {
     this.scene.add(this.cockpit);
     this.renderer.xr.addEventListener("sessionstart", () => {
       this.stop("VR session started: release trigger");
+      this.lastXRAt = -Infinity;
       this.recenter = true; this.xrLive = true;
       this.renderer.xr.getSession()?.addEventListener("visibilitychange", () => {
         this.suspended = this.renderer.xr.getSession()?.visibilityState !== "visible";
@@ -111,6 +114,7 @@ export class RoverExperience {
     });
     this.renderer.xr.addEventListener("sessionend", () => {
       this.stop("VR session ended: release deadman"); this.suspended = false;
+      this.lastXRAt = -Infinity;
     });
     this.connectControl(); this.connectDetections();
     this.timers.push(window.setInterval(() => this.pump(), 50));
@@ -214,14 +218,34 @@ export class RoverExperience {
     }
   }
 
-  update(now: number) {
+  update(now: number, frame?: XRFrame) {
     const xr = this.renderer.xr.isPresenting;
     const session = this.renderer.xr.getSession();
     if (xr && session) {
       const sources = [...session.inputSources];
       const right = sources.find(source => source.handedness === "right" && source.gamepad);
       const left = sources.find(source => source.handedness === "left" && source.gamepad);
-      const gamepad = (left ?? right)?.gamepad;
+      const movement = left ?? right;
+      const reference = this.renderer.xr.getReferenceSpace();
+      let tracked = false;
+      try {
+        tracked = Boolean(session.visibilityState === "visible" && frame && reference &&
+          right?.gamepad?.connected && movement?.gamepad?.connected &&
+          right.gripSpace && movement.gripSpace && frame.getViewerPose(reference) &&
+          frame.getPose(right.gripSpace, reference) && frame.getPose(movement.gripSpace, reference));
+      } catch { /* An ended/inactive frame cannot provide current tracking. */ }
+      if (!tracked) {
+        if (Number.isFinite(this.lastXRAt) || this.input.held)
+          this.stop("XR tracking unavailable: release trigger");
+        else this.gate.invalidate("XR tracking unavailable: release trigger");
+        this.lastXRAt = -Infinity;
+        this.cockpit.visible = false;
+        if (this.dirty) this.drawCamera(now);
+        if (now - this.lastHudAt > 100) { this.drawHUD(now); this.lastHudAt = now; }
+        return;
+      }
+      this.lastXRAt = now;
+      const gamepad = movement?.gamepad;
       const axes = gamepad?.axes ?? [];
       const held = !!right?.gamepad?.buttons[0]?.pressed;
       const toggle = !!right?.gamepad?.buttons[4]?.pressed;
@@ -257,7 +281,8 @@ export class RoverExperience {
     const now = performance.now();
     const connected = this.socket?.readyState === WebSocket.OPEN;
     const active = this.input.held && !document.hidden && !this.suspended;
-    const moving = this.gate.decide(active, now, connected);
+    const moving = this.gate.decide(active, now, connected,
+      this.renderer.xr.isPresenting ? this.lastXRAt : undefined);
     // Never add another command behind buffered traffic. Reset the session instead.
     if (connected && this.socket!.bufferedAmount > 0) {
       this.gate.invalidate("Control queue stalled: release deadman"); this.socket!.close(); return;
@@ -281,6 +306,10 @@ export class RoverExperience {
     if (this.frame) {
       if (this.canvas.width !== this.frame.naturalWidth || this.canvas.height !== this.frame.naturalHeight) {
         this.canvas.width = this.frame.naturalWidth; this.canvas.height = this.frame.naturalHeight;
+        this.cameraTexture.dispose();
+        this.cameraTexture = this.createCameraTexture();
+        this.cameraMaterial.map = this.cameraTexture;
+        this.cameraMaterial.needsUpdate = true;
       }
       context.drawImage(this.frame, 0, 0, this.canvas.width, this.canvas.height);
       const matching = this.detections && String(this.detections.frame) === this.frameId && now - this.detectionsAt < 500;
@@ -302,8 +331,14 @@ export class RoverExperience {
     }
     this.cameraTexture.needsUpdate = true; this.dirty = false;
   }
+  private createCameraTexture() {
+    const texture = new THREE.CanvasTexture(this.canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    return texture;
+  }
   private drawHUD(now: number) {
-    const ready = this.gate.readiness(now, this.socket?.readyState === WebSocket.OPEN);
+    const ready = this.gate.readiness(now, this.socket?.readyState === WebSocket.OPEN,
+      this.renderer.xr.isPresenting ? this.lastXRAt : undefined);
     const videoAge = this.gate.videoAge(now);
     const age = Number.isFinite(videoAge) ? `${Math.ceil(videoAge)} ms` : "unavailable";
     const simulation = this.status?.simulated || this.frameSource === "SIMULATED";

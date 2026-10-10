@@ -36,6 +36,11 @@ export default defineConfig(({ mode }) => {
           "/map",
           "/camera.jpg",
           "/depth.jpg",
+          "/ask",
+          "/mission",
+          "/control",
+          "/tts",
+          "/video",
         ].map((path) => [
           path,
           {
