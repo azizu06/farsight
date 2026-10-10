@@ -1,5 +1,13 @@
 # Farsight Capture for the rover iPhone
 
+The app also implements the confirmed [phone-owned cellular relay](../docs/phone-relay.md).
+Choose **Rover** to run capture and TCP forwarding together, **Operator** for the
+USB-accessible relay without camera permission, or **Off** for legacy capture.
+Both phone VPN/listener/USB hops still require actual device qualification.
+The bridge defaults off and leaves HTTP/WebSocket messages unchanged.
+In Rover mode, capture and forwarding use the same validated Jetson USB address;
+changing role or addresses requires stopping active capture/forwarding first.
+
 This is an original native app. Open `FarsightCapture.xcodeproj` in Xcode, choose
 the **FarsightCapture** scheme, and run it on the rover's iPhone. No earlier
 project's app or implementation is required.
