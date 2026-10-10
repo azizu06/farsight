@@ -194,6 +194,10 @@ impl MapState {
     /// matching the Python split-lock structure.
     pub fn process(&self, frame: &RgbdFrame) -> Result<(), String> {
         let started = Instant::now();
+        // Mirrors camera_receipt: receipt time minus the producer's encode
+        // delay, validated before the identity check like Python.
+        let camera_receipt =
+            crate::camera::adjusted_receipt(&frame.header, crate::state::monotonic())?;
         let generation;
         let may_fuse;
         {
@@ -214,7 +218,7 @@ impl MapState {
             generation = s.processing_generation;
             Self::observe_pose_locked(&mut s, &frame.header, &frame.transform)?;
             s.jpeg = Some(frame.jpeg.clone());
-            s.last_frame_received = monotonic();
+            s.last_frame_received = camera_receipt;
             s.frame_id = frame.header["frame_id"].as_i64().unwrap_or(-1);
             // Depth heatmap (valid range 0.15..8m, turbo LUT, invalid black).
             let (w, h) = (frame.depth_width, frame.depth_height);

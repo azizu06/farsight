@@ -29,6 +29,19 @@ struct Inner {
     error: Option<String>,
 }
 
+/// Mirrors camera.adjusted_receipt: receipt time minus the producer's own
+/// encoding delay, so frame age reflects true capture-to-now latency.
+pub fn adjusted_receipt(header: &serde_json::Value, received_at: f64) -> Result<f64, String> {
+    let delay_ms = match header.get("producer_delay_ms") {
+        None => 0.0,
+        Some(v) => v
+            .as_f64()
+            .filter(|d| d.is_finite() && (0.0..=60000.0).contains(d))
+            .ok_or("Producer encoding delay must be finite milliseconds in 0..60000")?,
+    };
+    Ok(received_at - delay_ms / 1000.0)
+}
+
 pub struct CameraService {
     pub mapping: Arc<MapState>,
     pub device: Option<String>,
@@ -109,7 +122,7 @@ impl CameraService {
             return Err("RGB image cannot be decoded or is excessive".into());
         }
         self.inner.lock().unwrap().phone_rgb =
-            Some(CameraFrame { jpeg: jpeg.to_vec(), received: now_monotonic(), frame_id: fid, source: "PHONE RGB".into() });
+            Some(CameraFrame { jpeg: jpeg.to_vec(), received: adjusted_receipt(&header, now_monotonic())?, frame_id: fid, source: "PHONE RGB".into() });
         Ok(fid)
     }
 

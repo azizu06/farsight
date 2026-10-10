@@ -161,7 +161,8 @@ impl VideoService {
             "-i", "pipe:0", "-an", "-c:v", "libx264", "-preset", "ultrafast",
             "-tune", "zerolatency", "-profile:v", "baseline", "-level", "3.0",
             "-pix_fmt", "yuv420p", "-b:v", &self.bitrate.to_string(),
-            "-maxrate", &self.bitrate.to_string(), "-bufsize", &self.bitrate.to_string(),
+            // ~200ms VBV like Python: tighter buffer keeps latency down.
+            "-maxrate", &self.bitrate.to_string(), "-bufsize", &std::cmp::max(64000, self.bitrate / 5).to_string(),
             "-g", &self.fps.to_string(), "-keyint_min", &self.fps.to_string(),
             "-sc_threshold", "0", "-movflags", "frag_keyframe+empty_moov+default_base_moof",
             "-video_track_timescale", "1000000",

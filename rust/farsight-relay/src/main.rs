@@ -26,7 +26,7 @@ const HOP_HEADERS: &[&str] = &[
     "te", "trailer", "transfer-encoding", "upgrade", "host", "content-length",
 ];
 const PROXY_PREFIXES: &[&str] = &["/ws/", "/map/", "/tts/", "/video/", "/mission/", "/phone/"];
-const PROXY_PATHS: &[&str] = &["/health", "/control/status", "/camera.jpg", "/depth.jpg", "/stream.mjpg", "/ask", "/phone", "/scan"];
+const PROXY_PATHS: &[&str] = &["/health", "/control/status", "/camera.jpg", "/depth.jpg", "/stream.mjpg", "/ask", "/phone", "/scan", "/speak"];
 /// HTTP requests on these paths are control-plane traffic: they use the
 /// dedicated upstream pool so bulk downloads can never take their slots.
 const CONTROL_PATHS: &[&str] = &["/control/status", "/scan", "/ask"];

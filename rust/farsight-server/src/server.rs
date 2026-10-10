@@ -68,6 +68,7 @@ pub fn build_state(
     h264: bool,
     mission_dir: Option<PathBuf>,
     max_pwm: i64,
+    min_pwm: i64,
     assistant_url: Option<String>,
     whisper_bin: Option<String>,
     whisper_model: Option<String>,
@@ -121,7 +122,7 @@ pub fn build_state(
     let control = Arc::new(
         ControlState::new(
             simulate_rover,
-            0,
+            min_pwm,
             max_pwm,
             Some(Arc::new(move || {
                 cam.status()["camera"].as_bool().unwrap_or(false)

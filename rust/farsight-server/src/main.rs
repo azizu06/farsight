@@ -31,6 +31,9 @@ struct Args {
     /// Initial motor PWM ceiling, 1..255
     #[arg(long, default_value_t = 100)]
     max_pwm: i64,
+    /// Motor PWM floor to overcome stiction (FARSIGHT_MIN_PWM); 0 disables
+    #[arg(long, default_value_t = 0)]
+    min_pwm: i64,
     /// Bundled CPU person detector
     #[arg(long, default_value = "hog", value_parser = ["hog", "pose", "none"])]
     detector: String,
@@ -141,12 +144,15 @@ async fn main() {
         args.camera,
         args.serial_port,
         args.simulate_rover,
-        if args.detector_model.is_some() { "onnx" } else { &args.detector },
+        // Model path overrides the bundled HOG backend, but an explicit
+        // `--detector pose` keeps the pose decoder (R5).
+        if args.detector == "hog" && args.detector_model.is_some() { "onnx" } else { &args.detector },
         args.detector_model.clone(),
         args.face_model.clone(),
         args.h264,
         args.mission_dir,
         args.max_pwm,
+        args.min_pwm,
         args.assistant_url,
         args.whisper_bin,
         args.whisper_model,
