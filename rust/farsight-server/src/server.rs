@@ -588,6 +588,22 @@ fn paced_body(body: impl Into<bytes::Bytes>) -> Body {
     Body::from_stream(stream)
 }
 
+/// Same chunked pacing on the live-video lane (#124): video must not queue
+/// behind map bulk — an unpaced (cap 0) live lane returns immediately.
+fn paced_body_live(body: impl Into<bytes::Bytes>) -> Body {
+    let all = body.into();
+    let stream = futures_util::stream::unfold((all, 0usize), |(all, off)| async move {
+        if off >= all.len() {
+            return None;
+        }
+        let end = (off + PACE_CHUNK).min(all.len());
+        crate::pacer::pace_live(end - off).await;
+        let chunk = all.slice(off..end);
+        Some((Ok::<_, std::convert::Infallible>(chunk), (all, end)))
+    });
+    Body::from_stream(stream)
+}
+
 async fn map_points(State(s): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     map_packet_response(&s, crate::state::PacketKind::Points, &headers, false)
 }
@@ -706,7 +722,7 @@ async fn camera_jpg(State(s): State<Arc<AppState>>) -> Response {
             let fid = frame.frame_id;
             let age = frame.age_ms();
             let source = frame.source.clone();
-            let mut resp = Response::new(paced_body(frame.jpeg));
+            let mut resp = Response::new(paced_body_live(frame.jpeg));
             let h = resp.headers_mut();
             h.insert(header::CONTENT_TYPE, "image/jpeg".parse().unwrap());
             h.insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
@@ -723,7 +739,7 @@ async fn depth_jpg(State(s): State<Arc<AppState>>) -> Response {
     let jpeg = s.mapping.inner.lock().unwrap().depth_jpeg.clone();
     match jpeg {
         Some(j) => {
-            let mut resp = Response::new(paced_body(j));
+            let mut resp = Response::new(paced_body_live(j));
             let h = resp.headers_mut();
             h.insert(header::CONTENT_TYPE, "image/jpeg".parse().unwrap());
             h.insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
@@ -749,7 +765,7 @@ async fn stream_mjpg(State(s): State<Arc<AppState>>) -> Response {
                     let mut off = 0usize;
                     while off < all.len() {
                         let end = (off + PACE_CHUNK).min(all.len());
-                        crate::pacer::pace(end - off).await;
+                        crate::pacer::pace_live(end - off).await;
                         yield Ok::<_, std::io::Error>(all.slice(off..end).to_vec());
                         off = end;
                     }
@@ -1503,7 +1519,7 @@ async fn handle_ws_video(socket: WebSocket, s: Arc<AppState>) {
             if tokio::time::timeout(Duration::from_millis(500), out.send(Message::Text(metadata.to_string().into()))).await.is_err() {
                 return;
             }
-            crate::pacer::pace(fragment.payload.len()).await;
+            crate::pacer::pace_live(fragment.payload.len()).await;
             if tokio::time::timeout(Duration::from_millis(500), out.send(Message::Binary(fragment.payload.into()))).await.is_err() {
                 return;
             }
