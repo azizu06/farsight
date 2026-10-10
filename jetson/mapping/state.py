@@ -7,8 +7,9 @@ import cv2
 import numpy as np
 
 from .geometry import encode_points, export_ply
-from .phone import VISUAL_LODS, reconstruct, measured_points
+from .phone import VISUAL_LODS, reconstruct
 from .dense import DenseMap
+from .dense_worker import DenseWorker
 from .surfaces import SurfaceMap
 from .voxel import VoxelMap
 from .wire import decimate_mesh_bin, decimate_points_bin
@@ -25,6 +26,9 @@ class MapState:
         self.fusion_bypass = fusion_bypass
         self.cloud = VoxelMap()
         self.dense = DenseMap(cache_only=True)
+        self.dense_worker = DenseWorker(lambda generation, cloud:
+            generation == self.processing_generation and cloud is self.dense
+            and self.connected and not self.paused and self.tracking == "normal")
         self.surfaces = SurfaceMap()
         self.demo = demo
         self.connected = demo
@@ -82,7 +86,10 @@ class MapState:
     def clear(self):
         with self.lock:
             self.cloud.clear()
-            self.dense.clear(list(self.identity) if self.identity else None)
+            # A running visual job retains the old cloud, never the new epoch.
+            # Swapping avoids waiting for its integration/delta lock on reset.
+            self.dense = DenseMap(cache_only=True)
+            self.dense.source = list(self.identity) if self.identity else None
             if self.scan:
                 self.cloud = VoxelMap()  # restore phone fusion's voxel size/budget
             self.surfaces.clear()
@@ -154,6 +161,7 @@ class MapState:
                         and self.tracking == "normal")
             may_dense = (not self.paused and frame.header["tracking"] == "normal"
                          and self.tracking == "normal")
+            dense_cloud = self.dense
             self.reason = (FUSION_BYPASSED if self.fusion_bypass else "Fusion paused" if self.paused
                            else "ARKit tracking limited; fusion frozen" if not may_fuse else None)
         for observer in self.frame_observers:
@@ -162,12 +170,11 @@ class MapState:
             except Exception:
                 pass  # navigation must never break mapping or camera publication
         if may_dense:
-            detail, rgb = measured_points(frame)
-            with self.lock:
-                if (generation == self.processing_generation and self.connected
-                        and not self.paused and self.tracking == "normal"):
-                    self.dense.integrate(detail, rgb)
+            self.dense_worker.offer(frame, dense_cloud, generation)
         if not may_fuse:
+            duration = time.monotonic() - started
+            self.processing_ms = round(duration * 1000, 1)
+            self.fps = round(1 / max(duration, 1e-4), 1)
             return
         points, colors, mesh, lods = reconstruct(frame, lods=VISUAL_LODS)
         with self.lock:
@@ -197,6 +204,7 @@ class MapState:
                         map_epoch=self.identity[1] if self.identity else None,
                         generation=self.generation, revision=self.revision,
                         mesh_revision=self.surfaces.revision, paused=self.paused, fusion_bypass=self.fusion_bypass,
+                        dense_worker=self.dense_worker.status(),
                         tracking=self.tracking if fresh else "stale",
                         points=len(self.cloud.cells), triangles=self.surfaces.count,
                         keyframes=len(self.surfaces.keyframes), frames=self.frames,

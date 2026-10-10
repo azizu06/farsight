@@ -1,13 +1,29 @@
 # Dense measured map
 
 The existing map is a coarse preview: 4 cm fusion, 120k retained voxels and
-30k served points by default. The additive dense lane uses every confident
-native depth pixel and its RGB at its ARKit pose, one real sample per 1 cm
+30k served points by default. The additive dense lane samples confident
+native depth pixels and their RGB at their ARKit pose, one real sample per 1 cm
 cell. It never interpolates, duplicates samples to increase counts, or
 changes navigation/control geometry. Invalid depth, limited tracking,
 duplicate captures, pause and session/epoch resets retain their existing rules.
 Dense capture remains active with `--fusion-bypass`; that flag still bypasses
 coarse voxel/mesh fusion only.
+
+Dense integration runs on a single background worker, with at most one pending
+frame plus one active frame. New frames replace the pending frame; capture and
+control never wait for dense reconstruction/integration. The default budget is
+**2 jobs/s and 4096 measured pixels/job**; sampling rotates across valid native
+pixels over accepted jobs. This bounds CPU use at the cost of slower detail
+accumulation. The 30-second RGB-D lifetime still applies. Delta reads copy one
+bounded journal page, rather than rebuilding all pending changes; the Mac
+polls at 2 Hz when caught up and drains pending bounded pages faster.
+
+Set **`FARSIGHT_DENSE=0`** in the Jetson service environment and have the service
+owner restart it to disable the visual worker completely. It is enabled by
+default; no CLI flag is required. `FARSIGHT_FUSION_BYPASS` and legacy visual caps
+are independent. `/health` includes `dense_worker` with enabled state, budgets,
+processed/dropped/queued jobs, worker duration and error. `processing_ms` remains
+the camera/coarse-frame path timing, separate from background dense duration.
 
 ## Launch and ownership
 

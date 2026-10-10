@@ -729,6 +729,10 @@ lease, deadman, release, camera-stale and disconnect stops are unchanged.
 navigation geometry. The Mac mounts `/dense/manifest`, `/dense/chunk.bin`,
 `/dense/delta.bin`, `/dense/status` and `POST /dense/metrics` on relay 8080.
 See `docs/dense-map.md` for launch, budgets and evidence limits.
+Jetson visual ingestion is latest-only background work (2 Hz, 4096 real pixels
+per job), disabled at startup by `FARSIGHT_DENSE=0`. Optional `/health.dense_worker`
+reports enabled/budget/queued/processed/dropped/processing_ms/error independently
+of the camera/coarse frame timing; normal capture/control guards are unchanged.
 
 Delta query: `epoch` (opaque server/capture-generation token), `after` (last
 cursor, initially zero), `limit` (1–8192), `snapshot` (boolean), and `anchor`

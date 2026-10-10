@@ -142,11 +142,19 @@ def world_grid(frame):
     return (local @ frame.transform[:3, :3].T + frame.transform[:3, 3]).astype(np.float32)
 
 
-def measured_points(frame):
-    """Every valid native depth pixel with its associated RGB; no mesh stride."""
+def measured_points(frame, max_points=None, phase=0):
+    """Observed native pixels with RGB; bounded samples rotate across captures."""
     usable = valid_depth(frame.depth, near=0.15, far=8, edge_ratio=0.12)
     usable &= frame.confidence >= 1
-    return world_grid(frame)[usable], frame.rgb[usable]
+    indices = np.flatnonzero(usable)
+    if max_points is not None and len(indices) > max_points:
+        step = (len(indices) + max_points - 1) // max_points
+        indices = indices[phase % step::step][:max_points]
+    v, u = np.divmod(indices, frame.depth.shape[1])
+    z, k = frame.depth[v, u], frame.calibration
+    local = np.stack(((u - k.cx) * z / k.fx, -(v - k.cy) * z / k.fy, -z), axis=-1)
+    xyz = local @ frame.transform[:3, :3].T + frame.transform[:3, 3]
+    return xyz.astype(np.float32), frame.rgb[v, u]
 
 
 # Coarser grid strides kept per keyframe for the capped visual mesh export.

@@ -1,4 +1,8 @@
 import unittest
+import os
+import threading
+import time
+from unittest.mock import patch
 
 import numpy as np
 from fastapi.testclient import TestClient
@@ -7,6 +11,7 @@ from jetson.mapping.dense import DenseMap, RECORD, unpack
 from jetson.mapping.phone import measured_points
 from jetson.mapping.server import create_app
 from jetson.mapping.state import MapState
+from jetson.mapping.dense_worker import DENSE_FRAME_POINTS, DenseWorker
 from jetson.mapping.tests.test_mapping import flat_frame
 
 
@@ -19,8 +24,12 @@ class DenseTests(unittest.TestCase):
         np.testing.assert_allclose(xyz[0], [0, 2.75, 1])
         np.testing.assert_array_equal(rgb, frame.rgb.reshape(-1, 3))
         state = MapState(fusion_bypass=True)
+        self.addCleanup(state.dense_worker.close)
         state.start_session(("test", 1), "test")
         state.process(frame)
+        deadline = time.monotonic() + 2
+        while not state.dense_worker.processed and time.monotonic() < deadline:
+            time.sleep(.005)
         self.assertEqual(len(state.cloud.cells), 0)
         self.assertEqual(len(state.dense.cells), frame.depth.size)
         previous = state.dense.revision
@@ -35,6 +44,78 @@ class DenseTests(unittest.TestCase):
         state.start_session(("other", 2), "other")
         self.assertNotEqual(state.dense.epoch, epoch)
         self.assertFalse(state.dense.cells)
+
+    def test_busy_dense_worker_never_blocks_frames_or_reset_and_drops_old_epoch(self):
+        state = MapState(fusion_bypass=True)
+        state.start_session(("test", 1), "test")
+        entered, release = threading.Event(), threading.Event()
+        original = state.dense.integrate
+        def blocked(*args):
+            with old.lock:
+                entered.set()
+                release.wait(2)
+                original(*args)
+        old = state.dense
+        try:
+            with patch.object(old, "integrate", side_effect=blocked):
+                state.process(flat_frame())
+                self.assertTrue(entered.wait(1))
+                frame = flat_frame()
+                for capture in range(1, 20):
+                    frame.header = dict(frame.header, t_capture=capture, frame_id=capture)
+                    started = time.monotonic()
+                    state.process(frame)
+                    self.assertLess(time.monotonic() - started, .05)
+                self.assertEqual(state.latest_camera[2], 19)
+                self.assertGreater(state.dense_worker.dropped, 0)
+                started = time.monotonic()
+                state.start_session(("new", 2), "new")
+                self.assertLess(time.monotonic() - started, .05)
+                self.assertIsNot(old, state.dense)
+                release.set()
+            state.dense_worker.close()
+            self.assertFalse(state.dense.cells)
+        finally:
+            release.set()
+            state.dense_worker.close()
+
+    def test_kill_switch_and_rotating_measured_sample_budget(self):
+        with patch.dict(os.environ, {"FARSIGHT_DENSE": "0"}):
+            state = MapState(fusion_bypass=True)
+        state.start_session(("test", 1), "test")
+        state.process(flat_frame())
+        self.assertFalse(state.dense_worker.enabled)
+        self.assertIsNone(state.dense_worker.thread)
+        self.assertFalse(state.dense.cells)
+        self.assertEqual(state.latest_camera[2], 0)
+        frame = flat_frame()
+        xyz, rgb = measured_points(frame)
+        a, colors = measured_points(frame, max_points=8, phase=0)
+        b, _ = measured_points(frame, max_points=8, phase=1)
+        self.assertEqual(len(a), 8)
+        np.testing.assert_array_equal(a, xyz[::6])
+        np.testing.assert_array_equal(colors, rgb[::6])
+        self.assertFalse(np.array_equal(a, b))
+
+    def test_worker_rate_limit_latest_only_and_point_budget(self):
+        from jetson.mapping.demo import simulated_frame
+        cloud = DenseMap(cache_only=True)
+        worker = DenseWorker(lambda generation, candidate: candidate is cloud)
+        frame = simulated_frame(1., 1)
+        try:
+            worker.offer(frame, cloud, 0)
+            deadline = time.monotonic() + 1
+            while not worker.processed and time.monotonic() < deadline:
+                time.sleep(.005)
+            self.assertEqual(worker.processed, 1)
+            self.assertLessEqual(len(cloud.cells), DENSE_FRAME_POINTS)
+            for _ in range(20):
+                worker.offer(frame, cloud, 0)
+            self.assertEqual(worker.processed, 1)
+            self.assertEqual(worker.status()["queued"], 1)
+            self.assertGreaterEqual(worker.dropped, 19)
+        finally:
+            worker.close()
 
     def test_delta_pages_bootstrap_journal_gap_reset_and_concurrent_delete(self):
         cloud = DenseMap(journal_size=3)
@@ -89,7 +170,7 @@ class DenseTests(unittest.TestCase):
             response = client.get("/map/dense.bin?snapshot=true&epoch=" + cloud.epoch)
             self.assertEqual(response.status_code, 400)
             client.post("/map/reset")
-            self.assertNotEqual(meta["epoch"], cloud.epoch)
+            self.assertNotEqual(meta["epoch"], app.state.mapping.dense.epoch)
 
 
 if __name__ == "__main__":
