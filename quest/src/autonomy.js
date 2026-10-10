@@ -7,6 +7,10 @@ export class AutonomyIntent {
     this.mode = "seek"; this.targetId = id;
     return true;
   }
+  /** Go-to after the server accepted a POST /nav/goal; the server owns the goal itself. */
+  goto() { this.mode = "goto"; this.targetId = null; }
+  /** A stop or release disarms Explore/Seek, but an accepted go-to goal stays armed so the operator can set it in the map view and then hold the deadman in the live view. Cancel, a stick override or another mode clears it. */
+  release() { if (this.mode !== "goto") this.clear(); }
   toggleExplore() {
     if (this.mode === "explore") this.clear();
     else { this.mode = "explore"; this.targetId = null; }
@@ -21,7 +25,8 @@ export class AutonomyIntent {
   /** Mode fields for one control message; a release never carries autonomy. */
   fields(deadman) {
     if (!deadman || this.mode === "teleop") return { mode: "teleop" };
-    return this.mode === "seek" ? { mode: "seek", target_id: this.targetId } : { mode: "explore" };
+    if (this.mode === "seek") return { mode: "seek", target_id: this.targetId };
+    return { mode: this.mode };
   }
 }
 

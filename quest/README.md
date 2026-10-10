@@ -64,6 +64,20 @@ Do not confuse an old server already on that port with a freshly launched demo.
 - Desktop: select Live rover, hold Space, then use WASD. The on-screen hold button
   can replace Space. STOP, Escape, opening settings, losing focus, or a connection
   failure stop driving.
+- Navigation (optional server `nav` status, see
+  [interfaces](../docs/interfaces.md#optional-navigation-status-and-go-to-goals)): the
+  planned path glows on the map floor (cyan driving, blue planning, amber
+  recovering, green arrived, red failed) with a goal beacon and violet frontier
+  markers, in the desktop 3D/2D map and the VR map view. The HUD and the desktop
+  panel show backend, mode and state, e.g. `Nav2 · Go-to driving · 2.4 m path`.
+  In VR, press A for the map view, point the right controller at the floor (a
+  white reticle marks the spot) and press the **right grip** to send a go-to goal;
+  **right thumbstick click** cancels navigation in either view. On the desktop,
+  double-click the map floor for a goal; **Cancel nav** or `C` cancels. Only a
+  `202` arms go-to: then the held deadman sends `mode: "goto"` heartbeats, a view
+  change or release keeps the goal armed but needs a fresh deadman press, and any
+  stick input, STOP or cancel disarms it and posts `/nav/cancel`. Go-to needs
+  `/nav/*` routed to the Jetson; the operator relay must proxy it.
 - In settings, select the camera mounting. Servo mode shows the full frame and
   sends head yaw as physical pan; the server and Uno block forward driving while
   pan is more than 10° off center. Fixed-camera mode keeps physical pan at zero
