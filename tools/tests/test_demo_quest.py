@@ -26,6 +26,7 @@ class QuestLauncherTests(unittest.TestCase):
         self.adb.write_text(
             f"#!{sys.executable}\n"
             "import json, os, sys, time\n"
+            "time.sleep(float(os.environ.get('QUEST_TEST_STARTUP_DELAY', '0')))\n"
             "with open(os.environ['QUEST_TEST_CALLS'], 'a') as calls:\n"
             "    calls.write(json.dumps(sys.argv[1:]) + '\\n')\n"
             "if 'get-state' in sys.argv:\n"
@@ -60,12 +61,22 @@ class QuestLauncherTests(unittest.TestCase):
         self.assertEqual(self.commands(), [["get-state"]])
 
     def test_unresponsive_adb_fails_instead_of_hanging_launcher(self):
-        started = time.monotonic()
-        with patch.dict(os.environ, {"QUEST_TEST_DELAY": "5"}):
-            with self.assertRaisesRegex(RuntimeError, "timed out"):
-                demo.quest_reverse(8080, None, adb=str(self.adb), timeout=0.15)
-        self.assertLess(time.monotonic() - started, 2)
-        self.assertEqual(self.commands(), [["get-state"]])
+        # A slow host may time out before Python creates the fake's log.
+        # Both startup-time and already-running timeouts must fail before reverse.
+        for startup_delay in ("0", "5"):
+            with self.subTest(startup_delay=startup_delay):
+                self.calls.unlink(missing_ok=True)
+                started = time.monotonic()
+                with patch.dict(os.environ, {"QUEST_TEST_DELAY": "5",
+                                            "QUEST_TEST_STARTUP_DELAY": startup_delay}):
+                    with self.assertRaisesRegex(RuntimeError, "timed out") as failure:
+                        demo.quest_reverse(8080, None, adb=str(self.adb), timeout=0.15)
+                self.assertLess(time.monotonic() - started, 2)
+                cause = failure.exception.__cause__
+                self.assertIsInstance(cause, subprocess.TimeoutExpired)
+                self.assertEqual(cause.cmd, [str(self.adb), "get-state"])
+                commands = self.commands() if self.calls.exists() else []
+                self.assertIn(commands, ([], [["get-state"]]))
 
     def test_check_accepts_explicit_adb_without_probing_usb(self):
         # The prerequisite check must not depend on ignored build output in
