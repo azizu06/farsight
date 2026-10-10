@@ -5,6 +5,7 @@ import vm from "node:vm";
 import ts from "typescript";
 import * as cameraView from "../src/camera-view.js";
 import * as poseHud from "../src/pose-hud.js";
+import * as detectionMatch from "../src/detection-match.js";
 import { POSE_EDGES, drawDownMarker, linkHealth, parseKpts, poseSegments, strokeSegments } from "../src/pose-hud.js";
 
 const full = { x: 0, y: 0, width: 640, height: 480 };
@@ -66,14 +67,15 @@ test("production drawDetections draws pose and down only for matching cached fra
   const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } });
   const mod = { exports: {} };
   vm.runInNewContext(compiled.outputText, { exports: mod.exports,
-    require: n => n === "./camera-view.js" ? cameraView : n === "./pose-hud.js" ? poseHud : n === "three" ? {} : {} });
+    require: n => n === "./camera-view.js" ? cameraView : n === "./pose-hud.js" ? poseHud : n === "./detection-match.js" ? detectionMatch : n === "three" ? {} : {} });
   const view = Object.create(mod.exports.RoverExperience.prototype);
   const ops = [];
   const ctx = new Proxy({ measureText: t => ({ width: t.length * 8 }) }, {
     get: (t, k) => k in t ? t[k] : (...a) => ops.push([k, ...a]), set: (t, k, v) => { t[k] = v; return true; } });
   const box = { id: 1, cls: "person", conf: .9, x: .2, y: .2, w: .3, h: .5, kpts: standing, down: true };
   Object.assign(view, { ctx, canvas: { width: 640, height: 480 }, frameId: "8", frameSource: "S", autonomy: { targetId: null },
-    detectionFrames: new Map([["S:8", { packet: { boxes: [box] }, at: 90 }]]), drawnBoxes: [] });
+    detectionFrames: new detectionMatch.DetectionCache(), drawnBoxes: [] });
+  view.detectionFrames.add({ frame: 8, source: "S", boxes: [box] }, 90);
   view.drawDetections(full, 640, 480, 100);
   assert.equal(view.drawnBoxes.length, 1);
   assert.ok(ops.some(o => o[0] === "fillText" && o[1] === "PERSON DOWN"));
@@ -82,4 +84,34 @@ test("production drawDetections draws pose and down only for matching cached fra
   view.drawDetections(full, 640, 480, 700); // cached packet older than 500 ms
   assert.equal(ops.length, 0);
   assert.equal(view.drawnBoxes.length, 0);
+});
+
+test("production drawDetections keeps a nearby same-source packet, faded, between detector frames (#64)", () => {
+  const source = readFileSync(new URL("../src/rover.ts", import.meta.url), "utf8");
+  const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } });
+  const mod = { exports: {} };
+  vm.runInNewContext(compiled.outputText, { exports: mod.exports,
+    require: n => n === "./camera-view.js" ? cameraView : n === "./pose-hud.js" ? poseHud : n === "./detection-match.js" ? detectionMatch : {} });
+  const view = Object.create(mod.exports.RoverExperience.prototype);
+  const ops = [], alphas = [];
+  const ctx = new Proxy({ measureText: t => ({ width: t.length * 8 }) }, {
+    get: (t, k) => k in t ? t[k] : (...a) => ops.push([k, ...a]),
+    set: (t, k, v) => { if (k === "globalAlpha") alphas.push(v); t[k] = v; return true; } });
+  const box = { id: 1, cls: "person", conf: .9, x: .2, y: .2, w: .3, h: .5 };
+  Object.assign(view, { ctx, canvas: { width: 640, height: 480 }, frameId: "11", frameSource: "S", autonomy: { targetId: null },
+    detectionFrames: new detectionMatch.DetectionCache(), drawnBoxes: [] });
+  view.detectionFrames.add({ frame: 8, source: "S", boxes: [box] }, 90);
+  view.drawDetections(full, 640, 480, 100);
+  assert.equal(view.drawnBoxes.length, 1, "seek targets stay clickable between detector frames");
+  assert.ok(ops.some(o => o[0] === "strokeRect"));
+  assert.ok(alphas[0] > 0 && alphas[0] < 1, "3-frame-old boxes are visibly faded");
+  assert.ok(ops.some(o => o[0] === "restore"), "fade does not leak into later canvas drawing");
+  ops.length = 0;
+  view.frameSource = "OTHER";
+  view.drawDetections(full, 640, 480, 100);
+  assert.equal(view.drawnBoxes.length, 0, "never draws boxes from another camera source");
+  view.frameSource = "S"; view.frameId = String(9 + detectionMatch.MAX_LAG_FRAMES);
+  view.drawDetections(full, 640, 480, 100);
+  assert.equal(view.drawnBoxes.length, 0, "boxes past the frame bound are dropped");
+  assert.equal(ops.filter(o => o[0] === "strokeRect").length, 0);
 });

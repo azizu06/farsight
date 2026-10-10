@@ -9,6 +9,7 @@ import { AssistantVoice } from "./assistant-voice";
 import { AutonomyIntent, autonomyLabel, containPoint, pickTarget, rayPanelPoint } from "./autonomy.js";
 import { PHRASE_LABELS, sbarLines, speakPhrase } from "./survivor-phrases.js";
 import { DRILL_TRAINS, DrillHud, endLines } from "./drill-hud.js";
+import { DetectionCache, PACKET_FRESH_MS } from "./detection-match.js";
 
 type Box = { id?: number; cls: string; conf: number; x: number; y: number; w: number; h: number; kpts?: number[][]; down?: boolean };
 type Detections = { frame: number | string; boxes: Box[]; fps?: number; source?: string; simulated?: boolean };
@@ -50,7 +51,7 @@ export class RoverExperience {
   private frame: HTMLImageElement | null = null;
   private detections: Detections | null = null;
   private detectionsAt = -Infinity;
-  private detectionFrames = new Map<string, { packet: Detections; at: number }>();
+  private detectionFrames = new DetectionCache();
   private status: ControlStatus | null = null;
   private seq = 0;
   private sent = new Map<number, number>();
@@ -293,8 +294,7 @@ export class RoverExperience {
           [box.conf, box.x, box.y, box.w, box.h].every(Number.isFinite) && box.w > 0 && box.h > 0 && box.conf >= 0 && box.conf <= 1);
         if (!this.detections || next.frame !== this.detections.frame || next.source !== this.detections.source) {
           this.detectionsAt = performance.now();
-          this.detectionFrames.set(`${next.source ?? ""}:${next.frame}`, { packet: next, at: this.detectionsAt });
-          if (this.detectionFrames.size > 40) this.detectionFrames.delete(this.detectionFrames.keys().next().value!);
+          this.detectionFrames.add(next, this.detectionsAt);
         }
         this.detections = next; this.dirty = true;
       } catch { /* Malformed detections are omitted from HUD; never synthesize boxes. */ }
@@ -600,16 +600,18 @@ export class RoverExperience {
     this.cameraScreen.scale.y = (this.canvas.height / this.canvas.width) / 0.75;
     this.cameraTexture.needsUpdate = true; this.dirty = false;
   }
-  private matchingDetections(now: number) {
-    if (!this.frameId) return null;
-    const cached = this.detectionFrames.get(`${this.frameSource}:${this.frameId}`) ?? this.detectionFrames.get(`:${this.frameId}`);
-    return cached && now - cached.at < 500 ? cached.packet : null;
+  /** Nearest same-source packet within a few frames of the displayed one; see detection-match.js. */
+  private matchingDetections(now: number): { packet: Detections; lag: number; alpha: number } | null {
+    return this.detectionFrames.match(this.frameSource, this.frameId, now);
   }
   private drawDetections(crop: ReturnType<typeof cameraCrop>, width: number, height: number, now: number) {
-    const packet = this.matchingDetections(now);
+    const matched = this.matchingDetections(now);
     this.drawnBoxes = [];
-    if (!packet) return;
+    if (!matched) return;
+    const { packet, alpha } = matched;
     const context = this.ctx;
+    // Boxes from a nearby, not exact, frame fade with frame distance.
+    context.save(); context.globalAlpha = alpha;
     context.strokeStyle = "#8dffa9"; context.fillStyle = "#8dffa9";
     context.lineWidth = Math.max(2, this.canvas.width / 320);
     context.font = `${Math.max(14, this.canvas.width / 40)}px system-ui`;
@@ -631,6 +633,7 @@ export class RoverExperience {
       if (box.kpts) segments.push(...poseSegments(box.kpts, crop, width, height));
     }
     strokeSegments(context, segments, this.canvas.width, this.canvas.height, "#7fd4ff", Math.max(2, this.canvas.width / 240));
+    context.restore();
   }
   /** Held buttons from a lost or replaced controller act only after an observed release. */
   private latchButtons() {
@@ -663,7 +666,7 @@ export class RoverExperience {
     const ack = this.ackMs === null ? "ack pending" : `control ack ${Math.round(this.ackMs)} ms`;
     const range = this.status?.range_cm == null ? "range unknown" : `${Math.round(this.status.range_cm)} cm`;
     const matching = this.matchingDetections(now);
-    const detection = matching ? `${matching.boxes.length} detections` : !this.detections ? "detector unavailable" : now - this.detectionsAt > 500 ? "detections stale" : "detections awaiting matching frame";
+    const detection = matching ? `${matching.packet.boxes.length} detections${matching.lag ? ` (${Math.abs(matching.lag)} frame${Math.abs(matching.lag) === 1 ? "" : "s"} ${matching.lag > 0 ? "old" : "ahead"})` : ""}` : !this.detections ? "detector unavailable" : now - this.detectionsAt > PACKET_FRESH_MS ? "detections stale" : "detections awaiting matching frame";
     const link = linkHealth({ now, receivedAt: this.gate.receivedAt, connected: this.socket?.readyState === WebSocket.OPEN,
       linkMs: this.status?.link_ms, detFps: this.detections?.fps });
     const drill = this.drillLine(now);
