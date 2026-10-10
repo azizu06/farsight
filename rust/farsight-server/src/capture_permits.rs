@@ -30,15 +30,31 @@ pub struct CapturePermits {
     session_id: String,
     map_epoch: u64,
     enabled: bool,
+    /// Sensor-clock names the receiver trusts for verified capture origins
+    /// (supported_clocks parity; ARKit RGB-D passes none).
+    supported_clocks: &'static [&'static str],
     inner: Mutex<Inner>,
 }
 
 impl CapturePermits {
     pub fn new(session_id: &str, map_epoch: u64, enabled: bool) -> Self {
+        Self::with_clocks(session_id, map_epoch, enabled, &["avcapture_sync_to_host"])
+    }
+
+    /// capture_permits.CapturePermits(supported_clocks=...): ARKit RGB-D has
+    /// no supported sensor-to-host clock contract, so /phone passes an empty
+    /// list and no ARKit frame can become a verified capture.
+    pub fn with_clocks(
+        session_id: &str,
+        map_epoch: u64,
+        enabled: bool,
+        supported_clocks: &'static [&'static str],
+    ) -> Self {
         Self {
             session_id: session_id.to_string(),
             map_epoch,
             enabled,
+            supported_clocks,
             inner: Mutex::new(Inner { active: true, tokens: VecDeque::new() }),
         }
     }
@@ -74,7 +90,12 @@ impl CapturePermits {
         let capture = header.get("t_capture")?;
         let receipt = header.get("capture_permit_received_t")?;
         let token = header.get("capture_permit")?.as_str()?;
-        if header.get("capture_clock").and_then(Value::as_str) != Some("avcapture_sync_to_host")
+        let clock_supported = header
+            .get("capture_clock")
+            .and_then(Value::as_str)
+            .map(|c| self.supported_clocks.contains(&c))
+            .unwrap_or(false);
+        if !clock_supported
             || header.get("capture_clock_verified") != Some(&json!(true))
             || header.get("capture_bound") != Some(&json!(true))
             || header.get("session_id").and_then(Value::as_str) != Some(self.session_id.as_str())

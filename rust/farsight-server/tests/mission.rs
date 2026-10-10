@@ -12,6 +12,10 @@ fn frame(frame_id: i64, source: &str) -> CameraFrame {
         source: source.to_string(),
         capture_verified: false,
         capture_binding: None,
+        tracking: None,
+        mirrored: false,
+        socket_received: None,
+        published: None,
     }
 }
 

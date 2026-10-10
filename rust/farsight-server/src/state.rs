@@ -2,6 +2,7 @@
 
 use bytes::Bytes;
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -65,7 +66,6 @@ pub struct Inner {
     pub dropped: u64,
     pub revision: u64,
     pub fps: f64,
-    pub processing_ms: f64,
     pub reason: Option<String>,
     pub jpeg: Option<Vec<u8>>,
     pub depth_jpeg: Option<Vec<u8>>,
@@ -100,6 +100,9 @@ pub struct MapState {
     /// depth/occupancy and labels keep full resolution. 0 = uncapped.
     pub points_cap: usize,
     pub triangles_cap: usize,
+    /// Last fusion duration, stored as f64 bits for lock-free reads (the
+    /// /video/status handler answers while the map worker is busy).
+    pub processing_ms: AtomicU64,
     /// Opt-in Jetson fusion bypass (--fusion-bypass / FARSIGHT_FUSION_BYPASS,
     /// #109): keep /phone pose +
     /// depth (Nav2) and the camera feed (inference/control), but skip RGB-D
@@ -131,7 +134,6 @@ impl MapState {
             dropped: 0,
             revision: 0,
             fps: 0.0,
-            processing_ms: 0.0,
             reason: Some("Waiting for iPhone RGB-D stream".into()),
             jpeg: None,
             depth_jpeg: None,
@@ -164,6 +166,7 @@ impl MapState {
             revision_tx,
             points_cap: 0,
             triangles_cap: 0,
+            processing_ms: AtomicU64::new(0),
             fusion_bypass: false,
         }
     }
@@ -249,6 +252,28 @@ impl MapState {
         Self::observe_pose_locked(&mut self.inner.lock().unwrap(), header, transform)
     }
 
+    /// Pose heartbeat applied only while `identity` is still the connected
+    /// session (server.py poses worker parity): a stale socket's pose is
+    /// dropped instead of corrupting the new session's pose history.
+    pub fn observe_session_pose(
+        &self,
+        identity: &Identity,
+        header: &Value,
+        transform: &Mat4,
+    ) -> Result<(), String> {
+        let mut s = self.inner.lock().unwrap();
+        if s.connected && s.identity.as_ref() == Some(identity) {
+            Self::observe_pose_locked(&mut s, header, transform)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Count a fusion-lane packet displaced by a newer one (bounded queue).
+    pub fn note_dropped(&self) {
+        self.inner.lock().unwrap().dropped += 1;
+    }
+
     fn observe_pose_locked(s: &mut Inner, header: &Value, transform: &Mat4) -> Result<(), String> {
         let capture = header["t_capture"].as_f64().unwrap_or(-1.0);
         let identity: PoseIdentity = (
@@ -278,11 +303,30 @@ impl MapState {
     /// Process one decoded RGB-D frame. Heavy reconstruction happens unlocked,
     /// matching the Python split-lock structure.
     pub fn process(&self, frame: &RgbdFrame) -> Result<(), String> {
+        self.process_permits(frame, None)
+    }
+
+    /// state.process(frame, permits): the camera fast-lane stamps
+    /// `_received_monotonic` at socket receipt so fusion never delays the
+    /// receipt time; a verified permit origin back-dates it further.
+    pub fn process_permits(
+        &self,
+        frame: &RgbdFrame,
+        permits: Option<&std::sync::Arc<crate::capture_permits::CapturePermits>>,
+    ) -> Result<(), String> {
         let started = Instant::now();
         // Mirrors camera_receipt: receipt time minus the producer's encode
         // delay, validated before the identity check like Python.
-        let camera_receipt =
-            crate::camera::adjusted_receipt(&frame.header, crate::state::monotonic())?;
+        let receipt_base = frame
+            .header
+            .get("_received_monotonic")
+            .and_then(|v| v.as_f64())
+            .filter(|t| t.is_finite() && *t > 0.0)
+            .unwrap_or_else(monotonic);
+        let mut camera_receipt = crate::camera::adjusted_receipt(&frame.header, receipt_base)?;
+        if let Some(origin) = permits.and_then(|p| p.verified_origin(&frame.header)) {
+            camera_receipt = camera_receipt.min(origin);
+        }
         let generation;
         let may_fuse;
         let may_dense;
@@ -393,7 +437,10 @@ impl MapState {
         s.revision += 1;
         let _ = self.revision_tx.send(s.revision);
         let duration = started.elapsed().as_secs_f64();
-        s.processing_ms = (duration * 1000.0 * 10.0).round() / 10.0;
+        self.processing_ms.store(
+            ((duration * 1000.0 * 10.0).round() / 10.0).to_bits(),
+            Ordering::Relaxed,
+        );
         s.fps = (1.0 / duration.max(1e-4) * 10.0).round() / 10.0;
         if point_count == 0 {
             s.reason = Some("No confident depth samples in this frame".into());
@@ -442,7 +489,7 @@ impl MapState {
             "frames": s.frames,
             "rejected": s.rejected,
             "dropped": s.dropped,
-            "processing_ms": s.processing_ms,
+            "processing_ms": f64::from_bits(self.processing_ms.load(Ordering::Relaxed)),
             "processing_fps": s.fps,
             "age_ms": age.map(|a| (a * 1000.0).round() as i64),
             "position": [pose[0][3], pose[1][3], pose[2][3]],
@@ -461,6 +508,12 @@ impl MapState {
     /// Pose heartbeats never refresh the camera's capture receipt time.
     pub fn capture_diagnostics(&self) -> serde_json::Map<String, Value> {
         self.inner.lock().unwrap().capture_diagnostics.clone()
+    }
+
+    /// Lock-free read of the last fusion duration (for /video/status, which
+    /// must answer while the map worker is busy).
+    pub fn processing_ms(&self) -> f64 {
+        f64::from_bits(self.processing_ms.load(Ordering::Relaxed))
     }
 
     pub fn camera_snapshot(&self) -> (Option<Vec<u8>>, f64, i64, &'static str) {

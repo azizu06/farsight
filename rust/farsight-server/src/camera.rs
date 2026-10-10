@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::orientation::{rotate_jpeg_180, UprightNormalizer};
 use crate::state::{now_monotonic, MapState};
 
 #[derive(Clone)]
@@ -20,6 +21,14 @@ pub struct CameraFrame {
     /// The permit issuer the frame was bound to; drive eligibility requires
     /// it to still be active (jetson/camera.py parity).
     pub capture_binding: Option<Arc<crate::capture_permits::CapturePermits>>,
+    /// ARKit tracking state reported with the frame ("normal", "limited", ...).
+    pub tracking: Option<String>,
+    /// JPEG was rotated 180 (phone mounted upside down); depth stays sensor-native.
+    pub mirrored: bool,
+    /// Monotonic time the packet arrived at the socket.
+    pub socket_received: Option<f64>,
+    /// Monotonic time the frame finished decode and was published.
+    pub published: Option<f64>,
 }
 
 impl CameraFrame {
@@ -32,6 +41,14 @@ struct Inner {
     frame: Option<CameraFrame>,
     phone_rgb: Option<CameraFrame>,
     phone_capture_diagnostics: serde_json::Map<String, serde_json::Value>,
+    /// (t_capture, tracking) observed on the phone lane, independent of fusion.
+    phone_pose: (f64, Option<String>),
+    /// Permit issuer of the current phone session; an old socket's in-flight
+    /// decoder cannot overwrite a newer session.
+    phone_binding: Option<Arc<crate::capture_permits::CapturePermits>>,
+    /// Per-session mount detector for the upside-down phone (#156).
+    mount: UprightNormalizer,
+    ingest_dropped: u64,
     error: Option<String>,
 }
 
@@ -115,6 +132,10 @@ impl CameraService {
                 frame: None,
                 phone_rgb: None,
                 phone_capture_diagnostics: serde_json::Map::new(),
+                phone_pose: (-1.0, None),
+                phone_binding: None,
+                mount: UprightNormalizer::new(),
+                ingest_dropped: 0,
                 error: None,
             }),
             preview_cache: Mutex::new(None),
@@ -137,9 +158,65 @@ impl CameraService {
                 source: source.into(),
                 capture_verified: false,
                 capture_binding: None,
+                tracking: None,
+                mirrored: false,
+                socket_received: None,
+                published: None,
             });
         }
         self.inner.lock().unwrap().frame.clone()
+    }
+
+    /// Record a pose heartbeat's tracking state without waiting for fusion.
+    /// Mirrors camera.observe_phone_tracking.
+    pub fn observe_phone_tracking(&self, header: &serde_json::Value) {
+        let t = header.get("t_capture").and_then(|v| v.as_f64()).unwrap_or(-1.0);
+        let tracking = header
+            .get("tracking")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let mut inner = self.inner.lock().unwrap();
+        if t >= inner.phone_pose.0 {
+            inner.phone_pose = (t, tracking);
+        }
+    }
+
+    /// Arm the phone lane for a new session. Mirrors camera.begin_phone.
+    pub fn begin_phone(&self, binding: Option<Arc<crate::capture_permits::CapturePermits>>) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.phone_binding = binding;
+        inner.phone_pose = (-1.0, None);
+        inner.phone_rgb = None;
+        inner.mount = UprightNormalizer::new();
+    }
+
+    /// Count a camera-lane packet displaced by a newer one (bounded queue).
+    pub fn note_ingest_dropped(&self) {
+        self.inner.lock().unwrap().ingest_dropped += 1;
+    }
+
+    /// Store a decoded phone frame. An old socket's in-flight decoder cannot
+    /// overwrite a newer session; its final image can remain viewable while
+    /// the inactive issuer revokes drive. Mirrors camera._publish_phone.
+    fn publish_phone(&self, frame: CameraFrame, header: &serde_json::Value) -> bool {
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(binding) = &inner.phone_binding {
+            let same = frame
+                .capture_binding
+                .as_ref()
+                .map(|b| Arc::ptr_eq(b, binding))
+                .unwrap_or(false);
+            if !same {
+                return false;
+            }
+        }
+        let t = header.get("t_capture").and_then(|v| v.as_f64()).unwrap_or(-1.0);
+        if frame.tracking.is_some() && t >= inner.phone_pose.0 {
+            inner.phone_pose = (t, frame.tracking.clone());
+        }
+        inner.phone_capture_diagnostics = capture_diagnostics(header);
+        inner.phone_rgb = Some(frame);
+        true
     }
 
     /// Validate + store a phone RGB packet. Mirrors accept_phone_rgb.
@@ -148,8 +225,10 @@ impl CameraService {
         packet: &[u8],
         session_id: &str,
         previous_frame: i64,
+        received_at: Option<f64>,
         permits: Option<&Arc<crate::capture_permits::CapturePermits>>,
     ) -> Result<i64, String> {
+        let arrived = received_at.unwrap_or_else(now_monotonic);
         if packet.len() <= 4 || packet.len() > 2 * 1024 * 1024 {
             return Err("RGB packet length is invalid".into());
         }
@@ -190,21 +269,72 @@ impl CameraService {
             return Err("RGB image cannot be decoded or is excessive".into());
         }
         let origin = permits.and_then(|p| p.verified_origin(&header));
-        let mut received = adjusted_receipt(&header, now_monotonic())?;
+        let mut received = adjusted_receipt(&header, arrived)?;
         if let Some(origin) = origin {
             received = received.min(origin);
         }
-        let mut inner = self.inner.lock().unwrap();
-        inner.phone_capture_diagnostics = capture_diagnostics(&header);
-        inner.phone_rgb = Some(CameraFrame {
+        let frame = CameraFrame {
             jpeg: jpeg.to_vec(),
             received,
             frame_id: fid,
             source: "PHONE RGB".into(),
             capture_verified: origin.is_some(),
             capture_binding: permits.cloned(),
-        });
-        Ok(fid)
+            tracking: None,
+            mirrored: false,
+            socket_received: Some(arrived),
+            published: Some(now_monotonic()),
+        };
+        Ok(if self.publish_phone(frame, &header) { fid } else { previous_frame })
+    }
+
+    /// Validate + publish an ARKit RGB-D packet's camera independently of
+    /// RGB-D fusion. Mirrors accept_phone_rgbd: the JPEG and packet are
+    /// validated on this lane, depth is never touched here.
+    pub fn accept_phone_rgbd(
+        &self,
+        packet: &[u8],
+        identity: &(String, u64),
+        previous_frame: i64,
+        received_at: Option<f64>,
+        permits: Option<&Arc<crate::capture_permits::CapturePermits>>,
+    ) -> Result<i64, String> {
+        let arrived = received_at.unwrap_or_else(now_monotonic);
+        let (header, mut jpeg) = crate::phone::decode_frame_camera(packet, identity)?;
+        let fid = header.get("frame_id").and_then(|v| v.as_i64()).unwrap_or(-1);
+        if fid <= previous_frame {
+            return Err("RGB-D camera frame ordering is invalid".into());
+        }
+        // Gravity in the ARKit pose says which way up the phone is mounted; show it upright.
+        let transform_values: Vec<f64> = header
+            .get("transform")
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|v| v.as_f64()).collect())
+            .unwrap_or_default();
+        let transform = crate::geometry::rigid_transform(&transform_values)?;
+        let mirrored = {
+            let mut inner = self.inner.lock().unwrap();
+            inner.mount.observe(&transform)
+        };
+        if mirrored {
+            jpeg = rotate_jpeg_180(&jpeg)?;
+        }
+        let received = adjusted_receipt(&header, arrived)?;
+        // ARKit does not have a qualified sensor clock; never elevate it to a
+        // verified capture just because the camera bypasses the map worker.
+        let frame = CameraFrame {
+            jpeg,
+            received,
+            frame_id: fid,
+            source: "IPHONE LIDAR".into(),
+            capture_verified: false,
+            capture_binding: permits.cloned(),
+            tracking: header.get("tracking").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            mirrored,
+            socket_received: Some(arrived),
+            published: Some(now_monotonic()),
+        };
+        Ok(if self.publish_phone(frame, &header) { fid } else { previous_frame })
     }
 
     pub fn set_phone_rgb(&self, frame: Option<CameraFrame>) {
@@ -225,10 +355,23 @@ impl CameraService {
             .unwrap_or(false);
         // Drive eligibility: verified phone RGB, local USB, or a known-safe
         // source; legacy/unverified streams are viewable but cannot drive.
+        // Opt-in LiDAR drive follows the freshest pose on the phone lane:
+        // normal tracking plus a still-active permit issuer. Before any phone
+        // frame arrives it falls back to the map lane's freshness check.
+        let live_lidar = if inner.phone_rgb.is_some() && frame.is_some() {
+            inner.phone_pose.1.as_deref() == Some("normal")
+                && frame
+                    .as_ref()
+                    .and_then(|f| f.capture_binding.as_ref())
+                    .map(|p| p.is_active())
+                    .unwrap_or(false)
+        } else {
+            self.mapping.lidar_drive_eligible()
+        };
         let lidar = self.lidar_drive
             && fresh
             && frame.as_ref().map(|f| f.source == "IPHONE LIDAR").unwrap_or(false)
-            && self.mapping.lidar_drive_eligible();
+            && live_lidar;
         let drive_ready = fresh
             && (self.device.is_some()
                 || bound
@@ -248,6 +391,11 @@ impl CameraService {
             "camera_capture_verified": bound,
             "camera_capture_diagnostics": diagnostics,
             "camera_age_ms": frame.as_ref().map(|f| f.age_ms()),
+            "camera_ingest_dropped": inner.ingest_dropped,
+            "camera_ingest_ms": frame.as_ref().and_then(|f| match (f.published, f.socket_received) {
+                (Some(p), Some(s)) => Some(((p - s) * 1000.0 * 100.0).round() / 100.0),
+                _ => None,
+            }),
             "camera_frame": frame.as_ref().map(|f| f.frame_id),
             "camera_source": frame.as_ref().map(|f| f.source.clone())
                 .unwrap_or_else(|| if self.device.is_some() { "USB CAMERA".into() } else { "WAITING".into() }),
@@ -314,6 +462,10 @@ impl CameraService {
                                 source: "USB CAMERA".into(),
                                 capture_verified: false,
                                 capture_binding: None,
+                                tracking: None,
+                                mirrored: false,
+                                socket_received: None,
+                                published: None,
                             });
                             inner.error = None;
                             drop(inner);
@@ -480,6 +632,7 @@ mod preview_tests {
             jpeg: vec![1, 2, 3], received: now_monotonic() - 0.2,
             frame_id: 7, source: "PHONE RGB".into(),
             capture_verified: false, capture_binding: None,
+            tracking: None, mirrored: false, socket_received: None, published: None,
         }));
         camera
     }

@@ -121,6 +121,13 @@ pub struct RgbdFrame {
 /// Port of decode_frame: strict packet framing, identity, dimension, format,
 /// intrinsics and payload-length validation before JPEG decode.
 pub fn decode_frame(packet: &[u8], identity: &Identity) -> Result<RgbdFrame, String> {
+    match decode(packet, identity, false)? {
+        DecodedFrame::Rgbd(frame) => Ok(frame),
+        DecodedFrame::Camera(..) => unreachable!(),
+    }
+}
+
+fn decode(packet: &[u8], identity: &Identity, camera_only: bool) -> Result<DecodedFrame, String> {
     if packet.len() <= 4 || packet.len() > MAX_PACKET {
         return Err("Frame exceeds the 8 MiB limit or is empty".into());
     }
@@ -196,6 +203,15 @@ pub fn decode_frame(packet: &[u8], identity: &Identity) -> Result<RgbdFrame, Str
         k(1, 2) * dh as f64 / ih as f64,
     )
     .map_err(|e| format!("Unsupported camera intrinsic matrix: {e}"))?;
+    // Confidence payload is validated before any decode work so the
+    // camera-only lane can trust a packet without copying depth.
+    let conf_offset = start + jl + dl;
+    if packet[conf_offset..conf_offset + cl].iter().any(|&c| c > 2) {
+        return Err("Confidence values must be 0, 1 or 2".into());
+    }
+    if camera_only {
+        return Ok(DecodedFrame::Camera(header, packet[start..start + jl].to_vec()));
+    }
     let jpeg = packet[start..start + jl].to_vec();
     let decoded = image::load_from_memory_with_format(&jpeg, image::ImageFormat::Jpeg)
         .map_err(|_| "JPEG dimensions do not match the frame header".to_string())?;
@@ -211,16 +227,12 @@ pub fn decode_frame(packet: &[u8], identity: &Identity) -> Result<RgbdFrame, Str
     );
     let rgb = resized.into_raw();
     let mut depth = Vec::with_capacity(dw * dh);
-    let mut cursor = start + jl;
+    let cursor = start + jl;
     for chunk in packet[cursor..cursor + dl].chunks_exact(4) {
         depth.push(f32::from_le_bytes(chunk.try_into().unwrap()));
     }
-    cursor += dl;
-    let confidence = packet[cursor..cursor + cl].to_vec();
-    if confidence.iter().any(|&c| c > 2) {
-        return Err("Confidence values must be 0, 1 or 2".into());
-    }
-    Ok(RgbdFrame {
+    let confidence = packet[conf_offset..conf_offset + cl].to_vec();
+    Ok(DecodedFrame::Rgbd(RgbdFrame {
         header,
         rgb,
         depth,
@@ -230,7 +242,22 @@ pub fn decode_frame(packet: &[u8], identity: &Identity) -> Result<RgbdFrame, Str
         jpeg,
         depth_width: dw,
         depth_height: dh,
-    })
+    }))
+}
+
+enum DecodedFrame {
+    Rgbd(RgbdFrame),
+    Camera(Value, Vec<u8>),
+}
+
+/// Validate the wire packet without touching depth or reconstruction: the
+/// camera fast-lane needs only the header and the JPEG bytes.
+/// Mirrors decode_frame(camera_only=True).
+pub fn decode_frame_camera(packet: &[u8], identity: &Identity) -> Result<(Value, Vec<u8>), String> {
+    match decode(packet, identity, true)? {
+        DecodedFrame::Camera(header, jpeg) => Ok((header, jpeg)),
+        DecodedFrame::Rgbd(_) => unreachable!(),
+    }
 }
 
 /// A compacted triangle mesh: world positions, colors, triangle corner indices.

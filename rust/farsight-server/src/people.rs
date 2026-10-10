@@ -126,18 +126,45 @@ impl PersonLocator {
     /// Perception annotate hook: add `world` to tracked person boxes that
     /// were detected on a held RGB-D frame. Byte-compares the JPEG like the
     /// Python object-identity check — RGB-only or estimated-depth sources
-    /// never get a 3D position.
+    /// never get a 3D position. A mirrored IPHONE LIDAR frame counts as the
+    /// same picture: its published JPEG was rotated, so the bytes differ.
     pub fn annotate(&self, boxes: &mut Vec<Value>, camera_frame: &CameraFrame) {
         let held = self.frames.lock().unwrap();
         let Some(f) = held.get(&camera_frame.frame_id) else {
             return;
         };
-        if f.jpeg != camera_frame.jpeg {
+        let same_picture = f.jpeg == camera_frame.jpeg
+            || (camera_frame.source == "IPHONE LIDAR" && camera_frame.mirrored);
+        if !same_picture {
             return;
         }
+        // Boxes live on the upright picture; sensor-native depth is viewed rotated to match.
+        let rotated;
+        let view = if camera_frame.mirrored {
+            let (depth, confidence, calibration, transform) = crate::orientation::upright_grid(
+                f.width,
+                f.height,
+                &f.depth,
+                &f.confidence,
+                &f.calibration,
+                &f.transform,
+            );
+            rotated = HeldFrame {
+                jpeg: f.jpeg.clone(),
+                depth,
+                confidence,
+                width: f.width,
+                height: f.height,
+                calibration,
+                transform,
+            };
+            &rotated
+        } else {
+            f
+        };
         for b in boxes.iter_mut() {
             if b["cls"].as_str() == Some("person") && b["id"].is_i64() {
-                if let Some(world) = torso_point(b, f) {
+                if let Some(world) = torso_point(b, view) {
                     b["world"] = json!(world);
                 }
             }

@@ -167,6 +167,10 @@ impl ReplaySession {
                             source: format!("REPLAY: {}", event["source"].as_str().unwrap_or("")),
                             capture_verified: false,
                             capture_binding: None,
+                            tracking: None,
+                            mirrored: false,
+                            socket_received: None,
+                            published: None,
                         }));
                     }
                 }

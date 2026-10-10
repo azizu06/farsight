@@ -22,6 +22,7 @@ pub mod identity;
 pub mod identity_onnx;
 pub mod mission;
 pub mod nav;
+pub mod orientation;
 pub mod pacer;
 pub mod people;
 pub mod perception;

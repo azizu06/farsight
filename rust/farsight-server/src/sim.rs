@@ -1162,6 +1162,10 @@ pub fn spawn_world_stream(
                     frame_id,
                     capture_verified: false,
                     capture_binding: None,
+                    tracking: None,
+                    mirrored: false,
+                    socket_received: None,
+                    published: None,
                     source: "SIMULATED".into(),
                 }));
                 let (mapping, busy) = (mapping.clone(), busy.clone());
