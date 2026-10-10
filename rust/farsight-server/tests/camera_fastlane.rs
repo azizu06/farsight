@@ -19,7 +19,7 @@ fn app_state() -> Arc<AppState> {
         false, None, None, false, "none", None, None, false, None, 100, 0, None, None, None, None,
         None, None, None, None, None, 3.0, None, false, 70.0, None, 45.0, 10, 500_000, false, None,
         None, false, false, "none", None, false, false, 0.0, 0.0, 0.0, 0.0, 0.0, None, true,
-        (256, 192), false, false,
+        (256, 192), false, false, (None, None, None),
     )
 }
 

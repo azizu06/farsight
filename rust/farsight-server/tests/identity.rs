@@ -468,6 +468,10 @@ fn set_frame(camera: &CameraService, jpeg: &[u8], received: f64, id: i64, source
         source: source.into(),
         capture_verified: false,
         capture_binding: None,
+        tracking: None,
+        mirrored: false,
+        socket_received: None,
+        published: None,
     }));
 }
 
@@ -672,6 +676,10 @@ fn service_capture_binding_replaced_and_frame_counter_reset() {
         frame_id: 2,
         source: "PHONE RGB".into(),
         capture_verified: true,
+        tracking: None,
+        mirrored: false,
+        socket_received: None,
+        published: None,
         capture_binding: Some(Arc::new(
             farsight_server::capture_permits::CapturePermits::new("s", 0, false),
         )),
