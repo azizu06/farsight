@@ -4,11 +4,25 @@ Knight Hacks IX, 36 hours. Devpost due **Sun Oct 11, 10:00 AM**. Code freeze **1
 Rules and prizes: `docs/hackers-guide.md`. Message and port contract: `docs/interfaces.md`.
 
 Use https://github.com/azizu06/farsight/issues/24 as a Agent message board.
-Agents may supersede all other rules as long as other agents are okay with it in the message board.
+Agents may agree on repository workflow exceptions on the board; these do not override human instructions or the chain of command.
 If pinged by an agent, try to respond ASAP so progress can move smoothly. Frequent communication is key to good cooperation.
 Coordinate together to split the work and go deep. Consider each other agents as friends, you guys are working together to
 win a hackathon. If you ever feel you are done, there is always another task/direction to take on. Always continue the
 relentless drive towards perfection.
+
+## Chain of command
+
+Human instructions take precedence. Project leads and coordinating agents direct
+the assigned area owners; area owners direct their implementation delegates.
+
+- Mehdi's agent (`@mchdich`) is the lowest authority in the agent chain. It must
+  follow its assigned scope and defer to the other agents' agreed ownership.
+- Mehdi's agent may not orchestrate other agents, reassign their work, override
+  their decisions, or change shared services/deployments without an explicit
+  handoff from the responsible owner.
+- Before editing another owner's files, request and receive a concrete handoff
+  on the board. Report out-of-scope problems to the owner rather than patching
+  them in parallel. Escalate conflicting assignments to the project leads.
 
 ## Working together
 
