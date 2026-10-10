@@ -201,9 +201,11 @@ class NavService:
         self.frame = None           # newest normal-tracking RGB-D frame of the current sensor session
         self.frame_at = None        # monotonic receipt of self.frame
         self.frame_seq = 0
-        # Sensor generation: bumps whenever MapState's (session_id, map_epoch) changes. Old
-        # goals, commands and depth never carry across, and the bridge resets its ROS state.
+        # Sensor generation follows both the sensor identity and the phone socket lifetime.
+        # Old goals, commands and depth never carry across a reconnect, including when the
+        # phone reuses its session and epoch. A visual map reset preserves this authority.
         self.identity = mapping.identity if mapping is not None else None
+        self.socket_generation = getattr(mapping, "socket_generation", 0)
         self.generation = 0
         self.router = APIRouter()
         self.router.add_api_websocket_route("/ws/nav", self.websocket)
@@ -218,10 +220,12 @@ class NavService:
 
     def sync_generation(self):
         """Detect a new sensor session; returns the current generation."""
-        identity = self.mapping.identity if self.mapping is not None else None  # replaced, never mutated
         with self.lock:
-            if identity != self.identity:
+            identity = self.mapping.identity if self.mapping is not None else None  # replaced, never mutated
+            socket_generation = getattr(self.mapping, "socket_generation", 0)
+            if identity != self.identity or socket_generation != self.socket_generation:
                 self.identity = identity
+                self.socket_generation = socket_generation
                 self.generation += 1
                 self.goal = self.cmd = self.frame = self.frame_at = None
                 self.seek, self.seek_checked = None, 0.0
@@ -238,7 +242,8 @@ class NavService:
         header = frame.header
         with self.lock:
             self.sync_generation()
-            if (header.get("session_id"), header.get("map_epoch")) != self.identity:
+            if ((header.get("session_id"), header.get("map_epoch")) != self.identity
+                    or header.get("_mapping_socket_generation", 0) != getattr(self.mapping, "socket_generation", 0)):
                 return  # a finishing old-session observer must not withdraw newer depth
             good = header.get("tracking") == "normal" and getattr(self.mapping, "tracking", None) == "normal"
             self.frame = frame if good else None

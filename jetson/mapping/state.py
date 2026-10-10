@@ -36,6 +36,7 @@ class MapState:
         self.device = "Ray-cast room" if demo else "No sensor"
         self.generation = 0
         self.processing_generation = 0
+        self.socket_generation = 0  # socket lifetime; a visual map reset preserves the live socket
         self.paused = False
         self.last_received = 0.0
         self.last_frame_received = 0.0
@@ -78,10 +79,12 @@ class MapState:
             self.connected, self.device = True, device
             self.dense.source = list(identity)
             self.processing_generation += 1
+            self.socket_generation += 1
             self.last_capture = self.last_pose_capture = -1.0
             self.pose_history.clear()
             self.tracking = "not_available"
             self.reason = "Waiting for synchronized RGB-D frames"
+            return self.socket_generation
 
     def clear(self):
         with self.lock:
@@ -108,8 +111,11 @@ class MapState:
             self.paused = True
             self.reason = "Camera-only snapshot retained; estimated metric depth"
 
-    def observe_pose(self, header, transform):
+    def observe_pose(self, header, transform, received_at=None, *, socket_generation=None):
         with self.lock:
+            if (not self.connected or (header.get("session_id"), header.get("map_epoch")) != self.identity
+                    or (socket_generation is not None and socket_generation != self.socket_generation)):
+                return  # a cancelled socket worker cannot publish into a later session
             capture = header["t_capture"]
             identity = (header["frame_id"], header["tracking"], tuple(transform.ravel()))
             previous = self.pose_history.get(capture)
@@ -121,10 +127,11 @@ class MapState:
             if header["t_capture"] <= self.last_pose_capture:
                 return
             self.last_pose_capture = header["t_capture"]
-            self.last_received = time.monotonic()
+            # CPU processing must not renew the age of an old pose capture.
+            self.last_received = time.monotonic() if received_at is None else received_at
             self.pose, self.tracking = transform, header["tracking"]
 
-    def process(self, frame, permits=None):
+    def process(self, frame, permits=None, *, socket_generation=None):
         started = time.monotonic()
         camera_receipt = adjusted_receipt(frame.header, frame.header.get("_received_monotonic", started))
         # Validate against this socket's live issuer, after decode/queue delay.
@@ -133,14 +140,18 @@ class MapState:
         if origin is not None:
             camera_receipt = min(camera_receipt, origin)
         with self.lock:
-            if not self.connected or (frame.header["session_id"], frame.header["map_epoch"]) != self.identity:
+            if (not self.connected or (frame.header["session_id"], frame.header["map_epoch"]) != self.identity
+                    or (socket_generation is not None and socket_generation != self.socket_generation)):
                 return
             if frame.header["t_capture"] <= self.last_capture:
                 self.rejected += 1
                 return
             self.last_capture = frame.header["t_capture"]
+            # Bind observers to this accepted socket lifetime. Overwrite any producer field:
+            # an observer can finish after a reconnect even when sensor identity is reused.
+            frame.header["_mapping_socket_generation"] = self.socket_generation
             generation = self.processing_generation
-            self.observe_pose(frame.header, frame.transform)
+            self.observe_pose(frame.header, frame.transform, camera_receipt, socket_generation=socket_generation)
             self.jpeg = frame.jpeg
             self.capture_diagnostics = capture_diagnostics(frame.header)
             self.last_frame_received = camera_receipt

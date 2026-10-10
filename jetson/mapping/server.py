@@ -24,7 +24,7 @@ from jetson.sim.worlds import WORLDS, load as load_world
 from .people import PersonLocator
 from .phone import Hello, decode_frame, validate_pose
 from .state import MapState
-from jetson.camera import CameraService
+from jetson.camera import CameraService, adjusted_receipt
 from jetson.capture_permits import CapturePermits
 from jetson.video import VideoService
 from jetson.perception import PerceptionService
@@ -43,6 +43,21 @@ from jetson.bulk import BulkPacer, BulkPacketTooLarge
 from jetson.bulk_response import bulk_response, PacedStreamingResponse
 
 DIST = Path(__file__).resolve().parents[2] / "quest" / "dist"
+
+
+async def _session_thread(function, *args):
+    """Finish a socket state mutation before propagating endpoint cancellation."""
+    operation = asyncio.create_task(asyncio.to_thread(function, *args))
+    try:
+        return await asyncio.shield(operation)
+    except asyncio.CancelledError:
+        # Cancelling to_thread cannot stop its CPU worker. Repeated endpoint
+        # cancellation must also leave this mutation protected until it finishes.
+        while not operation.done():
+            with suppress(asyncio.CancelledError):
+                await asyncio.shield(operation)
+        operation.result()
+        raise
 
 
 def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=False,
@@ -647,7 +662,9 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
             permits = CapturePermits(*identity, enabled=hello.supports_capture_permits,
                                      supported_clocks=())
             camera_service.phone_rgb = None
-            await asyncio.to_thread(state.start_session, identity, hello.device)
+            # Keep ownership through initialization, including cancelled awaits;
+            # a late start_session must not overwrite the next socket's state.
+            socket_generation = await _session_thread(state.start_session, identity, hello.device)
 
             async def consume():
                 while True:
@@ -655,7 +672,8 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                     try:
                         frame = await asyncio.to_thread(decode_frame, packet, identity)
                         frame.header["_received_monotonic"] = received_at
-                        await asyncio.to_thread(state.process, frame, permits=permits)
+                        await asyncio.to_thread(state.process, frame, permits=permits,
+                                                socket_generation=socket_generation)
                     except (ValueError, TypeError, KeyError, ValidationError) as exc:
                         with state.lock:
                             state.rejected += 1
@@ -673,10 +691,13 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                             state.dropped += 1
                         queue.put_nowait((message["bytes"], time.monotonic()))
                     elif message.get("text"):
+                        received_at = time.monotonic()
                         header = json.loads(message["text"])
                         if header.get("type") != "pose":
                             raise ValueError("Expected a pose message or binary RGB-D frame")
-                        await asyncio.to_thread(state.observe_pose, header, validate_pose(header, identity))
+                        await asyncio.to_thread(state.observe_pose, header, validate_pose(header, identity),
+                                                adjusted_receipt(header, received_at),
+                                                socket_generation=socket_generation)
             await permits.run(ws, receive_frames)
         except (ValueError, TypeError, KeyError, ValidationError, asyncio.TimeoutError) as exc:
             with suppress(RuntimeError, WebSocketDisconnect):
@@ -691,13 +712,22 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                 with suppress(asyncio.CancelledError):
                     await worker
             if app.state.phone_owner is owner:
-                app.state.phone_owner = None
+                # Withdraw lock-free live eligibility immediately. Off-thread
+                # cleanup may wait behind a map job, while ownership stays held.
+                state.connected = False
                 def disconnect_sensor():
                     with state.lock:
                         state.connected = False
                         # Invalidate any CPU worker still finishing after disconnect.
                         state.processing_generation += 1
-                await asyncio.to_thread(disconnect_sensor)
+                        state.socket_generation += 1
+                try:
+                    await _session_thread(disconnect_sensor)
+                finally:
+                    # Release even when cancellation was delayed through cleanup.
+                    # The helper has finished the worker before reaching this point.
+                    if app.state.phone_owner is owner:
+                        app.state.phone_owner = None
 
     @app.websocket("/phone/rgb")
     async def phone_rgb(ws: WebSocket):

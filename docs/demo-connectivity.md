@@ -43,6 +43,33 @@ fixtures and direct tailnet pings are not substitutes for those checks.
 
 ## Demo go/no-go
 
+Before putting the headset on, check the selected routes on the operator Mac:
+
+```sh
+python -m tools.check_demo_routes --operator http://127.0.0.1:8080 \
+  --require-dense --require-render --renderer http://127.0.0.1:8091 \
+  --output /tmp/farsight-demo-routes.json
+```
+
+Add `--expected-upstream` with the exact previously qualified Jetson route to
+reject an accidental switch to a commissioning tailnet address. Add
+`--expected-geometry` only when that separate lane is intentionally selected.
+This command makes bounded GET requests only. It reports the actual selected
+backend, geometry and renderer origins; requires fresh drive-ready camera/rover
+status, usable matching geometry, a populated dense accumulator and positive
+dense GPU draw/upload counts. A 200 response with zero or disconnected geometry
+fails. `/dense/status` returning 404 means this relay has no dense accumulator;
+start the owner-selected `tools.dense_map` launcher, or `tools.demo --dense-map`.
+`tools.dense_map` itself does not accept a `--dense-map` flag.
+
+For a camera/control rehearsal before scanning, use `--camera-only` without
+`--require-dense`/`--require-render`. It still requires a drive-ready camera and
+connected rover. The checker does not prove headset pixels, latency, physical
+watchdog behavior or route performance under load; complete the following checks
+on the actual rig. Keep the required Python packages installed in the launch
+environment, including `python-multipart` for voice uploads and PyYAML for ROS
+tools. An incomplete test or launch environment is not a model-performance result.
+
 1. Keep the Quest–Mac USB cable connected. On the Mac, `adb devices` must show
    the Quest as `device`; `adb reverse --list` must show port 8080. Load only
    `http://localhost:8080`.

@@ -31,7 +31,8 @@ def feed(nav, tracking="normal", identity=PHONE, frame=True):
         depth = np.full((120, 160), 3.0, np.float32)
         nav.offer_frame(type("Frame", (), dict(
             header=dict(session_id=identity[0], map_epoch=identity[1], tracking=tracking,
-                        _received_monotonic=time.monotonic()),
+                        _received_monotonic=time.monotonic(),
+                        _mapping_socket_generation=getattr(mapping, "socket_generation", 0)),
             depth=depth, confidence=np.full(depth.shape, 2, np.uint8), transform=np.eye(4),
             calibration=Calibration(160, 120, 135, 135, 79.5, 59.5)))())
 
@@ -490,6 +491,27 @@ class LeaseTests(unittest.TestCase):
         self.nav.sync_generation()
         self.assertIsNone(self.nav.intent()["goal"])
         self.assertIsNone(self.nav.seek)
+
+    def test_same_identity_reconnect_discards_seek_and_its_command(self):
+        goal_id = self.begin_seek()
+        self.bridge(type="cmd_vel", linear=.2, angular=0, goal_id=goal_id)
+        self.assertGreater(self.state.output()[0], 0)
+        generation = self.nav.generation
+        self.nav.mapping.start_session(PHONE, "same iPhone")
+        feed(self.nav)
+        self.assertEqual(self.nav.generation, generation + 1)
+        self.assertIsNone(self.nav.seek)
+        self.assertIsNone(self.nav.cmd)
+        self.bridge(type="cmd_vel", linear=.2, angular=0, goal_id=goal_id, generation=generation)
+        self.assertEqual(self.state.output()[:2], (0, 0))
+
+    def test_same_identity_reconnect_disarms_goto(self):
+        self.drive_goto()
+        self.nav.mapping.start_session(PHONE, "same iPhone")
+        feed(self.nav)
+        self.assertIsNone(self.nav.goal)
+        self.assertIsNone(self.nav.cmd)
+        self.assertEqual(self.state.output()[:2], (0, 0))
 
     def test_seek_computed_before_sensor_reset_cannot_rearm_the_old_goal(self):
         self.begin_seek()
