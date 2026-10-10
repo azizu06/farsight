@@ -390,3 +390,156 @@ qualify browser driving. The 250 ms lease, 500 ms view guard, 20 Hz permits and
 commands, two-fragment window, release latches and wire schemas are unchanged.
 All observations are software-only: no Quest, camera, phone, Jetson inference
 or physical motors were tested.
+
+## Cellular bandwidth budget (issue #62, October 10)
+
+The cellular fixture in `tools.budget_link` measures the production Python demo
+server with simulated motors, real CPU YOLO11n pose inference, real FFmpeg H.264
+(640×480, 10 fps, 500 kbps, two fragments in flight), and the production operator
+relay. The `map5` workload keeps 5 Hz room fusion and an independent 15 Hz
+synthetic RGB camera running. It measures both ASGI payload submissions and
+client payloads delivered through the relay. No phone, Tailscale tunnel, Quest,
+Jetson, physical camera or motors were used. Video age here is capture-to-MP4
+receipt, before decoding and display; it cannot qualify displayed-view age.
+
+The host was an Apple M5 Pro, macOS 27.0.1, Python 3.13.7, ONNX Runtime 1.31.0
+and FFmpeg 9.0.2. The report records model/scene hashes and package versions.
+Each controlled comparison used shared aggregate 2 or 5 Mbps, 50 ms delay each
+way, and seeded 0.1% retry events per at-most-4-KiB TCP chunk with a 40 ms
+recovery delay. This approximates reliable-stream head-of-line recovery; it is
+**not real IP packet loss, a carrier congestion model, or a measured cellular
+RTT distribution**. A single retry adds 40 ms to the 100 ms base round trip.
+The RNG seed cannot pin retries to identical routes under different traffic.
+Payload counts exclude TCP/TLS/Tailscale overhead; proxy counts include HTTP/WS
+framing, with modeled retry bytes recorded separately.
+
+### Changes justified by the measurements
+
+Raw map points and repeated meshes were the largest consumers: the legacy
+2 Mbps driving-map trials submitted about 2.01 Mbps of map WebSocket payload
+and 0.86 Mbps of already-Brotli-compressed meshes, while starving video to
+0.09 Mbps. This exceeds the link before video, detection and control traffic.
+The viewer now opts into `/ws/map?points=http`, waits for the optional
+`points_transport: "http"` acknowledgement, and pulls compressed authoritative
+point snapshots through HTTP. It permits one map download at a time, at least
+two seconds between starts, alternating points and mesh when both change.
+Holding the deadman closes the map socket and aborts map/settings-preview
+downloads; displayed geometry stays available and release resumes refresh.
+H.264 also suppresses the duplicate settings RGB JPEG poll, as well as the
+existing rover JPEG poll. The additive wire contract and legacy fallback are
+in [interfaces.md](interfaces.md#cellular-map-subscription-additive); Rust needs
+to mirror the query and acknowledgement.
+
+The tradeoff is slower stationary geometry refresh and retained geometry while
+driving. The 250 ms lease, 500 ms view guard, 20 Hz permits/commands, two-fragment
+video window and release latches are unchanged. No encoder adaptation or
+detection precision reduction was justified by the dominant map load.
+
+### Controlled before/after
+
+Each row contains two serial 20-second repeats, with our other test suites
+stopped. Driving rows press the deadman after a fresh view and explicit release;
+stationary rows deliberately leave it released. Moving fraction excludes the
+first second. All workloads fused frames and ran pose successfully.
+
+| Link / activity | Before moving | After moving | Before receipt p95 | After receipt p95 | Before proxy | After proxy |
+|---|---:|---:|---:|---:|---:|---:|
+| 2 Mbps / held deadman | 0.0% / 0.0% | 100.0% / 100.0% | 1082 / 1159 ms | 305 / 315 ms | 1872 / 1876 kbps | 636 / 635 kbps |
+| 2 Mbps / stationary map | stationary | stationary | 1161 / 1126 ms | 500 / 546 ms | 1866 / 1868 kbps | 1602 / 1618 kbps |
+| 5 Mbps / held deadman | 72.7% / 100.0% | 100.0% / 100.0% | 365 / 348 ms | 328 / 288 ms | 4313 / 4436 kbps | 635 / 634 kbps |
+| 5 Mbps / stationary map | stationary | stationary | 502 / 383 ms | 301 / 302 ms | 4202 / 4318 kbps | 2280 / 2281 kbps |
+
+At 2 Mbps the legacy driving trials saturated the link, expired the lease and
+latched a stop; video/HTTP errors were retained. At 5 Mbps one legacy driving
+repeat latched the stale-view stop, and the other had a mesh HTTP 502. All four
+final driving repeats sustained 100% settled motion without invalidation or
+transport errors. The final stationary map repeats also had no transport errors,
+but 2 Mbps receipt p95 reached 546 ms. Stationary maps can still delay video;
+a fresh decoded view and explicit release remain required before driving.
+
+Average ASGI submitted payload across the two 2 Mbps repeats (not a sum of
+on-wire delivery rates; buffering can make submitted traffic exceed the cap):
+
+| Stream | Legacy held | Final held | Final stationary | Final stationary cadence |
+|---|---:|---:|---:|---:|
+| Map WS (legacy raw points; final status only) | 2014.9 kbps | 0.0 kbps | 11.8 kbps | 2.00/s |
+| Point HTTP (Brotli) | 0.0 kbps | 0.0 kbps | 397.9 kbps | 0.20/s |
+| Mesh HTTP (Brotli) | 857.8 kbps | 0.0 kbps | 804.7 kbps | 0.20/s |
+| H.264 payload + metadata | 92.9 kbps | 471.4 kbps | 474.5 kbps | 19.88/s |
+| Control/status down | 61.4 kbps | 59.8 kbps | 61.3 kbps | 19.70/s |
+| Control commands up | 33.3 kbps | 32.9 kbps | 32.9 kbps | 19.73/s |
+| Pose detections (empty synthetic room) | 12.3 kbps | 12.1 kbps | 12.3 kbps | 9.94/s |
+| Local assistant summary | 0.6 kbps | 0.6 kbps | 0.6 kbps | 0.10/s |
+| Synthetic TTS sizing | 51.1 kbps | 51.2 kbps | 51.2 kbps | 0.10/s |
+
+Video uses approximately ten binary fragments and ten metadata messages per
+second. Control payloads measured near 20 Hz in both directions; no schedule
+was reduced. Assistant requests every ten seconds used the local summary
+fallback. Each synthetic TTS response was 64,044 bytes of two-second mono
+16 kHz PCM silence (51.2 kbps averaged over the trial), not a measured live
+model answer. Full assistant CPU/voice load remains outside this qualification.
+
+The empty room underestimates person payloads. A separate shifted public
+Ultralytics bus image produced up to six pose detections: 188.1 / 184.0 kbps at
+9.94 / 9.73 Hz on 2 / 5 Mbps, with total proxy traffic 786 / 782 kbps and
+100% settled motion in both 20-second camera-only repeats. Coordinates and
+keypoints already have bounded precision; their schema is unchanged.
+
+### Preview traffic and retained failures
+
+With stationary settings previews, no map transfer and H.264 enabled, separate
+12-second before/after trials measured RGB JPEG at 76.0 / 78.1 kbps and depth
+JPEG at 62.5 / 64.8 kbps on 2 / 5 Mbps, at 2.75 / 2.82 responses per second.
+Suppressing RGB left depth at 64.5 / 64.9 kbps and total proxy traffic changed
+from 825 / 824 to 738 / 740 kbps. There were no transport errors. This is the
+synthetic scene's size; real camera JPEG sizes vary. Both previews pause while
+held. A browser regression separately verifies real viewer polling suppression,
+bounded alternating map pulls, socket closure while held, and reconnect on
+release. Its deadman state and map payloads are injected fixtures.
+
+Compression alone was insufficient: an intermediate policy allowed independent
+point and mesh pulls every second. Its stationary 2 Mbps repeats still saturated
+the link, with receipt p95 1,144 / 1,148 ms and video/HTTP failures. Those results
+motivated the final aggregate two-second pacing above. One intermediate held
+trial also latched a stale-view stop at 516 ms held age (440 ms fragment receipt
+age) and sustained only 12.1% motion. The held path already paused map traffic
+then; the later stationary pacing change cannot explain that intermittent
+held-view stop. All four final held repeats passed, without establishing
+arbitrary scheduling/loss tolerance.
+
+The initial 1% / 80 ms retry stress produced lease stops even with camera-only
+traffic. Final optimized 12-second held-map stress repeats at the same profile
+also expired the lease: 7.2% / 23.0% settled motion on 2 / 5 Mbps, despite only
+660 kbps proxy traffic. Their timing traces retain permits already 151 / 203 ms
+old when the last active command arrived. Bandwidth savings do not eliminate
+permit-age sensitivity to retry delay. A subsequent exploratory 0.1% / 80 ms run also retained intermittent
+stops; its first minute overlapped our Python test suite, so it is not a clean
+before/after comparison. These failures, the intermediate policy, controlled
+baselines, final results and populated-pose/preview trials are all retained in
+[issue62-cellular-budget.json](qualification/issue62-cellular-budget.json).
+Do not infer physical readiness or loss tolerance from selected passing rows.
+
+Reproduce one process at a time, with the installed Jetson Python requirements,
+ONNX Runtime, FFmpeg and an exported pose model (see `models/README.md`):
+
+```sh
+python -m tools.budget_link --model models/yolo11n-pose.onnx --source map5 --duration 20 --repeats 2 --mbps 2 5 --scenarios map stopped-map --loss-rate .001 --retransmit-ms 40 --report before.json
+python -m tools.budget_link --model models/yolo11n-pose.onnx --source map5 --duration 20 --repeats 2 --mbps 2 5 --scenarios map stopped-map --loss-rate .001 --retransmit-ms 40 --optimized --report after.json
+# Populated detections (public bus image from the Ultralytics assets repository):
+python -m tools.budget_link --model models/yolo11n-pose.onnx --source rgb15 --scene models/profile-bus.jpg --duration 20 --repeats 1 --mbps 2 5 --scenarios camera --loss-rate .001 --retransmit-ms 40 --optimized --report pose.json
+```
+
+`--optimized` selects the canonical viewer's transfer policy in the Python
+measurement client; omitting it reproduces legacy behavior against the same
+additively compatible server. This client receives fragments without decoding
+video or rendering geometry. It exercises the real relay, pose, fusion, encoder,
+control and network paths, while browser tests cover the scheduling implementation.
+The production server gains no measurement or synthetic-audio routes.
+
+Validation passed: Python 401 tests plus 97 subtests (4 skipped). After
+integrating main through `a2cb07e` (Python unchanged), Quest 89 unit tests,
+TypeScript/Vite build, Chromium XR/transfer regression, and all 13
+simulated/replay judge-flow steps passed. The new
+browser fixture clears its status timers on cleanup so the runner exits. Cargo
+was unavailable on this host; Rust files were unchanged. None of these checks
+qualifies the physical rig or decoded H.264 driving over cellular.

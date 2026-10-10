@@ -187,6 +187,7 @@ export class RoverExperience {
     document.querySelector("#settings")!.append(videoOption);
     videoOption.querySelector("input")!.onchange = event => {
       this.h264Enabled = (event.target as HTMLInputElement).checked;
+      if (this.h264Enabled) this.request?.abort();
       this.stop("Video format changed: release deadman");
       this.gate.frameAt = -Infinity; this.gate.frameAge = Infinity; this.pendingFrame = null; this.lastCanvasDraw = -Infinity;
       if (this.h264Enabled) this.h264.start(); else this.h264.stop();
@@ -475,6 +476,8 @@ export class RoverExperience {
     if (this.voice.pushStart()) this.stop("Voice question: release trigger");
   }
   get vrCameraView() { return this.renderer.xr.isPresenting && this.xrLive; }
+  get deadmanHeld() { return this.input.held; }
+  get videoStreaming() { return this.h264Enabled; }
 
   private pump() {
     const now = performance.now();

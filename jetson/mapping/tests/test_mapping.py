@@ -167,6 +167,27 @@ class StateTests(unittest.TestCase):
 
 
 class APITests(unittest.TestCase):
+    def test_http_map_subscription_sends_only_status_and_retains_legacy_binary(self):
+        app = create_app()
+        with TestClient(app) as client:
+            app.state.mapping.process(flat_frame())
+            with client.websocket_connect('/ws/map?points=http') as viewer:
+                status = viewer.receive_json()
+                self.assertEqual(status['points_transport'], 'http')
+                # The next message must also be status, never a queued raw map.
+                self.assertEqual(viewer.receive_json()['type'], 'status')
+                packet = client.get('/map/points.bin', headers={'Accept-Encoding': 'gzip'}).content
+                self.assertEqual(struct.unpack_from('<I', packet)[0], status['points'])
+            with client.websocket_connect('/ws/map') as viewer:
+                viewer.receive_json()
+                self.assertEqual(viewer.receive_bytes(), packet)
+            with client.websocket_connect('/ws/map?points=http') as viewer:
+                viewer.receive_json()
+                changed = client.post('/map/reset').json()
+                next_status = viewer.receive_json()
+                self.assertEqual(next_status['generation'], changed['generation'])
+                self.assertEqual(next_status['points'], 0)
+
     def test_phone_to_map_export_pause_reset_and_reconnect_snapshot(self):
         app = create_app()
         with TestClient(app) as client:

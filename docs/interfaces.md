@@ -298,6 +298,24 @@ supported coding stay identity. Responses always carry `Vary: Accept-Encoding`. 
 encodes once per map version (generation, revision, mesh revision) and reuses it across clients.
 Decoded bytes are identical to the uncompressed body; no other route is compressed.
 
+### Cellular map subscription (additive)
+
+`/ws/map?points=http` opts into status-only delivery. Each status acknowledges
+`points_transport: "http"`; this socket sends no binary point snapshots. Clients
+pull authoritative replacements from `/map/points.bin`, with normal HTTP
+`Accept-Encoding` negotiation through the operator relay. Plain `/ws/map` retains
+its original status + raw binary snapshot behavior. Clients must wait for the
+acknowledgement before using HTTP pulls, so an older server can still supply
+legacy binary packets. Rust must mirror the query and optional status field.
+
+The canonical viewer allows one map download at a time, with at least two seconds
+between starts, alternating point and mesh refreshes when both change. It closes
+the map socket and aborts map/preview downloads while the operator holds the
+deadman, retaining displayed geometry. Release reconnects and obtains new
+authoritative snapshots. Camera view also pauses map transfers as before. H.264 suppresses both the rover JPEG poll
+and the settings RGB JPEG poll. Control leases, permits, view age and release
+latches are unchanged.
+
 ## Serial (Jetson <-> Uno), 115200 baud, newline-terminated ASCII
 
 | Jetson sends | Meaning |
