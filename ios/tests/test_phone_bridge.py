@@ -31,3 +31,14 @@ class PhoneBridgeTests(unittest.TestCase):
             result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=45)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("PASS", result.stdout)
+
+    def test_dual_pinned_listeners_atomic_failure_and_recovery(self):
+        with tempfile.TemporaryDirectory(prefix="farsight-phone-dual-") as work:
+            binary = Path(work) / "dual-fixture"
+            subprocess.run(["swiftc", str(ROOT / "ios/FarsightCapture/PhoneBridge.swift"),
+                            str(ROOT / "ios/tests/PhoneBridgeTestSupport.swift"),
+                            str(ROOT / "ios/tests/PhoneBridgeDualFixture.swift"), "-o", str(binary)],
+                           check=True, capture_output=True, text=True, timeout=60)
+            result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=45)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("PASS", result.stdout)

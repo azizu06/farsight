@@ -26,9 +26,11 @@ final class EchoAfterFIN {
     let listener: NWListener
     var connections: [NWConnection] = []
     var paused: Bool
+    let responsePrefix: String
 
-    init(paused: Bool = false) throws {
+    init(paused: Bool = false, responsePrefix: String = "RESP\0") throws {
         self.paused = paused
+        self.responsePrefix = responsePrefix
         let p = NWParameters.tcp
         p.requiredLocalEndpoint = .hostPort(host: .ipv4(IPv4Address("127.0.0.1")!), port: .any)
         listener = try NWListener(using: p, on: .any)
@@ -54,7 +56,7 @@ final class EchoAfterFIN {
             if eof {
                 // The server must receive the complete request FIN before it
                 // responds; an eager full cancel in the bridge breaks this.
-                var response = Data("RESP\0".utf8); response.append(all)
+                var response = Data(self.responsePrefix.utf8); response.append(all)
                 connection.send(content: response, completion: .contentProcessed { error in
                     guard error == nil else { return }
                     connection.send(content: nil, contentContext: .finalMessage, isComplete: true, completion: .contentProcessed { _ in })

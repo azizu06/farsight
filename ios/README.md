@@ -9,7 +9,11 @@ Operator mode supports the rover-phone primary plus an optional Jetson tailnet
 fallback, disabled by default. Each TCP session keeps its selected route;
 failures close it without replay. The UI shows primary/fallback session counts.
 An explicitly started operator listener re-arms after foregrounding; manual
-Stop or a role change clears that intent. Capture never auto-resumes.
+Stop or a role change clears that intent. Capture never auto-resumes. The optional
+**Pinned dual routes for host broker** mode binds primary loopback8081 and
+fallback loopback8082 separately for the experimental bonded Mac relay; it is
+mutually exclusive with automatic fallback and remains off by default. Both
+listeners must bind before accepting pairs, and a bind failure closes both.
 In Rover mode, capture and forwarding use the same validated Jetson USB address;
 changing role or addresses requires stopping active capture/forwarding first.
 

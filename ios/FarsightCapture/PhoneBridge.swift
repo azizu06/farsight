@@ -15,9 +15,12 @@ struct PhoneBridgeConfig {
     let upstreamPort: NWEndpoint.Port
     var fallbackUpstream: IPv4Address? = nil
     var fallbackPort: NWEndpoint.Port? = nil
+    var dualRoutes = false
+    var dualSecondaryPort: NWEndpoint.Port = 8082
 
     static func make(role: PhoneBridgeRole, localTailIP: String, roverPeerIP: String,
-                     jetsonUSBIP: String, fallbackPeerIP: String? = nil) throws -> PhoneBridgeConfig {
+                     jetsonUSBIP: String, fallbackPeerIP: String? = nil,
+                     dualRoutes: Bool = false) throws -> PhoneBridgeConfig {
         func address(_ text: String) throws -> IPv4Address {
             let parts = text.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: ".", omittingEmptySubsequences: false)
             guard parts.count == 4, parts.allSatisfy({ UInt8($0).map { String($0) } == String($0) }),
@@ -33,10 +36,13 @@ struct PhoneBridgeConfig {
             let primary = try tail(roverPeerIP)
             let fallback = try fallbackPeerIP.map { try tail($0) }
             guard fallback != primary else { throw BridgeError("Fallback must differ from primary") }
+            guard !dualRoutes || fallback != nil else { throw BridgeError("Dual routes require both tailnet addresses") }
             return PhoneBridgeConfig(local: IPv4Address("127.0.0.1")!, upstream: primary,
                                      localPort: 8081, upstreamPort: 8081,
-                                     fallbackUpstream: fallback, fallbackPort: fallback == nil ? nil : 8081)
+                                     fallbackUpstream: fallback, fallbackPort: fallback == nil ? nil : 8081,
+                                     dualRoutes: dualRoutes)
         }
+        guard !dualRoutes else { throw BridgeError("Dual routes are available only in Operator role") }
         guard role == .rover else { throw BridgeError("Choose a phone role before starting") }
         let local = try tail(localTailIP), upstream = try address(jetsonUSBIP), bytes = Array(upstream.rawValue)
         guard (bytes[0] == 172 && bytes[1] == 20 && bytes[2] == 10 && bytes[3] < 16) ||
@@ -77,6 +83,7 @@ struct PhoneBridgeSnapshot {
     var primaryActive = 0
     var fallbackActive = 0
     var lastChosen = "none"
+    var listenerFailed = false
     var status = "Bridge off"
 }
 
@@ -90,6 +97,7 @@ final class PhoneBridgeServer {
     private var activePaths: [UUID: BridgePath] = [:]
     private var badUntil: [BridgePath: Double] = [:]
     private var generation = UUID()
+    private var acceptingConnections = true
     private let maxPairs: Int
     private let connectTimeout: Double
     private let sendTimeout: Double
@@ -111,11 +119,17 @@ final class PhoneBridgeServer {
         for pair in pairs.values { pair.cancel() }
     }
 
-    func start(_ config: PhoneBridgeConfig) {
-        queue.async { [weak self] in self?.startOnQueue(config) }
+    func start(_ config: PhoneBridgeConfig, accepting: Bool = true) {
+        queue.async { [weak self] in self?.startOnQueue(config, accepting: accepting) }
     }
 
+    func enableAcceptingConnections() { queue.async { [weak self] in self?.acceptingConnections = true } }
+
     func stop() { queue.async { [weak self] in self?.stopOnQueue("Bridge stopped") } }
+
+    func readSnapshot(_ handler: @escaping (PhoneBridgeSnapshot) -> Void) {
+        queue.async { [weak self] in if let self { handler(self.snapshot) } }
+    }
 
     private func emit() { onSnapshot?(snapshot) }
 
@@ -126,6 +140,7 @@ final class PhoneBridgeServer {
         let old = pairs; pairs.removeAll(); activePaths.removeAll()
         for pair in old.values { pair.cancel() }
         snapshot.running = false; snapshot.ready = false; snapshot.active = 0; snapshot.primaryActive = 0; snapshot.fallbackActive = 0; snapshot.bufferedBytes = 0
+        snapshot.listenerFailed = reason.hasPrefix("Listener failed:")
         snapshot.status = reason; emit()
     }
 
@@ -134,8 +149,9 @@ final class PhoneBridgeServer {
         snapshot.fallbackActive = activePaths.values.filter { $0 == .fallback }.count
     }
 
-    private func startOnQueue(_ config: PhoneBridgeConfig) {
+    private func startOnQueue(_ config: PhoneBridgeConfig, accepting: Bool) {
         stopOnQueue("Bridge starting")
+        acceptingConnections = accepting
         snapshot = PhoneBridgeSnapshot(); snapshot.running = true; snapshot.status = "Binding local listener"
         badUntil.removeAll()
         let token = generation
@@ -150,7 +166,7 @@ final class PhoneBridgeServer {
                 guard let self, self.generation == token else { return }
                 switch state {
                 case .ready:
-                    self.snapshot.ready = true; self.snapshot.port = listener.port?.rawValue ?? 0
+                    self.snapshot.ready = true; self.snapshot.port = self.listener?.port?.rawValue ?? 0
                     self.snapshot.status = "Listener ready · phone VPN/USB path unqualified"; self.emit()
                 case .failed(let error): self.snapshot.errors += 1; self.stopOnQueue("Listener failed: \(error)")
                 case .waiting(let error): self.snapshot.status = "Listener waiting: \(error)"; self.emit()
@@ -159,7 +175,7 @@ final class PhoneBridgeServer {
             }
             listener.newConnectionHandler = { [weak self] connection in
                 guard let self, self.generation == token else { connection.cancel(); return }
-                guard self.pairs.count < self.maxPairs else {
+                guard self.acceptingConnections, self.pairs.count < self.maxPairs else {
                     connection.cancel(); self.snapshot.rejected += 1; self.emit(); return
                 }
                 let id = UUID()
@@ -446,51 +462,78 @@ final class PhoneBridge: ObservableObject {
     @Published private(set) var counters = "0 connections · 0 bytes"
     @Published private(set) var operatorRecoveryWanted = false
     @Published private(set) var listeningPort: UInt16 = 0
-    private let server: PhoneBridgeServer
+    @Published private(set) var secondaryListeningPort: UInt16 = 0
+    @Published private(set) var primaryRouteStatus = "Primary listener off"
+    @Published private(set) var secondaryRouteStatus = "Fallback listener off"
+    @Published private(set) var dualRoutesActive = false
+    private let server: PhoneBridgeServer, secondaryServer: PhoneBridgeServer
     private let configuration: (PhoneBridgeRole, String, String, String, String?) throws -> PhoneBridgeConfig
     private var generation = UUID()
     private let snapshotLock = NSLock()
-    private var latestSnapshot: (UUID, PhoneBridgeSnapshot)?
-    private var updateScheduled = false
+    private var snapshotToken = UUID()
+    private var pendingSnapshots: [Int: (UUID, PhoneBridgeSnapshot)] = [:]
+    private var routeSnapshots: [Int: PhoneBridgeSnapshot] = [:]
+    private var updateScheduled = false, dualArmed = false
     private var foregroundIntent = BridgeForegroundIntent()
     private var operatorConfig: PhoneBridgeConfig?
 
-    init(server: PhoneBridgeServer = PhoneBridgeServer(),
+    init(server: PhoneBridgeServer = PhoneBridgeServer(), secondaryServer: PhoneBridgeServer = PhoneBridgeServer(),
          configuration: @escaping (PhoneBridgeRole, String, String, String, String?) throws -> PhoneBridgeConfig = {
         try PhoneBridgeConfig.make(role: $0, localTailIP: $1, roverPeerIP: $2, jetsonUSBIP: $3, fallbackPeerIP: $4)
     }) {
-        self.server = server; self.configuration = configuration
+        self.server = server; self.secondaryServer = secondaryServer; self.configuration = configuration
     }
 
-    private func enqueue(_ snapshot: PhoneBridgeSnapshot, token: UUID) {
+    private func enqueue(_ snapshot: PhoneBridgeSnapshot, token: UUID, route: Int = 0) {
         snapshotLock.lock()
-        latestSnapshot = (token, snapshot)
-        let schedule = !updateScheduled
-        updateScheduled = true
+        guard snapshotToken == token else { snapshotLock.unlock(); return }
+        // Preserve listener failure across the subsequent stop notification.
+        if pendingSnapshots[route]?.1.listenerFailed != true { pendingSnapshots[route] = (token, snapshot) }
+        let schedule = !updateScheduled; updateScheduled = true
+        if snapshot.listenerFailed { server.stop(); secondaryServer.stop() }
         snapshotLock.unlock()
         guard schedule else { return }
-        // Counter refreshes replace one slot; bulk traffic cannot create an
-        // unbounded queue of UI work while the main thread is busy.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-            guard let self else { return }
-            self.snapshotLock.lock()
-            let latest = self.latestSnapshot
-            self.latestSnapshot = nil; self.updateScheduled = false
-            self.snapshotLock.unlock()
-            guard let (token, snapshot) = latest, self.generation == token else { return }
-            self.running = snapshot.running; self.status = snapshot.status
-            self.listeningPort = snapshot.ready ? snapshot.port : 0
-            self.counters = "\(snapshot.active)/16 active (primary \(snapshot.primaryActive), fallback \(snapshot.fallbackActive), connecting \(snapshot.active - snapshot.primaryActive - snapshot.fallbackActive)) · \(snapshot.errors) errors · \(snapshot.forwardedBytes) bytes · last \(snapshot.lastChosen)"
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in self?.drainSnapshots() }
+    }
+
+    private func drainSnapshots() {
+        snapshotLock.lock()
+        let pending = pendingSnapshots; pendingSnapshots.removeAll(); updateScheduled = false
+        snapshotLock.unlock()
+        for (route, value) in pending where value.0 == generation { routeSnapshots[route] = value.1 }
+        guard let primary = routeSnapshots[0] else { return }
+        if dualRoutesActive {
+            let secondary = routeSnapshots[1] ?? PhoneBridgeSnapshot()
+            if primary.listenerFailed || secondary.listenerFailed {
+                closeTransport("Dual \(primary.listenerFailed ? "primary" : "fallback") listener failed: \(primary.listenerFailed ? primary.status : secondary.status). Both stopped.")
+                return
+            }
+            primaryRouteStatus = "Primary listener :\(primary.port) · \(primary.ready ? "ready" : "not ready") · \(primary.active)/16 active · \(primary.errors) errors"
+            secondaryRouteStatus = "Fallback listener :\(secondary.port) · \(secondary.ready ? "ready" : "not ready") · \(secondary.active)/16 active · \(secondary.errors) errors"
+            listeningPort = primary.ready ? primary.port : 0
+            secondaryListeningPort = secondary.ready ? secondary.port : 0
+            if primary.ready && secondary.ready && !dualArmed {
+                dualArmed = true; server.enableAcceptingConnections(); secondaryServer.enableAcceptingConnections()
+            }
+            running = primary.running || secondary.running
+            status = dualArmed ? "Dual pinned listeners ready · routes never migrate or replay" : "Starting both dual listeners; requests gated"
+            counters = "Primary \(primary.forwardedBytes) bytes · fallback \(secondary.forwardedBytes) bytes"
+        } else {
+            running = primary.running; status = primary.status; listeningPort = primary.ready ? primary.port : 0
+            counters = "\(primary.active)/16 active (primary \(primary.primaryActive), fallback \(primary.fallbackActive), connecting \(primary.active - primary.primaryActive - primary.fallbackActive)) · \(primary.errors) errors · \(primary.forwardedBytes) bytes · last \(primary.lastChosen)"
         }
     }
 
     func start(role: PhoneBridgeRole, localTailIP: String, roverPeerIP: String, jetsonUSBIP: String,
-               fallbackPeerIP: String? = nil) {
+               fallbackPeerIP: String? = nil, dualRoutes: Bool = false) {
         guard !running else { return }
         do {
-            let config = try configuration(role, localTailIP, roverPeerIP, jetsonUSBIP, fallbackPeerIP)
-            foregroundIntent.explicitStart(role: role)
-            operatorRecoveryWanted = foregroundIntent.operatorWanted
+            var config = try configuration(role, localTailIP, roverPeerIP, jetsonUSBIP, fallbackPeerIP)
+            guard !dualRoutes || (role == .operator && config.fallbackUpstream != nil) else {
+                throw BridgeError("Operator dual routes require both validated tailnet addresses")
+            }
+            config.dualRoutes = dualRoutes
+            foregroundIntent.explicitStart(role: role); operatorRecoveryWanted = foregroundIntent.operatorWanted
             operatorConfig = role == .operator ? config : nil
             startConfigured(config)
         } catch { status = error.localizedDescription }
@@ -503,14 +546,29 @@ final class PhoneBridge: ObservableObject {
 
     private func startConfigured(_ config: PhoneBridgeConfig) {
         let token = UUID(); generation = token; running = true; status = "Starting fixed-upstream bridge"
+        dualRoutesActive = config.dualRoutes; dualArmed = false; routeSnapshots.removeAll()
+        // Enqueue the complete listener transaction under one lock. A fast
+        // bind failure must queue peer-stop AFTER both starts, not before the
+        // other start has even been submitted.
+        snapshotLock.lock(); snapshotToken = token; pendingSnapshots.removeAll()
         server.setSnapshotHandler { [weak self] snapshot in self?.enqueue(snapshot, token: token) }
-        server.start(config)
+        if config.dualRoutes, let fallback = config.fallbackUpstream {
+            var primary = config; primary.fallbackUpstream = nil; primary.fallbackPort = nil; primary.dualRoutes = false
+            let secondary = PhoneBridgeConfig(local: config.local, upstream: fallback,
+                                              localPort: config.dualSecondaryPort,
+                                              upstreamPort: config.fallbackPort ?? config.upstreamPort)
+            secondaryServer.setSnapshotHandler { [weak self] snapshot in self?.enqueue(snapshot, token: token, route: 1) }
+            server.start(primary, accepting: false); secondaryServer.start(secondary, accepting: false)
+        } else { secondaryServer.stop(); server.start(config) }
+        snapshotLock.unlock()
     }
 
     private func closeTransport(_ reason: String) {
-        generation = UUID(); running = false; status = reason
-        listeningPort = 0
-        counters = "0/16 active · bridge stopped"; server.stop()
+        generation = UUID(); running = false; status = reason; listeningPort = 0; secondaryListeningPort = 0
+        snapshotLock.lock(); snapshotToken = generation; pendingSnapshots.removeAll(); snapshotLock.unlock()
+        dualRoutesActive = false; dualArmed = false
+        primaryRouteStatus = "Primary listener stopped"; secondaryRouteStatus = "Fallback listener stopped"
+        counters = "0 active · bridge stopped"; server.stop(); secondaryServer.stop()
     }
 
     func suspendForBackground() {
