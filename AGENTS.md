@@ -50,6 +50,7 @@ must follow the final implementation, not an earlier plan.
 | Motor firmware and control | `rover/README.md`, `jetson/control/README.md`; drive calibration (PWM to m/s, rad/s): `docs/drive-calibration.md` |
 | Inference and models | `docs/inference-setup.md`, `models/README.md`; models are ignored artifacts copied separately |
 | Mapping and scan | `docs/mapping.md`, `docs/scan.md`; distinguish measured and estimated geometry |
+| ROS 2 navigation and SLAM | `docs/navigation.md`; SLAM is optional (`ros2/farsight_slam`, tests via its `test/run_docker.sh`, simulation only) |
 | Rust services | `rust/README.md`; verify feature and wire parity before changing the demo runtime |
 
 ## What counts as ready
