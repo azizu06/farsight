@@ -161,6 +161,7 @@ def measure_ask(url, text, runs=5, audio=None, context=None, out=sys.stdout):
         with _open(request, context, timeout=60) as response:
             answer = json.load(response)
         answer["wall_ms"] = round((time.monotonic() - started) * 1000)
+        answer.setdefault("ms", answer["wall_ms"])  # servers without the server-side total (Rust port) still measure
         results.append(answer)
         print(f"  run {i + 1}: {answer.get('ms')} ms server, {answer['wall_ms']} ms wall, timings {answer.get('timings')}, "
               f"model {answer.get('model')}: {str(answer.get('answer'))[:70]}", file=out)
