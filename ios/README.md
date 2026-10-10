@@ -61,9 +61,11 @@ camera, LiDAR, or USB networking behavior.
 ## Connect locally to the Jetson over USB
 
 1. On the rover phone, enable cellular data and Personal Hotspot / Allow Others
-   to Join. Trust the Jetson when asked. This local app connection uses the USB
-   hotspot network. In the primary design, the rover phone owns the cellular
-   relay to the operator phone; raw capture stays on USB.
+   to Join. Trust the Jetson when asked. This local app connection uses the
+   cabled USB network, not a Wi-Fi link. In the primary design, the rover phone
+   owns the cellular relay to the operator phone; raw capture stays on USB. The
+   Quest must not join this phone's hotspot for Farsight traffic: it reaches the
+   MacBook through USB/ADB reverse.
 2. On the Jetson, identify the iPhone USB network interface and its assigned IP:
    `ip -br addr`, then `ip route`. This requires the Linux iPhone USB driver and
    phone pairing/tethering working; validate it before the demo.

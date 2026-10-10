@@ -8,9 +8,10 @@ Optional camera-only room snapshot: [scan setup, model contract and local eviden
 
 See, steer, and search through a rover's camera from a Quest 2. The Jetson Orin
 Nano runs perception, motor safety, and mission recording. A MacBook serves the
-Quest app over USB. The confirmed [phone-owned cellular relay](docs/phone-relay.md)
-connects the two iPhones, with local USB bridges to the computers; implementation
-and hardware qualification are in progress. The earlier computer-side
+Quest app over USB. The [phone-owned cellular relay](docs/phone-relay.md)
+connects the two iPhones, with local USB bridges to the computers; a two-phone
+transport run is recorded, while full Quest display and physical-drive
+qualification remain in progress. The earlier computer-side
 Tailscale/USB-tether path remains a fallback. Venue Wi-Fi is not part of the design.
 
 The software includes JPEG/H.264 video, trigger/stick driving, servo or digital
@@ -82,16 +83,37 @@ of GPU execution. The optional [Hub face detector](models/README.md) uses
 
 ## Connect the operator
 
-Authenticate Tailscale on the Jetson and MacBook and verify cellular USB tethering
-at both ends. Use the actual rover address:
+For the demo, use the [phone-owned cellular route](docs/phone-relay.md): Quest
+and MacBook stay connected by USB-C/ADB reverse; the MacBook reaches the
+operator iPhone through USB `iproxy`; the two bridge phones use cellular data
+and Tailscale; the rover phone connects to the Jetson over its local USB network.
+Do not use the venue Wi-Fi or connect the Quest directly to the phone hotspot.
+
+On the MacBook, after both Farsight phone bridges are configured, run the
+no-motion health check:
 
 ```sh
-.venv/bin/python -m tools.demo --upstream http://JETSON_TAILNET_IP:8443 --quest
+python -m tools.phone_usb --check
 ```
 
-This explicit HTTP example travels inside the encrypted Tailscale tunnel.
-HTTPS upstream is supported with certificate verification and `--ca-file`.
-Open `http://localhost:8080` in Quest Browser. Right trigger is the deadman and the
+Then keep the USB helper running in Terminal 1:
+
+```sh
+python -m tools.phone_usb
+```
+
+Start the operator relay in Terminal 2:
+
+```sh
+.venv/bin/python -m tools.demo --upstream http://127.0.0.1:18443 --quest
+```
+
+The Quest opens `http://localhost:8080`; ADB reverse carries it over USB. For
+the exact phone setup, health checks, fallback behavior and acceptance gates,
+follow [phone-relay.md](docs/phone-relay.md) and
+[demo-connectivity.md](docs/demo-connectivity.md). The optional direct Jetson
+tailnet route is not the default and must not be called a qualified fallback
+without the full Quest/rover test. Right trigger is the deadman and the
 left stick drives. Right A switches camera/map, right B stops, left X recenters,
 left Y opens the actions menu (point and right grip to select),
 left grip starts the rescue drill, and the left trigger confirms a pending

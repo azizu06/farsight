@@ -1,15 +1,19 @@
 # Quest 2 first run
 
-From unboxing to driving, with what to check when a step fails. Written before
-any physical Quest 2 run: every step below is a hardware gate, and nothing here
-has been verified on a headset yet. Transport details:
-[transport-setup.md](transport-setup.md) and
-[demo-connectivity.md](demo-connectivity.md). Controls and safety:
-[quest/README.md](../quest/README.md).
+From setup to the first live view, with what to check when a step fails. The
+production Quest-to-Mac link is USB-C with ADB reverse; do not use venue Wi-Fi
+or a phone hotspot for headset app traffic. The complete topology and bring-up
+are in [demo-connectivity.md](demo-connectivity.md) and
+[phone-relay.md](phone-relay.md). Controls and safety are in
+[quest/README.md](../quest/README.md); the older computer-side transport is
+documented only as a fallback in [transport-setup.md](transport-setup.md).
 
-The headset never talks to the Jetson directly. Quest Browser opens
-`http://localhost:8080`, ADB reverse carries that port over USB to the MacBook
-operator relay (`tools/demo.py`), and the relay proxies every route to the rover.
+The headset never talks to the Jetson or a phone hotspot directly. Quest Browser
+opens `http://localhost:8080`; ADB reverse carries that port over USB to the
+MacBook operator relay (`tools/demo.py`). The Mac's `iproxy` USB bridge reaches
+the operator iPhone, and the phone relays reach the rover phone and Jetson.
+Keep the data USB-C cable attached throughout the demo; the app path must work
+with Quest, Mac and Jetson Wi-Fi disabled.
 
 ## 1. Headset setup (once, needs internet)
 
@@ -41,12 +45,32 @@ no other supported transport in this project.
 
 ## 3. Start the relay and map the port
 
-Rehearse with the simulator first, then use the real Jetson:
+Rehearse with the simulator first. For the live route, set up both Farsight
+Capture phone bridge roles and the rover phone's local USB network as described
+in [phone-relay.md](phone-relay.md). Then, on the operator Mac:
 
 ```sh
 npm --prefix quest ci && npm --prefix quest run build
 python -m tools.demo --simulate --h264 --quest           # simulated rover, H.264
-python -m tools.demo --upstream https://JETSON_TAILNET_NAME:8443 --quest
+```
+
+First run the bounded USB health check; it opens no control socket and requests
+no motion:
+
+```sh
+python -m tools.phone_usb --check
+```
+
+Then keep the USB helper running in Terminal 1:
+
+```sh
+python -m tools.phone_usb
+```
+
+Start the relay in Terminal 2:
+
+```sh
+python -m tools.demo --upstream http://127.0.0.1:18443 --quest
 ```
 
 `--quest` runs `adb reverse tcp:8080 tcp:8080` and prints `adb reverse --list`.
@@ -54,8 +78,8 @@ Reapply it after any USB reconnect, headset sleep or reboot (rerun the launcher
 or run the `adb reverse` command yourself).
 
 If the launcher exits, read its message: a busy port, missing `adb`, missing
-`quest/dist` (add `--build`), or an HTTPS certificate that does not match the
-Jetson name (use `--ca-file`, or an explicit `http://` origin inside Tailscale).
+`quest/dist` (add `--build`), or a failed USB phone forward. Do not replace the
+phone-owned route with the venue Wi-Fi or a direct headset-to-Jetson URL.
 
 ## 4. Open the app in Quest Browser
 

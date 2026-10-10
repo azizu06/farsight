@@ -75,7 +75,7 @@ Drop the Ask shot (1:36-1:50, 14 s) or the mission-report shot (1:50-2:00, 10 s)
 
 | Beat | Show | Say | Gate |
 |---|---|---|---|
-| Two-phone link | HUD link line, both phones with Wi-Fi off, hotspot on | "Over the two phones, with Wi-Fi off, control round trip was 119.5, 167 and 228 milliseconds. The stream held about 9 frames a second." | That exact run, [pitch-metrics.md](pitch-metrics.md), "Control round-trip p50 / p95 / max" and "Stream fps, H.264" under "Real phones and the Jetson". Not the older 123/182 or 9.1 rows. |
+| Two-phone link | HUD link line, both phones' Wi-Fi off, cellular/Tailscale active; rover phone Personal Hotspot used only for its cabled Jetson USB network | "Over the two phones, with Wi-Fi off, control round trip was 119.5, 167 and 228 milliseconds. The stream held about 9 frames a second." | That exact run, [pitch-metrics.md](pitch-metrics.md), "Control round-trip p50 / p95 / max" and "Stream fps, H.264" under "Real phones and the Jetson". Not the older 123/182 or 9.1 rows. |
 | LiDAR map | Map view, source labelled measured | "This map is measured LiDAR from the phone, not the estimated scan." | Pro iPhone paired and routed ([judge-demo.md](judge-demo.md) optional beats) |
 | Rescue drill | Drill HUD: timer, found count, score | "A 90-second drill. A face held in view for one second counts as found. It counts tracks, not people." | Faces model loaded, real people as victims |
 
@@ -97,7 +97,7 @@ Do this in order. The rig tech stays next to the battery switch the whole time
 
 ### Before anyone presses record
 
-- [ ] Cold boot from [demo-checklist.md](demo-checklist.md) until `python -m tools.ready --url http://<jetson>:8443 --require-tensorrt --require-drive-camera` ends `READY`. Board profile is plain HTTP.
+- [ ] Cold boot from [demo-checklist.md](demo-checklist.md) until `python -m tools.ready --url http://127.0.0.1:18443 --require-tensorrt --require-drive-camera` ends `READY` through the running phone USB helper. Board profile is plain HTTP.
 - [ ] Smoke test, laptop only, not hardware evidence: `npm --prefix quest run test:judge` ([judge-demo.md](judge-demo.md)).
 - [ ] Quest page is `http://localhost:8080/?mount=fixed&h264=1` ([quest-first-run.md](quest-first-run.md)). Fixed mount, because this rover has no pan servo. If the HUD reads *H.264 codec unsupported* or never shows *decoded frame verified*, drop `h264=1` and stay on JPEG. Quest 2 H.264 playback is not verified.
 - [ ] Confirm the banner. LIVE needs a real camera source and a connected rover. If it reads `NOT VERIFIED LIVE`, read the detail line and fix that, or do not call the shot live.
@@ -114,11 +114,15 @@ Do this in order. The rig tech stays next to the battery switch the whole time
 
 ### Commands (real flags)
 
-Operator path, from [demo-checklist.md](demo-checklist.md) and `tools/demo.py`:
+On the Mac, keep `python -m tools.phone_usb` running in one terminal, then start the operator path from [demo-checklist.md](demo-checklist.md):
 
 ```sh
-python -m tools.demo --upstream http://<jetson>:8443 --quest
+python -m tools.demo --upstream http://127.0.0.1:18443 --quest
 ```
+
+`18443` is the USB-forwarded operator-phone listener; the two phone bridges
+carry it to the rover phone and Jetson. Do not substitute a direct Jetson or
+venue-LAN URL for the production demo route.
 
 `--quest` runs `adb reverse tcp:8080 tcp:8080` and prints `adb reverse --list`. `--h264` is
 rejected on an upstream; video is configured on the Jetson, not by this flag. Add `--ca-file` only

@@ -3,10 +3,12 @@
 Farsight puts an operator inside a rover: Quest 2 for sight and steering, a Jetson Orin Nano on
 the rover for perception, safety and logging. There are two physical kits. The **operator kit**
 (Quest 2, MacBook relay, operator phone) sits with the judges; the **rover kit** (Jetson, mounted
-phone camera, sensorless Uno, drive motors) drives freely. The planned link is the
-phone-to-phone relay: Farsight Capture bridge roles over the two phones' Tailscale cellular, with
-the Mac and Jetson on local USB. That path is still being built and hardware-tested; computer-side
-Tailscale is the fallback. Wire details are in [interfaces.md](interfaces.md);
+phone camera, sensorless Uno, drive motors) drives freely. The production link is the
+phone-to-phone relay: Farsight Capture bridge roles over the two phones' cellular/Tailscale,
+with Quest↔Mac, Mac↔operator phone, and rover phone↔Jetson on local USB. Campus Wi-Fi is not part
+of the production route. A live two-phone transport run is recorded, while full Quest display,
+physical driving, and failure recovery still need on-rig qualification. The computer-side
+Tailscale/USB-tether path is a fallback only. Wire details are in [interfaces.md](interfaces.md);
 this page is the explanation for judges and the Devpost diagram.
 
 Rendered for slides and Devpost: [architecture.png](assets/architecture.png) (`-w 2400`, natural size),
@@ -127,11 +129,12 @@ flowchart TB
   depth is the obstacle source (the costmaps plan around it) and a missing depth stops that mode;
   Nav2 and SLAM Toolbox are simulation-tested, and nvblox has never run. The Uno has no ultrasonic
   and no pan servo.
-- The planned network is the phone-owned relay ([phone-relay.md](phone-relay.md)), still being
-  built and hardware-tested: operator phone
-  `127.0.0.1:8081` via USB `iproxy` (`:18443`), rover phone tailnet `:8081`, Jetson USB
-  `172.20.10.3:8443`. Models run offline; the *link* needs cellular internet. The computer-side
-  Tailscale path is the fallback. No path means no untethered live video; we then show labelled recordings.
+- The production network is the [phone-owned relay](phone-relay.md): Quest `localhost:8080`
+  through USB/ADB reverse to the Mac, USB `iproxy` to the operator phone, cellular/Tailscale
+  to the rover phone, then local USB to Jetson `:8443`. Campus Wi-Fi is not in this path.
+  Models run offline; remote viewing needs cellular internet. The full Quest/drive/fault-recovery
+  rehearsal is still pending. The computer-side Tailscale path is fallback only; if live paths
+  fail, show labelled recordings with motors disabled.
 - Geometry has three labelled kinds: **measured** (LiDAR iPhone, ARKit pose), **estimated**
   (monocular Depth Anything V2, five-view stationary scan, optical-axis metres) and **none** (ordinary
   iPhone or webcam: RGB only). The viewer and docs never present estimated depth as measured.
