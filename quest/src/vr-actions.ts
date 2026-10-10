@@ -1,6 +1,6 @@
 import * as THREE from "three";
 
-export type VRAction = "explore" | "scan" | "drill" | "close";
+export type VRAction = "help" | "scan" | "drill" | "close";
 type UV = { x: number; y: number };
 
 const WIDTH = 768;
@@ -9,7 +9,7 @@ const LEFT = 44;
 const RIGHT = WIDTH - LEFT;
 const ROW_HEIGHT = 128;
 const ROWS: { action: VRAction; label: string; top: number }[] = [
-  { action: "explore", label: "Explore", top: 152 },
+  { action: "help", label: "Controls", top: 152 },
   { action: "scan", label: "Scan", top: 308 },
   { action: "drill", label: "Rescue drill", top: 464 },
   { action: "close", label: "Close", top: 620 },
@@ -32,6 +32,7 @@ export class VRActionMenu {
   private readonly context: CanvasRenderingContext2D;
   private readonly texture: THREE.CanvasTexture;
   private selected: VRAction | null = null;
+  private confirmed: VRAction | null = null;
 
   constructor() {
     this.canvas.width = WIDTH;
@@ -56,11 +57,17 @@ export class VRActionMenu {
     if (value === this.panel.visible) return;
     this.panel.visible = value;
     if (value) this.draw();
-    else this.selected = null;
+    else this.selected = this.confirmed = null;
   }
 
   hit(uv: UV | undefined): VRAction | null {
     return this.visible ? vrActionHit(uv) : null;
+  }
+
+  /** Green flash on the chosen card so a selection is visibly accepted before the menu closes. */
+  confirm(action: VRAction) {
+    this.confirmed = action;
+    if (this.visible) this.draw();
   }
 
   hover(action: VRAction | null) {
@@ -81,18 +88,18 @@ export class VRActionMenu {
     c.font = "bold 48px system-ui";
     c.fillText("Rover actions", WIDTH / 2, 80);
     for (const row of ROWS) {
-      const hovered = this.selected === row.action;
-      c.fillStyle = hovered ? "#123b46" : "#152936";
-      c.strokeStyle = hovered ? "#70f2ff" : "#4a6575";
-      c.lineWidth = hovered ? 5 : 2;
+      const hovered = this.selected === row.action, chosen = this.confirmed === row.action;
+      c.fillStyle = chosen ? "#14532d" : hovered ? "#123b46" : "#152936";
+      c.strokeStyle = chosen ? "#3ddc84" : hovered ? "#70f2ff" : "#4a6575";
+      c.lineWidth = chosen || hovered ? 6 : 2;
       c.beginPath(); c.roundRect(LEFT, row.top, RIGHT - LEFT, ROW_HEIGHT, 20); c.fill(); c.stroke();
-      c.fillStyle = hovered ? "#bdfaff" : "#ffffff";
+      c.fillStyle = chosen ? "#bbf7d0" : hovered ? "#bdfaff" : "#ffffff";
       c.font = "bold 46px system-ui";
       c.fillText(row.label, WIDTH / 2, row.top + ROW_HEIGHT / 2);
     }
     c.fillStyle = "#d5e6ee";
     c.font = "40px system-ui";
-    c.fillText("Point + right grip to select", WIDTH / 2, 808);
+    c.fillText("Point + trigger or grip", WIDTH / 2, 808);
     c.fillText("Hold A closes", WIDTH / 2, 861);
     this.texture.needsUpdate = true;
   }

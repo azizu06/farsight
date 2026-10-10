@@ -331,7 +331,7 @@ try {
       moving: subject.gate.decide(true, 240, true, subject.inputValid, subject.lastXRAt),
       needsRelease: subject.gate.needsRelease,
     };
-    // Left Y held across tracking loss must not open a menu on recovery.
+    // Left Y (controller diagram) held across tracking loss must not reopen it on recovery.
     let scans = 0;
     subject.startScan = async () => { scans++; };
     left.gamepad.buttons = [0, 1, 2, 3, 4, 5].map(() => ({ pressed: false }));
@@ -340,13 +340,13 @@ try {
     subject.update(250, frame);
     loseLeft = false;
     subject.update(260, frame);
-    const menuWhileStillHeld = subject.actionMenu.visible;
+    const menuWhileStillHeld = Number.isFinite(subject.hintUntil);
     left.gamepad.buttons[5].pressed = false;
     subject.update(270, frame);
     left.gamepad.buttons[5].pressed = true;
     subject.update(280, frame);
-    const menuLatch = { menuWhileStillHeld, menuAfterRelease: subject.actionMenu.visible, scans };
-    subject.actionMenu.visible = false;
+    const menuLatch = { menuWhileStillHeld, menuAfterRelease: Number.isFinite(subject.hintUntil), scans };
+    subject.hintUntil = -Infinity;
 
     const grant = (label) => {
       const next = permissions.shift();
@@ -453,6 +453,7 @@ try {
 
     // Source banner: server truth only, mirrored on desktop DOM and the headset panel.
     const banner = subject.sourceBanner;
+    subject.bannerKey = ""; // the chip only repaints when its source, mode or tone changes
     subject.drawHUD(420);
     const simulated = { kind: banner.dataset.kind, title: banner.querySelector("strong").textContent, vr: subject.bannerPanel.visible && subject.bannerPanel.parent === subject.cockpit };
     // The headset banner repaints on a later frame than the HUD, and never for unchanged text.
@@ -462,7 +463,10 @@ try {
     subject.lastHudAt = 421;
     subject.paint(421);
     const painted = !subject.bannerPending;
-    const bannerPixel = [...subject.bannerCanvas.getContext("2d").getImageData(1010, 100, 1, 1).data].slice(0, 3);
+    // The chip's source tag is filled with the SIMULATED colour somewhere on the canvas.
+    const chipData = subject.bannerCanvas.getContext("2d").getImageData(0, 0, subject.bannerCanvas.width, subject.bannerCanvas.height).data;
+    let bannerPixel = null;
+    for (let i = 0; i < chipData.length; i += 4) if (chipData[i] === 0x7c && chipData[i + 1] === 0x4a && chipData[i + 2] === 0x03 && chipData[i + 3] === 255) { bannerPixel = [0x7c, 0x4a, 0x03]; break; }
     subject.drawHUD(420); // identical text, including the displayed age
     const headsetBanner = { queued, painted, bannerPixel, unchangedQueued: !!subject.bannerPending };
     subject.sourceTruth.accept({ replay: true }, 430);
@@ -648,14 +652,26 @@ try {
       const recentered = { position: subject.cockpit.position.toArray(), quaternion: subject.cockpit.quaternion.toArray(), needsRelease: subject.gate.needsRelease };
       left.gamepad.buttons[4].pressed = false; tick();
 
-      // A hits a person rectangle but still changes view, never selecting Seek.
+      // A over a person rectangle switches to AUTO (never selecting Seek): Explore armed, map shown,
+      // live camera kept as a small window, and a fresh trigger release required.
       subject.drawnBoxes = [{ id: 7, cls: "person", x: 0, y: 0, w: 1, h: 1 }];
       subject.panelPoint = () => ({ x: .5, y: .5 });
       press(right, 4);
       const viewWhileAHeld = view;
-      right.gamepad.buttons[4].pressed = false; tick(); // a tap toggles on release
-      const aOverPerson = { view, mode: subject.autonomy.mode, release: subject.gate.needsRelease, viewWhileAHeld };
+      right.gamepad.buttons[4].pressed = false; tick(); // a tap switches on release
+      const aOverPerson = { view, mode: subject.autonomy.mode, release: subject.gate.needsRelease, viewWhileAHeld,
+        auto: subject.freeRoam.active, cameraWindow: subject.cameraScreen.visible && subject.cameraScreen.scale.x < .5, mapShown: !subject.vrCameraView };
+      // AUTO: deadman held with the stick fully deflected. Heartbeats carry Explore with v = w = 0; the stick only roams.
+      right.gamepad.buttons[0].pressed = false; tick();
+      right.gamepad.axes[3] = -1; right.gamepad.axes[2] = .9;
+      right.gamepad.buttons[0].pressed = true; tick(); tick();
+      const autoMessage = messages.at(-1);
+      const autoDrive = { deadman: autoMessage.deadman, mode: autoMessage.mode, v: autoMessage.v, w: autoMessage.w, intent: subject.autonomy.mode,
+        roamed: subject.freeRoam.x !== 0 || subject.freeRoam.z !== 0, turned: subject.freeRoam.yaw !== 0 };
+      right.gamepad.axes[3] = 0; right.gamepad.axes[2] = 0;
+      // A again: back to MANUAL, autonomy off, motion latched until the trigger is released.
       press(right, 4); right.gamepad.buttons[4].pressed = false; tick();
+      const backToManual = { mode: subject.autonomy.mode, release: subject.gate.needsRelease, auto: subject.freeRoam.active, cameraView: subject.vrCameraView, deadman: messages.at(-1).deadman };
 
       // Hold right trigger + forward right stick, then B must stop and cancel.
       right.gamepad.axes[3] = -1;
@@ -689,8 +705,6 @@ try {
       while (performance.now() - aStart < 650) { await new Promise(resolve => setTimeout(resolve, 50)); tick(); }
       right.gamepad.buttons[4].pressed = false; tick();
       const holdA = { menu: subject.actionMenu.visible, view, viewBeforeHold };
-      subject.actionMenu.visible = false; tick();
-      press(left, 5);
       const menuOpened = subject.actionMenu.visible;
       right.gamepad.buttons[0].pressed = false; tick();
       right.gamepad.buttons[0].pressed = true; tick();
@@ -702,7 +716,7 @@ try {
       rayTracked = true; tick();
       const heldThroughRayRecovery = { menu: subject.actionMenu.visible, mode: subject.autonomy.mode };
       right.gamepad.buttons[1].pressed = false; tick();
-      // Aim at the Explore card on the actual menu mesh, then a new grip press.
+      // Aim at the Controls card on the actual menu mesh, then a new grip press.
       subject.cockpit.updateMatrixWorld(true);
       const aim = subject.actionMenu.panel.localToWorld(new THREE.Vector3(0, .351, 0));
       rayPosition.copy(position);
@@ -711,8 +725,8 @@ try {
       const hover = subject.updatePointer(frame, reference, right);
       right.gamepad.buttons[0].pressed = true;
       right.gamepad.buttons[1].pressed = true; tick();
-      const selected = { hover, mode: subject.autonomy.mode, menu: subject.actionMenu.visible, release: subject.gate.needsRelease, motion: messages.at(-1).deadman };
-      return { anchored, afterHeadMove, recentered, aOverPerson, drove, drift, override, holdA, bStopped, heldAfterStop,
+      const selected = { hover, mode: subject.autonomy.mode, menu: subject.actionMenu.visible, release: subject.gate.needsRelease, motion: messages.at(-1).deadman, hint: subject.hintPanel.visible };
+      return { anchored, afterHeadMove, recentered, aOverPerson, autoDrive, backToManual, drove, drift, override, holdA, bStopped, heldAfterStop,
                bStopsAfterRecovery, resumedAfterRelease, menuOpened, behindMenu, missingRay,
                heldThroughRayRecovery, selected };
     } finally { renderer.xr.isPresenting = false; subject.dispose(); renderer.dispose(); }
@@ -722,7 +736,10 @@ try {
   assert.ok(Math.abs(interactions.recentered.quaternion[0]) < 1e-8 && Math.abs(interactions.recentered.quaternion[2]) < 1e-8, "recenter is yaw-only");
   assert.ok(Math.abs(2 * Math.atan2(interactions.recentered.quaternion[1], interactions.recentered.quaternion[3]) - .8) < 1e-6, "recenter faces the current head yaw");
   assert.equal(interactions.recentered.needsRelease, true);
-  assert.deepEqual(interactions.aOverPerson, { view: "3d", mode: "teleop", release: true, viewWhileAHeld: "camera" });
+  assert.deepEqual(interactions.aOverPerson, { view: "camera", mode: "explore", release: true, viewWhileAHeld: "camera", auto: true, cameraWindow: true, mapShown: true });
+  assert.deepEqual(interactions.autoDrive, { deadman: true, mode: "explore", v: 0, w: 0, intent: "explore", roamed: true, turned: true },
+    "AUTO: a deflected stick roams the map and never sends physical v/w or a stick override");
+  assert.deepEqual(interactions.backToManual, { mode: "teleop", release: true, auto: false, cameraView: true, deadman: false });
   assert.deepEqual(interactions.drove, { deadman: true, v: 0.45, w: 0 }, "right stick forward drives");
   assert.deepEqual(interactions.drift, { mode: "explore", v: 0, w: 0 }, "drift inside the deadzone and the left stick never override Explore");
   assert.equal(interactions.override, "teleop", "a real right-stick push takes back control");
@@ -736,7 +753,7 @@ try {
   assert.deepEqual(interactions.behindMenu, { motion: false, inputValid: false, visible: true });
   assert.deepEqual(interactions.missingRay, { menu: true, mode: "teleop", pointer: false });
   assert.deepEqual(interactions.heldThroughRayRecovery, { menu: true, mode: "teleop" });
-  assert.deepEqual(interactions.selected, { hover: "explore", mode: "explore", menu: false, release: true, motion: false });
+  assert.deepEqual(interactions.selected, { hover: "help", mode: "teleop", menu: false, release: true, motion: false, hint: true });
   result.interactions = interactions;
   // Exercise the real main viewer's transfer scheduling with fixture packets.
   // Deadman state is injected; this does not qualify physical input or motion.
