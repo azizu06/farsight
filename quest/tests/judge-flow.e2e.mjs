@@ -1,0 +1,376 @@
+// Judge-flow smoke test (#57): docs/judge-demo.md against the simulator and the replay fixture.
+//
+//   npm --prefix quest run test:judge            # or: node quest/tests/judge-flow.e2e.mjs [--out report.json]
+//
+// Starts `python -m tools.demo --simulate --build` (simulated rover, ray-cast room) and a
+// `--replay tools/fixtures/replay-demo` server behind its own operator relay, then drives the
+// served Quest page in headless Chromium/SwiftShader with the desktop controls (Space deadman,
+// WASD, E explore, click-to-seek, Settings). XR-only inputs are covered by xr-input.browser.mjs.
+// Every result is SIMULATED or REPLAY; nothing here touches or proves hardware.
+import { spawn } from "node:child_process";
+import { existsSync, writeFileSync } from "node:fs";
+import net from "node:net";
+import { fileURLToPath } from "node:url";
+import { chromium } from "@playwright/test";
+
+const root = fileURLToPath(new URL("../..", import.meta.url));
+const python = process.env.FARSIGHT_PYTHON ?? (existsSync(`${root}.venv/bin/python`) ? `${root}.venv/bin/python` : "python3");
+const outIndex = process.argv.indexOf("--out");
+const outPath = outIndex > 0 ? process.argv[outIndex + 1] : null;
+const SYNTHETIC_ID = 900001;
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function freePort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => { const { port } = server.address(); server.close(() => resolve(port)); });
+  });
+}
+
+const processes = [];
+function start(name, args) {
+  // Own process group so the whole tree (tools.demo children included) can be stopped.
+  const child = spawn(python, args, { cwd: root, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+  let log = "";
+  child.stdout.on("data", (data) => { log = (log + data).slice(-4000); });
+  child.stderr.on("data", (data) => { log = (log + data).slice(-4000); });
+  child.on("error", (error) => { log += `\nspawn failed: ${error.message}`; });
+  const entry = { name, child, log: () => log };
+  processes.push(entry);
+  return entry;
+}
+function stopAll(signal = "SIGTERM") {
+  for (const { child } of processes) {
+    if (child.pid && child.exitCode === null) { try { process.kill(-child.pid, signal); } catch {} }
+  }
+}
+async function stopAndWait() {
+  stopAll();
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline && processes.some(({ child }) => child.pid && child.exitCode === null)) await sleep(100);
+  stopAll("SIGKILL");
+}
+
+async function waitFor(label, check, timeoutMs, intervalMs = 100) {
+  const deadline = Date.now() + timeoutMs;
+  let last;
+  while (Date.now() < deadline) {
+    try {
+      const value = await check();
+      if (value) return value;
+    } catch (error) {
+      if (error.fatal) throw error;
+      last = error;
+    }
+    await sleep(intervalMs);
+  }
+  throw new Error(`${label} (waited ${timeoutMs} ms${last ? `; last error: ${last.message}` : ""})`);
+}
+
+async function json(url) {
+  const response = await fetch(url, { cache: "no-store" });
+  if (!response.ok) throw new Error(`${url} HTTP ${response.status}`);
+  return response.json();
+}
+
+async function waitHttp(url, entry, timeoutMs) {
+  return waitFor(`${entry.name} did not serve ${url}`, async () => {
+    if (entry.child.exitCode !== null || entry.log().includes("spawn failed")) {
+      throw Object.assign(new Error(`${entry.name} exited ${entry.child.exitCode}: ${entry.log()}`), { fatal: true });
+    }
+    return (await fetch(url)).ok;
+  }, timeoutMs, 150);
+}
+
+const results = [];
+let liveSeen = null;
+let hudPage = null; // page whose HUD text is appended to a failure
+async function failure(error) {
+  const hud = hudPage ? await hudPage.evaluate(() => `${document.querySelector("#rover-message")?.textContent} | ${document.querySelector("#rover-details")?.textContent.split(" · ").at(-1)}`).catch(() => null) : null;
+  return error.message.split("\n")[0] + (hud ? ` [HUD: ${hud}]` : "");
+}
+// Held-deadman steps get one visible retry: on a loaded machine the viewer's own freshness guards
+// (500 ms video, 250 ms display) can invalidate a hold, exactly as they would on a slow rig.
+// Fatal errors (a server-side abort) are never retried.
+async function step(name, run, { retries = 0 } = {}) {
+  const started = Date.now();
+  const attempts = [];
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      if (hudPage) await releaseAll(hudPage);
+      const detail = await run();
+      const note = attempts.length ? ` (passed on retry; first attempt: ${attempts.join("; ")})` : "";
+      results.push({ step: name, result: "PASS", ms: Date.now() - started, detail: String(detail ?? "") + note });
+      return;
+    } catch (error) {
+      attempts.push(await failure(error));
+      if (error.fatal) break;
+    }
+  }
+  results.push({ step: name, result: "FAIL", ms: Date.now() - started, detail: attempts.join(" | then: ") });
+}
+
+async function openViewer(browser, origin, { injectPerson = () => false, counters = {} } = {}) {
+  const page = await browser.newPage({ viewport: { width: 960, height: 600 } });
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  counters.frames = 0; counters.detections = 0;
+  page.on("response", (response) => {
+    if (response.url().includes("/camera.jpg") && response.status() === 200) counters.frames++;
+  });
+  // Pass real detector packets through unchanged; when asked, append one clearly synthetic person
+  // box (the ray-cast room has no people) so box rendering and click-to-seek can be exercised.
+  await page.routeWebSocket("**/ws/detections", (ws) => {
+    const server = ws.connectToServer();
+    server.onMessage((message) => {
+      counters.detections++;
+      if (!injectPerson()) return ws.send(message);
+      try {
+        const packet = JSON.parse(String(message));
+        packet.boxes = [...(packet.boxes ?? []), { id: SYNTHETIC_ID, cls: "person", conf: 0.9, x: 0.4, y: 0.25, w: 0.2, h: 0.55, synthetic: true }];
+        ws.send(JSON.stringify(packet));
+      } catch { ws.send(message); }
+    });
+  });
+  await page.goto(origin);
+  return { page, errors };
+}
+
+const bannerKind = (page) => page.locator(".source-banner").getAttribute("data-kind");
+async function noteBanner(page) {
+  const kind = await bannerKind(page);
+  if (kind === "LIVE") liveSeen = kind;
+  return kind;
+}
+const roverDetails = (page) => page.locator("#rover-details").textContent();
+const roverMessage = (page) => page.locator("#rover-message").textContent();
+
+async function releaseAll(page) {
+  for (const key of ["KeyW", "KeyA", "KeyS", "KeyD", "Space"]) await page.keyboard.up(key);
+}
+// Like the operator: release, wait until the HUD is ready and the rover has seen the release, then hold Space.
+async function holdDeadman(page, origin, ...keys) {
+  await releaseAll(page);
+  await waitFor("HUD never reached ready-to-drive", async () => /Ready: hold deadman/.test(await page.locator("#rover-message").textContent())
+    && (await json(`${origin}/control/status`)).requires_release === false, 4000, 50);
+  await page.keyboard.down("Space");
+  for (const key of keys) await page.keyboard.down(key);
+}
+
+async function main() {
+  const [simPort, simJetson, replayPort, replayJetson] = await Promise.all([freePort(), freePort(), freePort(), freePort()]);
+  const sim = start("tools.demo --simulate", ["-m", "tools.demo", "--simulate", "--build", "--port", String(simPort), "--jetson-port", String(simJetson)]);
+  const replayServer = start("jetson.server --replay", ["-m", "jetson.server", "--replay", "tools/fixtures/replay-demo", "--host", "127.0.0.1", "--port", String(replayJetson)]);
+  const simOrigin = `http://127.0.0.1:${simPort}`;
+  const replayOrigin = `http://127.0.0.1:${replayPort}`;
+  await waitHttp(`${simOrigin}/relay/health`, sim, 60000);
+  await waitHttp(`http://127.0.0.1:${replayJetson}/health`, replayServer, 30000);
+  const replayRelay = start("operator_relay (replay)", ["-m", "tools.operator_relay", "--upstream", `http://127.0.0.1:${replayJetson}`, "--port", String(replayPort)]);
+  await waitHttp(`${replayOrigin}/relay/health`, replayRelay, 30000);
+
+  const browser = await chromium.launch({
+    args: ["--no-sandbox", "--disable-dev-shm-usage", "--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader"],
+  });
+  try {
+    let inject = false;
+    const counters = {};
+    const status = () => json(`${simOrigin}/control/status`);
+    const { page, errors } = await openViewer(browser, simOrigin, { injectPerson: () => inject, counters });
+    hudPage = page;
+
+    await step("page loads", async () => {
+      await page.locator("#rover-message").waitFor({ timeout: 10000 });
+      await page.locator("#rover-camera").waitFor({ state: "attached", timeout: 10000 });
+      if (errors.length) throw new Error(`page errors: ${errors.join("; ")}`);
+      return `${await page.title()} served by tools.demo relay`;
+    });
+
+    await step("source banner says SIMULATED", async () => {
+      const health = await json(`${simOrigin}/health`);
+      if (health.source !== "SIMULATED" || health.control?.simulated !== true) throw new Error(`server health source=${health.source} simulated=${health.control?.simulated}`);
+      await waitFor("banner never became SIMULATED", async () => (await noteBanner(page)) === "SIMULATED", 8000);
+      return `banner "${await page.locator(".source-banner strong").textContent()}"; /health source SIMULATED, control.simulated true`;
+    });
+
+    await step("video frames arrive", async () => {
+      const before = counters.frames;
+      await waitFor("fewer than 5 new /camera.jpg frames", () => counters.frames - before >= 5, 8000);
+      const age = await waitFor("HUD video age unavailable", async () => (await roverDetails(page)).match(/JPEG video (\d+) ms/), 5000);
+      const lit = await page.evaluate(() => {
+        const canvas = document.querySelector("#rover-camera");
+        const data = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data;
+        let sum = 0; for (let i = 0; i < data.length; i += 4) sum += data[i] + data[i + 1] + data[i + 2];
+        return sum / (data.length / 4);
+      });
+      if (!(lit > 10)) throw new Error(`camera canvas is blank (mean ${lit.toFixed(1)})`);
+      return `${counters.frames - before} frames; HUD video age ${age[1]} ms; canvas mean RGB ${lit.toFixed(0)}`;
+    });
+
+    await step("detections render", async () => {
+      const real = counters.detections;
+      await waitFor("no /ws/detections packets from the server", () => counters.detections - real >= 3, 5000);
+      inject = true;
+      await waitFor("HUD never showed the injected box", async () => (await roverDetails(page)).match(/(\d+) detections/)?.[1] === "1", 5000);
+      // Boxes only draw when a packet matches the displayed frame id exactly; sample how often they show.
+      let shownSamples = 0;
+      for (let i = 0; i < 20; i++) { if (/\b1 detections/.test(await roverDetails(page))) shownSamples++; await sleep(100); }
+      return `${counters.detections - real} real detector packets (ray-cast room: 0 people); synthetic box #${SYNTHETIC_ID} rendered → HUD "1 detections" in ${shownSamples}/20 samples over 2 s`;
+    });
+
+    await step("deadman + drive moves rover, release stops it", async () => {
+      await holdDeadman(page, simOrigin, "KeyW");
+      const moving = await waitFor("simulated rover never received forward PWM", async () => {
+        const s = await status();
+        return s.left_pwm > 0 && s.right_pwm > 0 && s.reason === "active" && s;
+      }, 4000, 50);
+      await releaseAll(page);
+      const releasedAt = Date.now();
+      const stopped = await waitFor("rover did not stop after release", async () => {
+        const s = await status();
+        return s.left_pwm === 0 && s.right_pwm === 0 && s;
+      }, 2000, 20);
+      return `PWM ${moving.left_pwm}/${moving.right_pwm} while held; 0/0 (${stopped.reason}) ${Date.now() - releasedAt} ms after release (simulated rover)`;
+    }, { retries: 1 });
+
+    await step("Explore select", async () => {
+      await page.keyboard.press("KeyE");
+      await holdDeadman(page, simOrigin);
+      const s = await waitFor("server never entered explore", async () => { const v = await status(); return v.mode === "explore" && v; }, 4000, 50);
+      await releaseAll(page);
+      await waitFor("explore did not stop on release", async () => { const v = await status(); return v.left_pwm === 0 && v.right_pwm === 0; }, 2000, 20);
+      await waitFor("Explore would not disarm", async () => {
+        if (await page.locator("#rover-explore").getAttribute("aria-pressed") !== "true") return true;
+        await page.keyboard.press("KeyE");
+        return false;
+      }, 2000, 200);
+      return `server mode explore, autonomy_state ${s.autonomy_state}; stopped on release`;
+    }, { retries: 1 });
+
+    await step("Seek select (click synthetic person)", async () => {
+      const point = await page.evaluate(() => {
+        const canvas = document.querySelector("#rover-camera"), rect = canvas.getBoundingClientRect();
+        const scale = Math.min(rect.width / canvas.width, rect.height / canvas.height);
+        const left = rect.left + (rect.width - canvas.width * scale) / 2, top = rect.top + (rect.height - canvas.height * scale) / 2;
+        return { x: left + 0.5 * canvas.width * scale, y: top + 0.5 * canvas.height * scale };
+      });
+      // A box is only clickable while its packet matches a frame younger than 500 ms; retry like an operator would.
+      await waitFor("click never armed Seek", async () => {
+        if ((await roverDetails(page)).includes(`Seek #${SYNTHETIC_ID} armed`)) return true;
+        await page.mouse.click(point.x, point.y);
+        return false;
+      }, 4000, 250);
+      await holdDeadman(page, simOrigin);
+      const s = await waitFor("server never entered seek", async () => { const v = await status(); return v.mode === "seek" && v.target_id === SYNTHETIC_ID && v; }, 4000, 50);
+      await releaseAll(page);
+      await waitFor("seek did not stop on release", async () => { const v = await status(); return v.left_pwm === 0 && v.right_pwm === 0; }, 2000, 20);
+      inject = false;
+      return `server mode seek target #${s.target_id}, autonomy_state ${s.autonomy_state} (server tracker has no such person)`;
+    }, { retries: 1 });
+
+    await step("drill start/score", async () => {
+      if (!(await page.locator("#settings").evaluate((d) => d.open))) await page.locator("#settings-toggle").click();
+      await page.locator("#start-drill").click();
+      const drill = await waitFor("server drill never became active", async () => { const d = await json(`${simOrigin}/mission/drill`); return d.active && d; }, 4000)
+        .catch(async (error) => { throw new Error(`${error.message}; UI drill status "${await page.locator("#drill-status").textContent()}"`); });
+      const line = await waitFor("drill status never showed a score", async () => (await page.locator("#drill-status").textContent()).match(/victims \d+\/\d+ · e-stops \d+/), 4000);
+      return `active, ${drill.remaining_s}s left; UI "${line[0]}"`;
+    }, { retries: 1 });
+
+    await step("ask (text path)", async () => {
+      const answer = page.locator(".local-assistant p[role=status]").first();
+      await page.getByLabel("Question for rover").fill("What do you see?");
+      await page.locator(".local-assistant form button").click();
+      const text = await waitFor("no assistant answer", async () => { const t = await answer.textContent(); return t && t !== "Asking rover…" && !t.startsWith("Uses observed") && t; }, 15000);
+      if (text.startsWith("Assistant unavailable")) throw new Error(text);
+      if (!/simulated/i.test(text)) throw new Error(`answer does not say simulated: ${text.slice(0, 120)}`);
+      return `"${text.slice(0, 90)}…"`;
+    });
+
+    await step("mission report opens, labelled SIMULATED", async () => {
+      await page.locator("#open-mission-report").click();
+      const dialog = page.locator("dialog.mission-report");
+      await waitFor("report never loaded", async () => !/Loading/.test(await dialog.locator(".mission-content").textContent()), 6000);
+      const summary = await dialog.locator(".mission-content p").first().textContent();
+      if (!(await dialog.locator(".mission-simulated").count())) throw new Error("report lacks the SIMULATED label");
+      await dialog.getByRole("button", { name: "Close mission report" }).click();
+      await page.locator("#close-settings").click();
+      return summary;
+    });
+
+    await step("scan", async () => {
+      await waitFor("settings still open", async () => !(await page.locator("#settings").evaluate((d) => d.open)), 2000);
+      await holdDeadman(page, simOrigin);
+      await waitFor("deadman not ready for scan", async () => { const v = await status(); return v.reason === "active"; }, 4000, 50);
+      await page.locator("#rover-scan").click();
+      const done = await waitFor("scan never completed", async () => {
+        const r = await json(`${simOrigin}/scan`);
+        // Known open race (docs/judge-demo.md): server can abort at view 0 when a teleop heartbeat lands after POST /scan.
+        if (r.state === "aborted") throw Object.assign(new Error(`server aborted scan after ${r.views?.length ?? 0} views: ${r.error}`), { fatal: true });
+        return r.state === "complete" && r;
+      }, 30000, 100);
+      // The viewer reports completion and opens the map before the operator lets go.
+      await waitFor("viewer never reported the completed scan", async () => {
+        const details = await roverDetails(page);
+        // Regression (docs/judge-demo.md): the next held heartbeat replaces "scan_finished" with
+        // "release_required" before most status ticks; the viewer must still treat the scan as complete.
+        if (/Scan cancelled/.test(details)) throw Object.assign(new Error("viewer cancelled a scan the server completed (status reason release_required replaced scan_finished)"), { fatal: true });
+        return /points/.test(details) || /View changed/.test(await roverMessage(page));
+      }, 3000);
+      await releaseAll(page);
+      if (!done.simulated) throw new Error("scan result not flagged simulated");
+      return `${done.views?.length} views, ${done.points} points, ${(done.scan_ms / 1000).toFixed(1)} s, simulated=${done.simulated}, backend ${done.backend}`;
+    }, { retries: 1 });
+
+    if (errors.length) results.push({ step: "no page errors (simulator)", result: "FAIL", ms: 0, detail: errors.join("; ") });
+    await page.close();
+
+    const replayCounters = {};
+    const replay = await openViewer(browser, replayOrigin, { counters: replayCounters });
+    hudPage = replay.page;
+    await step("replay mode shows REPLAY, motors inert", async () => {
+      const health = await json(`${replayOrigin}/health`);
+      if (health.replay !== true) throw new Error(`/health replay=${health.replay}`);
+      await waitFor("banner never became REPLAY", async () => (await noteBanner(replay.page)) === "REPLAY", 8000);
+      await waitFor("no replay frames", () => replayCounters.frames >= 3, 6000);
+      // Replay never reaches "ready", so hold directly; the assertion is that nothing moves.
+      await replay.page.keyboard.down("Space");
+      await replay.page.keyboard.down("KeyW");
+      let maxPwm = 0;
+      for (let i = 0; i < 15; i++) {
+        const s = await json(`${replayOrigin}/control/status`);
+        maxPwm = Math.max(maxPwm, Math.abs(s.left_pwm ?? 0), Math.abs(s.right_pwm ?? 0));
+        await sleep(60);
+      }
+      await releaseAll(replay.page);
+      if (maxPwm !== 0) throw new Error(`replay produced PWM ${maxPwm}`);
+      return `banner REPLAY; ${replayCounters.frames} recorded frames; deadman+W kept PWM 0`;
+    });
+    if (replay.errors.length) results.push({ step: "no page errors (replay)", result: "FAIL", ms: 0, detail: replay.errors.join("; ") });
+
+    results.push(liveSeen
+      ? { step: "never claims LIVE", result: "FAIL", ms: 0, detail: "banner showed LIVE during a simulated run" }
+      : { step: "never claims LIVE", result: "PASS", ms: 0, detail: "banner was SIMULATED/REPLAY at every check" });
+  } finally {
+    await browser.close();
+  }
+}
+
+process.on("SIGINT", () => { stopAll(); process.exit(130); });
+const began = Date.now();
+let fatal = null;
+try {
+  await main();
+} catch (error) {
+  fatal = error;
+} finally {
+  await stopAndWait();
+}
+const width = Math.max(...results.map((r) => r.step.length), 4);
+console.log("\nJudge-flow smoke (SIMULATED + REPLAY; no hardware, not live evidence)\n");
+for (const r of results) console.log(`${r.result}  ${r.step.padEnd(width)}  ${String(r.ms).padStart(5)} ms  ${r.detail}`);
+const failed = results.filter((r) => r.result !== "PASS").length;
+if (fatal) console.log(`\nSETUP FAILED: ${fatal.message}\n${processes.map((p) => `--- ${p.name}\n${p.log()}`).join("\n")}`);
+console.log(`\n${results.length - failed}/${results.length} passed in ${((Date.now() - began) / 1000).toFixed(1)} s`);
+if (outPath) writeFileSync(outPath, JSON.stringify({ environment: "Chromium/SwiftShader; desktop controls; tools.demo --simulate and --replay fixture; synthetic person box for render/seek", results, fatal: fatal?.message ?? null }, null, 2));
+process.exit(fatal || failed ? 1 : 0);

@@ -10,6 +10,50 @@ be claimed: [devpost-checklist.md](devpost-checklist.md). Design: [architecture.
 been qualified. Everything below is the plan for the *qualified* rig. If a gate has not passed on
 the day, use the matching fallback tier and say so. Never narrate simulation or replay as live.
 
+## Automated smoke test (simulator + replay, #57)
+
+Run before every rehearsal and after pulling main:
+
+```sh
+npm --prefix quest run test:judge          # ~15 s; add -- --out report.json for a JSON copy
+```
+
+`quest/tests/judge-flow.e2e.mjs` starts `python -m tools.demo --simulate --build` and a
+`--replay tools/fixtures/replay-demo` server behind its own relay on free ports, drives the served
+page in headless Chromium/SwiftShader with the desktop controls (Space deadman, W, E, click,
+Settings), and prints PASS/FAIL per step: page load, SIMULATED banner, video frames, detections,
+deadman drive and release stop, Explore, Seek, drill start/score, Ask (text), mission report,
+scan, REPLAY banner with inert motors, never LIVE. It exits non-zero on any failure. Uses
+`.venv/bin/python` if present (override with `FARSIGHT_PYTHON`) and needs `npm --prefix quest ci`.
+
+What it does **not** prove: the ray-cast room has no people, so one synthetic person box
+(`id 900001`) is appended to the real detector packets to test rendering and click-to-seek; the
+server never tracks that person. XR controller paths are covered separately by
+`npm --prefix quest run test:browser`. Every result is SIMULATED or REPLAY, never hardware evidence.
+On a heavily loaded machine a headless render stall can trip the viewer's 250 ms display guard
+(a FAIL whose HUD says "Release deadman to continue"); re-run once before treating it as a regression.
+
+**Scan bugs this test found:**
+
+- *Fixed (#57): viewer cancelled a completed scan.* The sweep ends with `stop("scan_finished")`
+  (`jetson/control/state.py` `end_scan`), but the operator's next held heartbeat hits
+  `requires_release` and overwrites the reason with `release_required` before most 50 ms status
+  ticks. `quest/src/rover.ts` only accepted `scan_finished`, so it showed "Scan cancelled" and never
+  opened the 3D map (sim and rig alike). It now also enters scan completion on `release_required`
+  and lets `/scan` decide complete vs aborted. Regression FAIL text:
+  `viewer cancelled a scan the server completed`.
+- *Open (rare): server aborts at view 0* with `server aborted scan after 0 views: Scan cancelled:
+  operator lease, override, or safety stop` and the control reason back at `active`. Likely cause:
+  the zero-stick `teleop` heartbeat sent just before `POST /scan` reaches the rover after
+  `begin_scan` (separate WebSocket and HTTP paths through the relay) and is treated as
+  `scan_override`. Press Y again.
+
+**Open: boxes render on only a fraction of frames.** `matchingDetections` in `quest/src/rover.ts`
+draws boxes only when a detector packet matches the displayed frame id exactly. In `--demo` the
+camera id advances ~15 Hz while the detector runs ~3 fps, so only ~1 in 5 displayed frames has a
+packet (measured 8 of 37 ids over 6 s); the `detections render` step prints how many of 20 HUD
+samples showed the box. The same applies on the rig whenever detector fps < camera fps.
+
 ## Roles (4 people)
 
 | Role | Does | Hands |

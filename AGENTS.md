@@ -58,7 +58,9 @@ Extra features should improve the demo without breaking that path. Use the
 existing stop leases, camera freshness, and explicit release after faults;
 do not lengthen timeouts just to disguise a slow connection.
 
-Run checks appropriate to the change and report their actual scope. Separately
+Run checks appropriate to the change and report their actual scope. Changes touching the
+demo path should keep `npm --prefix quest run test:judge` (simulator + replay judge flow,
+`docs/judge-demo.md`) green; it is software evidence only. Separately
 verify Quest/controller behavior, phone routing, target Jetson inference, motor
 direction and starting PWM, power under load, and disconnect stopping on the
 real rig. Record latency and throughput measurements with their source, load,
