@@ -39,6 +39,12 @@ class DryRunTests(unittest.TestCase):
         self.assertIn("-m tools.qualify_link --url http://127.0.0.1:8080", lines[4])
         self.assertIn("-m tools.rehearse_demo record --url http://192.168.55.1:8443 --relay http://127.0.0.1:8080", lines[6])
 
+    def test_ready_step_requires_tensorrt_unless_cpu_allowed(self):
+        _, text = run_main(*ARGS, "--out", "/tmp/unused", "--dry-run")
+        self.assertIn("--require-tensorrt", text.splitlines()[1])
+        _, text = run_main(*ARGS, "--out", "/tmp/unused", "--dry-run", "--allow-cpu-detector")
+        self.assertNotIn("--require-tensorrt", text.splitlines()[1])
+
     def test_default_path_never_drives_or_holds_a_permit(self):
         _, text = run_main(*ARGS, "--out", "/tmp/unused", "--dry-run")
         self.assertNotIn("--hold-permit", text)
@@ -108,7 +114,7 @@ class FixtureRunTests(unittest.TestCase):
                 report = json.loads((Path(d) / "rehearsal" / "report.json").read_text())
                 self.assertEqual(report["summary"]["verdict"], "NO-GO")
                 states = {c["id"]: c["state"] for c in report["checks"]}
-                for cid in ("seek_arrival", "range_stop_25cm", "tailscale_direct", "quest_mic_playback", "wifi_off_run"):
+                for cid in ("seek_arrival", "range_stop_25cm", "tailscale_direct", "wifi_off_run"):
                     self.assertEqual(states[cid], "unknown")
                 self.assertEqual(states["real_rig"], "fail")
         finally:

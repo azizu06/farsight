@@ -382,7 +382,7 @@ canvas:focus-visible {
 .local-assistant h2 { font-size: 12px; }
 .local-assistant form { display: flex; gap: 5px; }
 .local-assistant input { min-width: 0; width: 100%; border: 1px solid #555; background: #242424; color: #eee; padding: 8px; border-radius: 3px; }
-.local-assistant p { font-size: 11px; line-height: 1.5; color: #bbc8d4; }
+.local-assistant p { font-size: 11px; line-height: 1.5; color: #bbc8d4; white-space: pre-line; }
 .local-assistant a { color: #a6c9ec; font-size: 11px; }
 @media (max-width: 600px) { .rover-controls { bottom: 10px; left: 10px; width: calc(100vw - 20px); padding: 10px; } }
 .camera-mount-option { display: grid; gap: 7px; margin: 18px 0; color: #becbda; }

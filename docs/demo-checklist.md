@@ -17,7 +17,7 @@ Goal: under 2 minutes from power-on to video in the headset. Network design: [de
 | 2 | Rover phone: USB to Jetson, Personal Hotspot on | Phone shows "1 connection" |
 | 3 | Jetson: power on. Start a stopwatch. `farsight` unit starts itself | Nothing to type |
 | 4 | MacBook: second phone USB, hotspot on, Wi-Fi off | `tailscale ping <jetson>` replies (note direct vs relayed) |
-| 5 | MacBook: `python -m tools.ready --url http://<jetson>:8443` (HTTPS profile: `https://<jetson>:8443 --ca-file ...`) | Ends `READY`: server, camera, detector, rover, video all OK or SKIP. Stop the stopwatch on this line. |
+| 5 | MacBook: `python -m tools.ready --url http://<jetson>:8443 --require-tensorrt` (HTTPS profile: `https://<jetson>:8443 --ca-file ...`) | Ends `READY`: server, camera, detector, rover, video all OK or SKIP. `--require-tensorrt` fails a CPU (ONNX/HOG) detector, which cannot hold the demo frame rate. Stop the stopwatch on this line. |
 | 6 | MacBook: `python -m tools.demo --upstream http://<jetson>:8443 --quest` (HTTPS profile: `https://<jetson>:8443 --ca-file ...`) | Prints "Open http://localhost:8080"; `adb reverse --list` shows 8080 |
 | 7 | Quest: USB to MacBook, open `http://localhost:8080`, press Enter VR | Video live, HUD shows video age and link; rover estop clear |
 | 8 | Release and press the deadman once | Motors respond; releasing stops within 250 ms |

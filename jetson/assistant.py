@@ -129,8 +129,10 @@ class SceneAssistant:
         if facts["source"] == "SIMULATED":
             answer += "This view is simulated. "
         people = facts["person_detections"]
-        answer += (f"The {facts['detector']} detector reports {people} person detections. "
+        answer += (f"The {facts['detector']} detector reports {people} {'person' if people == 1 else 'people'}. "
                    if people is not None else "No fresh person detection result is available. ")
+        if people is not None and facts.get("detections"):
+            answer += f"Seen: {facts['detections']}. "
         answer += (f"The ultrasonic range is {facts['range_cm']} centimetres. "
                    if facts["range_cm"] is not None else "Ultrasonic range is unavailable. ")
         if facts["forward_blocked"]:

@@ -185,10 +185,23 @@ class AssistantTests(unittest.IsolatedAsyncioTestCase):
         result = await service.ask(text="What do you see?")
         self.assertEqual(result["model"], "local-observation-summary")
         self.assertEqual(result["source"], "PHONE RGB")
-        self.assertIn("1 person detections", result["answer"])
+        self.assertIn("reports 1 person.", result["answer"])
         self.assertIn("42 centimetres", result["answer"])
         self.assertIsNone(result["action"])
         self.assertNotIn("audio_url", result)
+
+    async def test_offline_summary_names_current_detections_and_down_flag(self):
+        class Down(Tracked):
+            def snapshot(self):
+                packet = super().snapshot()
+                packet["boxes"][0]["down"] = True
+                return packet
+        result = await SceneAssistant(Camera(), Down(), Control()).ask(text="What do you see?")
+        self.assertEqual(result["model"], "local-observation-summary")
+        self.assertIn("Seen: person #3 center close (down).", result["answer"])
+        self.assertIn("ms", result)
+        stale = await SceneAssistant(Camera(), Tracked(fresh=False), Control()).ask(text="What do you see?")
+        self.assertNotIn("Seen:", stale["answer"])
 
     async def test_local_vlm_receives_real_camera_jpeg_and_snapshot_facts(self):
         with model_server() as (url, seen):

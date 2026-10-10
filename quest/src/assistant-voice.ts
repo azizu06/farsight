@@ -35,6 +35,7 @@ export class AssistantVoice {
   private removeCloseListener: () => void;
   private ptt = false;
   private enableButton: HTMLButtonElement;
+  private available = true;
   /** Opt-in from a settings click, or `voice=1` saved/deep-linked by the operator (viewer-settings.js),
    * so the headset never prompts for the microphone unasked. */
   vrEnabled = false;
@@ -96,8 +97,18 @@ export class AssistantVoice {
     return Boolean(fresh);
   }
   dismissAction() { this.clearAction("Proposal dismissed."); }
+  /** False when the rover has no speech recognizer: voice controls hide and the left trigger never starts a question. */
+  get voiceAvailable() { return this.available; }
+  setAvailable(available: boolean) {
+    if (available === this.available) return;
+    this.available = available;
+    if (!available) this.cancelCapture();
+    for (const control of [this.recordButton, this.cancelButton, this.enableButton]) control.hidden = !available;
+    this.say(available ? "Optional voice: records up to 10 seconds, transcribes on the rover."
+      : "Voice questions are off: this rover has no speech recognizer. The text question works.", "idle");
+  }
   /** Re-enable in-VR voice saved from an earlier visit; no-op where recording is unavailable. */
-  restoreVR() { if (!this.enableButton.disabled) void this.enableVR(); }
+  restoreVR() { if (this.available && !this.enableButton.disabled) void this.enableVR(); }
   private async enableVR() {
     if (this.disposed || this.vrEnabled) return;
     this.enableButton.disabled = true;
@@ -116,7 +127,7 @@ export class AssistantVoice {
   }
   /** Left-trigger press in VR. Returns false when nothing started. */
   pushStart() {
-    if (this.disposed || document.hidden) return false;
+    if (this.disposed || document.hidden || !this.available) return false;
     if (!this.vrEnabled) { this.say("In-VR voice is off: enable it in Settings before entering VR.", "error"); return false; }
     if (this.textButton.disabled || this.recorder || this.request || this.capturing) return false;
     void this.record(true);

@@ -48,6 +48,7 @@ def build_plan(args):
     return [
         ("preflight", tool("preflight", "--role", args.role)),
         ("ready", tool("ready", "--url", args.url, "--timeout", args.ready_timeout, *tls_args(args),
+                       *([] if args.allow_cpu_detector else ["--require-tensorrt"]),
                        *(["--skip", args.ready_skip] if args.ready_skip else []))),
         ("stream", tool("measure", "stream", "--url", args.url, "--seconds", seconds, *tls_args(args))),
         ("detector", tool("measure", "detector", "--url", args.url, "--seconds", seconds, *tls_args(args))),
@@ -130,6 +131,8 @@ def main(argv=None):
     parser.add_argument("--seconds", type=float, default=10, help="Seconds for stream, detector, qualify_link, pitch_metrics")
     parser.add_argument("--ready-timeout", type=float, default=120)
     parser.add_argument("--ready-skip", help="Rows tools.ready ignores, e.g. rover,video")
+    parser.add_argument("--allow-cpu-detector", action="store_true",
+                        help="Do not require the TensorRT detector in the ready step (Mac or CPU rehearsal only)")
     parser.add_argument("--rehearse-minutes", type=float, default=15)
     parser.add_argument("--ca-file")
     parser.add_argument("--insecure", action="store_true")

@@ -142,6 +142,7 @@ class TriageService:
     def submit(self, key, encounter, jpeg, snapshot_url=None):
         """Called from the detector thread: store a template now, queue the model; never blocks on the model."""
         with self.wake:
+            snapshot_url = snapshot_url or self.frames.get(key, (None, None))[1]
             self.frames[key] = (jpeg, snapshot_url)
             self.frames.move_to_end(key)
             while len(self.frames) > 50:

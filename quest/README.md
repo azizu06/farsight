@@ -26,7 +26,10 @@ Do not confuse an old server already on that port with a freshly launched demo.
   Seek, or otherwise toggles live camera / map. Right B toggles Explore. Left X
   centers the pan, left Y (with the trigger held) starts a scan, and left grip
   starts the rescue drill. A view change stops driving and requires a release.
-- Hold the left trigger to ask the local assistant by voice; release to send.
+- Voice ask is not part of the judge demo. The controls stay hidden and the left
+  trigger only confirms a pending proposal unless the rover's `/health` reports
+  `assistant.whisper`. With a Whisper model, hold the left trigger to ask the local
+  assistant by voice; release to send.
   First select **Enable in-VR voice** in settings before entering VR: it asks for
   the microphone once and releases it immediately. A question stops driving,
   scan and autonomy, and blocks motion while the microphone is requested or open;
