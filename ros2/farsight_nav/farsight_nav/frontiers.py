@@ -239,7 +239,12 @@ class Explorer:
             self.visits[tuple(np.floor(point / 0.25).astype(int))] = now
         self.last_robot = robot[:2]
 
-    def choose(self, candidates, robot, grid, resolution, origin, now, blacklist=()):
+    RELAXED_HALF_WIDTH = 0.18  # the rover body (~0.35 m wide) physically fits
+    RELAXED_APPROACH = 0.6
+
+    def choose(self, candidates, robot, grid, resolution, origin, now, blacklist=(), relaxed=False):
+        """Best goal, or None. ``relaxed`` accepts rover-width corridors and short approaches:
+        Explore falls back to it rather than stopping while any reachable frontier remains."""
         cfg = self.config
         grid = np.asarray(grid)
         if grid.ndim != 2 or resolution <= 0:
@@ -251,7 +256,8 @@ class Explorer:
         clearance = clearance_map(grid >= 99, resolution)
         support = clearance_map(~free, resolution)
         thin = thin_obstacles(grid >= 99, resolution)
-        half_width = cfg.min_corridor_width / 2
+        half_width = self.RELAXED_HALF_WIDTH if relaxed else cfg.min_corridor_width / 2
+        approach_length = min(cfg.approach_length, self.RELAXED_APPROACH) if relaxed else cfg.approach_length
         scored = []
         # Boundary samples/centroids move as the camera clears cells. Keep the
         # exact active waypoint as an independent candidate and revalidate its
@@ -277,8 +283,8 @@ class Explorer:
                 continue
             approach_distance = math.dist(goal, robot[:2])
             approach_direction = (goal - robot[:2]) / approach_distance
-            start = goal - approach_direction * min(cfg.approach_length, approach_distance)
-            approach = np.linspace(start, goal, max(2, math.ceil(cfg.approach_length / resolution) + 1))
+            start = goal - approach_direction * min(approach_length, approach_distance)
+            approach = np.linspace(start, goal, max(2, math.ceil(approach_length / resolution) + 1))
             rc = np.floor((approach - origin) / resolution).astype(int)[:, ::-1]
             if (rc < 0).any() or (rc[:, 0] >= grid.shape[0]).any() or (rc[:, 1] >= grid.shape[1]).any():
                 continue

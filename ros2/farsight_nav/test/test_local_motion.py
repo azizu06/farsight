@@ -34,18 +34,18 @@ def test_no_idle_gap_during_goal_changes_and_noisy_depth():
         assert command is not None and any(command)
 
 
-def test_missing_depth_real_obstacle_and_expired_budget_stop():
+def test_missing_depth_stops_obstacles_back_off_and_creep_never_expires():
     motion = local_motion.LocalMotion()
     args = scene()
     assert motion.command(now=0, pose_at=0, depth_at=0, map_at=0, **args)[0] > 0
-    args['depth'][:] = 0.25
-    assert motion.command(now=0.1, pose_at=0.1, depth_at=0.1, map_at=0.1, **args) == (0, 0)
+    args['depth'][:] = 0.25  # wall inside the body disc: back off over observed floor
+    assert motion.command(now=0.1, pose_at=0.1, depth_at=0.1, map_at=0.1, **args) == (-motion.creep_mps, 0)
     args['depth'][:] = 0
     assert motion.command(now=0.2, pose_at=0.2, depth_at=0.2, map_at=0.2, **args) == (0, 0)
     args['depth'][:] = 3
     assert motion.command(now=1, pose_at=1, depth_at=0, map_at=1, **args) == (0, 0)
-    assert motion.command(now=4, pose_at=4, depth_at=4, map_at=4, **args)[1] > 0
-    assert motion.command(now=14, pose_at=14, depth_at=14, map_at=14, **args) == (0, 0)
+    assert motion.command(now=4, pose_at=4, depth_at=4, map_at=4, **args)[0] > 0
+    assert motion.command(now=14, pose_at=14, depth_at=14, map_at=14, **args)[0] > 0  # no budget: keep creeping
 
 
 def test_controller_stop_and_release_are_not_overridden():
@@ -65,10 +65,11 @@ def test_blocked_corridor_reorients_only_in_observed_safe_footprint():
     args['support'] = frontiers.clearance_map(blocked != 0, 0.1)
     command = motion.command(now=0, pose_at=0, depth_at=0, map_at=0, **args)
     assert command[0] == 0 and command[1] > 0
-    # Unknown in the sweep footprint does not support turning, even with depth.
+    # Unknown under the body and behind it: no back-off, but never a freeze either.
     blocked[40, 20] = -1
     args['support'] = frontiers.clearance_map(blocked != 0, 0.1)
-    assert motion.command(now=0.1, pose_at=0.1, depth_at=0.1, map_at=0.1, **args) == (0, 0)
+    command = motion.command(now=0.1, pose_at=0.1, depth_at=0.1, map_at=0.1, **args)
+    assert command[0] == 0 and command[1] != 0
 
 
 def test_missing_pose_and_map_or_release_never_replay_previous_creep():
@@ -83,10 +84,10 @@ def test_missing_pose_and_map_or_release_never_replay_previous_creep():
     assert motion.command(now=3.2, pose_at=0, depth_at=0, map_at=0, **args) == (0, 0)
 
 
-def test_blind_ring_scans_only_actual_body_support_then_stops_after_full_turn():
+def test_blind_ring_keeps_scanning_through_and_past_a_full_turn():
     motion = local_motion.LocalMotion()
     args = scene()
-    args.update(support=np.zeros((80, 100)), body_clear=True, scan_only=True)
+    args.update(support=np.zeros((80, 100)), body_clear=True)
     # No invented forward support: turn in place throughout the real yaw sweep.
     for i in range(80):
         now = i * 0.1
@@ -98,10 +99,8 @@ def test_blind_ring_scans_only_actual_body_support_then_stops_after_full_turn():
         transform[1, 3] = 0.15
         args['header']['transform'] = transform.flatten(order='F').tolist()
         command = motion.command(now=now, pose_at=now, depth_at=now, map_at=now, **args)
-        if i < 79:
-            assert command[0] == 0 and command[1] > 0
-        else:
-            assert command == (0, 0) and motion.scan_exhausted
+        assert command[0] == 0 and command[1] > 0  # a full look-around restarts, never stops
+    assert not motion.scan_exhausted
 
 
 def test_thin_new_pole_between_coverage_rays_never_gets_creep():
@@ -112,3 +111,22 @@ def test_thin_new_pole_between_coverage_rays_never_gets_creep():
     args['depth'][40, 61] = 0.7
     command = motion.command(now=0, pose_at=0, depth_at=0, map_at=0, **args)
     assert command[0] == 0
+
+
+def test_too_close_backs_off_over_observed_floor_then_turns_away():
+    motion = local_motion.LocalMotion()
+    args = scene()
+    args['depth'][:] = 0.25
+    assert motion.command(now=0, pose_at=0, depth_at=0, map_at=0, **args) == (-motion.creep_mps, 0)
+    motion.backoff_from = (motion.BACKOFF_M + 0.01, 0)  # still blocked after backing the full budget
+    command = motion.command(now=1, pose_at=1, depth_at=1, map_at=1, **args)
+    assert command[0] == 0 and command[1] != 0  # turn away instead of freezing
+    args['robot'] = (-0.4, 0, 0)  # backed clear of it: the scan turn may start again
+    assert motion.command(now=1.1, pose_at=1.1, depth_at=1.1, map_at=1.1, **args)[1] != 0
+    assert motion.backoff_from is None
+    fresh = local_motion.LocalMotion()
+    unseen = np.zeros((80, 100), np.int16)
+    unseen[:, :20] = -1  # nothing observed behind the rover
+    args.update(robot=(0, 0, 0), support=frontiers.clearance_map(unseen != 0, 0.1))
+    command = fresh.command(now=2, pose_at=2, depth_at=2, map_at=2, **args)
+    assert command[0] == 0 and command[1] != 0  # never reverse blind; turn away
