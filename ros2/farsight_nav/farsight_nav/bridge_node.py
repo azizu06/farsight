@@ -108,6 +108,8 @@ class FarsightBridge(Node):
         self.inactive_cancel_s = p("inactive_cancel_s", 0.3).value
         self.explore = p("explore", True).value  # frontier exploration for the server's Explore mode
         self.explore_goal_timeout_s = p("explore_goal_timeout_s", 25.0).value
+        self.explore_stall_s = p("explore_stall_s", 3.0).value          # no 0.3 m of progress: frontier blocked
+        self.explore_blacklist_s = p("explore_blacklist_s", 30.0).value  # a skipped frontier may come back after this
         self.explore_config = frontiers.ExploreConfig(**{
             name: p("explore_" + name, field.default).value
             for name, field in frontiers.ExploreConfig.__dataclass_fields__.items()})
@@ -194,9 +196,12 @@ class FarsightBridge(Node):
         self.explore_target = None   # map (x, y) of the current frontier goal
         self.explore_since = 0.0
         self.explore_seq = 0
-        self.blacklist = []          # map (x, y) of frontier goals Nav2 failed to reach
+        self.blacklist = []          # map (x, y, monotonic time) of frontier goals Nav2 failed to reach
+        self.explore_blocked = False  # Nav2 started a recovery on the current frontier goal
+        self.progress_best, self.progress_at = math.inf, 0.0  # closest distance_remaining and when it improved
         self.create_timer(0.25, self.send_status)
         self.explore_busy = False
+        self.explore_again = False   # a re-pick was requested while scoring ran
         self.explore_session = 0
         self.create_timer(p("explore_tick_s", 0.5).value, self.request_explore_tick)
         self.create_timer(0.05, self.motion_tick)
@@ -381,18 +386,26 @@ class FarsightBridge(Node):
         # 20 Hz command output or sensor callbacks on a large costmap.
         with self.lock:
             if self.explore_busy:
+                self.explore_again = True  # an abort or recovery arrived mid-score: score again at once
                 return
-            self.explore_busy = True
+            self.explore_busy, self.explore_again = True, False
 
         def update():
-            try:
-                self.explore_tick()
-            except Exception as exc:
-                self.get_logger().error(f"Explore scoring: {exc}")
-            finally:
+            while True:
+                try:
+                    self.explore_tick()
+                except Exception as exc:
+                    self.get_logger().error(f"Explore scoring: {exc}")
                 with self.lock:
-                    self.explore_busy = False
+                    if not self.explore_again:
+                        self.explore_busy = False
+                        return
+                    self.explore_again = False
         threading.Thread(target=update, name="explore-score", daemon=True).start()
+
+    def skip_frontier(self, point):
+        """Caller holds the lock. Blacklist a frontier goal for explore_blacklist_s."""
+        self.blacklist.append((float(point[0]), float(point[1]), time.monotonic()))
 
     def explore_tick(self):
         with self.lock:
@@ -434,11 +447,16 @@ class FarsightBridge(Node):
             if now - self.pose_at >= 0.5 or now - self.depth_at >= 0.5 or now - self.global_grid_at >= 2.5:
                 return  # server capture-loss interlock owns stopping and explicit rearming
             target = self.explore_target
-            timed_out = target is not None and now - self.explore_since > self.explore_goal_timeout_s
+            # Re-pick the moment the current frontier is blocked: Nav2 began a
+            # recovery, or got no 0.3 m closer for explore_stall_s (15 s backstop).
+            timed_out = target is not None and (
+                self.explore_blocked or now - self.progress_at > self.explore_stall_s
+                or now - self.explore_since > self.explore_goal_timeout_s)
             if timed_out:
-                self.blacklist.append(self.explorer.committed or target)
+                self.skip_frontier(self.explorer.committed or target)
                 self.explorer.release()
-            explorer, blacklist = self.explorer, list(self.blacklist)
+            self.blacklist = [bad for bad in self.blacklist if now - bad[2] < self.explore_blacklist_s]
+            explorer, blacklist = self.explorer, [bad[:2] for bad in self.blacklist]
         choice = explorer.choose(found, robot_map, cells, info.resolution, origin,
                                  now=now, blacklist=blacklist)
         if choice is None:  # never stop while a rover-width route to any frontier exists
@@ -499,9 +517,7 @@ class FarsightBridge(Node):
                 body_clear = (0 <= row < obstacles.shape[0] and 0 <= col < obstacles.shape[1]
                               and obstacles[row, col] >= self.swept.radius)
             command = self.local_motion.command(
-                now=now, active=True,
-                planning=self.goal_pending or self.goal_state == "planning" or not self.path,
-                nav_command=self.nav_command, nav_at=self.nav_command_at,
+                now=now, active=True, nav_command=self.nav_command, nav_at=self.nav_command_at,
                 robot=robot, pose_at=self.pose_at, depth=depth, header=header, depth_at=self.depth_at,
                 support=support, resolution=resolution, origin=origin, map_at=self.global_grid_at,
                 to_map=to_map, body_clear=body_clear)
@@ -536,9 +552,12 @@ class FarsightBridge(Node):
             self.goal_id, self.goal_state, self.goal_message = goal_id, "planning", ""
             self.path, self.recoveries = [], 0
             self.nav_command, self.nav_command_at = None, -math.inf
+            self.explore_blocked = False
+            self.progress_best, self.progress_at = math.inf, time.monotonic()
             self.goal_seq += 1
             self.goal_pending, self.goal_sent_at, seq = True, time.monotonic(), self.goal_seq
-        future = self.navigate.send_goal_async(request, feedback_callback=self.on_feedback)
+        future = self.navigate.send_goal_async(
+            request, feedback_callback=lambda feedback, sent=seq: self.on_feedback(sent, feedback))
         future.add_done_callback(lambda done, sent=seq: self.on_accepted(sent, done))
         return True
 
@@ -553,35 +572,54 @@ class FarsightBridge(Node):
 
     def on_accepted(self, seq, future):
         handle = future.result()
+        repick = False
         with self.lock:
             if seq != self.goal_seq:  # superseded by a newer send (or a cancel)
                 if handle.accepted:
                     handle.cancel_goal_async()
                 return
             self.goal_pending = False
-            if not handle.accepted:
+            if handle.accepted:
+                self.goal_handle = handle
+            else:
                 self.goal_state, self.goal_message = "failed", "Nav2 rejected the goal"
                 if self.exploring and self.explore_target is not None:
                     self.explore_session += 1
-                    self.blacklist.append(self.explorer.committed or self.explore_target)
+                    self.skip_frontier(self.explorer.committed or self.explore_target)
                     self.explore_target = None
                     self.explorer.release()
-                return
-            self.goal_handle = handle
+                    repick = True
+        if not handle.accepted:
+            if repick:
+                self.request_explore_tick()
+            return
         handle.get_result_async().add_done_callback(lambda done, sent=seq: self.on_result(sent, done))
 
-    def on_feedback(self, feedback):
+    def on_feedback(self, seq, feedback):
         data = feedback.feedback
+        now = time.monotonic()
+        repick = False
         with self.lock:
+            if seq != self.goal_seq:
+                return  # a preempted earlier goal's recoveries say nothing about this one
+            if 0 < data.distance_remaining < self.progress_best - 0.3:
+                self.progress_best, self.progress_at = data.distance_remaining, now
+            elif not math.isfinite(self.progress_best) and data.distance_remaining > 0:
+                self.progress_best = data.distance_remaining
             if data.number_of_recoveries > self.recoveries:
                 self.recoveries = data.number_of_recoveries
-                self.recovering_until = time.monotonic() + 3.0
+                self.recovering_until = now + 3.0
+                if self.exploring and str(self.goal_id).startswith("explore-") and not self.explore_blocked:
+                    self.explore_blocked = repick = True  # pick another frontier now; Nav2 keeps recovering meanwhile
             if self.goal_state in ("planning", "driving", "recovering"):
                 self.goal_state = "recovering" if time.monotonic() < self.recovering_until else "driving"
                 self.goal_message = f"{data.distance_remaining:.1f} m to go"
+        if repick:
+            self.request_explore_tick()
 
     def on_result(self, seq, future):
         result = future.result()
+        repick = False
         with self.lock:
             if seq != self.goal_seq:
                 return  # a preempted or cancelled earlier send must not end the current goal
@@ -590,15 +628,15 @@ class FarsightBridge(Node):
                 # One frontier done (or unreachable): exploration goes on, so never report arrived here.
                 self.explore_session += 1  # discard a scorer snapshot from before this result
                 if result.status != GoalStatus.STATUS_SUCCEEDED and self.explore_target is not None:
-                    self.blacklist.append(self.explorer.committed or self.explore_target)
+                    self.skip_frontier(self.explorer.committed or self.explore_target)
                 self.goal_state = "driving"
                 self.goal_message = ("Frontier reached; choosing the next" if result.status == GoalStatus.STATUS_SUCCEEDED
                                      else "Frontier unreachable; trying another")
                 self.explore_target, self.path = None, []
                 self.explorer.release()
                 self.nav_command, self.nav_command_at = None, -math.inf
-                return
-            if result.status == GoalStatus.STATUS_SUCCEEDED:
+                repick = True
+            elif result.status == GoalStatus.STATUS_SUCCEEDED:
                 self.goal_state, self.goal_message = "arrived", "Goal reached"
             elif result.status == GoalStatus.STATUS_CANCELED:
                 self.goal_state, self.goal_message = "idle", "Navigation cancelled"
@@ -607,6 +645,8 @@ class FarsightBridge(Node):
                 code = getattr(result.result, "error_code", 0)
                 self.goal_state, self.goal_message = "failed", f"Nav2 aborted (error {code})"
             self.path = []
+        if repick:
+            self.request_explore_tick()  # next frontier now, not at the next 0.5 s tick
 
     def cancel_goal(self, reason):
         with self.lock:

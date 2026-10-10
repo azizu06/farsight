@@ -129,10 +129,10 @@ controller_server:
     RPP:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
       desired_linear_vel: 0.70        # under the profile's 0.74 m/s at AUTONOMY_MAX_PWM 200 (captain: roam at speed)
-      lookahead_dist: 0.45            # short: pure pursuit cuts corners by about the lookahead
-      min_lookahead_dist: 0.25
-      max_lookahead_dist: 0.9
-      lookahead_time: 1.0
+      lookahead_dist: 0.35            # short: pure pursuit cuts corners by about the lookahead
+      min_lookahead_dist: 0.2
+      max_lookahead_dist: 0.5         # 0.9 cut the sim deadend divider corner at 0.7 m/s
+      lookahead_time: 0.6
       rotate_to_heading_angular_vel: 2.2
       transform_tolerance: 0.3
       use_velocity_scaled_lookahead_dist: true
@@ -216,7 +216,7 @@ local_costmap:
 global_costmap:
   global_costmap:
     ros__parameters:
-      update_frequency: 10.0         # IsPathValid checks this map: a person stepping in invalidates the path within 0.1 s
+      update_frequency: 15.0         # IsPathValid checks this map at 20 Hz: a person stepping in invalidates the path within ~0.1 s
       publish_frequency: 2.0
       global_frame: map
       robot_base_frame: base_link
@@ -290,7 +290,7 @@ behavior_server:
     global_costmap_topic: global_costmap/costmap_raw
     local_footprint_topic: local_costmap/published_footprint
     global_footprint_topic: global_costmap/published_footprint
-    cycle_frequency: 10.0
+    cycle_frequency: 20.0
     behavior_plugins: ["spin", "backup", "drive_on_heading", "wait"]
     spin:
       plugin: "nav2_behaviors::Spin"
@@ -305,9 +305,9 @@ behavior_server:
     robot_base_frame: base_link
     transform_tolerance: 0.3
     simulate_ahead_time: 1.5
-    max_rotational_vel: 1.4
+    max_rotational_vel: 2.2
     min_rotational_vel: 0.5
-    rotational_acc_lim: 3.0
+    rotational_acc_lim: 4.0
 
 lifecycle_manager_navigation:
   ros__parameters:
@@ -315,7 +315,7 @@ lifecycle_manager_navigation:
     bond_timeout: 4.0
     node_names: ["controller_server", "planner_server", "behavior_server", "bt_navigator"]
 
-# Explore selection runs at 1 Hz; the planning-gap arbiter runs at 20 Hz.
+# Explore selection runs at 2 Hz and at once on a Nav2 abort or recovery; the motion arbiter runs at 20 Hz.
 farsight_bridge:
   ros__parameters:
     explore_min_corridor_width: 0.36  # any gap the ~0.35 m rover body physically fits through
@@ -330,7 +330,9 @@ farsight_bridge:
     explore_revisit_weight: 3.0
     explore_revisit_decay_s: 60.0
     explore_commitment_s: 2.0          # quick decisions (captain)
-    explore_goal_timeout_s: 15.0       # skip a frontier Nav2 has not reached in 15 s
+    explore_goal_timeout_s: 15.0       # backstop: skip a frontier Nav2 has not reached in 15 s
+    explore_stall_s: 3.0               # skip a frontier when Nav2 got no 0.3 m closer for 3 s
+    explore_blacklist_s: 30.0          # a skipped frontier may be retried after 30 s
     explore_tick_s: 0.5                # frontier re-score / goal decision period
     explore_switch_margin: 0.8
     explore_transition_distance: 0.6
