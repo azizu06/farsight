@@ -30,14 +30,14 @@ DIST = Path(__file__).resolve().parents[2] / "quest" / "dist"
 def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=False,
                detector="hog", detector_model=None, h264=False, mission_dir=None, max_pwm=100, min_pwm=0,
                video_fps=10, video_bitrate=500000, assistant_url=None, whisper_bin=None, whisper_model=None,
-               piper_bin=None, piper_model=None, tts_dir=None):
+               piper_bin=None, piper_model=None, tts_dir=None, face_model=None):
     if (demo or simulate_rover) and serial_port:
         raise ValueError("Simulated sources cannot be combined with a physical motor serial port")
     state = MapState(demo)
     camera_service = CameraService(state, device=camera_device)
     video_service = VideoService(camera_service, enabled=h264, fps=video_fps, bitrate=video_bitrate)
     mission = Mission(mission_dir)
-    perception = PerceptionService(camera_service, model=detector_model, mode=detector, on_detection=mission.detect)
+    perception = PerceptionService(camera_service, model=detector_model, mode=detector, on_detection=mission.detect, face_model=face_model)
     control = ControlService(serial_port=serial_port, simulate=simulate_rover, max_pwm=max_pwm, min_pwm=min_pwm,
                              camera_ready=lambda: camera_service.status()["camera"],
                              detections=perception.snapshot)
@@ -442,6 +442,7 @@ def main():
     parser.add_argument("--detector", choices=("hog", "pose", "none"), default="hog",
                         help="hog: bundled CPU detector; pose: YOLO11-pose (needs --detector-model); none")
     parser.add_argument("--detector-model", help="YOLOv8/11 ONNX or TensorRT engine path; overrides bundled HOG. With --detector pose: YOLO11-pose model")
+    parser.add_argument("--face-model", help="Enable extra UltraFace RFB-320 ONNX pass; omitted means off")
     parser.add_argument("--h264", action="store_true", help="Enable ffmpeg H264 fragmented MP4 WebSocket")
     parser.add_argument("--video-fps", type=int, default=10)
     parser.add_argument("--video-bitrate", type=int, default=500000, help="H264 bit/s; start low for cellular headroom")
@@ -464,7 +465,7 @@ def main():
                 h264=args.h264, mission_dir=args.mission_dir, max_pwm=args.max_pwm, min_pwm=args.min_pwm,
                 video_fps=args.video_fps, video_bitrate=args.video_bitrate, assistant_url=args.assistant_url,
                 whisper_bin=args.whisper_bin, whisper_model=args.whisper_model, piper_bin=args.piper_bin,
-                piper_model=args.piper_model, tts_dir=args.tts_dir), host=args.host, port=args.port,
+                piper_model=args.piper_model, tts_dir=args.tts_dir, face_model=args.face_model), host=args.host, port=args.port,
                 ssl_certfile=args.ssl_certfile, ssl_keyfile=args.ssl_keyfile,
                 ws_max_size=8 * 1024 * 1024, access_log=False,
                 timeout_graceful_shutdown=5)
