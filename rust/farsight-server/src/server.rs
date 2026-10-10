@@ -15,6 +15,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
+use tower_http::compression::CompressionLayer;
 use tower_http::services::ServeDir;
 
 use crate::camera::CameraService;
@@ -1018,9 +1019,11 @@ async fn index_fallback() -> Json<Value> {
 pub fn router(state: Arc<AppState>, dist: Option<PathBuf>) -> Router {
     let app = Router::new()
         .route("/health", get(health))
-        .route("/map/points.bin", get(map_points))
-        .route("/map/mesh.bin", get(map_mesh))
-        .route("/map/export.ply", get(map_export))
+        // Raw 16 B/point payloads crossing a cellular link; browsers
+        // transparently decode br/gzip so quest needs no changes.
+        .route("/map/points.bin", get(map_points).layer(CompressionLayer::new()))
+        .route("/map/mesh.bin", get(map_mesh).layer(CompressionLayer::new()))
+        .route("/map/export.ply", get(map_export).layer(CompressionLayer::new()))
         .route("/map/reset", post(map_reset))
         .route("/map/pause", post(map_pause))
         .route("/camera.jpg", get(camera_jpg))
