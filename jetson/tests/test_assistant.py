@@ -38,6 +38,15 @@ class Perception:
         return dict(fresh=True, source="PHONE RGB", error=None, detector="hog", boxes=[dict(cls="person")])
 
 
+class Tracked:
+    def __init__(self, fresh=True, source="PHONE RGB"):
+        self.fresh, self.source = fresh, source
+
+    def snapshot(self):
+        return dict(fresh=self.fresh, source=self.source, error=None, detector="onnx",
+                    boxes=[dict(id=3, cls="person", conf=.9, x=.4, y=.2, w=.2, h=.6)])
+
+
 class Control:
     def status(self):
         return dict(range_cm=42, estop=False, rover=True, simulated=False)
@@ -72,6 +81,34 @@ def model_server(response=None):
         thread.join(timeout=2)
 
 
+@contextmanager
+def whisper_server(text=" What do you see?\n"):
+    seen = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            seen.append((self.path, self.rfile.read(int(self.headers["Content-Length"]))))
+            body = json.dumps({"text": text}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=lambda: server.serve_forever(poll_interval=0.01), daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}", seen
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
 def wav_bytes():
     result = io.BytesIO()
     with wave.open(result, "wb") as recording:
@@ -85,6 +122,63 @@ def wav_bytes():
 class AssistantTests(unittest.IsolatedAsyncioTestCase):
     def service(self, **options):
         return SceneAssistant(options.pop("camera", Camera()), Perception(), Control(), **options)
+
+    async def test_seek_proposal_with_guarded_model_answer_and_timings(self):
+        reply = {"choices": [{"message": {"content": "I'm heading towards the person."}}]}
+        with model_server(reply) as (url, seen):
+            service = SceneAssistant(Camera(), Tracked(), Control(), server_url=url)
+            result = await service.ask(text="Go to that person")
+        self.assertEqual(result["action"], {"type": "seek", "target_id": 3})
+        self.assertNotIn("heading", result["answer"])
+        self.assertTrue(result["answer"].endswith("Confirm on the headset to seek person #3."))
+        self.assertIn("person #3 center close", seen[0][1]["messages"][1]["content"][0]["text"])
+        self.assertEqual(set(result["timings"]), {"stt", "vlm", "tts"})
+        self.assertIsNone(result["timings"]["stt"])
+        self.assertIsInstance(result["timings"]["vlm"], int)
+
+    async def test_stale_or_foreign_detections_never_target_seek(self):
+        for perception in (Tracked(fresh=False), Tracked(source="USB CAMERA")):
+            service = SceneAssistant(Camera(), perception, Control())
+            self.assertIsNone((await service.ask(text="go to that person"))["action"])
+        scan = await SceneAssistant(Camera(), Tracked(fresh=False), Control()).ask(text="Scan the room")
+        self.assertEqual(scan["action"], {"type": "scan"})
+        self.assertIn("Confirm on the headset to scan the room.", scan["answer"])
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg is required for real conversion check")
+    async def test_long_lived_whisper_server_transcribes_without_cli(self):
+        with whisper_server() as (url, seen):
+            result = await self.service(whisper_url=url).ask(audio=wav_bytes())
+        self.assertEqual(result["question"], "What do you see?")
+        path, body = seen[0]
+        self.assertEqual(path, "/inference")
+        self.assertIn(b'name="file"', body)
+        self.assertIn(b"RIFF", body)
+        self.assertIsInstance(result["timings"]["stt"], int)
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg is required for real conversion check")
+    async def test_every_headset_recording_format_reaches_whisper(self):
+        # Formats quest/src/assistant-voice.ts may record: webm/opus, ogg/opus, mp4/aac.
+        def encode(*args):
+            return subprocess.run([shutil.which("ffmpeg"), "-nostdin", "-hide_banner", "-loglevel", "error",
+                "-f", "wav", "-i", "pipe:0", *args], input=wav_bytes(), stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, check=True).stdout
+
+        with tempfile.TemporaryDirectory() as directory:
+            mp4 = Path(directory) / "question.m4a"
+            subprocess.run([shutil.which("ffmpeg"), "-nostdin", "-hide_banner", "-loglevel", "error", "-f", "wav",
+                            "-i", "pipe:0", "-c:a", "aac", str(mp4)], input=wav_bytes(), check=True)
+            clips = {"webm": encode("-c:a", "libopus", "-f", "webm", "pipe:1"),
+                     "ogg": encode("-c:a", "libopus", "-f", "ogg", "pipe:1"), "mp4": mp4.read_bytes()}
+        for name, clip in clips.items():
+            with self.subTest(format=name), whisper_server() as (url, seen):
+                result = await self.service(whisper_url=url).ask(audio=clip)
+                self.assertEqual(result["question"], "What do you see?")
+                self.assertIn(b"RIFF", seen[0][1])
+
+    async def test_whisper_url_is_loopback_only(self):
+        for url in ("https://example.com", "http://user:secret@localhost:8091"):
+            with self.subTest(url=url), self.assertRaises(ValueError):
+                self.service(whisper_url=url)
 
     async def test_default_is_accurate_typed_summary_without_motion(self):
         service = self.service()
@@ -238,6 +332,29 @@ class AssistantTests(unittest.IsolatedAsyncioTestCase):
             with patch.object(service, "_run", side_effect=cancel), self.assertRaises(asyncio.CancelledError):
                 await service.speak("cancelled")
             self.assertEqual(list(root.glob("reply-*.wav")), [root / filename])
+
+    async def test_in_process_piper_voice_loads_once_when_no_cli_is_given(self):
+        loads = []
+
+        class Voice:
+            def synthesize_wav(self, text, output):
+                output.setnchannels(1)
+                output.setsampwidth(2)
+                output.setframerate(16000)
+                output.writeframes(b"\1\0" * 1600)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            model = root / "voice.onnx"
+            model.write_bytes(b"test-model")
+            service = self.service(piper_model=str(model), output_dir=root)
+            with patch.object(SceneAssistant, "_load_voice", side_effect=lambda path: loads.append(path) or Voice()):
+                first = await service.speak("one")
+                second = await service.speak("two")
+            self.assertEqual(loads, [str(model.resolve())])
+            for filename in (first, second):
+                with wave.open(str(root / filename), "rb") as recording:
+                    self.assertEqual(recording.getnframes(), 1600)
 
     async def test_busy_service_rejects_backlog_and_input_is_bounded(self):
         service = self.service()

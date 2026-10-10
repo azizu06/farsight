@@ -30,7 +30,7 @@ DIST = Path(__file__).resolve().parents[2] / "quest" / "dist"
 def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=False,
                detector="hog", detector_model=None, h264=False, mission_dir=None, max_pwm=100, min_pwm=0,
                video_fps=10, video_bitrate=500000, assistant_url=None, whisper_bin=None, whisper_model=None,
-               piper_bin=None, piper_model=None, tts_dir=None, face_model=None):
+               piper_bin=None, piper_model=None, tts_dir=None, face_model=None, whisper_url=None):
     if (demo or simulate_rover) and serial_port:
         raise ValueError("Simulated sources cannot be combined with a physical motor serial port")
     state = MapState(demo)
@@ -43,7 +43,8 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                              detections=perception.snapshot)
     assistant = SceneAssistant(camera_service, perception, control, server_url=assistant_url,
                                whisper_bin=whisper_bin, whisper_model=whisper_model,
-                               piper_bin=piper_bin, piper_model=piper_model, output_dir=tts_dir)
+                               piper_bin=piper_bin, piper_model=piper_model, output_dir=tts_dir,
+                               whisper_url=whisper_url)
 
     async def simulate():
         started, frame_id = time.monotonic(), 0
@@ -106,13 +107,14 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
         status = await asyncio.to_thread(state.status)
         status.update(camera_service.status())
         rover = control.status()
+        status.update(perception.health())
         status.update(rover=rover["rover"], estop=rover["estop"], control=rover,
                       detector=perception.mode, detector_error=perception.error,
                       detector_fps=perception.snapshot()["fps"] if perception.snapshot()["fresh"] else 0,
                       video=dict(enabled=h264, ready=video_service.ready, error=video_service.error,
                                  fps=video_fps, bitrate=video_bitrate),
-                      assistant=dict(vision_model=bool(assistant_url), whisper=bool(whisper_bin and whisper_model),
-                                     piper=bool(piper_bin and piper_model)))
+                      assistant=dict(vision_model=bool(assistant_url), whisper=bool(whisper_url or (whisper_bin and whisper_model)),
+                                     piper=bool(piper_model)))
         return status
 
     @app.get("/map/points.bin")
@@ -467,6 +469,7 @@ def main():
     parser.add_argument("--video-bitrate", type=int, default=500000, help="H264 bit/s; start low for cellular headroom")
     parser.add_argument("--mission-dir", help="Persist detection evidence beneath this directory")
     parser.add_argument("--assistant-url", help="Local llama-server origin, e.g. http://127.0.0.1:8082")
+    parser.add_argument("--whisper-url", help="Running whisper-server origin (model stays loaded), e.g. http://127.0.0.1:8091")
     parser.add_argument("--whisper-bin")
     parser.add_argument("--whisper-model")
     parser.add_argument("--piper-bin")
@@ -484,7 +487,8 @@ def main():
                 h264=args.h264, mission_dir=args.mission_dir, max_pwm=args.max_pwm, min_pwm=args.min_pwm,
                 video_fps=args.video_fps, video_bitrate=args.video_bitrate, assistant_url=args.assistant_url,
                 whisper_bin=args.whisper_bin, whisper_model=args.whisper_model, piper_bin=args.piper_bin,
-                piper_model=args.piper_model, tts_dir=args.tts_dir, face_model=args.face_model), host=args.host, port=args.port,
+                piper_model=args.piper_model, tts_dir=args.tts_dir, face_model=args.face_model,
+                whisper_url=args.whisper_url), host=args.host, port=args.port,
                 ssl_certfile=args.ssl_certfile, ssl_keyfile=args.ssl_keyfile,
                 ws_max_size=8 * 1024 * 1024, access_log=False,
                 timeout_graceful_shutdown=5)

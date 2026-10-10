@@ -2,7 +2,8 @@
 
 The default assistant is an accurately labelled summary of detections, camera
 freshness, and range. Optional local models add vision questions, speech
-recognition, and speech synthesis. Every answer returns `action: null`.
+recognition, and speech synthesis. Answers never execute motors. Optional proposals require explicit confirmation
+and fresh held operator commands.
 
 Prepared on the development Mac before the hardware test:
 

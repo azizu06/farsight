@@ -404,6 +404,7 @@ async fn proxy_http(s: Arc<AppState>, req: Request) -> Response {
 
 #[tokio::main]
 async fn main() {
+    rustls::crypto::CryptoProvider::install_default(rustls::crypto::aws_lc_rs::default_provider()).ok();
     tracing_subscriber::fmt::init();
     let args = Args::parse();
     let origin = match upstream_origin(&args.upstream) {
@@ -420,10 +421,14 @@ async fn main() {
     for cert in rustls_native_certs::load_native_certs().certs {
         let _ = roots.add(cert);
     }
+    let mut extra_certs: Vec<reqwest::Certificate> = Vec::new();
     if let Some(ca_file) = &args.ca_file {
         if let Ok(pem) = std::fs::read(ca_file) {
             let mut rd = std::io::BufReader::new(&pem[..]);
             for cert in rustls_pemfile::certs(&mut rd).flatten() {
+                if let Ok(c) = reqwest::Certificate::from_der(&cert) {
+                    extra_certs.push(c);
+                }
                 let _ = roots.add(cert);
             }
         }
@@ -432,14 +437,15 @@ async fn main() {
         .with_root_certificates(roots)
         .with_no_client_auth();
     let tls = Arc::new(tls);
-    let connector = || {
-        reqwest::Client::builder()
-            .use_preconfigured_tls(tls.clone())
+    let connector = move || {
+        let mut b = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(10))
-            .pool_max_idle_per_host(16)
-            .build()
-            .unwrap()
+            .pool_max_idle_per_host(16);
+        for c in &extra_certs {
+            b = b.add_root_certificate(c.clone());
+        }
+        b.build().unwrap()
     };
     let state = Arc::new(AppState {
         origin,

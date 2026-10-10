@@ -167,8 +167,8 @@ An encoder failure clears readiness, closes consumers, and restarts the encoder.
 Request: `multipart/form-data` with `audio` (webm/wav from the Quest mic) or JSON `{"text": "what do you see?"}`.
 The current implementation supports optional loopback llama-server, local
 whisper-cli and Piper. With no VLM, `model` is `local-observation-summary`;
-successful VLM answers use `local-vision-model`. Current answers always have
-`action: null`. Missing audio dependencies return 503 while typed text remains
+successful VLM answers use `local-vision-model`. Answers never execute motors;
+`action` may contain a confirmation-only proposal, and motion still needs the deadman. Missing audio dependencies return 503 while typed text remains
 available. Uploads are bounded to 8 MiB and local conversion to twenty seconds.
 See [assistant setup](assistant-setup.md).
 Response:
@@ -184,6 +184,20 @@ needs no audio hardware for this.
 
 `action` is `null` or a proposal like `{"type": "seek", "target_id": 3}` that the Quest shows as a
 confirmation prompt. The Jetson never executes it without that confirmation.
+
+Optional additive fields (clients ignore unknown fields):
+
+- `action` types: `{"type": "seek", "target_id": <int>}` (a fresh tracked person; one flagged `down` first,
+  otherwise the largest box) or `{"type": "scan"}`. Proposals come from keywords in the question
+  ("go to", "seek", "approach"; "scan", "look around"), never from the model. The answer then ends with
+  "Confirm on the headset to ...". On confirm, the Quest sends `mode: "seek"` + `target_id` on
+  `/ws/control`, which still needs the held deadman; scan has no rover handler yet.
+- `timings`: `{"stt": ms|null, "vlm": ms|null, "tts": ms|null}` per stage; `ms` stays the total.
+- `source`, `simulated`, `observation` (facts given to the model), `assistant_warning`, `speech_warning`.
+
+Accepted `audio`: WAV, WebM/Opus, Ogg/Opus, or MP4/AAC (whatever the browser's MediaRecorder gives), at most 8 MiB.
+Headset (`quest/src/assistant-voice.ts`): a proposal shows "Seek person #3?" with Confirm / Dismiss for
+20 seconds; a new question, cancel, or expiry clears it.
 
 ## WebSocket `/ws/points` (Jetson -> Quest), binary, 3D scan
 

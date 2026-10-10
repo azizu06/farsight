@@ -39,6 +39,7 @@ export class RoverExperience {
   private drillAt = -Infinity;
   private drillBusy = false;
   private voice: AssistantVoice | null = null;
+  private seekTarget: number | null = null;
   private lastSendAt = 0;
   private input = { held: false, v: 0, w: 0, pan: 0 };
   private keys = new Set<string>();
@@ -179,6 +180,7 @@ export class RoverExperience {
   private escapeStop = (event: KeyboardEvent) => { if (event.key === "Escape") this.stop("Stopped: release deadman"); };
 
   stop(reason: string) {
+    this.seekTarget = null;
     this.input = this.gate.stop(this.input, reason);
     this.send(false);
   }
@@ -309,6 +311,7 @@ export class RoverExperience {
         pan: 0,
       };
     }
+    if (this.input.v || this.input.w) this.seekTarget = null;
     this.cockpit.visible = xr;
     this.cameraScreen.visible = this.xrLive;
     if (this.h264Enabled) {
@@ -342,7 +345,8 @@ export class RoverExperience {
     this.socket.send(JSON.stringify({
       seq, session_id: this.status?.session_id ?? null, permit: this.status?.permit ?? null,
       deadman, v: deadman ? this.input.v : 0, w: deadman ? this.input.w : 0,
-      pan: this.digitalPan ? 0 : this.input.pan, mode: "teleop", video_fresh: age < 500,
+      pan: this.digitalPan ? 0 : this.input.pan, video_fresh: age < 500,
+      ...(this.seekTarget === null ? { mode: "teleop" } : { mode: "seek", target_id: this.seekTarget }),
       video_age_ms: Number.isFinite(age) ? Math.ceil(age) : 999999,
     }));
     this.lastSendAt = performance.now();
@@ -450,7 +454,14 @@ export class RoverExperience {
     block.querySelector<HTMLButtonElement>("#open-mission-report")!.onclick = () => void this.showReport();
     this.voice = new AssistantVoice(block, document.querySelector<HTMLDialogElement>("#settings")!, button,
       () => this.stop("Assistant active: release deadman"),
-      reply => { result.textContent = `${reply.question ? "Heard: " + reply.question + "\n" : ""}${String(reply.answer ?? "No answer returned")}`; });
+      reply => { result.textContent = `${reply.question ? "Heard: " + reply.question + "\n" : ""}${String(reply.answer ?? "No answer returned")}`; },
+      action => {
+        // A confirmed proposal still needs the held deadman; any stick input or stop cancels it.
+        if (action.type !== "seek") { result.textContent = "Scan confirmed, but room scan is not wired to the rover yet."; return; }
+        this.stop(`Seek person #${action.target_id}: release, then hold deadman`);
+        this.seekTarget = action.target_id;
+        result.textContent = `Seek person #${action.target_id} armed: hold the deadman to approach; move the stick to cancel.`;
+      });
     const drillButton = block.querySelector<HTMLButtonElement>("#start-drill")!;
     drillButton.onclick = () => void this.updateDrill(true);
     this.timers.push(window.setInterval(() => {

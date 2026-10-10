@@ -62,7 +62,7 @@ python3 -m tools.export_detector --weights yolo11n-pose.pt
 bash tools/push_models.sh USER@JETSON
 ```
 
-Export dependencies are laptop-only. Build TensorRT engines on the actual Jetson
+Export dependencies are laptop-only. Build TensorRT engines with `python -m jetson.build_engine models/yolo11n-pose.onnx` on the actual Jetson
 as described in [inference setup](docs/inference-setup.md). Add
 `--detector-model models/yolo11n.engine` for GPU object detection, or
 `--detector pose --detector-model models/yolo11n-pose.engine` for GPU pose.

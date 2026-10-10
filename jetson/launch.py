@@ -15,6 +15,10 @@ VALUE_FLAGS = (
     ("FARSIGHT_MISSION_DIR", "--mission-dir"), ("FARSIGHT_SSL_CERTFILE", "--ssl-certfile"),
     ("FARSIGHT_SSL_KEYFILE", "--ssl-keyfile"), ("FARSIGHT_MAX_PWM", "--max-pwm"),
     ("FARSIGHT_MIN_PWM", "--min-pwm"),
+    ("FARSIGHT_ASSISTANT_URL", "--assistant-url"), ("FARSIGHT_WHISPER_URL", "--whisper-url"),
+    ("FARSIGHT_WHISPER_BIN", "--whisper-bin"), ("FARSIGHT_WHISPER_MODEL", "--whisper-model"),
+    ("FARSIGHT_PIPER_BIN", "--piper-bin"), ("FARSIGHT_PIPER_MODEL", "--piper-model"),
+    ("FARSIGHT_TTS_DIR", "--tts-dir"),
 )
 INT_VARS = ("FARSIGHT_PORT", "FARSIGHT_MAX_PWM", "FARSIGHT_MIN_PWM", "FARSIGHT_WAIT_SECONDS")
 
