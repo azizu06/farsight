@@ -69,7 +69,7 @@ reachable over SSH ([jetson-setup-handoff.md](jetson-setup-handoff.md)). Update 
 | Claim | Status | Evidence / scope |
 |---|---|---|
 | End-to-end: camera, boxes, driving, Seek, report | **V** simulator + desktop browser, **P** rig | [ui-validation.md](ui-validation.md): positive JPEG and H.264 overlays on a SIMULATED public photo with real YOLO11n ONNX; Quest 2 unverified |
-| Frame-matched overlays | **V** desktop | Boxes drawn only on matching frame ids; ~3 fps ONNX on Mac so intermittent |
+| Frame-matched overlays | **V** desktop | Boxes drawn from the same source within 8 frames of the displayed one, faded by lag; ~3 fps ONNX on Mac |
 | Stable ids, pose, "down" | **V** synthetic | Tracker and decode tests; not yet on real video from the rover |
 | Seek / Explore | **V** unit + sim, **P** rover | Arrival is a software bound from the front ultrasonic |
 | Software link behaviour | **V** simulated | 8 s RGB trial: arrival p95 285 ms, 190/192 settled samples moving; a later loaded run stopped at stale video and is kept. Software receipt age, **not** camera-to-eye latency |

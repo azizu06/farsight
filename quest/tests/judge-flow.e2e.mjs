@@ -212,9 +212,11 @@ async function main() {
       await waitFor("no /ws/detections packets from the server", () => counters.detections - real >= 3, 5000);
       inject = true;
       await waitFor("HUD never showed the injected box", async () => (await roverDetails(page)).match(/(\d+) detections/)?.[1] === "1", 5000);
-      // Boxes only draw when a packet matches the displayed frame id exactly; sample how often they show.
+      // The detector (~3 fps) is slower than the camera (~15 Hz); the nearest same-source packet within
+      // a few frames must keep the box on screen between detector frames (#64), not 1 frame in 5.
       let shownSamples = 0;
       for (let i = 0; i < 20; i++) { if (/\b1 detections/.test(await roverDetails(page))) shownSamples++; await sleep(100); }
+      if (shownSamples < 18) throw new Error(`box shown in only ${shownSamples}/20 HUD samples over 2 s`);
       return `${counters.detections - real} real detector packets (ray-cast room: 0 people); synthetic box #${SYNTHETIC_ID} rendered → HUD "1 detections" in ${shownSamples}/20 samples over 2 s`;
     });
 
@@ -254,7 +256,7 @@ async function main() {
         const left = rect.left + (rect.width - canvas.width * scale) / 2, top = rect.top + (rect.height - canvas.height * scale) / 2;
         return { x: left + 0.5 * canvas.width * scale, y: top + 0.5 * canvas.height * scale };
       });
-      // A box is only clickable while its packet matches a frame younger than 500 ms; retry like an operator would.
+      // A box is only clickable while a same-source packet within a few frames is younger than 500 ms; retry like an operator would.
       await waitFor("click never armed Seek", async () => {
         if ((await roverDetails(page)).includes(`Seek #${SYNTHETIC_ID} armed`)) return true;
         await page.mouse.click(point.x, point.y);

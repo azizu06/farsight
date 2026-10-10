@@ -48,11 +48,11 @@ On a heavily loaded machine a headless render stall can trip the viewer's 250 ms
   `begin_scan` (separate WebSocket and HTTP paths through the relay) and is treated as
   `scan_override`. Press Y again.
 
-**Open: boxes render on only a fraction of frames.** `matchingDetections` in `quest/src/rover.ts`
-draws boxes only when a detector packet matches the displayed frame id exactly. In `--demo` the
-camera id advances ~15 Hz while the detector runs ~3 fps, so only ~1 in 5 displayed frames has a
-packet (measured 8 of 37 ids over 6 s); the `detections render` step prints how many of 20 HUD
-samples showed the box. The same applies on the rig whenever detector fps < camera fps.
+**Boxes between detector frames (#64).** The detector runs slower than the camera (`--demo`:
+~3 fps vs ~15 Hz), so most displayed frames have no packet of their own. The viewer draws the
+nearest packet from the same camera source within 8 frames and 500 ms (`quest/src/detection-match.js`),
+faded by frame distance; the HUD says `(N frames old)`. The `detections render` step fails if the
+box shows in fewer than 18 of 20 HUD samples (exact-frame matching gave 1-7/20).
 
 ## Roles (4 people)
 
@@ -100,7 +100,7 @@ so re-check it right before rehearsal.
 | Time | Operator does | Presenter says | Proof shown |
 |---|---|---|---|
 | 0:00-0:10 | Put on / already in headset, trigger **released** | "This is a rover you inhabit. The Jetson on its back does the seeing and the safety." | Live camera on the panel, HUD freshness |
-| 0:10-0:25 | Turn head left and right | "My head pans the camera." Spotter steps in view. "Each box is a tracked person with a stable id and a pose." | Boxes and keypoints on matching frames; id stays while spotter walks |
+| 0:10-0:25 | Turn head left and right | "My head pans the camera." Spotter steps in view. "Each box is a tracked person with a stable id and a pose." | Boxes and keypoints on the displayed frame (older ones faded); id stays while spotter walks |
 | 0:25-0:40 | Hold **right trigger**, nudge **left stick** forward, then **release** | "Deadman: let go and the Jetson cuts the motors. A bad link does the same." | Rover moves, stops on release |
 | 0:40-0:55 | Hold trigger, aim right controller at the spotter's box, press **right A** | "Seek: I choose a person, the rover drives itself, slows near them, and stops on arrival." | HUD autonomy state `tracking` then `arrived`; rover stops ~60 cm out |
 | 0:55-1:05 | Release trigger. Spotter lies down | "Pose flags a person who looks down." | `down` flag on the box (pose detector only) |
