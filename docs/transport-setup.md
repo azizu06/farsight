@@ -166,3 +166,13 @@ Only configured-upstream absolute URLs are rewritten to local paths. Redirects
 to another origin are rejected. Foreign browser origins and non-local Host headers
 are rejected; the listener is always bound to `127.0.0.1`. `/relay/health` checks
 the local operator process independently of `/health`, which checks the rover.
+
+For repeated control disconnects, read `GET /relay/health` and inspect
+`control_closures`. It records single-route control connection counts and at
+most eight endings, with UTC time, duration, the observed side/reason and
+numeric close codes captured before relay cleanup. It stores no control
+payloads. Correlate these times with Jetson serial exceptions and kernel USB
+reset/detach logs. This observation identifies where the relay noticed loss;
+it does not prove whether USB power, cellular service or another component
+caused it. Bonded control is explicitly excluded and uses its separate
+`transport` report. These diagnostics do not change stop or reconnect rules.

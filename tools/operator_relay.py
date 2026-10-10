@@ -15,6 +15,8 @@ import aiohttp
 from aiohttp import web
 from yarl import URL
 
+from .control_closures import ControlClosures
+
 DIST = Path(__file__).resolve().parents[1] / "quest" / "dist"
 HOP_HEADERS = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
                "te", "trailer", "transfer-encoding", "upgrade", "host", "content-length"}
@@ -92,6 +94,7 @@ def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5, bonded_upstr
 
     app = web.Application(client_max_size=8 * 1024 * 1024, middlewares=[local_only])
     app["origin"] = origin
+    control_closures = ControlClosures()
 
     async def sessions(app):
         timeout = aiohttp.ClientTimeout(total=None, connect=5, sock_read=10)
@@ -123,7 +126,8 @@ def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5, bonded_upstr
 
     async def relay_health(request):
         packet = {"relay": True, "upstream": str(origin),
-                  "quest_built": (dist / "index.html").is_file()}
+                  "quest_built": (dist / "index.html").is_file(),
+                  "control_closures": control_closures.status(enabled=second is None)}
         if second is not None:
             packet["transport"] = app["bonded"].status()
         if geometry_upstream is not None:
@@ -134,6 +138,7 @@ def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5, bonded_upstr
     async def websocket(request, target):
         control = request.path == "/ws/control"
         session = app["control"] if control else app["http"]
+        diagnostic = control_closures.begin() if control else None
         # Do not accept the Quest socket until the upstream socket exists.
         try:
             remote = await session.ws_connect(target, heartbeat=10,
@@ -141,14 +146,37 @@ def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5, bonded_upstr
                 autoclose=True, compress=0,
                 timeout=aiohttp.ClientWSTimeout(ws_close=0.25))
         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            if diagnostic is not None:
+                diagnostic.end("upstream", "connect_failure", exception=exc, operation="connect")
             raise web.HTTPBadGateway(text=f"Rover unavailable: {type(exc).__name__}")
+        except BaseException as exc:
+            if diagnostic is not None:
+                diagnostic.end("upstream", "connect_failure", exception=exc, operation="connect")
+            raise
         local = web.WebSocketResponse(heartbeat=10, timeout=0.25,
             max_msg_size=16384 if control else 8 * 1024 * 1024, compress=False)
         try:
-            await local.prepare(request)
+            try:
+                await local.prepare(request)
+            except BaseException as exc:
+                if diagnostic is not None:
+                    diagnostic.end("quest", "prepare_failure", local.close_code, remote.close_code, exc, operation="prepare")
+                raise
+            if diagnostic is not None:
+                diagnostic.opened()
             deadline = min(send_timeout, 0.1) if control else send_timeout
 
-            async def pipe(source, destination, client_to_rover=False):
+            async def send(operation, client_to_rover):
+                try:
+                    await asyncio.wait_for(operation, deadline)
+                except BaseException as exc:
+                    if diagnostic is not None:
+                        diagnostic.end("upstream" if client_to_rover else "quest",
+                                       "send_timeout" if isinstance(exc, asyncio.TimeoutError) else "error",
+                                       local.close_code, remote.close_code, exc, operation="send")
+                    raise
+
+            async def pipe_body(source, destination, client_to_rover=False):
                 async for message in source:
                     if message.type == aiohttp.WSMsgType.TEXT:
                         data = message.data
@@ -167,21 +195,41 @@ def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5, bonded_upstr
                                             or not 0 <= age <= 500):
                                         command.update(deadman=False, v=0, w=0)
                                         data = json.dumps(command)
-                            except (ValueError, TypeError):
+                            except (ValueError, TypeError) as exc:
+                                if diagnostic is not None:
+                                    diagnostic.end("quest", "invalid_control", local.close_code, remote.close_code, exc)
                                 await local.close(code=1008, message=b"Invalid control JSON")
                                 return
                         if not client_to_rover:
                             # Assistant/telemetry messages may contain absolute audio URLs.
                             with suppress(ValueError, TypeError):
                                 data = json.dumps(rewrite_json(json.loads(data), target.origin()))
-                        await asyncio.wait_for(destination.send_str(data), deadline)
+                        await send(destination.send_str(data), client_to_rover)
                     elif message.type == aiohttp.WSMsgType.BINARY:
                         if control:
+                            if diagnostic is not None:
+                                diagnostic.end("quest" if client_to_rover else "upstream", "invalid_control",
+                                               local.close_code, remote.close_code)
                             await local.close(code=1008, message=b"Control requires JSON")
                             return
-                        await asyncio.wait_for(destination.send_bytes(message.data), deadline)
+                        await send(destination.send_bytes(message.data), client_to_rover)
                     else:
                         return
+
+            async def pipe(source, destination, client_to_rover=False):
+                side = "quest" if client_to_rover else "upstream"
+                try:
+                    await pipe_body(source, destination, client_to_rover)
+                except BaseException as exc:
+                    if diagnostic is not None:
+                        diagnostic.end(side, "send_timeout" if isinstance(exc, asyncio.TimeoutError) else "error",
+                                       local.close_code, remote.close_code, exc)
+                    raise
+                finally:
+                    if diagnostic is not None and not diagnostic.finished:
+                        error = source.exception()
+                        diagnostic.end(side, "error" if error is not None or source.close_code == 1006 else "normal",
+                                       local.close_code, remote.close_code, error)
 
             tasks = [asyncio.create_task(pipe(local, remote, True)),
                      asyncio.create_task(pipe(remote, local))]
