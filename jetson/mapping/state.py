@@ -12,10 +12,15 @@ from .surfaces import SurfaceMap
 from .voxel import VoxelMap
 from jetson.camera import adjusted_receipt, capture_diagnostics
 
+FUSION_OFF = "Jetson map fusion off (--map-fusion off): no Jetson 3D map"
+
 
 class MapState:
-    def __init__(self, demo=False):
+    def __init__(self, demo=False, fusion=True):
         self.lock = threading.RLock()
+        # With fusion off the Jetson builds no 3D map: frames still publish the camera,
+        # depth view, pose and the navigation observers, but no voxel/mesh integration.
+        self.fusion = fusion
         self.cloud = VoxelMap()
         self.surfaces = SurfaceMap()
         self.demo = demo
@@ -137,15 +142,23 @@ class MapState:
             _, encoded = cv2.imencode('.jpg', heat)
             self.depth_jpeg = encoded.tobytes()
             self.depth_range = [round(float(np.min(frame.depth[valid])), 2), round(float(np.max(frame.depth[valid])), 2)] if valid.any() else None
-            may_fuse = (not self.paused and frame.header["tracking"] == "normal"
+            may_fuse = (self.fusion and not self.paused and frame.header["tracking"] == "normal"
                         and self.tracking == "normal")
-            self.reason = ("Fusion paused" if self.paused else "ARKit tracking limited; fusion frozen"
-                           if not may_fuse else None)
+            self.reason = (FUSION_OFF if not self.fusion else "Fusion paused" if self.paused
+                           else "ARKit tracking limited; fusion frozen" if not may_fuse else None)
         for observer in self.frame_observers:
             try:
                 observer(frame)
             except Exception:
                 pass  # navigation must never break mapping or camera publication
+        if not self.fusion:
+            with self.lock:
+                if generation == self.processing_generation:
+                    self.frames += 1  # frames ingested; the map itself stays empty
+                    duration = time.monotonic() - started
+                    self.processing_ms = round(duration * 1000, 1)
+                    self.fps = round(1 / max(duration, 1e-4), 1)
+            return
         if not may_fuse:
             return
         points, colors, mesh = reconstruct(frame)
@@ -175,7 +188,7 @@ class MapState:
                         session_id=self.identity[0] if self.identity else None,
                         map_epoch=self.identity[1] if self.identity else None,
                         generation=self.generation, revision=self.revision,
-                        mesh_revision=self.surfaces.revision, paused=self.paused,
+                        mesh_revision=self.surfaces.revision, paused=self.paused, map_fusion=self.fusion,
                         tracking=self.tracking if fresh else "stale",
                         points=len(self.cloud.cells), triangles=self.surfaces.count,
                         keyframes=len(self.surfaces.keyframes), frames=self.frames,
