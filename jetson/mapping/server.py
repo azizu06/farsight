@@ -35,7 +35,8 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
     mission = Mission(mission_dir)
     perception = PerceptionService(camera_service, model=detector_model, mode=detector, on_detection=mission.detect)
     control = ControlService(serial_port=serial_port, simulate=simulate_rover, max_pwm=max_pwm, min_pwm=min_pwm,
-                             camera_ready=lambda: camera_service.status()["camera"])
+                             camera_ready=lambda: camera_service.status()["camera"],
+                             detections=perception.snapshot)
 
     async def simulate():
         started, frame_id = time.monotonic(), 0

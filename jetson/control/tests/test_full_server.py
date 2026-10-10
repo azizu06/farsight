@@ -12,6 +12,57 @@ from jetson.mapping.server import create_app
 
 
 class FullServerTests(unittest.TestCase):
+    def test_demo_explore_seek_target_loss_stick_override_and_link_loss(self):
+        app = create_app(demo=True, simulate_rover=True, detector="none")
+        perception = app.state.perception
+
+        def detected(x=None):
+            # Fake inference results, real camera, control socket, and serial pump.
+            perception.packet = dict(ts=time.time(), frame=1, fps=10, detector="FAKE",
+                                     source="SIMULATED", received=time.monotonic(),
+                                     boxes=[] if x is None else [dict(id=7, cls="person", x=x, w=.2)])
+
+        with TestClient(app) as client:
+            self.wait_health(client, lambda value: value["camera"] and value["rover"])
+            with client.websocket_connect("/ws/control") as ws:
+                status = self.release(ws, ws.receive_json(), 0)
+                detected()
+                self.motion(ws, status, 1, mode="explore", v=0)
+                status = self.wait_status(ws, lambda value: value["seq"] == 1)
+                self.assertEqual((status["mode"], status["autonomy_state"]), ("explore", "forward"))
+                self.assertEqual((status["left_pwm"], status["right_pwm"]), (25, 25))
+                detected(.7)
+                self.motion(ws, status, 2, mode="explore", v=0)
+                status = self.wait_status(ws, lambda value: value["seq"] == 2)
+                self.assertEqual((status["mode"], status["target_id"]), ("seek", 7))
+                self.assertGreater(status["left_pwm"], status["right_pwm"])
+                detected(.1)
+                self.motion(ws, status, 3, mode="explore", v=0)
+                status = self.wait_status(ws, lambda value: value["seq"] == 3)
+                self.assertLess(status["left_pwm"], status["right_pwm"])
+                detected()
+                seq = 3
+                deadline = time.monotonic() + 1.4
+                while time.monotonic() < deadline and status["autonomy_state"] != "target_lost":
+                    seq += 1
+                    self.motion(ws, status, seq, mode="explore", v=0)
+                    status = self.wait_status(ws, lambda value: value["seq"] == seq)
+                    self.assertEqual((status["left_pwm"], status["right_pwm"]), (0, 0))
+                self.assertEqual(status["autonomy_state"], "target_lost")
+                detected(.4)
+                self.motion(ws, status, seq + 1, mode="explore", v=-.5)
+                status = self.wait_status(ws, lambda value: value["seq"] == seq + 1)
+                self.assertEqual((status["mode"], status["autonomy_state"], status["left_pwm"]),
+                                 ("teleop", "stick_override", -50))
+                status = self.release(ws, status, seq + 2)
+                self.motion(ws, status, seq + 3, mode="seek", target_id=7, v=0)
+                status = self.wait_status(ws, lambda value: value["seq"] == seq + 3)
+                self.assertGreater(status["left_pwm"], 0)
+                stopped = self.wait_status(ws, lambda value: value["reason"] == "lease_expired")
+                self.assertEqual((stopped["left_pwm"], stopped["right_pwm"]), (0, 0))
+                self.assertTrue(stopped["requires_release"])
+            self.assertEqual(app.state.control.state.output()[:2], (0, 0))
+
     def wait_health(self, client, predicate, timeout=3):
         deadline = time.monotonic() + timeout
         while True:
