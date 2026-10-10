@@ -109,6 +109,9 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 #[tokio::main]
 async fn main() {
+    // Both rustls providers end up in the tree via axum-server + reqwest;
+    // pin one or RustlsConfig panics on TLS startup.
+    rustls::crypto::CryptoProvider::install_default(rustls::crypto::aws_lc_rs::default_provider()).ok();
     tracing_subscriber::fmt::init();
     let args = Args::parse();
     farsight_server::pacer::init(args.bulk_limit_mbps);

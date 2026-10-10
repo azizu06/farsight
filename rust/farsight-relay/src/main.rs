@@ -365,7 +365,7 @@ async fn proxy_http(s: Arc<AppState>, req: Request) -> Response {
         .await
     {
         Ok(r) => r,
-        Err(e) => return (StatusCode::BAD_GATEWAY, format!("Rover unavailable: {e}")).into_response(),
+        Err(e) => return (StatusCode::BAD_GATEWAY, format!("Rover unavailable: {e:?}")).into_response(),
     };
     let status = StatusCode::from_u16(remote.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
     let mut out_headers = forward_headers(remote.headers());
