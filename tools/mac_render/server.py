@@ -355,12 +355,14 @@ class App:
                     continue
                 if not isinstance(body, dict) or body.get("type") != "next" or type(body.get("request_id")) is not int:
                     continue
+                waiting_at = time.monotonic()
                 try:
                     item = await asyncio.wait_for(queue.latest(), timeout=2)
                 except asyncio.TimeoutError:
                     await socket.send_json({"type": "macview_error", "reason": "no fragment"})
                     continue
                 sidecar = dict(item["sidecar"], request_id=body.get("request_id"))
+                sidecar["server_wait_ms"] = (time.monotonic() - waiting_at) * 1000
                 sidecar["age_ms"] = max(0, time.monotonic() * 1000 - sidecar["capture_mono_ms"])
                 await asyncio.wait_for(socket.send_json(sidecar), .5)
                 await asyncio.wait_for(socket.send_bytes(item["payload"]), .5)
