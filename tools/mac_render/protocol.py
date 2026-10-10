@@ -21,6 +21,7 @@ VERSION = 1
 MAX_POSE_HZ = 72
 # A pose older than this is not applied. It does not stretch any motor lease.
 POSE_STALE_MS = 250
+_SESSION_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 
 
 def finite(value):
@@ -53,7 +54,7 @@ def parse_pose(message, now_mono_ms):
     identity = {}
     if "session_id" in message or "frame_id" in message or "pose_id" in message:
         session = message.get("session_id")
-        if not isinstance(session, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", session):
+        if not isinstance(session, str) or not _SESSION_ID.fullmatch(session):
             raise ValueError("invalid pose session")
         identity["session_id"] = session
         seq = message.get("frame_id", message.get("pose_id"))

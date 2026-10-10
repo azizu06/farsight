@@ -10,6 +10,7 @@ import base64
 import json
 import shutil
 import signal
+import struct
 import subprocess
 import time
 from contextlib import suppress, asynccontextmanager
@@ -30,6 +31,17 @@ from .protocol import (
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 
+_UNSET = object()
+
+_POSE_PAGE_JS = """(pose) => { window.__macPose = {
+  position: pose.position, quaternion: pose.quaternion, ray: pose.ray,
+  sentMonoMs: pose.sent_mono_ms, sentWallMs: pose.sent_wall_ms,
+  receivedMonoMs: pose.received_mono_ms, receiptAgeMs: pose.receipt_age_ms,
+  tracked: true, session_id: pose.session_id, frame_id: pose.frame_id,
+  pose_id: pose.pose_id, client_nonce: pose.client_nonce,
+  fov_y_deg: pose.fov_y_deg, aspect: pose.aspect, space: pose.space,
+  map_revision: pose.map_revision, eyes: pose.eyes }; }"""
+
 
 class RenderEncoder:
     def __init__(self, page, width, height, fps, bitrate, hardware):
@@ -43,13 +55,15 @@ class RenderEncoder:
         self.encoder = None
         self.error = None
         self.frame_id = 0
-        self.fragments = asyncio.Queue(maxsize=4)
+        self.viewers = set()
         self.latest_pose = None
         self.samples = []
         self._tasks = []
         self._screencast = None
         self._pose_session = None
         self._pose_seq = -1
+        self._pending_pose = _UNSET
+        self._pose_pump = None
         self.dropped_captures = 0
         self.last_snapshot = {}
 
@@ -106,7 +120,9 @@ class RenderEncoder:
             " map: window.__mac && window.__mac.map || null })")
         if len(params["data"]) > 6 * 1024 * 1024:
             raise ValueError("screencast exceeds capture limit")
-        jpeg = base64.b64decode(params["data"], validate=True)
+        # Decoding several hundred KB of base64 per frame is pure CPU; keep it
+        # off the event loop so websocket sends and pose handling stay prompt.
+        jpeg = await asyncio.to_thread(base64.b64decode, params["data"], validate=True)
         self.last_snapshot = meta
         self.frame_id += 1
         self.samples.append({
@@ -149,7 +165,8 @@ class RenderEncoder:
                 first, count, start, end = fragment_timing(data, self.fps)
                 # image2pipe stamps each fed image at fps regardless of CDP wall
                 # cadence. Match MP4 input ordinals, never a later captured image.
-                represented = [s for s in self.samples if first <= s["input_index"] < first + count]
+                base = self.frame_id - len(self.samples)  # input_index of samples[0]
+                represented = self.samples[first - base:first - base + count]
                 if not count or len(represented) != count:
                     raise ValueError("fragment capture provenance unavailable")
                 newest = represented[0]  # oldest represented image bounds the whole fragment
@@ -168,17 +185,58 @@ class RenderEncoder:
                 sidecar["timing_scope"] = "Mac atomic render request through encoded fragment; not camera or headset age"
                 sidecar["bytes"] = len(data)
                 sidecar["pose_to_frame_ms"] = pose_to_frame_ms(newest.get("pose"), newest["capture_mono_ms"])
-                item = {"sidecar": sidecar, "payload": data}
-                if self.fragments.full():
-                    with suppress(asyncio.QueueEmpty):
-                        self.fragments.get_nowait()
-                self.fragments.put_nowait(item)
+                self._publish({"sidecar": sidecar, "payload": data,
+                               "keyframe": _is_keyframe(data)})
+
+    def subscribe(self):
+        """Per-viewer fragment queue; the viewer starts and restarts on a
+        keyframe so it never decodes a fragment whose references it missed."""
+        viewer = ViewerQueue()
+        self.viewers.add(viewer)
+        return viewer
+
+    def unsubscribe(self, viewer):
+        self.viewers.discard(viewer)
+
+    def _publish(self, item):
+        """Shared-encode fan-out: one copy per viewer, so a slow or paused
+        client can never backpressure the encoder or other viewers."""
+        for viewer in list(self.viewers):
+            viewer.offer(item)
+
+    def echo_pose(self, pose):
+        """Latest-wins handoff of the newest validated pose to the render page.
+        One in-flight page.evaluate at most; intermediate poses are dropped so
+        72 Hz input can never queue a CDP backlog behind the render loop."""
+        self._pending_pose = pose
+        if self.page is None:
+            return
+        if self._pose_pump is None or self._pose_pump.done():
+            self._pose_pump = asyncio.create_task(self._pose_loop())
+
+    async def _pose_loop(self):
+        while self._pending_pose is not _UNSET:
+            pose, self._pending_pose = self._pending_pose, _UNSET
+            try:
+                if pose is None:
+                    await self.page.evaluate("() => { window.__macPose = null; }")
+                else:
+                    pose["receipt_age_ms"] = max(0, time.monotonic() * 1000 - pose["received_mono_ms"])
+                    await self.page.evaluate(_POSE_PAGE_JS, pose)
+            except Exception:
+                self._pending_pose = _UNSET
+                return
 
     async def _stderr(self):
         while line := await self.process.stderr.readline():
             self.error = line.decode(errors="replace").strip()[:300]
 
     async def close(self):
+        self.viewers.clear()
+        if self._pose_pump is not None:
+            self._pose_pump.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._pose_pump
         for task in self._tasks:
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
@@ -197,8 +255,8 @@ class App:
         self.browser = browser
         self.page = page
         self.encoder = None
-        self.view_socket = None
         self.pose_socket = None
+        self._videobox = None
 
     async def start_encoder(self):
         if self.page is None:
@@ -218,7 +276,7 @@ class App:
             "encoder": None if encoder is None else encoder.encoder,
             "ready": bool(encoder and encoder.init and encoder.process and encoder.process.returncode is None),
             "error": None if encoder is None else encoder.error,
-            "videotoolbox": videobox_available(),
+            "videotoolbox": await self.videotoolbox(),
             "width": self.args.width,
             "height": self.args.height,
             "fps": self.args.fps,
@@ -227,12 +285,19 @@ class App:
             "map": encoder.last_snapshot.get("mapStatus") if encoder else None,
         })
 
+    async def videotoolbox(self):
+        # ffmpeg -encoders spawns a subprocess; cache it instead of paying that
+        # on every health poll.
+        if self._videobox is None:
+            self._videobox = await asyncio.to_thread(videobox_available)
+        return self._videobox
+
     @asynccontextmanager
     async def owned_socket(self, attribute, request):
         existing = getattr(self, attribute)
         if existing is not None and not existing.closed:
             raise web.HTTPServiceUnavailable(text="Visual stream already has an owner")
-        socket = web.WebSocketResponse(max_msg_size=16384)
+        socket = web.WebSocketResponse(max_msg_size=16384, heartbeat=30)
         setattr(self, attribute, socket)
         try:
             await socket.prepare(request)
@@ -249,12 +314,17 @@ class App:
                         await asyncio.wait_for(self.page.evaluate("() => { window.__macPose = null; }"), .5)
 
     async def macview(self, request):
-        async with self.owned_socket("view_socket", request) as socket:
-            encoder = self.encoder
-            if encoder is None or not encoder.init:
-                await socket.send_json({"type": "macview_error", "reason": "encoder not ready"})
-                await socket.close()
-                return socket
+        # Multiple viewers share the one encoder; each gets its own freshness
+        # queue so a slow client's socket can never stall the stream for others.
+        socket = web.WebSocketResponse(max_msg_size=16384, heartbeat=30)
+        await socket.prepare(request)
+        encoder = self.encoder
+        if encoder is None or not encoder.init:
+            await socket.send_json({"type": "macview_error", "reason": "encoder not ready"})
+            await socket.close()
+            return socket
+        queue = encoder.subscribe()
+        try:
             await socket.send_json({
                 "type": "video_init", "macview": "macview_init", "version": 1,
                 "mime": encoder.mime, "source": "MAC RENDER",
@@ -272,7 +342,7 @@ class App:
                 if not isinstance(body, dict) or body.get("type") != "next" or type(body.get("request_id")) is not int:
                     continue
                 try:
-                    item = await asyncio.wait_for(encoder.fragments.get(), timeout=2)
+                    item = await asyncio.wait_for(queue.latest(), timeout=2)
                 except asyncio.TimeoutError:
                     await socket.send_json({"type": "macview_error", "reason": "no fragment"})
                     continue
@@ -280,7 +350,11 @@ class App:
                 sidecar["age_ms"] = max(0, time.monotonic() * 1000 - sidecar["capture_mono_ms"])
                 await asyncio.wait_for(socket.send_json(sidecar), .5)
                 await asyncio.wait_for(socket.send_bytes(item["payload"]), .5)
-            return socket
+        finally:
+            encoder.unsubscribe(queue)
+            with suppress(Exception):
+                await asyncio.wait_for(socket.close(), .25)
+        return socket
 
     async def pose(self, request):
         async with self.owned_socket("pose_socket", request) as socket:
@@ -293,21 +367,7 @@ class App:
                 except (json.JSONDecodeError, ValueError) as exc:
                     await socket.send_json({"type": "pose_rejected", "reason": str(exc)})
                     continue
-                if self.page is not None:
-                    if not pose["tracked"]:
-                        await self.page.evaluate("() => { window.__macPose = null; }")
-                        continue
-                    pose["receipt_age_ms"] = max(0, time.monotonic() * 1000 - pose["received_mono_ms"])
-                    await self.page.evaluate(
-                        """(pose) => { window.__macPose = {
-                          position: pose.position, quaternion: pose.quaternion, ray: pose.ray,
-                          sentMonoMs: pose.sent_mono_ms, sentWallMs: pose.sent_wall_ms,
-                          receivedMonoMs: pose.received_mono_ms, receiptAgeMs: pose.receipt_age_ms,
-                          tracked: true, session_id: pose.session_id, frame_id: pose.frame_id,
-                          pose_id: pose.pose_id, client_nonce: pose.client_nonce,
-                          fov_y_deg: pose.fov_y_deg, aspect: pose.aspect, space: pose.space,
-                          map_revision: pose.map_revision, eyes: pose.eyes }; }""",
-                        pose)
+                self.encoder.echo_pose(pose if pose["tracked"] else None)
             return socket
 
 
@@ -355,7 +415,107 @@ def create_app(args, browser=None, page=None):
     if args.upstream:
         web_app.router.add_get("/map/{tail:.*}", proxy(args.upstream))
         web_app.router.add_get("/health/map", proxy_one(args.upstream, "/map/status"))
+        web_app.router.add_get("/dense/{tail:.*}", dense_proxy(args.upstream))
     return web_app
+
+
+class ViewerQueue:
+    """Latest-only fragments for one viewer.
+
+    A viewer is handed nothing until a keyframe, so it never decodes a fragment
+    whose reference frames it missed. When the viewer asks for the next fragment
+    and a backlog has built up (a slow start, a stall), everything before the
+    newest queued keyframe is dropped: the picture jumps forward instead of the
+    backlog becoming standing latency. A full queue waits for the next keyframe.
+
+    Adopted from aziz/mac-dense-render (quest-hud handoff).
+    """
+
+    def __init__(self, limit=12):
+        self.items = []
+        self.limit = limit
+        self.synced = False
+        self.skipped = 0
+        self._ready = asyncio.Event()
+
+    def offer(self, item):
+        if item["keyframe"]:
+            self.synced = True
+        if not self.synced:
+            return
+        if len(self.items) >= self.limit:
+            self.skipped += len(self.items)
+            self.items.clear()
+            self.synced = bool(item["keyframe"])
+            if not self.synced:
+                return
+        self.items.append(item)
+        self._ready.set()
+
+    def take(self):
+        """The next decodable fragment, skipping any backlog to its newest keyframe."""
+        keys = [index for index, item in enumerate(self.items) if item["keyframe"]]
+        if keys and keys[-1] > 0:
+            self.skipped += keys[-1]
+            del self.items[:keys[-1]]
+        item = self.items.pop(0)
+        if not self.items:
+            self._ready.clear()
+        return item
+
+    async def latest(self):
+        while not self.items:
+            self._ready.clear()
+            await self._ready.wait()
+        return self.take()
+
+
+def _is_keyframe(data):
+    """A fragment whose mdat carries an IDR picture, so a viewer can start decoding on it.
+
+    ffmpeg writes MP4 samples as AVCC: 4-byte big-endian NAL lengths, not Annex B
+    start codes, and default-base-is-moof says nothing about sync samples.
+    Adopted from aziz/mac-dense-render.
+    """
+    at = data.find(b"mdat")
+    if at < 4:
+        return False
+    end = min(len(data), at - 4 + struct.unpack_from(">I", data, at - 4)[0])
+    pos = at + 4
+    while pos + 4 <= end:
+        length = struct.unpack_from(">I", data, pos)[0]
+        pos += 4
+        if length == 0 or pos + length > end:
+            return False
+        if data[pos] & 0x1F == 5:
+            return True
+        pos += length
+    return False
+
+
+def dense_proxy(upstream):
+    """Relay /dense/* for the render page, keeping the query and the upstream status.
+
+    Adopted from aziz/mac-dense-render; uses the shared map_client session
+    instead of a per-request blocking fetch.
+    """
+    async def send(request):
+        url = str(upstream_origin(upstream)) + "/dense/" + request.match_info["tail"]
+        if request.query_string:
+            url += "?" + request.query_string
+        async with request.app["map_client"].get(url,
+                headers={"Accept-Encoding": "identity"}, allow_redirects=False) as response:
+            body = bytearray()
+            async for chunk in response.content.iter_chunked(65536):
+                body.extend(chunk)
+                if len(body) > 64 * 1024 * 1024:
+                    raise web.HTTPBadGateway(text="Dense response exceeds bounded size")
+            headers = {key: value for key, value in response.headers.items()
+                       if key.lower().startswith(("x-map-", "x-geometry-", "x-dense-"))
+                       or key.lower() == "content-type"}
+            headers["Cache-Control"] = "no-store"
+            return web.Response(status=response.status, body=bytes(body), headers=headers)
+    return send
 
 
 def proxy(upstream):

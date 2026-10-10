@@ -1,0 +1,137 @@
+"""Pipeline behavior for the Mac render server: per-viewer freshness queues,
+keyframe-safe drops, /dense passthrough, and coalesced pose echo. No browser,
+no ffmpeg, no motion."""
+
+import asyncio
+import struct
+import unittest
+
+from aiohttp import web
+from aiohttp.test_utils import TestClient, TestServer
+
+from tools.mac_render.server import (
+    RenderEncoder, ViewerQueue, _is_keyframe, create_app, parse_args,
+)
+
+
+def box(kind, payload=b""):
+    return struct.pack(">I4s", 8 + len(payload), kind) + payload
+
+
+class KeyframeTest(unittest.TestCase):
+    def test_idr_is_found_in_avcc_mdat_not_by_tfhd_flags(self):
+        moof = box(b"moof", box(b"tfhd", struct.pack(">II", 0x020000, 1)))
+        nal = lambda kind: struct.pack(">I", 3) + bytes([kind, 0, 0])
+        self.assertTrue(_is_keyframe(moof + box(b"mdat", nal(0x06) + nal(0x65))), "SEI then IDR")
+        self.assertFalse(_is_keyframe(moof + box(b"mdat", nal(0x41))), "default-base-is-moof alone is not sync")
+        self.assertFalse(_is_keyframe(box(b"moof")))
+
+
+class ViewerQueueTest(unittest.TestCase):
+    """Ported from aziz/mac-dense-render (quest-hud handoff)."""
+
+    def test_late_join_waits_for_a_keyframe_and_backlog_skips_forward(self):
+        queue = ViewerQueue(limit=12)
+        item = lambda n, key=False: {"n": n, "keyframe": key}
+        queue.offer(item(1))
+        queue.offer(item(2))
+        self.assertEqual(queue.items, [], "no fragment before a keyframe")
+        for n, key in ((3, True), (4, False), (5, False), (6, True), (7, False)):
+            queue.offer(item(n, key))
+        self.assertEqual(queue.take()["n"], 6, "a backlog jumps to its newest keyframe")
+        self.assertEqual(queue.take()["n"], 7)
+
+    def test_full_queue_resyncs_on_the_next_keyframe(self):
+        queue = ViewerQueue(limit=3)
+        queue.offer({"n": 0, "keyframe": True})
+        for n in range(1, 4):
+            queue.offer({"n": n, "keyframe": False})
+        self.assertEqual(queue.items, [], "overflow drops the backlog")
+        queue.offer({"n": 4, "keyframe": False})
+        self.assertEqual(queue.items, [])
+        queue.offer({"n": 5, "keyframe": True})
+        self.assertEqual(queue.take()["n"], 5)
+
+
+class FanoutTest(unittest.TestCase):
+    def test_publish_is_per_viewer_and_a_stalled_viewer_resyncs_alone(self):
+        encoder = RenderEncoder(None, 320, 240, 30, 100000, False)
+        fast, stalled = encoder.subscribe(), encoder.subscribe()
+        stalled.limit = 2
+        encoder._publish({"n": 0, "keyframe": True})
+        for n in range(1, 4):
+            encoder._publish({"n": n, "keyframe": False})
+        self.assertEqual(stalled.items, [], "the stalled viewer dropped its backlog")
+        self.assertEqual([item["n"] for item in fast.items], [0, 1, 2, 3],
+                         "the fast viewer kept every fragment")
+        encoder._publish({"n": 4, "keyframe": True})
+        encoder._publish({"n": 5, "keyframe": False})
+        self.assertEqual(stalled.take()["n"], 4)
+        encoder.unsubscribe(stalled)
+        self.assertNotIn(stalled, encoder.viewers)
+
+
+class FakePage:
+    def __init__(self, delay=0.02):
+        self.calls = []
+        self.delay = delay
+
+    async def evaluate(self, script, arg=None):
+        await asyncio.sleep(self.delay)
+        self.calls.append((script, arg))
+
+
+class PoseEchoTest(unittest.IsolatedAsyncioTestCase):
+    async def test_a_pose_burst_coalesces_to_the_newest_page_write(self):
+        page = FakePage()
+        encoder = RenderEncoder(page, 320, 240, 30, 100000, False)
+        poses = [{"received_mono_ms": i, "position": [i, 0, 0]} for i in range(6)]
+        for pose in poses:
+            encoder.echo_pose(pose)
+        await asyncio.sleep(0.3)
+        writes = [arg for script, arg in page.calls if arg is not None]
+        self.assertLess(len(writes), len(poses), "in-flight poses are dropped, not queued")
+        self.assertIs(writes[-1], poses[-1], "the page always ends on the newest pose")
+
+    async def test_untracked_clears_the_page_pose(self):
+        page = FakePage()
+        encoder = RenderEncoder(page, 320, 240, 30, 100000, False)
+        encoder.echo_pose(None)
+        await asyncio.sleep(0.1)
+        self.assertIn("__macPose = null", page.calls[-1][0])
+
+
+class DenseProxyTest(unittest.IsolatedAsyncioTestCase):
+    async def test_dense_route_passes_query_and_upstream_status(self):
+        seen = []
+        source = web.Application()
+
+        async def delta(request):
+            seen.append((request.path, request.query_string))
+            return web.Response(body=b"delta", headers={"X-Dense-Revision": "7"})
+
+        async def missing(request):
+            return web.Response(status=404, body=b"nope")
+
+        source.router.add_get("/dense/delta.bin", delta)
+        source.router.add_get("/dense/missing.bin", missing)
+        upstream = TestServer(source)
+        await upstream.start_server()
+        client = TestClient(TestServer(create_app(
+            parse_args(["--upstream", str(upstream.make_url("/")), "--no-browser"]))))
+        await client.start_server()
+        try:
+            response = await client.get("/dense/delta.bin?since=3&limit=50")
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.headers["X-Dense-Revision"], "7")
+            self.assertEqual(await response.read(), b"delta")
+            self.assertEqual(seen, [("/dense/delta.bin", "since=3&limit=50")])
+            response = await client.get("/dense/missing.bin")
+            self.assertEqual(response.status, 404, "upstream status passes through")
+        finally:
+            await client.close()
+            await upstream.close()
+
+
+if __name__ == "__main__":
+    unittest.main()
