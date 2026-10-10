@@ -83,18 +83,21 @@ Do the cold boot in [demo-checklist.md](demo-checklist.md) until `tools.ready` p
 
 | Input | Action |
 |---|---|
-| **Right trigger (hold)** | Deadman. Release stops the rover; Jetson lease is 250 ms |
-| **Right stick** | Drive (forward capped at 45% of the PWM ceiling). The left stick does nothing, so its drift cannot cancel Explore/Seek/go-to |
+| **Right trigger (hold)** | MANUAL deadman. Release stops the rover; Jetson lease is 250 ms. Hysteresis: engages > 0.6, releases < 0.25 |
+| **Right stick** | MANUAL: drive (forward capped at 45% of the PWM ceiling). AUTO: walk through the 3D map (sideways flick = 30° turn); never moves the rover |
+| **Right A (tap)** | MANUAL ⇄ AUTO. AUTO = Explore drives the rover, map walk-through, live camera in a corner window. Hands-free in the demo build (no trigger needed); back to MANUAL needs a fresh trigger press |
+| **Right B** | Stop now, cancel navigation, back to MANUAL |
+| **Right A (hold 0.6 s)** | Actions menu (Controls, Scan, Rescue drill, Close); point, then trigger or grip |
+| **Right grip** | MANUAL: Seek the pointed person. AUTO: set a go-to goal on the pointed floor |
+| **Right stick click** | Cancel go-to |
 | **Head turn** | Pans a servo camera; fixed mode retains the full image |
-| **Right grip**, controller ray on a tracked person's box | **Seek** that person |
-| **Right A (tap)** | Toggle live camera / 3D map on release (stops driving; re-press trigger) |
-| **Right A (hold 0.6 s)** | Open the actions menu; point and right grip to select Explore, Scan or Drill |
-| **Right B** | Stop and cancel navigation |
-| **Left X** | Recenter the anchored view |
-| **Left Y** | Optional: also opens the actions menu |
+| **Left X** / **Left Y** | Recenter the view / show the controller diagram again |
 | **Left grip** | Start the 90 s rescue drill |
 | **Left trigger (hold)** | Only when the voice services are up (`/health` `assistant.whisper`): ask the local assistant by voice; release to send. Enable in Settings first. Without Whisper the voice controls stay hidden and the trigger only confirms a pending proposal |
-| Right stick pushed past its deadzone during Seek/Explore/go-to | Takes over; autonomy stays off until trigger release |
+| MANUAL right stick past its deadzone during Seek/go-to | Takes over; autonomy stays off until trigger release |
+
+Demo build: `quest/src/demo-config.js` is ON by default (`?demo=0` restores every client guard). It is
+listed in `quest/README.md#controls`; permits and leases are unchanged; the rover's camera checks follow its own `--demo-mode`.
 
 `quest/README.md` and `README.md` match this table; `quest/src/rover.ts` stays authoritative,
 so re-check it right before rehearsal.

@@ -166,3 +166,33 @@ test("deadman trigger hysteresis: a held trigger hovering near the pressed thres
   assert.equal(triggerHeld(false, { pressed: true }), true, "digital-only buttons still work");
   assert.equal(triggerHeld(true, { pressed: false }), false);
 });
+
+test("demo mode: stale video warns but does not block; transient stops resume with one release tick; hard stops still need a re-press", async () => {
+  const { demoMode } = await import("../src/demo-config.js");
+  assert.equal(demoMode(""), true, "demo is the default build");
+  assert.equal(demoMode("?demo=0"), false, "?demo=0 restores every client guard");
+  const gate = ready();
+  gate.demo = true;
+  assert.equal(gate.decide(true, 110, true, true, 110), true);
+  gate.acceptStatus(status, 590);
+  assert.equal(gate.decide(true, 590, true, true, 590), true, "camera older than 500 ms no longer blocks on the client");
+  assert.equal(gate.readiness(590, true, 590), null);
+  // A transient stop (link hiccup, menu, tracking) while the trigger stays held.
+  gate.invalidate("Control queue stalled: release deadman");
+  assert.equal(gate.decide(true, 600, true, true, 600), false, "this tick sends the release the rover requires");
+  assert.equal(gate.decide(true, 610, true, true, 610), true, "the next tick resumes without a physical re-press");
+  // Input gaps up to 1 s are a blip, not stale input.
+  assert.notEqual(gate.readiness(1500, true, 600), "XR input stale: release trigger", "900 ms gap");
+  assert.equal(gate.readiness(1600, true, 600), "XR input stale: release trigger", "1 s gap");
+  // B, a mode switch or closing the viewer is hard: a real release is still required.
+  gate.invalidate("Stopped: release trigger", true);
+  assert.equal(gate.decide(true, 620, true, true, 620), false);
+  assert.equal(gate.decide(true, 630, true, true, 630), false, "no virtual release after a hard stop");
+  assert.equal(gate.decide(false, 640, true, true, 640), false);
+  assert.equal(gate.decide(true, 650, true, true, 650), true);
+  // Link and lease limits are untouched.
+  assert.equal(gate.readiness(650, false, 650), "Control disconnected");
+  assert.equal(gate.readiness(1000, true, 1000), "Control status stale");
+  gate.demo = false;
+  assert.equal(gate.readiness(650, true, 650), "Camera stale: motion stopped", "?demo=0 restores the 500 ms block");
+});

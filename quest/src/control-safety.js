@@ -1,15 +1,21 @@
 /** Safety decisions use local monotonic time. The rover independently expires its permits. */
-function inputFresh(now, sampledAt) {
+function inputFresh(now, sampledAt, limit = 150) {
   return sampledAt === undefined || (Number.isFinite(sampledAt) && sampledAt >= 0 &&
-    now >= sampledAt && now - sampledAt < 150);
+    now >= sampledAt && now - sampledAt < limit);
 }
+/** Demo mode tolerates XR input gaps this long (a tracking blip) before treating input as stale. */
+const DEMO_INPUT_MS = 1000;
 
 /** Latch causes that only restate "release first"; a specific cause may replace them. */
 const GENERIC_CAUSES = new Set(["Waiting for live camera and rover", "Release deadman to continue",
   "Connected: release deadman", "New control session: release deadman", "release_required", "deadman_released"]);
 
 export class ControlSafety {
-  constructor() {
+  /** @param {{ demo?: boolean }} [options] demo: see demo-config.js; the owner may toggle `demo` per frame. */
+  constructor({ demo = false } = {}) {
+    this.demo = demo;
+    /** A deliberate stop (B, mode change, viewer closed) always needs a real release, even in demo mode. */
+    this.hardLatch = false;
     this.needsRelease = true;
     this.session = null;
     this.status = null;
@@ -21,14 +27,15 @@ export class ControlSafety {
     /** First specific cause of the current release latch, kept for display only. */
     this.cause = this.reason;
   }
-  invalidate(reason = "Release deadman to continue") {
+  invalidate(reason = "Release deadman to continue", hard = false) {
+    if (hard) this.hardLatch = true;
     if (!this.needsRelease || this.cause === null || GENERIC_CAUSES.has(this.cause)) this.cause = reason;
     this.needsRelease = true;
     this.reason = reason;
   }
-  stop(input, reason) {
+  stop(input, reason, hard = false) {
     // Zero commands without inventing a release of the physical trigger/key.
-    this.invalidate(reason);
+    this.invalidate(reason, hard);
     return { ...input, v: 0, w: 0 };
   }
   acceptStatus(status, now) {
@@ -59,10 +66,10 @@ export class ControlSafety {
   /** @param {number} [sampledAt] Most recent verified XR input sample. */
   readiness(now, connected = true, sampledAt = undefined) {
     if (!connected) return "Control disconnected";
-    if (!inputFresh(now, sampledAt)) return "XR input stale: release trigger";
+    if (!inputFresh(now, sampledAt, this.demo ? DEMO_INPUT_MS : 150)) return "XR input stale: release trigger";
     if (now - this.receivedAt >= 300) return "Control status stale";
     if (!this.status?.rover) return "Rover unavailable";
-    if (this.videoAge(now) >= 500) return "Camera stale: motion stopped";
+    if (!this.demo && this.videoAge(now) >= 500) return "Camera stale: motion stopped";
     if (now - this.receivedAt >= Math.min(this.status.permit_ms, 200)) return "Waiting for fresh control permit";
     return null;
   }
@@ -75,7 +82,12 @@ export class ControlSafety {
     const unsafe = this.readiness(now, connected, sampledAt);
     if (unsafe) this.invalidate(unsafe);
     // Missing tracking cannot prove a physical trigger release.
-    if (!held && inputFresh(now, sampledAt)) { this.needsRelease = false; this.cause = null; }
+    if (!held && inputFresh(now, sampledAt)) { this.needsRelease = false; this.cause = null; this.hardLatch = false; }
+    else if (this.demo && held && this.needsRelease && !this.hardLatch && !unsafe) {
+      // Demo: a transient stop needs no re-press. This tick sends the release the rover requires; the next resumes.
+      this.needsRelease = false; this.cause = null; this.reason = "Resuming";
+      return false;
+    }
     const moving = held && !unsafe && !this.needsRelease;
     if (!unsafe) this.reason = this.needsRelease ? "Release deadman to continue" : moving ? "Driving" : "Ready: hold deadman to drive";
     return moving;

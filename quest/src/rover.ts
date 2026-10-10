@@ -18,11 +18,18 @@ import { encounterLine, summaryLines, timelineLines } from "./mission-report.js"
 import { floorHit, goalBody, mergeNav, navActive, navLabel, parseNav, postNav } from "./nav-view.js";
 import { NavOverlay, type Nav } from "./nav-overlay";
 import { frameOrder } from "./frame-order.js";
+import { mapWalk } from "./map-walk.js";
+import { DEMO_BLIP_MS, DEMO_MODE } from "./demo-config.js";
+import { cueFor, drawChip, drawControllerHint, drawCue, motionTone } from "./vr-hud.js";
 
 /** Quest sticks drift; a slightly off-center right stick must not override Explore/Seek/go-to. */
 const XR_STICK_DEADZONE = 0.25;
-/** Holding right A this long opens Actions instead of toggling camera/map on release. */
+/** Holding right A this long opens Actions instead of switching MANUAL/AUTO on release. */
 const A_HOLD_MS = 600;
+/** The icon controller diagram shows this long on VR entry (or Y / Controls), then fades out. */
+const HINT_MS = 8000, HINT_FADE_MS = 1000;
+/** AUTO walk-through: metres per second at full stick, and one comfort snap turn per flick. */
+const ROAM_SPEED = 1.5, ROAM_SNAP = Math.PI / 6;
 
 type Box = { id?: number; cls: string; conf: number; x: number; y: number; w: number; h: number; kpts?: number[][]; down?: boolean };
 type Detections = { frame: number | string; boxes: Box[]; fps?: number; source?: string; simulated?: boolean };
@@ -40,19 +47,27 @@ export class RoverExperience {
   private sourceBanner: HTMLElement;
   private bannerCanvas = document.createElement("canvas");
   private bannerTexture = new THREE.CanvasTexture(this.bannerCanvas);
-  private bannerPanel = new THREE.Mesh(new THREE.PlaneGeometry(1.05, 0.15), new THREE.MeshBasicMaterial({ map: this.bannerTexture, transparent: true, toneMapped: false, depthTest: false }));
+  private bannerPanel = new THREE.Mesh(new THREE.PlaneGeometry(1.0, 0.125), new THREE.MeshBasicMaterial({ map: this.bannerTexture, transparent: true, toneMapped: false, depthTest: false }));
   private stopCanvas = document.createElement("canvas");
   private stopTexture = new THREE.CanvasTexture(this.stopCanvas);
-  private stopPanel = new THREE.Mesh(new THREE.PlaneGeometry(2.8, 0.3), new THREE.MeshBasicMaterial({ map: this.stopTexture, transparent: true, toneMapped: false, depthTest: false }));
+  private stopPanel = new THREE.Mesh(new THREE.PlaneGeometry(1.0, 0.15), new THREE.MeshBasicMaterial({ map: this.stopTexture, transparent: true, toneMapped: false, depthTest: false }));
   private stopKey = "";
-  private hudKey = "";
   private bannerKey = "";
-  private bannerPending: { source: ReturnType<SourceTruth["state"]>; at: number } | null = null;
+  private bannerPending: { source: ReturnType<SourceTruth["state"]>; mode: "manual" | "auto"; tone: string; at: number } | null = null;
+  private hintCanvas = document.createElement("canvas");
+  private hintTexture = new THREE.CanvasTexture(this.hintCanvas);
+  private hintPanel = new THREE.Mesh(new THREE.PlaneGeometry(1.6, 1.0), new THREE.MeshBasicMaterial({ map: this.hintTexture, transparent: true, toneMapped: false, depthTest: false, depthWrite: false }));
+  private hintUntil = -Infinity;
+  private hintKey = "";
+  /** AUTO / free roam: Explore drives the rover, the right stick only moves the operator through the map. */
+  private auto = false;
+  private lastRoamAt = -Infinity;
+  private roamTurnArmed = true;
   private voiceCanvas = document.createElement("canvas");
   private voiceTexture = new THREE.CanvasTexture(this.voiceCanvas);
   private voicePanel = new THREE.Mesh(new THREE.PlaneGeometry(1.2, 0.8), new THREE.MeshBasicMaterial({ map: this.voiceTexture, transparent: true, toneMapped: false, depthTest: false }));
   private talkDown = false;
-  private gate = new ControlSafety();
+  private gate = new ControlSafety({ demo: DEMO_MODE });
   private socket: WebSocket | null = null;
   private detectionsSocket: WebSocket | null = null;
   private timers: number[] = [];
@@ -92,6 +107,12 @@ export class RoverExperience {
   private navMessageAt = -Infinity;
   private navBusy = false;
   private goalDown = false;
+  /** Trigger edge inside the actions menu: it selects, like the grip, and never drives (the menu blocks input). */
+  private menuTriggerDown = false;
+  private menuCloseAt = -Infinity;
+  private modeFlashUntil = -Infinity;
+  private screenFitX = 1;
+  private screenFitY = 1;
   private cancelDown = false;
   private navStatus: HTMLElement;
   private lastSendAt = 0;
@@ -113,7 +134,6 @@ export class RoverExperience {
   /** When an observed (unlatched) A press began: a tap toggles the view, a long hold opens Actions. */
   private aPressedAt: number | null = null;
   private recenterDown = false;
-  private xrLive = true;
   private scanPending = false;
   private scanGeneration = 0;
   private scanReserved = false;
@@ -122,16 +142,13 @@ export class RoverExperience {
   private scanning = false;
   private scanCompleting = false;
   private scanDown = false;
-  private scanMessage = "Hold A (or Y) for actions; pick Scan, then hold the trigger";
+  private scanMessage = "Hold A for actions; pick Scan, then hold the trigger";
   private scanPollAt = 0;
   private lastXRAt = -Infinity;
   private rightSource: XRInputSource | null = null;
   private leftSource: XRInputSource | null = null;
   private canvas = document.createElement("canvas");
   private ctx: CanvasRenderingContext2D;
-  private hudCanvas = document.createElement("canvas");
-  private hudContext: CanvasRenderingContext2D;
-  private hudTexture: THREE.CanvasTexture;
   private cameraTexture: THREE.CanvasTexture;
   private cameraMaterial: THREE.MeshBasicMaterial;
   private cockpit = new THREE.Group();
@@ -141,7 +158,6 @@ export class RoverExperience {
   private actionMenu = new VRActionMenu();
   private pointer = new THREE.Mesh(new THREE.RingGeometry(0.008, 0.016, 20),
     new THREE.MeshBasicMaterial({ color: 0x7fe8ff, depthTest: false, depthWrite: false }));
-  private hudPanel!: THREE.Mesh;
   private message: HTMLElement;
   private details: HTMLElement;
   private holdButton: HTMLButtonElement;
@@ -183,7 +199,7 @@ export class RoverExperience {
       <button id="rover-explore" aria-pressed="false">Explore (E)</button>
       <button id="rover-nav-cancel">Cancel nav (C)</button>
       <p id="rover-nav" class="rover-nav" role="status" hidden></p>
-      <p class="rover-help">Quest (right hand only): hold the trigger to go, right stick steers. B: stop. Tap A: camera/map. Hold A: actions menu (or Y). Point and squeeze grip to pick an action, a person, or a floor goal in the map. Click the stick to cancel go-to. Optional left hand: X recenter, grip rescue drill.<span id="rover-voice-help" hidden> Hold left trigger: ask by voice (enable in Settings first).</span><br>Desktop: hold Space + WASD in camera view; click a person to seek; E explores; double-click the map floor for go-to, C cancels. Stick/WASD takes back control.</p>`;
+      <p class="rover-help">Quest (right hand only): starts in MANUAL, hold the trigger and the right stick drives the rover. Tap A: AUTO, the rover explores on its own (hands-free in the demo build) and the stick walks you through the 3D map, with the live camera in a corner window; tap A again for MANUAL. B: stop, back to MANUAL. Hold A: actions menu (point, then trigger or grip). Grip: pick a person (MANUAL) or set a floor goal (AUTO); click the stick to cancel go-to. Left Y: controller diagram. Left X: recenter. Add ?demo=0 to restore every client guard.<span id="rover-voice-help" hidden> Hold left trigger: ask by voice (enable in Settings first).</span><br>Desktop: hold Space + WASD in camera view; click a person to seek; E explores; double-click the map floor for go-to, C cancels. Stick/WASD takes back control.</p>`;
     document.querySelector("main")!.append(panel);
     this.sourceBanner = document.createElement("div");
     this.sourceBanner.className = "source-banner"; this.sourceBanner.setAttribute("role", "status");
@@ -196,7 +212,7 @@ export class RoverExperience {
     panel.querySelector<HTMLButtonElement>("#live-rover")!.onclick = () => this.setView("camera");
     panel.querySelector<HTMLButtonElement>("#rover-map")!.onclick = () => { this.stop("Map view: release deadman"); this.setView("3d"); };
     panel.querySelector<HTMLButtonElement>("#rover-stop")!.onclick = () => {
-      this.stop("Stopped: release deadman");
+      this.stop("Stopped: release deadman", true);
       if (this.autonomy.mode === "goto" || navActive(this.nav)) void this.cancelNav("Stopped: navigation cancelled");
     };
     panel.querySelector<HTMLButtonElement>("#rover-nav-cancel")!.onclick = () => void this.cancelNav();
@@ -216,32 +232,28 @@ export class RoverExperience {
     document.addEventListener("visibilitychange", this.visibility);
     document.addEventListener("keydown", this.escapeStop);
 
-    this.hudCanvas.width = 1024; this.hudCanvas.height = 220;
-    this.hudContext = this.hudCanvas.getContext("2d")!;
     this.cameraTexture = this.createCameraTexture();
-    this.hudTexture = new THREE.CanvasTexture(this.hudCanvas);
-    this.hudTexture.colorSpace = THREE.SRGBColorSpace;
     this.cameraMaterial = new THREE.MeshBasicMaterial({ map: this.cameraTexture, toneMapped: false, depthTest: false });
     const screen = new THREE.Mesh(new THREE.PlaneGeometry(2.8, 2.1), this.cameraMaterial);
     screen.position.set(0, 0, -2.35); screen.renderOrder = 10;
-    const hud = new THREE.Mesh(new THREE.PlaneGeometry(2.8, 0.60), new THREE.MeshBasicMaterial({ map: this.hudTexture, transparent: true, toneMapped: false, depthTest: false }));
-    this.hudPanel = hud;
-    hud.position.set(0, -1.23, -2.30); hud.renderOrder = 11;
     this.drillTexture.colorSpace = THREE.SRGBColorSpace;
     this.drillPanel.position.set(2.15, 0.15, -2.1); this.drillPanel.rotation.y = -0.35; this.drillPanel.renderOrder = 12; this.drillPanel.visible = false;
     document.querySelector("#full-camera")!.append(this.drillHud.canvas); this.drillHud.canvas.hidden = true;
     this.bannerCanvas.width = 1024; this.bannerCanvas.height = 128;
     this.bannerTexture.colorSpace = THREE.SRGBColorSpace;
-    this.bannerPanel.position.set(0, 1.10, -2.32); this.bannerPanel.renderOrder = 13;
-    this.stopCanvas.width = 1024; this.stopCanvas.height = 110;
+    this.bannerPanel.position.set(0, 1.12, -2.32); this.bannerPanel.renderOrder = 13;
+    this.stopCanvas.width = 640; this.stopCanvas.height = 96;
     this.stopTexture.colorSpace = THREE.SRGBColorSpace;
-    this.stopPanel.position.set(0, -1.00, -2.31); this.stopPanel.renderOrder = 13; this.stopPanel.visible = false;
+    this.stopPanel.position.set(0, -0.92, -2.30); this.stopPanel.renderOrder = 13; this.stopPanel.visible = false;
+    this.hintCanvas.width = 1024; this.hintCanvas.height = 640;
+    this.hintTexture.colorSpace = THREE.SRGBColorSpace;
+    this.hintPanel.position.set(0, 0.05, -2.2); this.hintPanel.renderOrder = 21; this.hintPanel.visible = false;
     this.voiceCanvas.width = 768; this.voiceCanvas.height = 512;
     this.voiceTexture.colorSpace = THREE.SRGBColorSpace;
     this.voicePanel.position.set(-2.15, 0.15, -2.1); this.voicePanel.rotation.y = 0.35; this.voicePanel.renderOrder = 12; this.voicePanel.visible = false;
     this.pointer.visible = false; this.pointer.renderOrder = 30;
-    this.cockpit.add(screen, hud, this.drillPanel, this.bannerPanel, this.stopPanel, this.voicePanel,
-      this.actionMenu.panel, this.pointer); this.cockpit.visible = false;
+    this.cockpit.add(screen, this.drillPanel, this.bannerPanel, this.stopPanel, this.voicePanel,
+      this.actionMenu.panel, this.hintPanel, this.pointer); this.cockpit.visible = false;
     this.cameraScreen = screen;
     this.scene.add(this.cockpit);
     this.h264 = new H264Viewer(() => {
@@ -253,11 +265,12 @@ export class RoverExperience {
     this.videoToggle = videoOption.querySelector("input")!;
     this.videoToggle.onchange = () => this.setVideo(this.videoToggle.checked, true);
     this.renderer.xr.addEventListener("sessionstart", () => {
-      this.stop("VR session started: release trigger");
+      this.stop("VR session started: release trigger", true);
       this.lastXRAt = -Infinity;
       this.rightSource = null; this.leftSource = null;
       this.inputValid = false; this.keys.clear(); this.pointerHeld = false;
-      this.recenter = true; this.xrLive = true; this.actionMenu.visible = false; this.setView("camera");
+      this.recenter = true; this.actionMenu.visible = false; this.setView("camera");
+      this.auto = false; mapWalk.setMode("overview"); mapWalk.reset(); this.lastRoamAt = -Infinity; this.showHint();
       this.renderer.xr.getSession()?.addEventListener("visibilitychange", () => {
         this.suspended = this.renderer.xr.getSession()?.visibilityState !== "visible";
         if (this.suspended) { this.voice?.stopListening("Headset inactive: voice question cancelled"); this.stop("Headset inactive: release trigger"); }
@@ -265,7 +278,7 @@ export class RoverExperience {
     });
     this.renderer.xr.addEventListener("sessionend", () => {
       this.voice?.stopListening("VR session ended: voice question cancelled");
-      this.stop("VR session ended: release deadman"); this.suspended = false;
+      this.stop("VR session ended: release deadman", true); this.suspended = false;
       this.lastXRAt = -Infinity;
       this.rightSource = null; this.leftSource = null;
       this.inputValid = false; this.keys.clear(); this.pointerHeld = false;
@@ -384,9 +397,11 @@ export class RoverExperience {
     this.dirty = true;
   }
 
-  private escapeStop = (event: KeyboardEvent) => { if (event.key === "Escape") this.stop("Stopped: release deadman"); };
+  private escapeStop = (event: KeyboardEvent) => { if (event.key === "Escape") this.stop("Stopped: release deadman", true); };
 
-  stop(reason: string) {
+  /** `hard`: a deliberate stop (B, MANUAL/AUTO switch, session start/end, viewer closed) that needs a real
+   * trigger release even in demo mode. Every other stop is transient. */
+  stop(reason: string, hard = false) {
     // An accepted go-to goal stays armed (see AutonomyIntent.release); motion still needs a fresh deadman press.
     this.autonomy.release();
     this.scanGeneration++; this.scanReserved = false;
@@ -394,7 +409,7 @@ export class RoverExperience {
     this.scanArmed = false;
     this.scanning = false;
     this.scanCompleting = false;
-    this.input = this.gate.stop(this.input, reason);
+    this.input = this.gate.stop(this.input, reason, hard);
     this.send(false);
   }
   private endpoint(path: string) { return new URL(path, location.origin).href.replace(/^http/, "ws"); }
@@ -553,6 +568,8 @@ export class RoverExperience {
     this.pollCamera(now);
     this.pollHealth(now);
     const session = this.renderer.xr.getSession();
+    // Demo relaxations (demo-config.js) apply only while immersive; the desktop page keeps every guard.
+    this.gate.demo = DEMO_MODE && xr;
     if (xr && session) {
       const sources = [...session.inputSources];
       const right = sources.find(source => source.handedness === "right" && source.gamepad);
@@ -561,7 +578,8 @@ export class RoverExperience {
       // idle, sleeping or swapped left controller never stops the rover or cancels autonomy.
       if ((right ?? null) !== this.rightSource) {
         this.voice?.stopListening("Controller changed: voice question cancelled");
-        this.stop("Controller changed: release trigger");
+        // Demo: a re-enumerated right controller is not a stop; a missing one is (after DEMO_BLIP_MS, below).
+        if (!this.gate.demo) this.stop("Controller changed: release trigger");
         this.rightSource = right ?? null;
         this.latchButtons();
       }
@@ -587,6 +605,15 @@ export class RoverExperience {
         this.position.set(position.x, position.y, position.z);
         if (this.recenter) this.anchorCockpit();
       }
+      if (!tracked && this.gate.demo && pose && session.visibilityState === "visible" && now - this.lastXRAt < DEMO_BLIP_MS) {
+        // Demo: ride out a short right-controller tracking blip without a stop or re-press. The deadman
+        // state carries over, but manual v/w go to 0 until tracking returns; > DEMO_BLIP_MS still stops.
+        this.input = { ...this.input, v: 0, w: 0 };
+        this.navOverlay.setReticle(null); this.pointer.visible = false;
+        this.cockpit.visible = true; this.cameraScreen.visible = !this.actionMenu.visible;
+        this.paint(now);
+        return;
+      }
       if (!tracked) {
         this.inputValid = false;
         this.voice?.stopListening("XR tracking lost: voice question cancelled");
@@ -599,7 +626,7 @@ export class RoverExperience {
         this.pointer.visible = false;
         // Keep the camera and stop reason visible when only a controller is lost.
         this.cockpit.visible = !!pose;
-        this.cameraScreen.visible = this.xrLive && !this.actionMenu.visible;
+        this.cameraScreen.visible = !this.actionMenu.visible;
         this.paint(now);
         return;
       }
@@ -609,7 +636,9 @@ export class RoverExperience {
       }
       this.lastXRAt = now;
       const axes = right?.gamepad?.axes ?? [];
-      const held = triggerHeld(this.input.held, right?.gamepad?.buttons[0]);
+      // Hands-free AUTO (demo): Explore heartbeats carry deadman=true without the trigger; A or B ends AUTO.
+      const handsFree = this.auto && this.gate.demo;
+      const held = handsFree || triggerHeld(this.input.held, right?.gamepad?.buttons[0]);
       const scan = leftTracked && !!left?.gamepad?.buttons[5]?.pressed;
       const toggle = !!right?.gamepad?.buttons[4]?.pressed;
       const explore = !!right?.gamepad?.buttons[5]?.pressed;
@@ -619,13 +648,14 @@ export class RoverExperience {
       // Free on the right controller: grip (squeeze) sets a go-to goal, thumbstick click cancels nav.
       const goal = !!right?.gamepad?.buttons[1]?.pressed;
       const cancel = !!right?.gamepad?.buttons[3]?.pressed;
-      const aim = this.xrLive || this.actionMenu.visible ? null : this.aimFloor(frame, reference, right);
+      const aim = !this.auto || this.actionMenu.visible ? null : this.aimFloor(frame, reference, right);
       this.navOverlay.setReticle(aim);
       const menuAction = this.updatePointer(frame!, reference, right);
-      if (goal && !this.goalDown) {
-        if (this.actionMenu.visible) {
-          if (menuAction) this.chooseAction(menuAction);
-        } else if (this.xrLive) {
+      if (this.actionMenu.visible) {
+        const pick = (goal && !this.goalDown) || (held && !this.menuTriggerDown);
+        if (pick && menuAction && !Number.isFinite(this.menuCloseAt)) this.chooseAction(menuAction, now);
+      } else if (goal && !this.goalDown) {
+        if (!this.auto) {
           const point = this.panelPoint(frame, reference, right);
           if (!point || !this.selectAt(point)) this.noteNav("Point at a person, then right grip to select Seek");
         }
@@ -633,28 +663,24 @@ export class RoverExperience {
         else this.noteNav("Go-to: point the right controller at the floor");
       }
       if (cancel && !this.cancelDown) void this.cancelNav();
-      this.goalDown = goal; this.cancelDown = cancel;
+      this.goalDown = goal; this.cancelDown = cancel; this.menuTriggerDown = held;
       if (talk && !this.talkDown) this.talkPressed();
       else if (!talk && this.talkDown) this.voice?.pushEnd();
       if (leftTracked) this.talkDown = talk;
       if (center && !this.recenterDown && this.voice?.pendingAction) this.voice.dismissAction();
       if (drill && !this.drillDown) void this.startDrill();
       if (leftTracked) this.drillDown = drill;
-      // A: tap toggles camera/map; hold opens Actions so the right hand alone reaches every mode.
+      // A: tap switches MANUAL/AUTO; hold opens Actions so the right hand alone reaches every mode.
       if (toggle && !this.toggleDown) this.aPressedAt = now;
       let aHold = false;
       if (this.aPressedAt !== null) {
         if (toggle && now - this.aPressedAt >= A_HOLD_MS) { aHold = true; this.aPressedAt = null; }
-        else if (!toggle) {
-          this.aPressedAt = null;
-          this.actionMenu.visible = false;
-          this.xrLive = !this.xrLive; this.stop("View changed: release trigger");
-          this.setView(this.xrLive ? "camera" : "3d");
-        }
+        else if (!toggle) { this.aPressedAt = null; this.setAuto(!this.auto); }
       }
       if (explore && !this.exploreDown) {
-        this.actionMenu.visible = false; this.autonomy.clear();
-        this.stop("Stopped: release trigger");
+        // B always lands in MANUAL so nothing re-arms Explore behind the stop.
+        this.actionMenu.visible = false; this.auto = false; mapWalk.setMode("overview"); this.autonomy.clear();
+        this.stop("Stopped: release trigger", true);
         if (navActive(this.nav)) void this.cancelNav("Stopped: navigation cancelled");
       }
       if (center && !this.recenterDown) { this.stop("View recentered: release trigger"); this.recenter = true; }
@@ -664,15 +690,22 @@ export class RoverExperience {
       if (this.recenter && pose) this.anchorCockpit();
       const yaw = Math.atan2(Math.sin(this.euler.y - this.baseYaw), Math.cos(this.euler.y - this.baseYaw));
       this.inputValid = !this.actionMenu.visible;
+      const stickX = axes.length >= 4 ? axes[2] : axes[0], stickY = axes.length >= 4 ? axes[3] : axes[1];
+      // AUTO: the stick is virtual locomotion only. Physical v/w stay 0, so it can never be a stick override.
+      if (this.auto) this.roamStep(now, stickX, stickY);
+      this.lastRoamAt = this.auto ? now : -Infinity;
       this.input = { held,
-        v: -stick(axes.length >= 4 ? axes[3] : axes[1], XR_STICK_DEADZONE) * 0.45,
-        w: stick(axes.length >= 4 ? axes[2] : axes[0], XR_STICK_DEADZONE) * 0.55,
+        v: this.auto ? 0 : -stick(stickY, XR_STICK_DEADZONE) * 0.45,
+        w: this.auto ? 0 : stick(stickX, XR_STICK_DEADZONE) * 0.55,
         pan: this.digitalPan ? 0 : this.panSmoother.step(-THREE.MathUtils.radToDeg(yaw), this.panDt()) };
-      if ((scan && !this.scanDown) || aHold) {
+      if (aHold) {
         this.stop("Actions open: release trigger");
         this.actionMenu.visible = !this.actionMenu.visible;
         this.inputValid = !this.actionMenu.visible;
       }
+      if (scan && !this.scanDown) this.showHint(now >= this.hintUntil);
+      // Explore stays armed in AUTO (re-armed only while released); the held deadman still gates every heartbeat.
+      if (this.auto && this.autonomy.mode === "teleop" && (handsFree || !held)) this.autonomy.toggleExplore();
       if (leftTracked) this.scanDown = scan;
     } else {
       this.inputValid = true;
@@ -690,13 +723,17 @@ export class RoverExperience {
     }
     if (!xr) this.navOverlay.setReticle(null);
     this.navOverlay.update(this.nav, now);
-    this.navOverlay.group.visible = !(xr && this.xrLive);
+    this.navOverlay.group.visible = !(xr && !this.auto);
     if (this.input.v || this.input.w) this.scanArmed = false;
     this.cockpit.visible = xr;
-    this.cameraScreen.visible = this.xrLive && !this.actionMenu.visible;
-    this.hudPanel.visible = !this.actionMenu.visible;
-    this.hudPanel.position.y = this.xrLive ? -1.23 : -1.60;
-    this.stopPanel.visible = false; // Stop cause/recovery share the HUD instead of overlapping it.
+    this.cameraScreen.visible = !this.actionMenu.visible;
+    // AUTO keeps the live camera painted as a small window: it is the motion freshness source and the
+    // rover's sensor provenance while the operator roams the map.
+    this.placeCameraScreen();
+    if (Number.isFinite(this.menuCloseAt) && now >= this.menuCloseAt) { this.actionMenu.visible = false; this.menuCloseAt = -Infinity; }
+    // A mode switch briefly enlarges the chip so MANUAL/AUTO is unmistakable.
+    this.bannerPanel.scale.setScalar(now < this.modeFlashUntil ? 1.8 : 1);
+    this.updateHint(now);
     if (this.h264Enabled) {
       this.h264.update();
     }
@@ -734,18 +771,20 @@ export class RoverExperience {
       this.pointer.visible = false; this.actionMenu.hover(null); return null;
     }
     this.cockpit.updateMatrixWorld(true);
-    const panel = this.actionMenu.visible ? this.actionMenu.panel : this.xrLive ? this.cameraScreen : null;
+    const panel = this.actionMenu.visible ? this.actionMenu.panel : this.cameraScreen;
     const hit = panel ? this.raycaster.intersectObject(panel, false)[0] : undefined;
     this.pointer.visible = !!hit;
     if (hit) { this.pointer.position.copy(this.cockpit.worldToLocal(hit.point.clone())); this.pointer.position.z += .015; }
     const action = this.actionMenu.hit(hit?.uv); this.actionMenu.hover(action);
     return action;
   }
-  private chooseAction(action: VRAction) {
-    this.actionMenu.visible = false;
+  private chooseAction(action: VRAction, now: number) {
+    // Flash the chosen card, then close; the stop below already latches a fresh trigger release.
+    this.actionMenu.confirm(action); this.menuCloseAt = now + 250;
     this.stop("Action selected: release trigger");
-    if (action === "explore") this.toggleExplore();
+    if (action === "help") this.showHint();
     else if (action === "scan") {
+      this.auto = false; mapWalk.setMode("overview");
       this.autonomy.clear(); this.scanArmed = true;
       this.scanMessage = "Scan armed: center the stick, then hold the right trigger";
     } else if (action === "drill") void this.startDrill();
@@ -753,7 +792,7 @@ export class RoverExperience {
   /** Every canvas repaint is a texture upload; spread camera, HUD and banner over separate frames.
    * Liveness and freshness timing are unchanged: the camera still repaints first, every frame it is due. */
   private paint(now: number) {
-    let painted = (!this.renderer.xr.isPresenting || (this.xrLive && !this.actionMenu.visible)) &&
+    let painted = (!this.renderer.xr.isPresenting || !this.actionMenu.visible) &&
       (this.dirty || now - this.lastCanvasDraw > 100) && this.drawCamera(now) ? 1 : 0;
     // An overdue HUD draws even when fresh camera frames are arriving.
     if (now - this.lastHudAt > (painted ? 200 : 100)) { this.drawHUD(now); this.lastHudAt = now; painted++; }
@@ -850,7 +889,51 @@ export class RoverExperience {
     if (this.voice.pendingAction) { this.voice.confirmAction(); this.dirty = true; return; }
     if (this.voice.pushStart()) this.stop("Voice question: release trigger");
   }
-  get vrCameraView() { return this.renderer.xr.isPresenting && this.xrLive; }
+  get vrCameraView() { return this.renderer.xr.isPresenting && !this.auto; }
+  /** AUTO walk-through state for diagnostics/tests; main.ts renders mapWalk itself. */
+  get freeRoam() { return { active: this.renderer.xr.isPresenting && this.auto, x: mapWalk.x, z: mapWalk.z, yaw: mapWalk.yaw }; }
+  /** AUTO locomotion on mapWalk: stick forward/back walks along the gaze, a sideways flick snap-turns. */
+  private roamStep(now: number, stickX: number, stickY: number) {
+    const dt = Number.isFinite(this.lastRoamAt) ? Math.min(0.1, Math.max(0, (now - this.lastRoamAt) / 1000)) : 0;
+    const forward = -stick(stickY, XR_STICK_DEADZONE), side = stick(stickX, XR_STICK_DEADZONE);
+    let turn = 0;
+    if (!side) this.roamTurnArmed = true;
+    else if (this.roamTurnArmed && Math.abs(side) > 0.5) { turn = -Math.sign(side) * ROAM_SNAP; this.roamTurnArmed = false; }
+    mapWalk.moveViewer(forward * ROAM_SPEED * dt, 0, 0, turn);
+  }
+  /** MANUAL: the right stick drives the rover. AUTO: Explore drives it, the stick roams the map.
+   * Either switch stops and needs a fresh trigger release/press; leaving AUTO cancels navigation. */
+  private setAuto(auto: boolean) {
+    if (auto === this.auto) return;
+    this.actionMenu.visible = false; this.auto = auto; this.dirty = true; this.modeFlashUntil = performance.now() + 1500;
+    mapWalk.setMode(auto ? "walk" : "overview"); this.lastRoamAt = -Infinity; this.roamTurnArmed = true;
+    // Leaving AUTO always needs a real release before manual driving. Entering it is hard only when the
+    // trigger must be held (demo off); hands-free AUTO sends its own release, then Explore heartbeats.
+    this.stop(auto ? "Auto: release trigger" : "Manual: release trigger", !auto || !this.gate.demo);
+    this.autonomy.clear();
+    if (!auto && navActive(this.nav)) void this.cancelNav("Manual: navigation cancelled");
+    if (auto) this.autonomy.toggleExplore();
+  }
+  /** Full camera view in MANUAL; a small upper-right window over the map in AUTO. */
+  private get cameraWindowed() { return !!this.renderer?.xr.isPresenting && this.auto; }
+  private placeCameraScreen() {
+    const windowed = this.cameraWindowed, k = windowed ? 0.3 : 1;
+    this.cameraScreen.scale.set(this.screenFitX * k, this.screenFitY * k, 1);
+    this.cameraScreen.position.set(windowed ? 0.95 : 0, windowed ? 0.7 : 0, windowed ? -2.2 : -2.35);
+  }
+  private showHint(visible = true) { this.hintUntil = visible ? performance.now() + HINT_MS : -Infinity; }
+  private updateHint(now: number) {
+    const left = this.hintUntil + HINT_FADE_MS - now;
+    const opacity = this.renderer.xr.isPresenting && !this.actionMenu.visible ? Math.min(1, Math.max(0, left / HINT_FADE_MS)) : 0;
+    this.hintPanel.visible = opacity > 0;
+    (this.hintPanel.material as THREE.MeshBasicMaterial).opacity = opacity;
+    const key = this.auto ? "auto" : "manual";
+    if (opacity > 0 && key !== this.hintKey) {
+      this.hintKey = key;
+      drawControllerHint(this.hintCanvas.getContext("2d")!, this.hintCanvas.width, this.hintCanvas.height, { mode: key });
+      this.hintTexture.needsUpdate = true;
+    }
+  }
   get deadmanHeld() { return this.input.held; }
   get videoStreaming() { return this.h264Enabled; }
   /** Head-locked panel beside the camera, e.g. the diagnostics overlay. */
@@ -866,9 +949,10 @@ export class RoverExperience {
   private pump() {
     const now = performance.now();
     const connected = this.socket?.readyState === WebSocket.OPEN;
-    const contextActive = this.renderer.xr.isPresenting ? this.xrLive && !this.actionMenu.visible && !this.suspended : this.getView() === "camera" && !document.querySelector("dialog[open]");
+    // XR motion needs the live camera painted (full view in MANUAL, the window in AUTO) and no menu in front.
+    const contextActive = this.renderer.xr.isPresenting ? !this.actionMenu.visible && !this.suspended : this.getView() === "camera" && !document.querySelector("dialog[open]");
     const displayVisible = this.renderer.xr.isPresenting ? this.renderer.xr.getSession()?.visibilityState === "visible" : !document.hidden;
-    const available = this.inputValid && contextActive && displayVisible && !this.contextLost && now - this.lastCanvasDraw < 250;
+    const available = this.inputValid && contextActive && displayVisible && !this.contextLost && (this.gate.demo || now - this.lastCanvasDraw < 250);
     // No motion while the microphone is requested or open; release is required afterwards.
     if (this.voice?.capturing) this.gate.invalidate("Voice question: release trigger");
     const moving = this.gate.decide(this.input.held, now, connected, available,
@@ -978,7 +1062,7 @@ export class RoverExperience {
       this.scanMessage = result.state === "complete" ?
         `${result.points.toLocaleString()} points · ${(result.scan_ms / 1000).toFixed(1)} s${result.approximate ? " · approximate" : ""}` : `Scan aborted: ${result.error}`;
       this.stop(this.scanMessage);
-      if (result.state === "complete") { this.xrLive = false; this.setView("3d"); }
+      if (result.state === "complete" && !this.renderer.xr.isPresenting) this.setView("3d");
     } catch (error) {
       if (generation !== this.scanGeneration) return;
       this.scanMessage = String(error); this.stop("Scan status unavailable");
@@ -1024,7 +1108,9 @@ export class RoverExperience {
     this.drawnPan = this.input.pan;
     const aspect = this.canvas.width / this.canvas.height;
     const width = Math.min(3, 1.9 * aspect), height = width / aspect;
-    this.cameraScreen.scale.x = width / 2.8; this.cameraScreen.scale.y = height / 2.1;
+    this.screenFitX = width / 2.8; this.screenFitY = height / 2.1;
+    const k = this.cameraWindowed ? 0.3 : 1;
+    this.cameraScreen.scale.x = this.screenFitX * k; this.cameraScreen.scale.y = this.screenFitY * k;
     this.cameraTexture.needsUpdate = true; this.dirty = false;
     return true;
   }
@@ -1066,7 +1152,7 @@ export class RoverExperience {
   /** Held buttons from a lost or replaced controller act only after an observed release. */
   private latchButtons() {
     this.aPressedAt = null;
-    this.toggleDown = this.exploreDown = this.goalDown = this.cancelDown = true;
+    this.toggleDown = this.exploreDown = this.goalDown = this.cancelDown = this.menuTriggerDown = true;
     this.latchLeftButtons();
   }
   private latchLeftButtons() {
@@ -1119,74 +1205,52 @@ export class RoverExperience {
     const exploreButton = document.querySelector<HTMLButtonElement>("#rover-explore");
     exploreButton?.setAttribute("aria-pressed", String(this.autonomy.mode === "explore"));
     this.holdButton.classList.toggle("engaged", moving);
-    this.drawSource(source, now);
     const stop = explainStop({ unsafe: ready, reason: this.gate.reason, latched: this.gate.needsRelease, cause: this.gate.cause, status: this.status,
       xr: this.renderer.xr.isPresenting, held: this.input.held, autonomyArmed: this.autonomy.mode !== "teleop",
       detectorStale: !this.detections || now - this.detectionsAt > 500 });
-    this.drawStop(stop);
+    // Demo mode lifts the client stale-camera block, so stale video becomes a warning instead of a stop.
+    const cue = cueFor(stop, !!ready) ?? (this.gate.demo && videoAge >= 500 ? { tone: "wait" as const, icon: "camera", words: "VIDEO STALE" } : null);
+    this.drawSource(source, now, motionTone({ moving, unsafe: !!ready, cue }));
+    this.drawStop(stop, cue);
     this.drawVoice();
     const drawn = this.drillHud.draw(now);
     this.drillPanel.visible = drawn; this.drillHud.canvas.hidden = !drawn;
     if (drawn) this.drillTexture.needsUpdate = true;
-    // Identical HUD text needs no repaint or texture upload.
-    const mapView = this.renderer.xr.isPresenting && !this.xrLive;
-    const hudKey = [mapView, simulation, ready, headline, age, range, panMode, link.text, link.color, ack, detection, this.status?.estop, drill, autonomy, navText, this.scanMessage, this.h264Enabled, stop?.cause, stop?.recovery].join("|");
-    if (hudKey === this.hudKey) return;
-    this.hudKey = hudKey;
-    const c = this.hudContext;
-    c.clearRect(0, 0, 1024, 220); c.fillStyle = "#111b25ee"; c.fillRect(0, 0, 1024, 220);
-    c.fillStyle = simulation ? "#ffc779" : ready ? "#ffb3a8" : "#a6edc4";
-    c.font = "bold 32px system-ui"; c.fillText((mapView ? "3D MAP · driving paused" : stop?.cause ?? headline).slice(0, 58), 28, 46);
-    c.font = "24px system-ui"; c.fillStyle = "#dce5ee";
-    c.font = "32px system-ui"; c.fillStyle = "#f3f9fc";
-    const instruction = mapView ? "Point at floor + RIGHT GRIP to select a goal" : stop?.recovery ?? "Hold RIGHT TRIGGER + RIGHT STICK to drive";
-    c.font = `${stop ? 27 : 32}px system-ui`; c.fillText(instruction.slice(0, 74), 28, 94);
-    c.font = "30px system-ui"; c.fillStyle = "#ffb3a8";
-    c.fillText("B  STOP", 28, 143);
-    c.fillStyle = "#bde2f6"; c.fillText("A  Camera / Map    X  Recenter    Y  Actions", 210, 143);
-    c.font = "25px system-ui"; c.fillStyle = link.color;
-    c.fillText(mapView ? "A returns to camera · release, then hold trigger" : `${link.text} · video ${age}${autonomy ? " · " + autonomy : ""}`, 28, 191);
-    this.hudTexture.needsUpdate = true;
   }
 
-  private drawSource(source: ReturnType<SourceTruth["state"]>, now: number) {
+  private drawSource(source: ReturnType<SourceTruth["state"]>, now: number, tone: string) {
     this.sourceBanner.dataset.kind = source.kind;
     this.sourceBanner.querySelector("strong")!.textContent = source.title;
     this.sourceBanner.querySelector("span")!.textContent = source.detail;
-    // The headset banner repaints on a later frame than the HUD (see paint), and only when its text changed.
-    const key = `${source.kind}|${source.title}|${source.detail.slice(0, 72)}`;
+    // The headset chip repaints on a later frame than the HUD (see paint), and only when it changed.
+    const mode = this.auto ? "auto" : "manual";
+    const key = `${source.kind}|${mode}|${tone}`;
     if (key === this.bannerKey) { this.bannerPending = null; return; }
-    if (!this.bannerPending) this.bannerPending = { source, at: now }; else this.bannerPending.source = source;
+    if (!this.bannerPending) this.bannerPending = { source, mode, tone, at: now };
+    else Object.assign(this.bannerPending, { source, mode, tone });
   }
+  /** Tiny headset chip: motion tone, MANUAL/AUTO and the truthful source label. */
   private drawBanner() {
-    const source = this.bannerPending!.source;
+    const { source, mode, tone } = this.bannerPending!;
     this.bannerPending = null;
-    this.bannerKey = `${source.kind}|${source.title}|${source.detail.slice(0, 72)}`;
-    const colors = { LIVE: ["#14532d", "#bbf7d0"], SIMULATED: ["#7c4a03", "#ffe3a3"], REPLAY: ["#4c1d95", "#e9d5ff"], UNVERIFIED: ["#5b1f1f", "#ffd2ca"] }[source.kind];
-    const c = this.bannerCanvas.getContext("2d")!;
-    c.clearRect(0, 0, 1024, 128); c.fillStyle = colors[0]; c.fillRect(0, 0, 1024, 128);
-    c.strokeStyle = colors[1]; c.lineWidth = 6; c.strokeRect(3, 3, 1018, 122);
-    c.fillStyle = colors[1]; c.font = "bold 74px system-ui"; c.textAlign = "center";
-    c.fillText(source.kind === "SIMULATED" ? "SIMULATED FEED" : source.kind === "LIVE" ? "LIVE CAMERA" : source.kind, 512, 89);
-    c.textAlign = "start";
+    this.bannerKey = `${source.kind}|${mode}|${tone}`;
+    drawChip(this.bannerCanvas.getContext("2d")!, this.bannerCanvas.width, this.bannerCanvas.height, { mode, source: source.kind, tone });
     this.bannerTexture.needsUpdate = true;
   }
-  /** Why motion stopped and the one action that recovers it, under the source banner. */
-  private drawStop(stop: ReturnType<typeof explainStop>) {
-    const key = stop ? `${stop.tone}|${stop.cause}|${stop.recovery}` : "";
+  /** Full cause and recovery on the 2D page; one icon and 1-3 words in the headset, only when relevant. */
+  private drawStop(stop: ReturnType<typeof explainStop>, cue: ReturnType<typeof cueFor>) {
+    this.stopPanel.visible = !!cue && this.renderer.xr.isPresenting && !this.actionMenu.visible;
+    const key = `${stop ? `${stop.tone}|${stop.cause}|${stop.recovery}` : ""}|${cue ? `${cue.tone}|${cue.icon}|${cue.words}` : ""}`;
     if (key === this.stopKey) return;
     this.stopKey = key;
     const line = this.sourceBanner.querySelector<HTMLElement>(".stop-reason")!;
-    line.hidden = !stop; this.stopPanel.visible = false;
-    if (!stop) return;
-    line.dataset.tone = stop.tone;
-    line.querySelector("b")!.textContent = stop.cause;
-    line.querySelector("em")!.textContent = stop.recovery;
-    const c = this.stopCanvas.getContext("2d")!, warn = stop.tone === "warn";
-    c.clearRect(0, 0, 1024, 110); c.fillStyle = warn ? "#4a3606ee" : "#3b0d0dee"; c.fillRect(0, 0, 1024, 110);
-    c.fillStyle = warn ? "#ffe08a" : "#ffb3a8"; c.font = "bold 36px system-ui";
-    c.fillText(`${warn ? "⚠" : "■"} ${stop.cause}`.slice(0, 54), 24, 44);
-    c.fillStyle = "#ffffff"; c.font = "28px system-ui"; c.fillText(`→ ${stop.recovery}`.slice(0, 66), 24, 90);
+    line.hidden = !stop;
+    if (stop) {
+      line.dataset.tone = stop.tone;
+      line.querySelector("b")!.textContent = stop.cause;
+      line.querySelector("em")!.textContent = stop.recovery;
+    }
+    drawCue(this.stopCanvas.getContext("2d")!, this.stopCanvas.width, this.stopCanvas.height, cue);
     this.stopTexture.needsUpdate = true;
   }
   private drawVoice() {
@@ -1347,7 +1411,7 @@ export class RoverExperience {
     if (label) label.textContent = line;
   }
   dispose() {
-    this.stop("Viewer closed"); this.stopped = true;
+    this.stop("Viewer closed", true); this.stopped = true;
     this.timers.forEach(timer => { window.clearInterval(timer); window.clearTimeout(timer); });
     this.socket?.close(); this.detectionsSocket?.close();
     for (const request of this.frameRequests.values()) request.controller.abort();
@@ -1356,7 +1420,7 @@ export class RoverExperience {
     window.removeEventListener("blur", this.blur); window.removeEventListener("click", this.click);
     this.renderer.domElement.removeEventListener("dblclick", this.mapGoal); this.navOverlay.dispose(); document.removeEventListener("visibilitychange", this.visibility);
     document.removeEventListener("keydown", this.escapeStop);
-    this.cameraTexture.dispose(); this.hudTexture.dispose(); this.drillTexture.dispose(); this.drillHud.canvas.remove();
+    this.cameraTexture.dispose(); this.hintTexture.dispose(); this.hintPanel.geometry.dispose(); (this.hintPanel.material as THREE.Material).dispose(); this.drillTexture.dispose(); this.drillHud.canvas.remove();
     this.bannerTexture.dispose(); this.stopTexture.dispose(); this.voiceTexture.dispose(); this.sourceBanner.remove();
     this.actionMenu.dispose(); this.pointer.geometry.dispose(); this.pointer.material.dispose();
   }

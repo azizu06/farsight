@@ -160,12 +160,15 @@ Press **Enter VR**. With the car lifted or otherwise unable to travel:
    forward, reverse and both turns. Calibrate starting PWM on the real car
    ([rover/README.md](../rover/README.md)).
 4. Turn your head: the screen stays anchored. Servo pan follows only in servo
-   mode; fixed mode retains the whole frame. Left X recenters. Check A switches
-   camera/map, B stops, and holding A (or left Y) opens the actions menu. Point and squeeze right
-   grip to select a highlighted action; the menu must block driving.
+   mode; fixed mode retains the whole frame. Left X recenters. Check tap A switches
+   to AUTO (map walk-through, camera in a corner window, rover explores) and back to
+   MANUAL, B stops and returns to MANUAL, and holding A opens the actions menu. Point and
+   press the trigger or grip to select a card (it flashes green); the menu must block driving.
+   The demo build relaxes some client guards; load with `?demo=0` to test the strict ones
+   ([quest/README.md](../quest/README.md#controls)).
 5. If voice is available and enabled, hold the left trigger to ask; release to send.
-6. Take the headset off for a few seconds: motion stops and requires a release
-   when you return.
+6. Take the headset off for a few seconds: motion stops. With `?demo=0` it requires a
+   release when you return; the demo build resumes once the trigger is held (or AUTO is on).
 
 If the stop panel shows a reason, follow its recovery line; the mapping lives in
 `quest/src/stop-reason.js`.
