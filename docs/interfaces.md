@@ -36,7 +36,7 @@ explicit ray-cast camera/map and virtual rover sources. See
 | `GET /health` | `{"camera": bool, "detector_fps": float, "rover": bool, "estop": bool}`; optional `camera_pan: bool` (see below); optional `face_detector: bool`, `face_error: string\|null` (see below) |
 | `GET /camera.jpg` | Latest JPEG; `X-Frame-Id`, `X-Frame-Age-Ms`, `X-Frame-Source`; no-store |
 | `GET /control/status` | Read-only control status; no usable permit |
-| `GET /mission/report` | Evidence, persistence/source labels, drill results |
+| `GET /mission/report` | Evidence, persistence/source labels, drill results, control `summary` and `timeline` (below) |
 | `POST /mission/drill` | `{"duration_s":90,"victims":3}` starts a rescue drill; `GET` polls it. See below |
 | `POST /mission/triage/{key}` | Regenerate one person's SBAR now (`key` from the report, URL-encoded); 404 unknown, 503 busy |
 | `GET /speak` | `{"phrases": [{"id","en","es"}], "speaker": bool, "speaker_cmd", "voices": ["en","es"]}` |
@@ -226,6 +226,36 @@ Optional additive fields (clients ignore unknown fields):
 Accepted `audio`: WAV, WebM/Opus, Ogg/Opus, or MP4/AAC (whatever the browser's MediaRecorder gives), at most 8 MiB.
 Headset (`quest/src/assistant-voice.ts`): a proposal shows "Seek person #3?" with Confirm / Dismiss for
 20 seconds; a new question, cancel, or expiry clears it.
+
+## Mission telemetry (additive fields on `GET /mission/report`)
+
+The server samples `control.status()` read-only at most 10 Hz for the whole run (no
+`--record` needed); it never issues permits or commands, and states shorter than 100 ms
+can be missed. Timestamps are Unix seconds, like `started_at`. All new fields are optional
+for consumers; Quest renders them in the mission report dialog (`quest/src/mission-report.js`).
+
+```json
+{"summary": {"samples": 412, "sample_hz": 10, "last_sample_ts": 1791640100.2,
+   "min_range_cm": 18, "min_range_at": 1791640065.0, "estop_count": 1,
+   "stop_reasons": {"forward_blocked": {"count": 2, "first_ts": 1791640010.0, "last_ts": 1791640065.0}},
+   "lost": {"rover_link": {"count": 1, "total_s": 3.5, "intervals": [{"start": 1791640080.0, "end": 1791640083.5, "duration_s": 3.5}]},
+            "controller": {"count": 0, "total_s": 0, "intervals": []},
+            "camera": {"count": 0, "total_s": 0, "intervals": []}},
+   "detections_by_class": {"person": 2}, "encounters": 2},
+ "timeline": [{"kind": "estop", "ts": 1791640065.0, "range_cm": 18, "reason": "forward_blocked"}]}
+```
+
+- `estop_count`: rising edges (0.5 s debounce) of `estop:true` with `range_cm < 25` or
+  `reason:"forward_blocked"`; a missing range alone is not an e-stop.
+- `stop_reasons`: each change into a non-`active` `reason`, counted with first/last time; at most 64 reasons.
+- `lost`: `rover_link` is `rover:false`, `controller` is no control session, `camera` is a stale camera,
+  each counted only after it was up once. An open interval has `end: null`. At most 100 intervals per kind.
+- `timeline`: newest 300 flagged events, `kind` one of `detection` (`cls`, `key`, `range_cm`), `estop`,
+  `stop` (`reason`, `range_cm`, `requires_release`), `<rover_link|controller|camera>_lost` and
+  `_restored` (`lost_s`). With `--mission-dir`, non-detection flags also append to `events.jsonl`
+  (first 10,000), beside the existing detection events.
+- Each `encounters[]` entry gains `first_range_cm`: the forward ultrasonic range within 1 s of
+  first sight (not a measured distance to that object), or `null`. `first_seen`/`last_seen` are Unix seconds.
 
 ## SBAR triage (additive fields on `GET /mission/report`)
 
