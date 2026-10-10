@@ -61,10 +61,12 @@ class VideoTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(b"moov", service.init)
             queue = service.subscribe()
             fragments = [await asyncio.wait_for(queue.get(), 3) for _ in range(7)]
-            self.assertTrue(all(b"moof" in fragment and b"mdat" in fragment for fragment in fragments))
+            self.assertTrue(all(b"moof" in fragment["payload"] and b"mdat" in fragment["payload"] for fragment in fragments))
+            self.assertTrue(all(fragment["received"] <= time.monotonic() for fragment in fragments))
+            self.assertTrue(all(fragment["media_end_s"] > fragment["media_start_s"] for fragment in fragments))
             decoder = await asyncio.create_subprocess_exec("ffmpeg", "-v", "error", "-i", "pipe:0",
                        "-f", "null", "-", stdin=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-            _, errors = await decoder.communicate(service.init + b"".join(fragments))
+            _, errors = await decoder.communicate(service.init + b"".join(fragment["payload"] for fragment in fragments))
             self.assertEqual(decoder.returncode, 0, errors.decode())
         finally:
             await service.close()

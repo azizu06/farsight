@@ -4,6 +4,9 @@ import asyncio
 from dataclasses import dataclass
 import threading
 import time
+import json
+import struct
+import math
 
 import cv2
 import numpy as np
@@ -31,13 +34,39 @@ class CameraService:
         self.capture = None
         self.lock = threading.Lock()
         self.task = None
+        self.phone_rgb = None
 
     def snapshot(self):
         if self.device is None:
+            if self.phone_rgb is not None:
+                return self.phone_rgb
             jpeg, received, frame_id, source = self.mapping.camera_snapshot()
             return CameraFrame(jpeg, received, frame_id, source) if jpeg is not None else None
         with self.lock:
             return self.frame
+
+    def accept_phone_rgb(self, packet, session_id, previous_frame=-1):
+        if not isinstance(packet, bytes) or not 4 < len(packet) <= 2 * 1024 * 1024:
+            raise ValueError("RGB packet length is invalid")
+        length = struct.unpack_from("<I", packet)[0]
+        if not 0 < length <= 65536 or length + 4 >= len(packet):
+            raise ValueError("RGB header length is invalid")
+        header = json.loads(packet[4:4 + length])
+        if not isinstance(header, dict) or header.get("version") != 1 or header.get("type") != "rgb_frame":
+            raise ValueError("Expected RGB frame version 1")
+        frame_id, capture = header.get("frame_id"), header.get("t_capture")
+        if header.get("session_id") != session_id or type(frame_id) is not int or frame_id <= previous_frame:
+            raise ValueError("RGB frame identity or ordering is invalid")
+        if type(capture) not in (int, float) or not math.isfinite(capture) or capture < 0:
+            raise ValueError("RGB capture timestamp is invalid")
+        jpeg = packet[4 + length:]
+        if header.get("jpeg_len") != len(jpeg) or not jpeg.startswith(b"\xff\xd8"):
+            raise ValueError("RGB JPEG length or format is invalid")
+        image = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
+        if image is None or max(image.shape[:2]) > 4096:
+            raise ValueError("RGB image cannot be decoded or is excessive")
+        self.phone_rgb = CameraFrame(jpeg, time.monotonic(), frame_id, "PHONE RGB")
+        return frame_id
 
     def status(self):
         frame = self.snapshot()

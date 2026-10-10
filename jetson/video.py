@@ -4,6 +4,8 @@ import asyncio
 from contextlib import suppress
 import shutil
 import struct
+import time
+from collections import OrderedDict
 
 import cv2
 import numpy as np
@@ -16,6 +18,19 @@ def codec_from_init(data):
     return "avc1." + data[offset + 5:offset + 8].hex().upper()
 
 
+def fragment_timing(data, fps):
+    """Our single video track uses a forced one-million-tick timescale."""
+    offset = data.find(b"tfdt")
+    samples = data.find(b"trun")
+    if offset < 0 or samples < 0:
+        raise ValueError("Fragment missing sample timing")
+    version = data[offset + 4]
+    start = struct.unpack_from(">Q" if version == 1 else ">I", data, offset + 8)[0] / 1000000
+    count = struct.unpack_from(">I", data, samples + 8)[0]
+    first = round(start * fps)
+    return first, count, start, (first + count) / fps
+
+
 class VideoService:
     def __init__(self, camera, enabled=False, width=640, height=480, fps=15, bitrate=1000000):
         self.camera, self.enabled = camera, enabled
@@ -26,6 +41,8 @@ class VideoService:
         self.mime = None
         self.error = None
         self.subscribers = set()
+        self.samples = OrderedDict()
+        self.sample_id = 0
 
     async def start(self):
         if self.enabled:
@@ -57,6 +74,10 @@ class VideoService:
                 image = await asyncio.to_thread(cv2.imdecode, np.frombuffer(frame.jpeg, np.uint8), cv2.IMREAD_COLOR)
                 if image is not None:
                     image = cv2.resize(image, (self.width, self.height))
+                    self.samples[self.sample_id] = frame
+                    self.sample_id += 1
+                    while len(self.samples) > 600:
+                        self.samples.popitem(last=False)
                     self.process.stdin.write(image.tobytes())
                     await asyncio.wait_for(self.process.stdin.drain(), timeout=2)
             await asyncio.sleep(1 / self.fps)
@@ -78,7 +99,14 @@ class VideoService:
             else:
                 fragment.extend(box)
                 if kind == b"mdat":
-                    self.publish(bytes(fragment))
+                    data = bytes(fragment)
+                    first, count, start, end = fragment_timing(data, self.fps)
+                    captures = [self.samples[index] for index in range(first, first + count) if index in self.samples]
+                    if len(captures) != count or not captures:
+                        raise ValueError("Encoded fragment cannot be matched to capture receipt times")
+                    self.publish(dict(payload=data, media_start_s=start, media_end_s=end,
+                                      received=min(frame.received for frame in captures),
+                                      frame=captures[-1].frame_id, source=captures[-1].source))
                     fragment.clear()
 
     async def _run(self):
@@ -89,6 +117,7 @@ class VideoService:
                 "-pix_fmt", "yuv420p", "-b:v", str(self.bitrate), "-maxrate", str(self.bitrate),
                 "-bufsize", str(self.bitrate), "-g", str(self.fps), "-keyint_min", str(self.fps),
                 "-sc_threshold", "0", "-movflags", "frag_keyframe+empty_moov+default_base_moof",
+                "-video_track_timescale", "1000000",
                 "-frag_duration", "100000", "-f", "mp4", "pipe:1"]
         tasks = []
         try:
