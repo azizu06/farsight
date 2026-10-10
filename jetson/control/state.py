@@ -11,7 +11,7 @@ import threading
 import time
 import uuid
 
-from jetson.autonomy import Autonomy
+from jetson.autonomy import Autonomy, valid_person
 
 
 class ControlState:
@@ -353,8 +353,19 @@ class ControlState:
             engaged = bool(self.autonomy and self.autonomy.mode != "teleop" and self.deadline)
             if self.navigator is not None and self.autonomy:
                 self.navigator.sync(self.autonomy.mode, self.autonomy.target_id, engaged)
-            fault = (self.navigator.sensor_fault()
-                     if engaged and self.navigator is not None and self.navigator.handles(self.autonomy.mode) else None)
+            backed = engaged and self.navigator is not None and self.navigator.handles(self.autonomy.mode)
+            if backed and self.autonomy.mode in ("explore", "seek"):
+                snapshot = self.detections() if self.detections else {}
+                usable = snapshot.get("fresh") and not snapshot.get("error")
+                person = next((box for box in (snapshot.get("boxes", []) if usable else [])
+                               if valid_person(box)), None)
+                if self.autonomy.mode == "explore" and person is not None:
+                    # Like the reactive policy: Explore hands over to Seek on the first person seen.
+                    self.autonomy.mode, self.autonomy.target_id = "seek", person["id"]
+                    self.navigator.sync("seek", person["id"], True)
+                if self.autonomy.mode == "seek":
+                    self.navigator.update_seek(snapshot)
+            fault = self.navigator.sensor_fault() if backed else None
             if fault:
                 # No fresh normal-tracking pose or measured depth of the current sensor session:
                 # stop now, even with a live lease and fresh cmd_vel, and require a new press.

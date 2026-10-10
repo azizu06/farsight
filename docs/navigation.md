@@ -18,12 +18,25 @@ operator held deadman --/ws/control--> ControlState |                           
 ```
 python -m jetson.server ... --nav2                     # server side; add --drive-profile for calibrated m/s
 ros2 launch farsight_nav nav.launch.py                 # or the farsight-nav systemd unit
-    [controller:=mppi|rpp] [slam:=false|true] [costmap_source:=pointcloud|nvblox]
+    [controller:=rpp|mppi] [slam:=false|true] [costmap_source:=pointcloud|nvblox] [explore:=true|false]
 ```
 
-- **Go-to-point** (`POST /nav/goal`) is the Nav2-backed mode today. Explore and
-  Seek keep the reactive policy until their Nav2 versions land; the `nav.backend`
-  field says which one is driving (`nav2` or `fallback`).
+- **Modes:** with Nav2 up, all three autonomy modes plan with Nav2; `nav.backend`
+  says which one is driving (`nav2` or `fallback`).
+  - **Go-to-point:** `POST /nav/goal` arms a voxel-map `x, z`; the operator's held
+    `goto` heartbeats drive it.
+  - **Explore:** the bridge finds frontiers (free cells next to unknown space,
+    8-connected clusters of at least 30 cm) on the global costmap every second and
+    sends the best one to Nav2: near, wide and roughly ahead wins. A goal Nav2
+    fails, or one that takes over 25 s, is skipped for the rest of that press.
+    Exploration ends (`arrived`) when no reachable frontier remains. As in the
+    reactive policy, the first detected person switches Explore to Seek.
+  - **Seek:** the server projects the tracked person's box through the LiDAR depth
+    (median of the torso region) to a floor point, and Nav2 drives to a point
+    0.8 m short of it on the line from the rover. The goal is re-sent whenever the
+    person moves more than 0.3 m, so the rover follows a walking person. Within
+    0.95 m the rover stops (`arrived`); with the person unseen for 3 s, Seek stops
+    with `failed` (`Target lost`).
 - **Fallback:** if the bridge is down, silent for 1.5 s, or Nav2's lifecycle is not
   active, `nav.backend` is `fallback` (or `null`), go-to goals are refused with `409`,
   and Explore/Seek drive the reactive policy. Nothing restarts or waits on ROS.
@@ -102,13 +115,23 @@ the goal.
   otherwise drop, so free floor clears stale obstacles.
 - **Global costmap:** 40 x 40 m, not rolling, `track_unknown_space` so explored and
   unexplored space stay distinct for frontiers and replanning.
-- **Inflation:** `robot_radius` 0.13 m, inflation 0.35 m, cost scaling 6.
+- **Inflation:** `robot_radius` 0.16 m (a ~0.12 m chassis plus 4 cm for tracking
+  error at corners), inflation 0.28 m, cost scaling 8, so a 0.65 m gap keeps a
+  zero-cost centre line. With 0.35 m inflation the rover dithered at such gaps;
+  with a 0.13 m radius RPP clipped a wall end.
 - **Planner:** `SmacPlanner2D`, `allow_unknown` (goals are often in unseen space),
   0.25 m tolerance.
-- **Controller:** MPPI at 20 Hz (1000 samples, 2 s horizon, `vx_max` 0.30 m/s,
-  `wz_max` 1.6 rad/s) or RPP (`controller:=rpp`, 0.28 m/s) if MPPI is too heavy on
-  the Orin Nano. Both are loaded; the bridge picks one through the latched
-  `controller_selector` topic.
+- **Controller:** Regulated Pure Pursuit by default (20 Hz, 0.28 m/s, 0.35 m
+  lookahead, rotate to heading, cost-regulated slow-down near obstacles), or MPPI
+  with `controller:=mppi` (1000 samples, 2 s horizon, `vx_max` 0.30 m/s, `wz_max`
+  1.6 rad/s). Both are loaded; the bridge picks one through the latched
+  `controller_selector` topic. RPP is the default because it was faster in every
+  simulated world and lighter (see the results below); MPPI hesitated in 0.65 m
+  gaps. RPP does not dodge obstacles by itself: the 0.4 s replanning does, which is
+  how it steers around a pop-up obstacle without stopping.
+- **Odometry twist:** the bridge estimates `/odom` velocity over a 150 ms window.
+  Differencing single 30 Hz poses with jittery stamps produced rate spikes that
+  made MPPI believe the rover was still spinning, and it spun in place.
 - **Behavior tree** (`behavior_trees/navigate_farsight.xml`): replans at least every
   0.4 s, immediately when the path becomes invalid or the goal moves, and recovers
   in turn by clearing costmaps, backing up 0.25 m, spinning 90 degrees and waiting
@@ -122,28 +145,83 @@ Do these in order on the rig; record each result with conditions.
    `--drive-profile`. Without it, measure top speed and spin rate at `--max-pwm`
    and pass them as `--nav-speed-mps` / `--nav-turn-radps`.
 2. **Footprint.** Measure the chassis and set `robot_radius` (both costmaps) to
-   half the widest dimension; set `inflation_radius` to at least
-   `robot_radius + 0.15`. Narrow doorways need `2 * inflation_radius` under the gap.
+   half the widest dimension plus about 4 cm; keep `inflation_radius` about
+   `robot_radius + 0.12`. A gap wider than `2 * inflation_radius` keeps a zero-cost
+   centre line; narrower gaps are passable but slow.
 3. **Obstacle band.** Check `min_obstacle_height` against the floor estimate: if the
    floor shows up as obstacles, raise it to 0.06; if low clutter is missed, lower it.
-4. **Speed limits.** Set MPPI `vx_max` / `wz_max` (or RPP `desired_linear_vel`) at or
+4. **Speed limits.** Set RPP `desired_linear_vel` (or MPPI `vx_max` / `wz_max`) at or
    under the profile `limits`, then raise only after a clean run.
 5. **Controller rate.** Watch `controller_hz` in `/nav/status` `detail.remote`
-   while driving. If MPPI cannot hold 15 Hz on the Jetson, lower `batch_size`
-   (1000 to 600) or switch to `controller:=rpp`.
+   while driving. RPP should hold 20 Hz easily; with `controller:=mppi`, lower
+   `batch_size` (1000 to 600) if it cannot hold 15 Hz on the Jetson.
 6. **Progress checker.** If recoveries trigger while the rover is slowly turning,
    raise `movement_time_allowance` (6 s) rather than lowering speeds.
+
+## Closed-loop simulator
+
+`python -m jetson.server --sim-world NAME` (implies `--demo` and `--simulate-rover`)
+drives a ray-cast rover through a test floor plan from `jetson/sim/worlds.py`:
+`popup`, `doorway`, `deadend`, `floorplan`, `seek`. Applied motor commands move the
+simulated rover; its camera renders 160 x 120 depth and RGB that go through the
+same `MapState` path as a LiDAR iPhone (pose at 30 Hz, RGB-D at 10 Hz), so the
+bridge, voxel map, camera freshness and sensor gate all run unchanged. The
+ultrasonic reads the nearest surface ahead with the Uno's ~206 cm echo limit,
+and Seek gets ground-truth person boxes. Everything is labelled `SIMULATED`.
+`GET /sim/state` (only with `--sim-world`) returns ground truth: pose, collisions,
+minimum clearance, distance driven, pop-up events, people and floor coverage.
+
+`ros2/tests/scenarios.py` runs each world against Nav2 with a real held-deadman
+`/ws/control` operator, with `controller:=mppi` and `controller:=rpp`; reports go
+to `ros2/tests/out/scenarios.json` and per-run timelines to `*-timeline.json`.
 
 ## Tests
 
 | Check | Command | Result |
 |---|---|---|
-| Server seam, gating, contract | `.venv/bin/python -m pytest -q jetson/tests/test_nav.py` | 14 pass |
-| Frame math | `.venv/bin/python -m pytest -q ros2/farsight_nav/test` | 7 pass (host and container) |
+| Server seam, gating, contract, Seek | `.venv/bin/python -m pytest -q jetson/tests/test_nav.py` | 22 pass |
+| Simulator worlds and sensors | `.venv/bin/python -m pytest -q jetson/tests/test_sim.py` | 5 pass |
+| Frame math, frontiers | `.venv/bin/python -m pytest -q ros2/farsight_nav/test` | 12 pass (host and container) |
 | Bringup smoke | `bash ros2/docker/run-tests.sh smoke` | PASS in 17-19 s: Nav2 lifecycle active, topics and `map -> camera_optical` TF present |
+| Closed-loop scenarios | `bash ros2/docker/run-tests.sh scenarios` | see below |
 
 The Docker image is `ros2/docker/Dockerfile` (ROS 2 Jazzy ros-base + Nav2 on
 Apple silicon arm64). Nothing here has run on the Jetson or with real phone depth.
+
+Without Docker (for example on the Jetson, from a separate checkout), the same
+scripts take their paths from the environment. The live server already holds 8443,
+and the harness refuses a port that is in use, because its test operator holds a
+real deadman lease:
+
+```
+source /opt/ros/jazzy/setup.bash && source ros2/install/setup.bash
+export ROS_DOMAIN_ID=42 ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+export FARSIGHT_REPO=$PWD FARSIGHT_SERVER_PYTHON=~/farsight/jetson/.venv/bin/python
+export FARSIGHT_OUT=/tmp/farsight-nav-out FARSIGHT_TEST_PORT=8601
+python3 ros2/tests/smoke.py
+```
+
+### Scenario results (simulation only)
+
+Source: one `run-tests.sh all` run on the operator Mac (Docker Desktop, 15 cores,
+7.7 GB VM), one scenario at a time, while an unrelated pytest run shared the machine.
+Raw reports and verdicts: `docs/qualification/nav-scenarios-sim.json`. RPP is the
+default and gates the suite; MPPI runs are informational.
+
+| World | What it checks | RPP (default) | MPPI |
+|---|---|---|---|
+| `popup` | a 0.5 m box appears in the corridor when the rover is 1.75 m from it; no standstill over 0.5 s | arrived in 36.9 s, longest standstill 0.41 s, clearance 0.22 m | stood still 1.62 s (fails the gate) |
+| `doorway` | the only way to the far room is a 0.8 m door off to one side | arrived in 60.8 s, 3 recoveries (earlier tuning runs: 24.7-27.9 s, 0 recoveries) | 30.7 s |
+| `deadend` | a 0.7 m corridor at the goal closes once the rover is inside; back out and take the side gap | arrived in 121.4 s, 9 recoveries (earlier tuning run: 79.6 s) | 118.0 s |
+| `floorplan` Explore | three rooms; time to see 90 % of reachable floor | 90 % in 24.9 s, 0 collisions | 90 % in 96.3 s |
+| `seek` | follow a 0.25 m/s walker, 0.8 m standoff | 5.25 m to a 1.61 m median gap (max 2.44 m) | 1.39 m median gap |
+
+All runs: 0 collisions, controller 20 Hz median. CPU in % of one core, mean
+over a run: bridge 80-107 %, `jetson.server` 21-33 %, `controller_server` 4-4.5 %
+with RPP and about 6.5 % with MPPI, `bt_navigator` 3-4 %, `planner_server` about 2 %.
+The bridge figure is high and not yet explained; profile it before relying on the
+Jetson. Run-to-run spread is large (doorway and dead-end recoveries vary), so treat
+single times as examples, not bounds.
 
 ## Jetson install
 

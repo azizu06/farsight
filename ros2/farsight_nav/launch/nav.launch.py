@@ -1,6 +1,6 @@
 """Farsight navigation: bridge to jetson.server + Nav2 (no map server, no AMCL, no collision monitor).
 
-ros2 launch farsight_nav nav.launch.py [server:=http://127.0.0.1:8443] [controller:=mppi|rpp]
+ros2 launch farsight_nav nav.launch.py [server:=http://127.0.0.1:8443] [controller:=rpp|mppi]
     [slam:=false|true] [costmap_source:=pointcloud|nvblox] [explore:=true|false] [params_file:=...]
 
 slam:=true includes farsight_slam's launch (SLAM Toolbox publishes map->odom); otherwise the
@@ -39,6 +39,7 @@ def nav_nodes(context):
     if controller not in ("mppi", "rpp"):
         raise RuntimeError("controller must be mppi or rpp")
     slam = LaunchConfiguration("slam").perform(context).lower() in ("1", "true", "yes")
+    explore = LaunchConfiguration("explore").perform(context).lower() in ("1", "true", "yes")
     remappings = [("/tf", "tf"), ("/tf_static", "tf_static")]
     log = LaunchConfiguration("log_level")
     nodes = [
@@ -54,7 +55,7 @@ def nav_nodes(context):
              output="screen", parameters=[{"autostart": True, "bond_timeout": 4.0, "node_names": list(NAV2_NODES)}]),
         Node(package="farsight_nav", executable="bridge", name="farsight_bridge", output="screen",
              parameters=[{"server": LaunchConfiguration("server"), "publish_map_odom": not slam,
-                          "controller": controller.upper()}],
+                          "controller": controller.upper(), "explore": explore}],
              remappings=remappings),
     ]
     if slam:
@@ -71,10 +72,12 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument("server", default_value=os.environ.get("FARSIGHT_NAV_SERVER", "http://127.0.0.1:8443"),
                               description="jetson.server origin (loopback)"),
-        DeclareLaunchArgument("controller", default_value="mppi", description="mppi or rpp"),
+        DeclareLaunchArgument("controller", default_value="rpp",
+                              description="rpp (default: faster and lighter in the indoor scenarios) or mppi"),
         DeclareLaunchArgument("slam", default_value="false", description="Include farsight_slam (map->odom)"),
         DeclareLaunchArgument("costmap_source", default_value="pointcloud", description="pointcloud or nvblox"),
-        DeclareLaunchArgument("explore", default_value="true", description="Run the frontier explorer"),
+        DeclareLaunchArgument("explore", default_value="true",
+                              description="Frontier exploration for the server's Explore mode (in the bridge)"),
         DeclareLaunchArgument("params_file", default_value="", description="Override config/nav2_params.yaml"),
         DeclareLaunchArgument("use_sim_time", default_value="false"),
         DeclareLaunchArgument("log_level", default_value="info"),

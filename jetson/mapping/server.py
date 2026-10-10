@@ -17,6 +17,9 @@ import uvicorn
 
 from .compress import EncodedCache
 from .demo import stream_demo
+from jetson.sim.stream import SimFeed, stream_world
+from jetson.sim.world import RoverSim
+from jetson.sim.worlds import WORLDS, load as load_world
 from .phone import Hello, decode_frame, validate_pose
 from .state import MapState
 from jetson.camera import CameraService
@@ -46,7 +49,11 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                depth_model=None, scan_pan=False, scan_fov=70, scan_intrinsics=None, scan_turn_dps=90,
                record=False, replay=None, proximity_stop=True, nav2=False, nav_speed_mps=0.45,
                nav_turn_radps=3.0, nav_max_v=0.7, nav_max_w=0.8, nav_camera_height=0.15, bulk_limit_mbps=0, drive_profile=None,
-               allow_calibration=False):
+               allow_calibration=False, sim_world=None):
+    if sim_world is not None:  # closed-loop simulator: a moving ray-cast rover in a test floor plan
+        if serial_port or camera_device is not None or replay is not None:
+            raise ValueError("--sim-world is simulated; it cannot drive real motors, cameras or replays")
+        demo = simulate_rover = True
     if isinstance(drive_profile, (str, Path)):
         drive_profile = DriveProfile.load(drive_profile)
         if drive_profile.meta.get("source") == "simulated":
@@ -59,6 +66,8 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
     if nav2 and replay is not None:
         raise ValueError("Replay is read-only; navigation cannot be combined with it")
     state = MapState(demo)
+    sim = (SimFeed(RoverSim(load_world(sim_world), speed_mps=nav_speed_mps, turn_radps=nav_turn_radps))
+           if sim_world is not None else None)
     camera_service = CameraService(state, device=camera_device)
     video_service = VideoService(camera_service, enabled=h264, fps=video_fps, bitrate=video_bitrate)
     mission = Mission(mission_dir, record=record)
@@ -69,7 +78,9 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
     control = ReplayControl() if replay is not None else ControlService(serial_port=serial_port, simulate=simulate_rover, max_pwm=max_pwm, min_pwm=min_pwm,
                              drive_profile=drive_profile, allow_calibration=allow_calibration,
                              camera_ready=lambda: camera_service.status()["camera_drive_ready" if serial_port else "camera"],
-                             detections=perception.snapshot, proximity_stop=proximity_stop, navigator=nav)
+                             detections=sim.detections if sim else perception.snapshot,
+                             simulated_range=sim.sim.ultrasonic_cm if sim else None,
+                             proximity_stop=proximity_stop, navigator=nav)
     if nav is not None:
         nav.attach(control.state)
         state.frame_observers.append(nav.offer_frame)
@@ -102,6 +113,15 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
 
     if hasattr(control, "state"):  # recorded replays have no live control loop
         control.state.on_output = mission.drill_motion
+        observers = [mission.drill_motion] + ([sim.sim.apply] if sim else [])
+        if len(observers) > 1:
+            def applied(v, w, blocked):
+                for observer in observers:
+                    try:
+                        observer(v, w, blocked)
+                    except Exception:
+                        pass  # telemetry/odometry must never affect motor output
+            control.state.on_output = applied
     assistant = SceneAssistant(camera_service, perception, control, server_url=assistant_url,
                                whisper_bin=whisper_bin, whisper_model=whisper_model,
                                piper_bin=piper_bin, piper_model=piper_model, output_dir=tts_dir,
@@ -116,7 +136,8 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
 
     @asynccontextmanager
     async def lifespan(app):
-        task = asyncio.create_task(stream_demo(state, camera_service)) if demo else None
+        task = (asyncio.create_task(stream_world(state, camera_service, sim)) if sim else
+                asyncio.create_task(stream_demo(state, camera_service)) if demo else None)
         replay_task = asyncio.create_task(replay_session.run.play(replay_session.publish)) if replay_session else None
         record_task = asyncio.create_task(record_run()) if record else None
         sample_task = asyncio.create_task(sample_mission())
@@ -201,7 +222,15 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                       speech=await asyncio.to_thread(phrases.status), triage=triage.status())
         if nav is not None:  # absent without --nav2, like the Rust server
             status["nav"] = dict(enabled=True, available=nav.available())
+        if sim is not None:
+            status["sim_world"] = sim_world
         return status
+
+    if sim is not None:
+        @app.get("/sim/state")
+        async def sim_state():
+            """Ground truth for scenario tests: pose, collisions, clearance, coverage, pop-ups."""
+            return await asyncio.to_thread(sim.sim.state)
 
     class ScanRequest(BaseModel):
         session_id: str
@@ -668,6 +697,8 @@ def on_off(value):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--demo", action="store_true", help="Ray-cast room; no hardware needed")
+    parser.add_argument("--sim-world", choices=sorted(WORLDS), default=None,
+                        help="Closed-loop simulator: drive a ray-cast rover in a test floor plan (implies --demo)")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8443)
     parser.add_argument("--ssl-certfile")
@@ -729,8 +760,10 @@ def main():
         parser.error("Replay cannot be combined with serial, live/simulated sources, or recording")
     if args.simulate_rover and args.serial_port:
         parser.error("--simulate-rover cannot be combined with --serial-port")
-    if args.demo and args.serial_port:
+    if (args.demo or args.sim_world) and args.serial_port:
         parser.error("A simulated camera cannot be used to drive physical motors")
+    if args.sim_world and (args.camera is not None or args.replay):
+        parser.error("--sim-world cannot be combined with a real --camera or --replay")
     if args.demo and args.camera:
         parser.error("Choose --demo or a real --camera, not both")
     uvicorn.run(create_app(args.demo, camera_device=args.camera, serial_port=args.serial_port,
@@ -748,7 +781,7 @@ def main():
                 proximity_stop=args.proximity_stop,
                 nav2=args.nav2, nav_speed_mps=args.nav_speed_mps, nav_turn_radps=args.nav_turn_radps,
                 nav_max_v=args.nav_max_v, nav_max_w=args.nav_max_w,
-                nav_camera_height=args.nav_camera_height), host=args.host, port=args.port,
+                nav_camera_height=args.nav_camera_height, sim_world=args.sim_world), host=args.host, port=args.port,
                 ssl_certfile=args.ssl_certfile, ssl_keyfile=args.ssl_keyfile,
                 ws_max_size=8 * 1024 * 1024, access_log=False,
                 timeout_graceful_shutdown=5)

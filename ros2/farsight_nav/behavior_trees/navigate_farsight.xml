@@ -9,7 +9,7 @@
   <BehaviorTree ID="MainTree">
     <RecoveryNode number_of_retries="8" name="NavigateRecovery">
       <PipelineSequence name="NavigateWithReplanning">
-        <ControllerSelector selected_controller="{selected_controller}" default_controller="MPPI" topic_name="controller_selector"/>
+        <ControllerSelector selected_controller="{selected_controller}" default_controller="RPP" topic_name="controller_selector"/>
         <PlannerSelector selected_planner="{selected_planner}" default_planner="GridBased" topic_name="planner_selector"/>
         <RateController hz="10.0">
           <RecoveryNode number_of_retries="1" name="ComputePathToPose">
