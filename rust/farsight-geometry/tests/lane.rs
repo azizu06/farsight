@@ -235,3 +235,83 @@ async fn dense_delta_paging() {
     assert_eq!(resp.headers()["x-geometry-next-seq"], "6");
     assert_eq!(resp.bytes().await.unwrap().len(), 0);
 }
+
+#[tokio::test]
+async fn delta_pagination_rules() {
+    // Aziz's densemap contract: fresh or stale consumers always land exactly
+    // one complete snapshot; session/epoch headers let them detect swaps.
+    let producer = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let prod_addr = producer.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (stream, _) = producer.accept().await.unwrap();
+        let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+        for u in [
+            upd(1, geom::Op::Reset, None),
+            upd(2, geom::Op::Replace, Some(mesh(2))),
+            upd(3, geom::Op::Replace, Some(mesh(1))),
+            upd(4, geom::Op::SnapshotEnd, None),
+        ] {
+            ws.send(tokio_tungstenite::tungstenite::Message::Binary(
+                geom::encode(&u, geom::RecordCoding::Raw).into(),
+            ))
+            .await
+            .unwrap();
+        }
+        futures_util::future::pending::<()>().await;
+    });
+
+    let shared = geom::Shared::new(10_000);
+    tokio::spawn(geom::pull_loop(
+        shared.clone(),
+        vec![format!("ws://{prod_addr}/geometry/stream")],
+        0.05,
+        0.2,
+    ));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, geom::router(shared)).await.unwrap();
+    });
+    let client = reqwest::Client::new();
+    for _ in 0..50 {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let st: serde_json::Value = client
+            .get(format!("http://{addr}/geometry/status"))
+            .send().await.unwrap().json().await.unwrap();
+        if st["anchors"].as_u64() == Some(2) {
+            break;
+        }
+    }
+
+    // Fresh consumer: exactly one synthetic Reset first, then the complete
+    // retained set, then the journaled tail — seqs never decrease.
+    let resp = client
+        .get(format!("http://{addr}/geometry/chunks"))
+        .send().await.unwrap();
+    assert_eq!(resp.headers()["x-geometry-truncated"], "0");
+    assert!(resp.headers().contains_key("x-geometry-session"));
+    assert_eq!(resp.headers()["x-geometry-epoch"], "7");
+    let recs = split_records(&resp.bytes().await.unwrap());
+    let ops: Vec<u8> = recs.iter().map(|r| r.1).collect();
+    assert_eq!(ops[0], 2); // Reset first
+    assert_eq!(ops.iter().filter(|&&o| o == 2).count(), 2, "synthetic + journaled session Reset only");
+    let seqs: Vec<u64> = recs.iter().map(|r| r.0).collect();
+    assert!(seqs.windows(2).all(|w| w[0] <= w[1]), "seqs monotonic: {seqs:?}");
+
+    // Stale cursor ahead of every journaled seq (e.g. missed a session
+    // swap): still lands one complete snapshot, flagged truncated.
+    let resp = client
+        .get(format!("http://{addr}/geometry/chunks?after=9999"))
+        .send().await.unwrap();
+    assert_eq!(resp.headers()["x-geometry-truncated"], "1");
+    let recs = split_records(&resp.bytes().await.unwrap());
+    let ops: Vec<u8> = recs.iter().map(|r| r.1).collect();
+    assert_eq!(ops[0], 2);
+    assert!(ops.iter().filter(|&&o| o == 0).count() >= 2, "all retained chunks emitted");
+
+    // Caught-up page has no synthetic Reset — only journaled ops.
+    let resp = client
+        .get(format!("http://{addr}/geometry/chunks?after=4"))
+        .send().await.unwrap();
+    assert_eq!(resp.bytes().await.unwrap().len(), 0);
+}

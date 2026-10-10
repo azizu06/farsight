@@ -755,23 +755,40 @@ or delays the control permit lane. Network recovery grants no motion intent.
 The standalone assembler also serves the retained cloud as an incremental
 delta for the Mac dense-reconstruction lane, which accumulates millions of
 points beyond the Quest-packet budget. `after=<seq>` pages the journal as
-concatenated v1 wire records (op codes only: replace, remove, reset —
-snapshot-end stays a staging signal, never replayed); `limit=<n>` caps the
-page at 512 records. Records use coding 0 (raw) and identity transforms —
-positions are already baked into ARSession world coordinates at ingest.
+concatenated v1 wire records; `limit=<n>` caps the journaled-ops page at
+512. Records use coding 0 (raw) and identity transforms — positions are
+already baked into ARSession world coordinates at ingest. Every emitted
+record stays inside the 256 KiB packet bound: a Replace whose raw payload
+would exceed it is split into fragments sharing the same (seq, anchor);
+consumers concatenate all fragments of a (seq, anchor) group in order
+before applying the replacement.
 
-Consumers page until the response is empty, then track the cursor in the
-`X-Geometry-Next-Seq` header. `X-Geometry-Remaining` reports journaled ops
-still to read. The journal is bounded at 8192 ops; a consumer whose `after`
-precedes the oldest entry (or sends `after=0`) gets a bootstrap — a
-synthetic reset record then every retained chunk, then the journaled tail —
-with `X-Geometry-Truncated: 1` when coverage was lost. Budget evictions are
-journalled as remove tombstones keyed to the evicted anchor so a delta
-consumer drops the same geometry the Quest snapshot drops.
+Op codes on this feed: replace, remove, reset, and **evict (4)** — an
+assembler-outbound marker emitted when the publisher drops an anchor for
+its memory budget. Evict is not a geometry removal: dense accumulators
+may retain the chunk (this is how the million-point set accumulates past
+the publisher's window), while bounded consumers apply it like remove.
+Real remove ops are genuine producer removals. Snapshot-end stays a
+staging signal and is never replayed.
+
+Consumers page until a response is empty, then track the cursor in the
+`X-Geometry-Next-Seq` header; `X-Geometry-Remaining` reports journaled
+ops still to read, and `X-Geometry-Session`/`X-Geometry-Epoch` mirror the
+current capture session so consumers can detect a session swap even on
+empty pages. The journal is bounded at 8192 ops. A bootstrap is sent when
+`after=0`, when `after` precedes the oldest journal entry, or when
+`after` exceeds the producer's current seq (a cursor left over from a
+previous session/epoch, since seqs restart per session): a synthetic
+reset record first, then every retained chunk, then the journaled tail —
+the complete snapshot always arrives in one response, never truncated by
+`limit`. `X-Geometry-Truncated: 1` marks a bootstrap where coverage was
+lost (`after` was nonzero).
 
 `GET /geometry/status` additionally reports `retained` with the actual
-published counts `{anchors, vertices, triangles, points, bytes}` for the
-density audit, alongside the existing caps/limits fields.
+published counts `{anchors, vertices, triangles, points, bytes}` and
+`observed` with cumulative published counts `{anchors, vertices,
+triangles}` since session start — retained unique points reported
+separately from historical observation count, per the density audit.
 
 ## Local Mac render transport (opt-in)
 

@@ -49,6 +49,10 @@ pub enum Op {
     Remove,
     Reset,
     SnapshotEnd,
+    /// Assembler-outbound only on /geometry/chunks: publisher memory-budget
+    /// eviction, not a geometry removal — dense accumulators may retain the
+    /// anchor; bounded consumers apply it like Remove.
+    Evict,
 }
 
 /// One decoded lane update. `session`/`epoch` identify the capture session;
@@ -100,6 +104,7 @@ pub fn decode(packet: &[u8]) -> Result<Update, String> {
         1 => Op::Remove,
         2 => Op::Reset,
         3 => Op::SnapshotEnd,
+        4 => Op::Evict,
         other => return Err(format!("unknown geometry op {other}")),
     };
     let flags = u16::from_le_bytes(take(2).try_into().unwrap());
@@ -243,6 +248,7 @@ pub fn encode(update: &Update, coding: RecordCoding) -> Vec<u8> {
         Op::Remove => 1,
         Op::Reset => 2,
         Op::SnapshotEnd => 3,
+        Op::Evict => 4,
     });
     out.extend_from_slice(&(match coding { RecordCoding::Raw => 0u16, RecordCoding::Zlib => 1, RecordCoding::Brotli => 2 }).to_le_bytes());
     out.extend_from_slice(&update.seq.to_le_bytes());
@@ -286,6 +292,12 @@ pub struct AnchorGeometry {
     /// Bounded record of published ops for /geometry/chunks delta replay:
     /// (producer seq, anchor, op). Cleared on session/epoch change.
     journal: std::collections::VecDeque<(u64, [u8; 16], Op)>,
+    /// Cumulative published observation counts (before any eviction), reset
+    /// per session/epoch — the "historical" half of the density audit vs
+    /// the bounded `retained` window.
+    observed_anchors: u64,
+    observed_verts: u64,
+    observed_tris: u64,
     /// Revision seen by consumers (bumps only on publishable changes).
     pub_lane: LaneStats,
 }
@@ -314,6 +326,9 @@ impl AnchorGeometry {
             pending_tri: 0,
             pending_vert: 0,
             journal: std::collections::VecDeque::new(),
+            observed_anchors: 0,
+            observed_verts: 0,
+            observed_tris: 0,
             pub_lane: LaneStats::default(),
         }
     }
@@ -332,6 +347,12 @@ impl AnchorGeometry {
 
     pub fn vertices(&self) -> usize {
         self.verts
+    }
+
+    /// Cumulative published observations since session/epoch start:
+    /// (anchor publishes, vertex scalars published, triangle records).
+    pub fn observed(&self) -> (u64, u64, u64) {
+        (self.observed_anchors, self.observed_verts, self.observed_tris)
     }
 
     pub fn anchors(&self) -> usize {
@@ -406,6 +427,9 @@ impl AnchorGeometry {
             self.pending_tri = 0;
             self.pending_vert = 0;
             self.journal.clear();
+            self.observed_anchors = 0;
+            self.observed_verts = 0;
+            self.observed_tris = 0;
             self.snapshot_complete = false;
             self.pub_lane.reconnects += 1;
             self.revision += 1;
@@ -434,6 +458,9 @@ impl AnchorGeometry {
                     for (id, (seq, mesh)) in pending {
                         self.count += mesh.indices.len();
                         self.verts += mesh.positions.len();
+                        self.observed_tris += mesh.indices.len() as u64;
+                        self.observed_verts += mesh.positions.len() as u64;
+                        self.observed_anchors += 1;
                         self.chunks.insert(id, mesh);
                         self.jpush(seq, id, Op::Replace);
                     }
@@ -441,7 +468,7 @@ impl AnchorGeometry {
                         if let Some((id, evicted)) = self.chunks.shift_remove_index(0) {
                             self.count -= evicted.indices.len();
                             self.verts -= evicted.positions.len();
-                            self.jpush(self.last_seq, id, Op::Remove);
+                            self.jpush(self.last_seq, id, Op::Evict);
                         } else {
                             break;
                         }
@@ -482,11 +509,11 @@ impl AnchorGeometry {
                     }
                 }
             }
-            Op::Remove => {
+            Op::Remove | Op::Evict => {
                 if let Some(pending) = &mut self.pending {
                     pending.shift_remove(&u.anchor);
                 } else if self.remove(u.anchor) {
-                    self.jpush(u.seq, u.anchor, Op::Remove);
+                    self.jpush(u.seq, u.anchor, u.op);
                 }
             }
         }
@@ -507,12 +534,15 @@ impl AnchorGeometry {
         }
         self.count += mesh.indices.len();
         self.verts += mesh.positions.len();
+        self.observed_tris += mesh.indices.len() as u64;
+        self.observed_verts += mesh.positions.len() as u64;
+        self.observed_anchors += 1;
         self.chunks.insert(anchor_id, mesh);
         while self.count > self.budget || self.verts > MAX_PUBLISHED_VERTICES {
             if let Some((id, evicted)) = self.chunks.shift_remove_index(0) {
                 self.count -= evicted.indices.len();
                 self.verts -= evicted.positions.len();
-                self.jpush(self.last_seq, id, Op::Remove);
+                self.jpush(self.last_seq, id, Op::Evict);
             } else {
                 break;
             }
@@ -891,6 +921,86 @@ mod tests {
         assert!((vy - local[0]).abs() < 1e-6);
         assert!((vz - local[2]).abs() < 1e-6);
     }
+
+    #[test]
+    fn delta_journal_marks_evict_not_remove() {
+        // Budget 4 tris: snapshot publishes two 2-tri anchors, the next
+        // published Replace pushes to 6 > 4 -> oldest evicted (Evict), while
+        // a producer Remove journals Remove.
+        let mut g = AnchorGeometry::new(4);
+        let mut set_anchor = |seq: u64, op: Op, m: Option<ChunkMesh>| {
+            let mut u = upd(seq, op, m);
+            u.anchor = [seq as u8; 16];
+            u
+        };
+        g.apply_owned(set_anchor(1, Op::Reset, None));
+        g.apply_owned(set_anchor(2, Op::Replace, Some(mesh(2))));
+        g.apply_owned(set_anchor(3, Op::Replace, Some(mesh(2))));
+        g.apply_owned(set_anchor(4, Op::SnapshotEnd, None));
+        g.apply_owned(set_anchor(5, Op::Replace, Some(mesh(2)))); // evicts anchor2
+        g.apply_owned(set_anchor(6, Op::Remove, None)); // no such anchor -> ignored
+        g.apply_owned(set_anchor(7, Op::Remove, None));
+        // anchor7 was never published; remove a real one instead:
+        let mut rm = upd(8, Op::Remove, None);
+        rm.anchor = [3; 16];
+        g.apply_owned(rm);
+        let ops: Vec<Op> = g.journal().iter().map(|e| e.2).collect();
+        assert!(ops.contains(&Op::Evict), "eviction must journal Evict: {ops:?}");
+        assert!(ops.contains(&Op::Remove), "real removal must journal Remove");
+        let evict = g.journal().iter().find(|e| e.2 == Op::Evict).unwrap();
+        let remove = g.journal().iter().find(|e| e.2 == Op::Remove).unwrap();
+        assert_eq!(remove.0, 8);
+        assert_eq!(evict.1, [2; 16]);
+        assert_eq!(remove.1, [3; 16]);
+        assert_ne!(evict.1, remove.1);
+    }
+
+    #[test]
+    fn emit_delta_records_fragments_oversized_replace() {
+        let big = mesh(8000); // ~384 KiB raw -> must fragment
+        let u = upd(9, Op::Replace, Some(big));
+        let recs = emit_delta_records(&u);
+        assert!(recs.len() >= 2, "expected fragmentation: {}", recs.len());
+        let mut total_tris = 0usize;
+        for rec in &recs {
+            assert!(rec.len() <= MAX_UPDATE_BYTES);
+            let d = decode(rec).unwrap();
+            assert_eq!(d.seq, 9);
+            assert_eq!(d.anchor, u.anchor);
+            assert_eq!(d.op, Op::Replace);
+            let m = d.mesh.unwrap();
+            total_tris += m.indices.len();
+            for tri in &m.indices {
+                for vi in tri {
+                    assert!((*vi as usize) < m.positions.len());
+                }
+            }
+        }
+        assert_eq!(total_tris, 8000);
+    }
+
+    #[test]
+    fn observed_counts_publish_history_retained_counts_window() {
+        let mut g = AnchorGeometry::new(4);
+        let mut set_anchor = |seq: u64, op: Op, m: Option<ChunkMesh>| {
+            let mut u = upd(seq, op, m);
+            u.anchor = [seq as u8; 16];
+            u
+        };
+        g.apply_owned(set_anchor(1, Op::Reset, None));
+        g.apply_owned(set_anchor(2, Op::Replace, Some(mesh(2))));
+        g.apply_owned(set_anchor(3, Op::Replace, Some(mesh(2))));
+        g.apply_owned(set_anchor(4, Op::SnapshotEnd, None));
+        let (anchors, verts, tris) = g.observed();
+        assert_eq!((anchors, tris, verts), (2, 4, 12));
+        assert_eq!(g.triangles(), 4);
+        // Third publish evicts the oldest — observed keeps counting.
+        g.apply_owned(set_anchor(5, Op::Replace, Some(mesh(2))));
+        let (anchors, verts, tris) = g.observed();
+        assert_eq!((anchors, tris, verts), (3, 6, 18));
+        assert_eq!(g.triangles(), 4);
+        assert_eq!(g.anchors(), 2);
+    }
 }
 
 
@@ -991,6 +1101,13 @@ async fn status(State(s): State<Arc<Shared>>) -> Json<Value> {
             "points": geo.vertices(),
             "bytes": geo.vertices() * 16 + geo.triangles() * 12,
         },
+        // Cumulative published observations since session start (before any
+        // eviction) — the historical half of the density audit vs retained.
+        "observed": {
+            "anchors": geo.observed().0,
+            "vertices": geo.observed().1,
+            "triangles": geo.observed().2,
+        },
         "last_seq": geo.last_seq(),
         "lane": {
             "upstream": connected,
@@ -1018,12 +1135,80 @@ pub struct DeltaQuery {
     limit: Option<u64>,
 }
 
+/// Encode one delta update as v1 wire records, always within the 256 KiB
+/// packet bound: non-payload ops are a single record; a Replace whose raw
+/// payload would exceed the bound is fragmented into sub-meshes sharing the
+/// same (seq, anchor) — consumers concatenate same-(seq,anchor) fragments
+/// before applying. Coding is always 0 (raw): fragmentation guarantees the
+/// bound so no compression is needed on this lane.
+fn emit_delta_records(update: &Update) -> Vec<Vec<u8>> {
+    let raw_payload = update
+        .mesh
+        .as_ref()
+        .map(|m| m.positions.len() * 12 + m.indices.len() * 12)
+        .unwrap_or(0);
+    if update.op != Op::Replace || 124 + raw_payload <= MAX_UPDATE_BYTES {
+        return vec![encode(update, RecordCoding::Raw)];
+    }
+    let mesh = update.mesh.as_ref().unwrap();
+    // Emit fragment when the next triangle's worst-case cost (3 new verts
+    // *12B + 3 indices *4B = 48B) would cross the packet bound — the actual
+    // payload is measured as it builds, never estimated per-triangle.
+    let budget = MAX_UPDATE_BYTES - 124;
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < mesh.indices.len() {
+        let mut remap = std::collections::HashMap::with_capacity(4096);
+        let mut positions = Vec::new();
+        let mut colors = Vec::new();
+        let mut indices: Vec<[u32; 3]> = Vec::new();
+        while i < mesh.indices.len() {
+            let projected = (positions.len() + 3) * 12 + (indices.len() + 1) * 12;
+            if projected > budget && !indices.is_empty() {
+                break;
+            }
+            let tri = &mesh.indices[i];
+            let mut nt = [0u32; 3];
+            for (k, &vi) in tri.iter().enumerate() {
+                let ni = *remap.entry(vi).or_insert_with(|| {
+                    positions.push(mesh.positions[vi as usize]);
+                    colors.push(mesh.colors[vi as usize]);
+                    positions.len() as u32 - 1
+                });
+                nt[k] = ni;
+            }
+            indices.push(nt);
+            i += 1;
+        }
+        let frag = Update {
+            session: update.session,
+            epoch: update.epoch,
+            seq: update.seq,
+            op: update.op,
+            anchor: update.anchor,
+            transform: update.transform,
+            mesh: Some(ChunkMesh { positions, colors, indices }),
+        };
+        out.push(encode(&frag, RecordCoding::Raw));
+    }
+    out
+}
+
 /// Mac-specific dense/chunked path (6102570158): incremental deltas of the
 /// published retained cloud as concatenated v1 wire records — the same
 /// format the phone lane produces, coding=0, transform=identity because
 /// positions are already world-baked at ingest. A Mac accumulator replays
 /// `after=<seq>` pages and retains millions of points without ever
 /// re-pulling a whole snapshot; the bounded Quest mesh.bin is untouched.
+///
+/// Contract (interfaces.md): ops Replace/Remove/Reset/Evict. Remove is a
+/// real producer removal; Evict is a publisher memory-budget eviction —
+/// dense accumulators may retain the anchor, bounded consumers apply it
+/// like Remove. Bootstrap (`after=0` or a cursor behind the bounded
+/// journal) emits a synthetic Reset, every retained chunk, then the
+/// journaled tail — all chunks always complete in one response so a fresh
+/// consumer reaches a complete snapshot in one page; `limit` bounds only
+/// the journaled tail. X-Geometry-Truncated marks lost coverage.
 async fn chunks_delta(
     State(s): State<Arc<Shared>>,
     axum::extract::Query(q): axum::extract::Query<DeltaQuery>,
@@ -1034,21 +1219,31 @@ async fn chunks_delta(
     let session = geo.session();
     let epoch = geo.epoch();
     let oldest_journaled = geo.journal().front().map(|e| e.0);
-    // Bootstrap when the consumer cannot prove continuity: fresh cursor, or
-    // its seq fell behind the bounded journal. Synthetic Reset then every
-    // retained chunk, then journal tail — all in seq order.
+    let newest_journaled = geo.journal().back().map(|e| e.0).unwrap_or(0);
+    // Bootstrap when the consumer cannot prove continuity: fresh cursor, a
+    // cursor behind the bounded journal, OR a stale cursor ahead of the
+    // producer's seq — seqs restart per session/epoch, so after > last_seq
+    // means the consumer missed a session swap and must reset. (Journal
+    // seqs lag last_seq: SnapshotEnd never journals, so a caught-up cursor
+    // can sit ahead of the newest journal entry — that is NOT stale.)
     let bootstrap = after == 0
+        || after > geo.last_seq()
         || match oldest_journaled {
             Some(o) => after < o,
             None => geo.anchors() > 0,
         };
     let truncated = bootstrap && after > 0;
     let mut entries: Vec<(u64, Op, [u8; 16], Option<ChunkMesh>)> = Vec::new();
+    let mut next_seq = after;
     if bootstrap {
+        // Synthetic Reset first — never sorted into the middle: a consumer
+        // must clear before applying chunks, not after.
         entries.push((after, Op::Reset, [0; 16], None));
+        // Every retained chunk — always the complete snapshot in one page
+        // (no truncation of the chunk list). Chunk seq = its last journaled
+        // Replace, or last_seq when that entry has rolled out of the bounded
+        // journal (fallback >= every live journal seq, so it sorts last).
         for (id, mesh) in geo.chunks() {
-            // chunk seq: its last published write, recoverable from journal
-            // (fallback last_seq for anything that predates journaling).
             let seq = geo
                 .journal()
                 .iter()
@@ -1058,12 +1253,24 @@ async fn chunks_delta(
                 .unwrap_or_else(|| geo.last_seq());
             entries.push((seq, Op::Replace, *id, Some(mesh.clone())));
         }
-        for &(seq, id, op) in geo.journal().iter() {
-            if seq > after && op != Op::Replace {
-                entries.push((seq, op, id, None));
-            }
+        // Journaled tail: real Removes, Evicts, Resets — merge-sorted WITH
+        // the chunks by seq so lifecycle ops land in true position (a tail
+        // Reset never applies after chunks published before it).
+        entries.extend(
+            geo.journal()
+                .iter()
+                .filter(|e| e.0 > after && e.2 != Op::Replace)
+                .map(|&(seq, id, op)| (seq, op, id, None)),
+        );
+        entries[1..].sort_by_key(|e| e.0);
+        // `limit` pages the tail only — the synthetic Reset plus every
+        // retained chunk are always emitted in full.
+        let chunk_block = 1 + geo.anchors();
+        if entries.len() > chunk_block + limit {
+            entries.truncate(chunk_block + limit);
         }
-        entries.sort_by_key(|e| e.0);
+        // Bootstrap always covers through last_seq — the cursor is complete.
+        next_seq = geo.last_seq().max(after);
     } else {
         for &(seq, id, op) in geo.journal().iter() {
             if seq <= after {
@@ -1072,17 +1279,15 @@ async fn chunks_delta(
             let entry = match op {
                 Op::Replace => match geo.chunks().get(&id) {
                     Some(mesh) => (seq, op, id, Some(mesh.clone())),
-                    // Evicted between the journal entry and now: degrade to a
-                    // tombstone so consumers drop the ghost anchor.
-                    None => (seq, Op::Remove, id, None),
+                    None => (seq, Op::Evict, id, None),
                 },
                 _ => (seq, op, id, None),
             };
             entries.push(entry);
         }
+        entries.truncate(limit);
+        next_seq = entries.last().map(|e| e.0).unwrap_or(after);
     }
-    entries.truncate(limit);
-    let next_seq = entries.last().map(|e| e.0).unwrap_or(after);
     let remaining = geo.journal().iter().filter(|e| e.0 > next_seq).count() as u64;
     let mut body = Vec::new();
     for (seq, op, id, mesh) in &entries {
@@ -1095,13 +1300,17 @@ async fn chunks_delta(
             transform: IDENTITY,
             mesh: mesh.clone(),
         };
-        body.extend_from_slice(&encode(&update, RecordCoding::Raw));
+        for rec in emit_delta_records(&update) {
+            body.extend_from_slice(&rec);
+        }
     }
     (
         [
             (header::CONTENT_TYPE, "application/octet-stream".to_string()),
             (header::CACHE_CONTROL, "no-store".to_string()),
             (header::HeaderName::from_static("x-geometry-next-seq"), next_seq.to_string()),
+            (header::HeaderName::from_static("x-geometry-session"), session.iter().map(|b| format!("{b:02x}")).collect::<String>()),
+            (header::HeaderName::from_static("x-geometry-epoch"), epoch.to_string()),
             (header::HeaderName::from_static("x-geometry-remaining"), remaining.to_string()),
             (header::HeaderName::from_static("x-geometry-truncated"), if truncated { "1".into() } else { "0".into() }),
         ],
