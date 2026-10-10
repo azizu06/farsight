@@ -11,7 +11,7 @@ const compiled = ts.transpileModule(source, {
 const { VRActionMenu, vrActionHit } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString("base64")}`);
 
 test("all four rows are reachable and separated by noninteractive gaps", () => {
-  for (const [y, expected] of [[.76, "explore"], [.59, "scan"], [.41, "drill"], [.24, "close"]]) {
+  for (const [y, expected] of [[.76, "help"], [.59, "scan"], [.41, "drill"], [.24, "close"]]) {
     assert.equal(vrActionHit({ x: .5, y }), expected);
     assert.equal(vrActionHit({ x: .02, y }), null);
     assert.equal(vrActionHit({ x: .98, y }), null);
@@ -56,11 +56,11 @@ test("hidden menu cannot be clicked, and labels require no hidden button mapping
   assert.equal(menu.visible, false);
   assert.equal(menu.hit({ x: .5, y: .76 }), null);
   assert.deepEqual(menu.panel.position.toArray(), [0, 0, -2.2]);
-  for (const text of ["Explore", "Scan", "Rescue drill", "Close", "Point + right grip to select", "Hold A closes"]) {
+  for (const text of ["Controls", "Scan", "Rescue drill", "Close", "Point + right grip to select", "Hold A closes"]) {
     assert.ok(labels.includes(text));
   }
   menu.visible = true;
-  assert.equal(menu.hit({ x: .5, y: .76 }), "explore");
+  assert.equal(menu.hit({ x: .5, y: .76 }), "help");
   menu.visible = false;
   assert.equal(menu.hit({ x: .5, y: .76 }), null);
 }));

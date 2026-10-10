@@ -284,6 +284,7 @@ renderer.setAnimationLoop((_time, frame) => {
   }
   root.visible = !rover?.vrCameraView;
   rover?.placeMapOverview(root, vrMapCenter, vrMapSpan);
+  rover?.applyFreeRoam(root); // AUTO: the right stick roams the map, never the rover
   mapAxes.visible = !renderer.xr.isPresenting;
   if (renderer.xr.isPresenting) {
     grid.scale.setScalar(Math.max(vrMapSpan, 4) / 2000);
