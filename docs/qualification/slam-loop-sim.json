@@ -1,0 +1,352 @@
+{
+ "source": "ros2/farsight_slam/test/run_docker.sh (test_loop_closure.py), ROS 2 Jazzy in Docker on the operator Mac (Apple silicon, arm64, 15 cores), 2026-10-10",
+ "conditions": "Simulated 8 x 6 m room, 2 laps of a 16.7 m loop at 0.35 m/s (relocalize: 1 lap), 62 x 48 degree LiDAR cone 160 x 12 rays at 10 Hz, 5 m range, 1 cm + 1 % range noise; three runs in parallel in one container; CPU percent is of one core",
+ "commit": "c9eb776",
+ "runs": {
+  "none": {
+   "label": "none",
+   "samples": 394,
+   "duration_s": 102.4,
+   "host_cpus": 15,
+   "odom_err_m": {
+    "mean": 1.9768803063796607e-17,
+    "p95": 1.1102230246251565e-16,
+    "max": 1.1102230246251565e-16,
+    "final": 0.0
+   },
+   "slam_err_m": {
+    "mean": 0.047885435033293185,
+    "p95": 0.08264199217915276,
+    "max": 0.10051531744845313,
+    "final": 0.03451575259678739
+   },
+   "odom_yaw_err_rad": {
+    "mean": 3.7740692374717495e-19,
+    "p95": 0.0,
+    "max": 1.1102230246251565e-16,
+    "final": 0.0
+   },
+   "slam_yaw_err_rad": {
+    "mean": 0.005060500742631627,
+    "p95": 0.010470000000001978,
+    "max": 0.010470000000002422,
+    "final": 0.0041259200178529465
+   },
+   "correction_final": {
+    "t": 102.35,
+    "x": -0.026647714107099887,
+    "y": -1.0132290773881587e-05,
+    "yaw": -0.00412592001785306
+   },
+   "correction_jumps": [],
+   "graph": {
+    "nodes": 80,
+    "edges": 118,
+    "revisit_edges": 30,
+    "revisit_gap": 30
+   },
+   "map": {
+    "width": 161,
+    "height": 122,
+    "resolution": 0.05,
+    "origin": [
+     -4.06,
+     -3.08
+    ],
+    "known_m2": 36.39,
+    "occupied_cells": 1041
+   },
+   "serialized": null,
+   "resources": {
+    "pointcloud_to_laserscan_node": {
+     "cpu_percent_mean": 1.4,
+     "cpu_percent_max": 3.0,
+     "rss_mb_max": 31.7,
+     "rss_mb_final": 31.7,
+     "samples": 101
+    },
+    "async_slam_toolbox_node": {
+     "cpu_percent_mean": 2.1,
+     "cpu_percent_max": 4.0,
+     "rss_mb_max": 53.3,
+     "rss_mb_final": 53.3,
+     "samples": 101
+    }
+   }
+  },
+  "arkit": {
+   "label": "arkit",
+   "samples": 393,
+   "duration_s": 102.4,
+   "host_cpus": 15,
+   "odom_err_m": {
+    "mean": 0.12997375339721634,
+    "p95": 0.335908006962516,
+    "max": 0.34274737341443046,
+    "final": 0.34274737341443046
+   },
+   "slam_err_m": {
+    "mean": 0.04679139974363559,
+    "p95": 0.08062153764698263,
+    "max": 0.0997730212421406,
+    "final": 0.056398846563874665
+   },
+   "odom_yaw_err_rad": {
+    "mean": 0.037580422151302174,
+    "p95": 0.08353758067889006,
+    "max": 0.09364340901266922,
+    "final": 0.07732882530731355
+   },
+   "slam_yaw_err_rad": {
+    "mean": 0.0105743130184539,
+    "p95": 0.02952351547016419,
+    "max": 0.03750689728870458,
+    "final": 0.00940944401663446
+   },
+   "correction_final": {
+    "t": 102.18,
+    "x": -0.08428315097796166,
+    "y": 0.11751075213155067,
+    "yaw": -0.08673826932394806
+   },
+   "correction_jumps": [
+    {
+     "t": 51.48,
+     "dp_m": 0.07,
+     "dyaw_rad": 0.004
+    }
+   ],
+   "graph": {
+    "nodes": 80,
+    "edges": 118,
+    "revisit_edges": 29,
+    "revisit_gap": 30
+   },
+   "map": {
+    "width": 162,
+    "height": 122,
+    "resolution": 0.05,
+    "origin": [
+     -4.06,
+     -3.06
+    ],
+    "known_m2": 36.55,
+    "occupied_cells": 1015
+   },
+   "serialized": null,
+   "resources": {
+    "pointcloud_to_laserscan_node": {
+     "cpu_percent_mean": 1.5,
+     "cpu_percent_max": 3.0,
+     "rss_mb_max": 31.6,
+     "rss_mb_final": 31.6,
+     "samples": 101
+    },
+    "async_slam_toolbox_node": {
+     "cpu_percent_mean": 2.4,
+     "cpu_percent_max": 5.0,
+     "rss_mb_max": 53.2,
+     "rss_mb_final": 53.2,
+     "samples": 101
+    }
+   }
+  },
+  "heavy": {
+   "label": "heavy",
+   "samples": 394,
+   "duration_s": 102.6,
+   "host_cpus": 15,
+   "odom_err_m": {
+    "mean": 0.498103790311747,
+    "p95": 1.3454655697753604,
+    "max": 1.3631714315150878,
+    "final": 1.3630676673389521
+   },
+   "slam_err_m": {
+    "mean": 0.07251448686157899,
+    "p95": 0.17139840244208232,
+    "max": 0.29084721602057734,
+    "final": 0.03145122379915073
+   },
+   "odom_yaw_err_rad": {
+    "mean": 0.18262659198498535,
+    "p95": 0.3880936506152689,
+    "max": 0.3983615011045248,
+    "final": 0.3880936506152689
+   },
+   "slam_yaw_err_rad": {
+    "mean": 0.021821459716550164,
+    "p95": 0.09387652345595332,
+    "max": 0.1134756046419554,
+    "final": 0.006766596960252835
+   },
+   "correction_final": {
+    "t": 102.35,
+    "x": -0.08704284392576175,
+    "y": 0.22372155047914835,
+    "yaw": -0.39486024757552174
+   },
+   "correction_jumps": [
+    {
+     "t": 50.85,
+     "dp_m": 0.252,
+     "dyaw_rad": 0.109
+    },
+    {
+     "t": 53.45,
+     "dp_m": 0.072,
+     "dyaw_rad": 0.023
+    },
+    {
+     "t": 55.01,
+     "dp_m": 0.062,
+     "dyaw_rad": 0.021
+    },
+    {
+     "t": 56.31,
+     "dp_m": 0.048,
+     "dyaw_rad": 0.024
+    },
+    {
+     "t": 67.5,
+     "dp_m": 0.073,
+     "dyaw_rad": 0.016
+    },
+    {
+     "t": 78.69,
+     "dp_m": 0.045,
+     "dyaw_rad": 0.021
+    },
+    {
+     "t": 89.87,
+     "dp_m": 0.062,
+     "dyaw_rad": 0.004
+    }
+   ],
+   "graph": {
+    "nodes": 137,
+    "edges": 201,
+    "revisit_edges": 57,
+    "revisit_gap": 30
+   },
+   "map": {
+    "width": 164,
+    "height": 124,
+    "resolution": 0.05,
+    "origin": [
+     -4.15,
+     -3.16
+    ],
+    "known_m2": 37.55,
+    "occupied_cells": 1205
+   },
+   "serialized": {
+    "filename": "/ws/src/farsight_slam/test/results/heavy_map",
+    "ok": true
+   },
+   "resources": {
+    "pointcloud_to_laserscan_node": {
+     "cpu_percent_mean": 1.5,
+     "cpu_percent_max": 3.0,
+     "rss_mb_max": 31.7,
+     "rss_mb_final": 31.7,
+     "samples": 101
+    },
+    "async_slam_toolbox_node": {
+     "cpu_percent_mean": 2.6,
+     "cpu_percent_max": 5.0,
+     "rss_mb_max": 54.0,
+     "rss_mb_final": 54.0,
+     "samples": 101
+    }
+   }
+  },
+  "relocalize": {
+   "label": "heavy",
+   "samples": 210,
+   "duration_s": 54.8,
+   "host_cpus": 15,
+   "odom_err_m": {
+    "mean": 0.20934752743594476,
+    "p95": 0.6133785364906381,
+    "max": 0.6133785364906381,
+    "final": 0.6133785364906381
+   },
+   "slam_err_m": {
+    "mean": 0.039020252370078175,
+    "p95": 0.08349032958206913,
+    "max": 0.09222248201444179,
+    "final": 0.06441289153839862
+   },
+   "odom_yaw_err_rad": {
+    "mean": 0.06464975168938089,
+    "p95": 0.1690257647729725,
+    "max": 0.1690257647729725,
+    "final": 0.1690257647729725
+   },
+   "slam_yaw_err_rad": {
+    "mean": 0.01046621473912639,
+    "p95": 0.03445087964108492,
+    "max": 0.04576743865677146,
+    "final": 0.004261039939709388
+   },
+   "correction_final": {
+    "t": 54.6,
+    "x": -2.9289184179454195,
+    "y": -0.5421133896201271,
+    "yaw": -1.7440831315075782
+   },
+   "correction_jumps": [
+    {
+     "t": 18.44,
+     "dp_m": 0.064,
+     "dyaw_rad": 0.01
+    },
+    {
+     "t": 20.78,
+     "dp_m": 0.118,
+     "dyaw_rad": 0.021
+    },
+    {
+     "t": 31.96,
+     "dp_m": 0.116,
+     "dyaw_rad": 0.025
+    }
+   ],
+   "graph": {
+    "nodes": 157,
+    "edges": 258,
+    "revisit_edges": 92,
+    "revisit_gap": 30
+   },
+   "map": {
+    "width": 164,
+    "height": 125,
+    "resolution": 0.05,
+    "origin": [
+     -4.14,
+     -3.17
+    ],
+    "known_m2": 37.68,
+    "occupied_cells": 1205
+   },
+   "serialized": null,
+   "resources": {
+    "pointcloud_to_laserscan_node": {
+     "cpu_percent_mean": 1.7,
+     "cpu_percent_max": 3.0,
+     "rss_mb_max": 31.7,
+     "rss_mb_final": 31.7,
+     "samples": 53
+    },
+    "localization_slam_toolbox_node": {
+     "cpu_percent_mean": 3.8,
+     "cpu_percent_max": 8.0,
+     "rss_mb_max": 56.1,
+     "rss_mb_final": 56.1,
+     "samples": 53
+    }
+   }
+  }
+ }
+}

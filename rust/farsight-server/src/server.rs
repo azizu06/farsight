@@ -93,6 +93,7 @@ pub fn build_state(
     replay: Option<PathBuf>,
     drive_profile: Option<crate::drive_profile::DriveProfile>,
     allow_calibration: bool,
+    proximity_stop: bool,
 ) -> Arc<AppState> {
     if replay.is_some()
         && (serial_port.is_some() || camera_device.is_some() || demo || simulate_rover || record)
@@ -139,6 +140,7 @@ pub fn build_state(
             None,
             drive_profile,
             allow_calibration,
+            proximity_stop,
         )
         .expect("PWM bounds"),
     );
@@ -157,6 +159,14 @@ pub fn build_state(
         let m2 = mission.clone();
         *control.on_output.lock().unwrap() =
             Some(Box::new(move |v, w, blocked| m2.drill_motion(v, w, blocked)));
+    }
+    // #79/#81: /mission/drill carries the face-detector status, and the face
+    // pass only costs CPU while a drill is running.
+    {
+        let p = perception.clone();
+        mission.set_face_status(Box::new(move || p.face_status()));
+        let m3 = mission.clone();
+        perception.set_face_wanted(Box::new(move || m3.drill_score.running()));
     }
     let control_on_status: Option<Arc<dyn Fn(&Value) + Send + Sync>> = if record {
         let m3 = mission.clone();
@@ -241,6 +251,24 @@ pub fn start_services(state: &Arc<AppState>) {
     state.video.clone().start();
     state.perception.clone().start();
     state.triage.clone().start();
+    {
+        // sample_mission: read-only control telemetry at <=10 Hz; never
+        // issues permits or commands. Replays sample the ReplayControl
+        // read-only packet, same as Python.
+        let mission = state.mission.clone();
+        let control = state.control.clone();
+        let replay_control = state.replay_control.clone();
+        let camera = state.camera.clone();
+        std::thread::spawn(move || loop {
+            let status = replay_control
+                .as_ref()
+                .map(|rc| rc.status())
+                .unwrap_or_else(|| control.status(false));
+            let cam = camera.status()["camera"].as_bool();
+            mission.observe_control(&status, cam);
+            std::thread::sleep(Duration::from_millis(100));
+        });
+    }
     if let Some(session) = &state.replay {
         let session = session.clone();
         std::thread::spawn(move || loop {
@@ -645,6 +673,31 @@ async fn mission_triage(State(s): State<Arc<AppState>>, Path(key): Path<String>)
         }
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
+}
+
+/// The nav object when no planner is attached (docs/interfaces.md "Optional
+/// navigation status"): `state: "unavailable"`, everything else empty.
+fn nav_unavailable() -> Value {
+    json!({"state": "unavailable", "mode": Value::Null, "goal": Value::Null,
+           "path": [], "frontiers": [], "backend": Value::Null,
+           "message": "No navigation planner (Nav2 bridge not running)"})
+}
+
+/// POST /nav/goal — 409 until a Nav2/fallback planner exists (the contract
+/// refuses rather than silently ignoring a go-to request).
+async fn nav_goal() -> Response {
+    (
+        StatusCode::CONFLICT,
+        Json(json!({"nav": nav_unavailable(), "message": "No navigation planner (Nav2 bridge not running)"})),
+    )
+        .into_response()
+}
+
+/// POST /nav/cancel — nothing armed; returns the nav object.
+async fn nav_cancel() -> Response {
+    Json(json!({"state": "idle", "mode": Value::Null, "goal": Value::Null,
+                "path": [], "frontiers": [], "backend": Value::Null, "message": ""}))
+        .into_response()
 }
 
 async fn speak_options(State(s): State<Arc<AppState>>) -> Json<Value> {
@@ -1302,7 +1355,9 @@ pub fn router(state: Arc<AppState>, dist: Option<PathBuf>) -> Router {
         .route("/ask", post(ask))
         .route("/speak", get(speak_options))
         .route("/speak", post(speak))
-        .route("/tts/{name}", get(tts));
+        .route("/tts/{name}", get(tts))
+        .route("/nav/goal", post(nav_goal))
+        .route("/nav/cancel", post(nav_cancel));
     let app = if let Some(dist) = dist {
         if dist.is_dir() {
             app.fallback_service(ServeDir::new(dist).append_index_html_on_directories(true))

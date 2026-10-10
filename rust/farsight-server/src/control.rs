@@ -73,6 +73,9 @@ pub struct ControlState {
     pub drive_profile: Option<crate::drive_profile::DriveProfile>,
     /// Opt-in raw-PWM `mode: "calibrate"` for tools.calibrate_drive.
     pub allow_calibration: bool,
+    /// Ultrasonic stop (range < 25 cm or stale) blocks forward; `off` is an
+    /// explicit opt-in for navigation runs that steer around obstacles.
+    pub proximity_stop: bool,
     pub camera_ready: Option<CameraReady>,
     pub detections: Option<Detections>,
     pub clock: Clock,
@@ -102,6 +105,7 @@ impl ControlState {
         clock: Option<Clock>,
         drive_profile: Option<crate::drive_profile::DriveProfile>,
         allow_calibration: bool,
+        proximity_stop: bool,
     ) -> Result<Self, String> {
         if !(0 <= min_pwm && min_pwm < max_pwm && max_pwm <= 255) {
             return Err("PWM bounds must satisfy 0 <= min_pwm < max_pwm <= 255".into());
@@ -112,6 +116,7 @@ impl ControlState {
             min_pwm,
             drive_profile,
             allow_calibration,
+            proximity_stop,
             camera_ready,
             detections: detections.clone(),
             clock: clock.unwrap_or_else(|| Arc::new(now_monotonic)),
@@ -267,11 +272,17 @@ impl ControlState {
         s.range_at = self.now();
     }
 
+    /// The ultrasonic proximity rule; never true when the option is off.
+    fn range_unsafe(&self, s: &ControlInner) -> bool {
+        self.proximity_stop
+            && (s.range_cm.is_none()
+                || self.now() - s.range_at >= RANGE_TTL
+                || s.range_cm.unwrap() < 25.0)
+    }
+
     fn forward_blocked(&self, s: &ControlInner) -> bool {
-        s.range_cm.is_none()
-            || self.now() - s.range_at >= RANGE_TTL
-            || s.range_cm.unwrap() < 25.0
-            || s.pan.abs() > 10
+        // The pan rule protects the ultrasonic/camera mount and stays on.
+        self.range_unsafe(s) || s.pan.abs() > 10
     }
 
     fn camera_is_ready(&self) -> bool {
@@ -568,11 +579,7 @@ impl ControlState {
         if s.scan_token.is_some() {
             v = 0.0;
             w = s.scan_w;
-            if w != 0.0
-                && (s.range_cm.is_none()
-                    || self.now() - s.range_at >= RANGE_TTL
-                    || s.range_cm.unwrap() < 25.0)
-            {
+            if w != 0.0 && self.range_unsafe(&s) {
                 Self::stop_locked(s, "scan_range_stop", true);
                 v = 0.0;
                 w = 0.0;

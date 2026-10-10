@@ -1,0 +1,21 @@
+# Flattens the iPhone LiDAR PointCloud2 into a /scan for SLAM Toolbox.
+# Heights are relative to base_link (z up, on the floor plane under the rover).
+pointcloud_to_laserscan:
+  ros__parameters:
+    target_frame: base_link
+    transform_tolerance: 0.05
+    min_height: 0.06          # above floor noise and thresholds; drops the floor itself
+    max_height: 1.20          # above that is tabletops and the ceiling, not navigation walls
+    # 62 degree cone is +-0.54 rad; small margin. pointcloud_to_laserscan sizes the
+    # scan with ceil(span / increment) but Karto expects round(span / increment) + 1,
+    # so span / increment must have a fractional part below 0.5 or SLAM Toolbox
+    # drops every scan ("LaserRangeScan contains 138 range readings, expected 139").
+    # Here span / increment = 1.1941 / 0.0087 = 137.25.
+    angle_min: -0.60
+    angle_max: 0.5941
+    angle_increment: 0.0087   # 0.5 degree
+    scan_time: 0.1
+    range_min: 0.15
+    range_max: 5.0
+    use_inf: true
+    inf_epsilon: 1.0

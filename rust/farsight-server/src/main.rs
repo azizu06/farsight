@@ -40,6 +40,9 @@ struct Args {
     /// Accept raw-PWM mode "calibrate" from a held-deadman controller; for tools.calibrate_drive on a cleared floor only
     #[arg(long)]
     allow_calibration: bool,
+    /// Ultrasonic stop: range < 25 cm or stale range blocks forward (default on); 'off' is an explicit opt-in for navigation runs that steer around obstacles
+    #[arg(long, default_value = "on", value_parser = ["on", "off"])]
+    proximity_stop: String,
     /// Bundled CPU person detector
     #[arg(long, default_value = "hog", value_parser = ["hog", "pose", "none"])]
     detector: String,
@@ -194,6 +197,7 @@ async fn main() {
         args.replay,
         drive_profile,
         args.allow_calibration,
+        args.proximity_stop == "on",
     );
     server::start_services(&state);
     let dist = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../quest/dist");
