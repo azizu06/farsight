@@ -23,7 +23,12 @@ class OnnxPoseDetector:
             self.name = "pose-onnx-cv2dnn"
         else:
             self._net = None
-            self._session = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+            # Leave CPU headroom for capture, H.264 and the control event loop.
+            # Paired CPU budget measurements: docs/qualification-results.md.
+            options = ort.SessionOptions()
+            options.intra_op_num_threads = 2
+            self._session = ort.InferenceSession(model_path, sess_options=options,
+                                                providers=["CPUExecutionProvider"])
             self._input = self._session.get_inputs()[0].name
 
     def detect(self, frame: np.ndarray) -> list[Detection]:

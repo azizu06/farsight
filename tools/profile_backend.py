@@ -190,7 +190,8 @@ async def run(args):
         opencv_version=cv2.__version__, onnxruntime_version=ort.__version__, hardware_verified=False,
         settings=dict(detector=args.detector, model_sha256=hashlib.sha256(Path(args.model).read_bytes()).hexdigest()
                       if args.model else None,
-                      scene_sha256=hashlib.sha256(args.scene.read_bytes()).hexdigest() if args.scene else None,
+                      scene_sha256=hashlib.sha256(args.scene.read_bytes()).hexdigest()
+                          if args.scene and args.source == "rgb15" else None,
                       cv_threads=args.cv_threads, ort_threads=args.ort_threads, source=args.source,
                       delay_each_direction_ms=50, aggregate_mbps=2, encoder_fps=10,
                       encoder_bitrate=500000, request_window=2, permit_ms=250, command_hz=20, view_guard_ms=500),
