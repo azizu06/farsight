@@ -19,7 +19,7 @@ VALUE_FLAGS = (
     ("FARSIGHT_DETECTOR", "--detector"), ("FARSIGHT_DETECTOR_MODEL", "--detector-model"),
     ("FARSIGHT_MISSION_DIR", "--mission-dir"), ("FARSIGHT_SSL_CERTFILE", "--ssl-certfile"),
     ("FARSIGHT_SSL_KEYFILE", "--ssl-keyfile"), ("FARSIGHT_MAX_PWM", "--max-pwm"),
-    ("FARSIGHT_MIN_PWM", "--min-pwm"),
+    ("FARSIGHT_MIN_PWM", "--min-pwm"), ("FARSIGHT_AUTONOMY_MAX_PWM", "--autonomy-max-pwm"),
     ("FARSIGHT_ASSISTANT_URL", "--assistant-url"), ("FARSIGHT_WHISPER_URL", "--whisper-url"),
     ("FARSIGHT_WHISPER_BIN", "--whisper-bin"), ("FARSIGHT_WHISPER_MODEL", "--whisper-model"),
     ("FARSIGHT_PIPER_BIN", "--piper-bin"), ("FARSIGHT_PIPER_MODEL", "--piper-model"),
@@ -36,7 +36,7 @@ VALUE_FLAGS = (
 )
 BOOL_FLAGS = (("FARSIGHT_H264", "--h264"), ("FARSIGHT_SIMULATE_ROVER", "--simulate-rover"),
               ("FARSIGHT_SCAN_PAN", "--scan-pan"), ("FARSIGHT_RECORD", "--record"), ("FARSIGHT_NAV2", "--nav2"))
-INT_VARS = ("FARSIGHT_PORT", "FARSIGHT_MAX_PWM", "FARSIGHT_MIN_PWM", "FARSIGHT_WAIT_SECONDS",
+INT_VARS = ("FARSIGHT_PORT", "FARSIGHT_MAX_PWM", "FARSIGHT_MIN_PWM", "FARSIGHT_AUTONOMY_MAX_PWM", "FARSIGHT_WAIT_SECONDS",
             "FARSIGHT_VIDEO_FPS", "FARSIGHT_VIDEO_BITRATE")
 FLOAT_VARS = ("FARSIGHT_TRIAGE_INTERVAL", "FARSIGHT_SCAN_FOV", "FARSIGHT_SCAN_TURN_DPS",
               "FARSIGHT_BULK_LIMIT_MBPS", "FARSIGHT_NAV_SPEED_MPS", "FARSIGHT_NAV_TURN_RADPS",

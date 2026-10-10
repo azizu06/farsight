@@ -21,12 +21,19 @@ class ControlState:
 
     def __init__(self, simulated=False, max_pwm=100, clock=time.monotonic, camera_ready=None, min_pwm=0,
                  detections=None, proximity_stop=True, navigator=None, drive_profile=None,
-                 allow_calibration=False, pan_mount="servo"):
+                 allow_calibration=False, pan_mount="servo", autonomy_max_pwm=None):
         if (type(min_pwm) is not int or type(max_pwm) is not int
                 or not 0 <= min_pwm < max_pwm <= 255):
             raise ValueError("PWM bounds must satisfy 0 <= min_pwm < max_pwm <= 255")
+        autonomy_max_pwm = max_pwm if autonomy_max_pwm is None else autonomy_max_pwm
+        if type(autonomy_max_pwm) is not int or not min_pwm < autonomy_max_pwm <= max_pwm:
+            raise ValueError("autonomy_max_pwm must satisfy min_pwm < autonomy_max_pwm <= max_pwm")
         self.clock, self.simulated, self.max_pwm = clock, simulated, max_pwm
         self.min_pwm = min_pwm
+        # Ceiling for motion the operator does not steer directly (explore, seek,
+        # goto, Nav2, scan sweeps), so a fast teleop max_pwm does not also speed
+        # up autonomy. Defaults to max_pwm (unchanged behaviour).
+        self.autonomy_max_pwm = autonomy_max_pwm
         self.camera_ready = camera_ready
         # Optional, bounded in-memory snapshot reader; never inference or I/O.
         self.detections = detections
@@ -324,13 +331,13 @@ class ControlState:
         self.reason = "active"
         return True
 
-    def _drive_output(self, kind=None, values=None):
+    def _drive_output(self, kind=None, values=None, max_pwm=None):
         if kind is None:
             kind, values = self.drive
         left, right = (0, 0)
         if self.connected:
             left, right = (values if kind == "calibrate"
-                           else self.profile.wheel_pwm(*values, max_pwm=self.max_pwm))
+                           else self.profile.wheel_pwm(*values, max_pwm=max_pwm or self.max_pwm))
         # Translation intent decides the range stop: a spin with slightly
         # unequal trimmed wheels must not be blocked by its own bias.
         translating = values[0] > 0 if kind == "velocity" else left + right > 0
@@ -386,10 +393,11 @@ class ControlState:
                 # Nav2 drives this mode; a missing or stale velocity command stops.
                 if self.profile is not None:  # calibrated: Nav2 m/s, rad/s straight to wheel PWM
                     command = self.navigator.command(si=True) or (0.0, 0.0)
-                    top_v = self.profile.max_linear_mps(self.max_pwm)
-                    top_w = self.profile.max_angular_radps(self.max_pwm)
+                    top_v = self.profile.max_linear_mps(self.autonomy_max_pwm)
+                    top_w = self.profile.max_angular_radps(self.autonomy_max_pwm)
                     return self._drive_output("velocity", (max(-top_v, min(top_v, command[0])),
-                                                           max(-top_w, min(top_w, command[1]))))
+                                                           max(-top_w, min(top_w, command[1]))),
+                                              max_pwm=self.autonomy_max_pwm)
                 command = self.navigator.command()
                 v, w = command if command is not None else (0.0, 0.0)
             elif engaged:
@@ -412,10 +420,12 @@ class ControlState:
                     self.on_output(v / scale, w / scale, blocked)
                 except Exception:
                     pass  # telemetry must never affect motor output
+            top = self.autonomy_max_pwm if engaged or self.scan_token is not None else self.max_pwm
+
             def pwm(value):
                 if value == 0:
                     return 0
-                magnitude = round(self.min_pwm + (self.max_pwm - self.min_pwm) * abs(value / scale))
+                magnitude = round(self.min_pwm + (top - self.min_pwm) * abs(value / scale))
                 return magnitude if value > 0 else -magnitude
             return pwm(left), pwm(right), self.pan + 90
 
