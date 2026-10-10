@@ -31,6 +31,7 @@ from .protocol import (
     segment_sidecar,
 )
 from .stats import take
+from .stereo import SBS, capture_format
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
@@ -60,10 +61,11 @@ _EVALUATE_TIMEOUT_S = 10
 
 
 class RenderEncoder:
-    def __init__(self, page, width, height, fps, bitrate, hardware):
+    def __init__(self, page, width, height, fps, bitrate, hardware, layout=None):
         self.page = page
         self.width, self.height, self.fps, self.bitrate = width, height, fps, bitrate
         self.hardware = hardware
+        self.layout = layout
         self.process = None
         self.reader = Mp4Reader()
         self.init = None
@@ -90,7 +92,21 @@ class RenderEncoder:
             self.error = "ffmpeg unavailable"
             return
         args, self.encoder = screencast_to_ffmpeg(
-            self.width, self.height, self.fps, self.bitrate, self.hardware)
+            self.width, self.height, self.fps, self.bitrate, self.hardware,
+            **({"fragment_ms": 0} if self.layout else {}))
+        if self.encoder == "h264_videotoolbox":
+            # The input JPEG decoder flag does not enable VT's one-in/one-out
+            # rate-control mode. Paced, picture-verified A/B measured ~200 ms
+            # less steady encoder delay with this output-scoped flag.
+            at = args.index("-c:v")
+            args[at:at] = ["-flags", "+low_delay"]
+        if self.layout:
+            # Adaptive render pixel ratio must not change the declared coded
+            # eye sizes. FFmpeg scales both halves together to the fixed pair.
+            at = args.index("-c:v")
+            args[at:at] = ["-s:v", f"{self.width}x{self.height}"]
+            at = max(index for index, value in enumerate(args) if value == "-movflags")
+            args[at + 1] += "+frag_every_frame"
         self.process = await asyncio.create_subprocess_exec(
             *args, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE)
@@ -181,6 +197,7 @@ class RenderEncoder:
             "source": meta.get("source") or "WAITING",
             "pose": meta.get("poseEcho", meta.get("pose")), "map": meta.get("mapStatus", meta.get("map")),
             "fov_y_deg": meta.get("fovY", 50), "aspect": meta.get("aspect", self.width / self.height),
+            "format": capture_format(meta, self.layout, self.width, self.height),
         }
         self.samples.append(sample)
         del self.samples[:-600]
@@ -226,6 +243,9 @@ class RenderEncoder:
                 if not count or len(represented) != count:
                     raise ValueError("fragment capture provenance unavailable")
                 newest = represented[0]  # oldest represented image bounds the whole fragment
+                if ("format" in newest and newest["format"] is None) or (self.layout and count != 1):
+                    # Never publish a mono/partial pair under a stereo declaration.
+                    continue
                 sidecar = segment_sidecar(
                     newest["frame_id"], newest.get("pose"), newest["capture_mono_ms"],
                     newest["capture_wall_ms"], start, end, request_id=None,
@@ -235,6 +255,7 @@ class RenderEncoder:
                     capture_ms=newest.get("capture_ms") or 0,
                 )
                 sidecar["encoder"] = self.encoder
+                sidecar.update(newest.get("format") or {"stereo": False})
                 sidecar["map"] = newest.get("map")
                 sidecar["fov_y_deg"] = newest.get("fov_y_deg")
                 sidecar["aspect"] = newest.get("aspect")
@@ -307,18 +328,23 @@ class App:
             return
         self.encoder = RenderEncoder(
             self.page, self.args.width, self.args.height, self.args.fps,
-            self.args.bitrate, None if self.args.hardware == "auto" else self.args.hardware == "videotoolbox")
+            self.args.bitrate, None if self.args.hardware == "auto" else self.args.hardware == "videotoolbox",
+            layout=self.args.stereo)
         await self.encoder.start()
 
     async def health(self, _request):
         encoder = self.encoder
+        format_ready = bool(encoder and capture_format(encoder.last_snapshot,
+            encoder.layout, encoder.width, encoder.height))
         return web.json_response({
             "service": "mac-render",
             "visual_only": True,
-            "stereo": False,
+            "stereo": bool(encoder and encoder.layout and capture_format(encoder.last_snapshot,
+                encoder.layout, encoder.width, encoder.height)),
+            "configured_layout": self.args.stereo,
             "label": "Mac desk, no headset",
             "encoder": None if encoder is None else encoder.encoder,
-            "ready": bool(encoder and encoder.init and encoder.process and encoder.process.returncode is None),
+            "ready": bool(format_ready and encoder.init and encoder.process and encoder.process.returncode is None),
             "error": None if encoder is None else encoder.error,
             "videotoolbox": await self.videotoolbox(),
             "width": self.args.width,
@@ -372,6 +398,8 @@ class App:
                 setattr(self, attribute, None)
 
     async def macview(self, request):
+        if request.query.get("layout") != self.args.stereo:
+            raise web.HTTPBadRequest(text="Requested layout does not match the configured renderer mode")
         # Multiple viewers share the one encoder; each gets its own freshness
         # queue so a slow client's socket can never stall the stream for others.
         socket = web.WebSocketResponse(max_msg_size=16384, heartbeat=30)
@@ -381,13 +409,18 @@ class App:
             await socket.send_json({"type": "macview_error", "reason": "encoder not ready"})
             await socket.close()
             return socket
+        format_metadata = capture_format(encoder.last_snapshot, encoder.layout, encoder.width, encoder.height)
+        if format_metadata is None:
+            await socket.send_json({"type": "macview_error", "reason": "waiting for a valid rendered stereo pair"})
+            await socket.close()
+            return socket
         queue = encoder.subscribe()
         try:
             await socket.send_json({
                 "type": "video_init", "macview": "macview_init", "version": 1,
                 "mime": encoder.mime, "source": "MAC RENDER",
                 "width": self.args.width, "height": self.args.height,
-                "fps": self.args.fps, "stereo": False,
+                "fps": self.args.fps, **format_metadata,
             })
             await socket.send_bytes(encoder.init)
             async for message in socket:
@@ -643,7 +676,7 @@ def render_page_query(args):
     # The encoded view is placed using its echoed pose on Quest. Cosmetic
     # camera easing would make the pixels disagree with that exact pose.
     return urlencode(dict(upstream=f"http://127.0.0.1:{args.port}", width=args.width,
-                          height=args.height, camera="snap"))
+                          height=args.height, camera="snap", **({"layout": args.stereo} if args.stereo else {})))
 
 
 def parse_args(argv=None):
@@ -652,8 +685,9 @@ def parse_args(argv=None):
     parser.add_argument("--sim-world", action="store_true", help="Launch the local simulated map on --sim-port")
     parser.add_argument("--sim-port", type=int, default=8443)
     parser.add_argument("--port", type=int, default=8090)
-    parser.add_argument("--width", type=int, default=1280)
-    parser.add_argument("--height", type=int, default=720)
+    parser.add_argument("--width", type=int)
+    parser.add_argument("--height", type=int)
+    parser.add_argument("--stereo", choices=(SBS,), help="Opt-in packed eye pairs; requires a stereo-capable renderer")
     parser.add_argument("--fps", type=int, default=30)
     parser.add_argument("--bitrate", type=int, default=4_000_000)
     parser.add_argument("--hardware", choices=("auto", "videotoolbox", "libx264"), default="auto")
@@ -661,6 +695,10 @@ def parse_args(argv=None):
     parser.add_argument("--headed", action="store_true")
     parser.add_argument("--browser", help="Chromium binary, if Playwright has not downloaded its own")
     args = parser.parse_args(argv)
+    args.width = args.width if args.width is not None else 1920 if args.stereo else 1280
+    args.height = args.height if args.height is not None else 1080 if args.stereo else 720
+    if args.stereo and args.width % 4:
+        parser.error("stereo width must be divisible by 4 for two even-width eyes")
     if not 1 <= args.port <= 65535 or not 1 <= args.sim_port <= 65535:
         parser.error("ports must be 1..65535")
     if args.upstream:
@@ -691,7 +729,7 @@ def main(argv=None):
                 web_app["mac"].browser = browser
                 web_app["mac"].page = page
                 await web_app["mac"].start_encoder()
-            print(f"Mac view on ws://127.0.0.1:{args.port}/ws/macview (visual only, not stereo)", flush=True)
+            print(f"Mac view on ws://127.0.0.1:{args.port}/ws/macview (visual only; requested {args.stereo or 'flat'} mode)", flush=True)
             stopped = asyncio.Event()
             for sig in (signal.SIGINT, signal.SIGTERM):
                 loop.add_signal_handler(sig, stopped.set)

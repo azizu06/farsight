@@ -9,6 +9,8 @@ pub mod camera;
 pub mod capture_permits;
 pub mod control;
 pub mod demo;
+pub mod dense;
+pub mod dense_worker;
 pub mod drill;
 pub mod depth;
 pub mod drive_profile;

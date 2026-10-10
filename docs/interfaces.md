@@ -971,6 +971,23 @@ its layout is invalid or its echo lacks this page's `session_id`, names an unkno
 `pose_id`, or has no valid left and right eye pose and projection. Any echo naming
 another `session_id` is rejected, flat or stereo.
 
+The Mac server's packed mode is explicit: `--stereo sbs-left-right`, default
+coded size 1920×1080 (960×1080 per eye); `--width 1280 --height 720` selects the
+smaller pair. Without that mode the server remains mono. A packed producer
+requires the matching `layout=sbs-left-right` video-socket query; legacy viewers
+cannot consume a packed stream as mono. The render page receives the same
+`layout` query and `camera=snap` so captured transforms match their pose echo.
+
+For each packed capture, `window.__mac` must declare `stereo: true`,
+`layout: "sbs-left-right"`, `eye_width`/`eye_height` matching the coded halves,
+and `poseEcho` with the pair's `session_id`, `frame_id`/`pose_id` and both labeled
+eye poses/projections. The server validates that pair, carries its identity in
+`video_segment.pose`, fixes output dimensions, and publishes only single-frame
+fragments. Missing eyes, singular projections, format mismatch or partial pairs
+are unavailable; no mono picture is advertised as stereo. Valid metadata and
+encoder readiness alone do not prove two rendered eye views: raster parallax,
+decoded eye assignment and actual headset acceptance remain separate gates.
+
 The viewer finds a frame's render pose by the echoed `pose_id`, or failing
 that by an exact `sent_mono_ms`. It sizes the picture from the echoed
 `video_segment.fov_y_deg`, which defaults to 50.
