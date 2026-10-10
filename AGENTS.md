@@ -47,7 +47,7 @@ must follow the final implementation, not an earlier plan.
 | Operator and Quest USB | `tools/demo.py`, `tools/operator_relay.py`, `docs/transport-setup.md` |
 | Quest | `quest/src/main.ts`, `quest/src/rover.ts`, `quest/README.md`; headset bring-up and frame budget in `docs/quest-first-run.md` |
 | iPhone capture | `ios/README.md`; RGB on ordinary phones, measured RGB-D only with scene-depth support |
-| Motor firmware and control | `rover/README.md`, `jetson/control/README.md` |
+| Motor firmware and control | `rover/README.md`, `jetson/control/README.md`; drive calibration (PWM to m/s, rad/s): `docs/drive-calibration.md` |
 | Inference and models | `docs/inference-setup.md`, `models/README.md`; models are ignored artifacts copied separately |
 | Mapping and scan | `docs/mapping.md`, `docs/scan.md`; distinguish measured and estimated geometry |
 | Rust services | `rust/README.md`; verify feature and wire parity before changing the demo runtime |
