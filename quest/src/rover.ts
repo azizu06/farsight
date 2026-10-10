@@ -119,6 +119,8 @@ export class RoverExperience {
   private cameraMaterial: THREE.MeshBasicMaterial;
   private cockpit = new THREE.Group();
   private cockpitUp = new THREE.Vector3(0, 1, 0);
+  private mapTilt = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI / 6);
+  private mapOffset = new THREE.Vector3();
   private actionMenu = new VRActionMenu();
   private pointer = new THREE.Mesh(new THREE.RingGeometry(0.008, 0.016, 20),
     new THREE.MeshBasicMaterial({ color: 0x7fe8ff, depthTest: false, depthWrite: false }));
@@ -590,8 +592,9 @@ export class RoverExperience {
     if (this.input.v || this.input.w) this.scanArmed = false;
     this.cockpit.visible = xr;
     this.cameraScreen.visible = this.xrLive && !this.actionMenu.visible;
-    this.hudPanel.visible = this.xrLive && !this.actionMenu.visible;
-    this.stopPanel.visible = !!this.stopKey && this.xrLive && !this.actionMenu.visible;
+    this.hudPanel.visible = !this.actionMenu.visible;
+    this.hudPanel.position.y = this.xrLive ? -1.23 : -1.60;
+    this.stopPanel.visible = false; // Stop cause/recovery share the HUD instead of overlapping it.
     if (this.h264Enabled) {
       this.h264.update();
     }
@@ -631,17 +634,17 @@ export class RoverExperience {
   private paint(now: number) {
     let painted = (!this.renderer.xr.isPresenting || (this.xrLive && !this.actionMenu.visible)) &&
       (this.dirty || now - this.lastCanvasDraw > 100) && this.drawCamera(now) ? 1 : 0;
-    // An overdue HUD draws anyway, so a moving digital-pan crop cannot starve it.
+    // An overdue HUD draws even when fresh camera frames are arriving.
     if (now - this.lastHudAt > (painted ? 200 : 100)) { this.drawHUD(now); this.lastHudAt = now; painted++; }
     if (this.bannerPending && (!painted || now - this.bannerPending.at > 100)) this.drawBanner();
   }
-  /** Controller ray (or head gaze) onto the camera panel, in canvas-normalized coordinates. */
+  /** A tracked controller ray onto the camera panel, in canvas-normalized coordinates. */
   private panelPoint(frame: XRFrame | undefined, reference: XRReferenceSpace | null, right: XRInputSource | undefined) {
     if (!this.aimRay(frame, reference, right)) return null;
     this.cockpit.updateMatrixWorld(true);
     return rayPanelPoint(this.raycaster.intersectObject(this.cameraScreen, false)[0]?.uv ?? null);
   }
-  /** Controller ray (or head gaze) onto the map floor, in map {x, z}. */
+  /** A tracked controller ray onto the map floor, in map {x, z}. */
   private aimFloor(frame: XRFrame | undefined, reference: XRReferenceSpace | null, right: XRInputSource | undefined) {
     if (!this.aimRay(frame, reference, right)) return null;
     return this.mapFloorPoint();
@@ -708,10 +711,11 @@ export class RoverExperience {
     if (!this.renderer.xr.isPresenting) {
       group.position.set(0, 0, 0); group.quaternion.identity(); group.scale.setScalar(1); return;
     }
-    const scale = Math.min(.35, 2.6 / Math.max(span, 2));
-    group.scale.setScalar(scale); group.quaternion.copy(this.cockpit.quaternion);
-    group.position.set(-center.x * scale, -.65, -2.65 - center.z * scale)
-      .applyQuaternion(this.cockpit.quaternion).add(this.cockpit.position);
+    const scale = Math.min(.25, 1.8 / Math.max(span, 2));
+    group.scale.setScalar(scale); group.quaternion.copy(this.cockpit.quaternion).multiply(this.mapTilt);
+    this.mapOffset.set(0, -.75, -2.9).applyQuaternion(this.cockpit.quaternion).add(this.cockpit.position);
+    group.position.set(-center.x * scale, 0, -center.z * scale)
+      .applyQuaternion(group.quaternion).add(this.mapOffset);
   }
   private toggleExplore() {
     if (this.scanning || this.scanPending) this.stop("Scan cancelled: Explore selected");
@@ -969,29 +973,32 @@ export class RoverExperience {
     exploreButton?.setAttribute("aria-pressed", String(this.autonomy.mode === "explore"));
     this.holdButton.classList.toggle("engaged", moving);
     this.drawSource(source, now);
-    this.drawStop(explainStop({ unsafe: ready, reason: this.gate.reason, latched: this.gate.needsRelease, cause: this.gate.cause, status: this.status,
+    const stop = explainStop({ unsafe: ready, reason: this.gate.reason, latched: this.gate.needsRelease, cause: this.gate.cause, status: this.status,
       xr: this.renderer.xr.isPresenting, held: this.input.held, autonomyArmed: this.autonomy.mode !== "teleop",
-      detectorStale: !this.detections || now - this.detectionsAt > 500 }));
+      detectorStale: !this.detections || now - this.detectionsAt > 500 });
+    this.drawStop(stop);
     this.drawVoice();
     const drawn = this.drillHud.draw(now);
     this.drillPanel.visible = drawn; this.drillHud.canvas.hidden = !drawn;
     if (drawn) this.drillTexture.needsUpdate = true;
     // Identical HUD text needs no repaint or texture upload.
-    const hudKey = [simulation, ready, headline, age, range, panMode, link.text, link.color, ack, detection, this.status?.estop, drill, autonomy, navText, this.scanMessage, this.h264Enabled].join("|");
+    const mapView = this.renderer.xr.isPresenting && !this.xrLive;
+    const hudKey = [mapView, simulation, ready, headline, age, range, panMode, link.text, link.color, ack, detection, this.status?.estop, drill, autonomy, navText, this.scanMessage, this.h264Enabled, stop?.cause, stop?.recovery].join("|");
     if (hudKey === this.hudKey) return;
     this.hudKey = hudKey;
     const c = this.hudContext;
     c.clearRect(0, 0, 1024, 220); c.fillStyle = "#111b25ee"; c.fillRect(0, 0, 1024, 220);
     c.fillStyle = simulation ? "#ffc779" : ready ? "#ffb3a8" : "#a6edc4";
-    c.font = "bold 32px system-ui"; c.fillText(headline.slice(0, 58), 28, 46);
+    c.font = "bold 32px system-ui"; c.fillText((mapView ? "3D MAP · driving paused" : stop?.cause ?? headline).slice(0, 58), 28, 46);
     c.font = "24px system-ui"; c.fillStyle = "#dce5ee";
     c.font = "32px system-ui"; c.fillStyle = "#f3f9fc";
-    c.fillText("Hold RIGHT TRIGGER + LEFT STICK to drive", 28, 94);
+    const instruction = mapView ? "Point at floor + RIGHT GRIP to select a goal" : stop?.recovery ?? "Hold RIGHT TRIGGER + LEFT STICK to drive";
+    c.font = `${stop ? 27 : 32}px system-ui`; c.fillText(instruction.slice(0, 74), 28, 94);
     c.font = "30px system-ui"; c.fillStyle = "#ffb3a8";
     c.fillText("B  STOP", 28, 143);
     c.fillStyle = "#bde2f6"; c.fillText("A  Camera / Map    X  Recenter    Y  Actions", 210, 143);
     c.font = "25px system-ui"; c.fillStyle = link.color;
-    c.fillText(`${link.text} · video ${age}${autonomy ? " · " + autonomy : ""}`, 28, 191);
+    c.fillText(mapView ? "A returns to camera · release, then hold trigger" : `${link.text} · video ${age}${autonomy ? " · " + autonomy : ""}`, 28, 191);
     this.hudTexture.needsUpdate = true;
   }
 
@@ -1023,7 +1030,7 @@ export class RoverExperience {
     if (key === this.stopKey) return;
     this.stopKey = key;
     const line = this.sourceBanner.querySelector<HTMLElement>(".stop-reason")!;
-    line.hidden = !stop; this.stopPanel.visible = !!stop && this.xrLive && !this.actionMenu.visible;
+    line.hidden = !stop; this.stopPanel.visible = false;
     if (!stop) return;
     line.dataset.tone = stop.tone;
     line.querySelector("b")!.textContent = stop.cause;

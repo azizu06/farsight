@@ -197,16 +197,15 @@ axesGeometry.setAttribute(
     3,
   ),
 );
-root.add(
-  new THREE.LineSegments(
+const mapAxes = new THREE.LineSegments(
     axesGeometry,
     new THREE.LineBasicMaterial({
       vertexColors: true,
       transparent: true,
       opacity: 0.8,
     }),
-  ),
-);
+  );
+root.add(mapAxes);
 const pointsMaterial = new THREE.PointsMaterial({
   size: 0.025,
   vertexColors: true,
@@ -245,7 +244,6 @@ marker.visible = false;
 const xrButton = VRButton.createButton(renderer);
 xrButton.removeAttribute("style");
 $("xr-slot").append(xrButton);
-// Prepare shader programs before the headset enters or changes to the map.
 const desktopPosition = new THREE.Vector3(),
   desktopQuaternion = new THREE.Quaternion();
 renderer.xr.addEventListener("sessionstart", () => {
@@ -282,6 +280,7 @@ renderer.setAnimationLoop((_time, frame) => {
   }
   root.visible = !rover?.vrCameraView;
   rover?.placeMapOverview(root, vrMapCenter, vrMapSpan);
+  mapAxes.visible = !renderer.xr.isPresenting;
   if (renderer.xr.isPresenting) {
     grid.scale.setScalar(Math.max(vrMapSpan, 4) / 2000);
     grid.position.x = vrMapCenter.x; grid.position.z = vrMapCenter.z;
@@ -299,6 +298,7 @@ rover = new RoverExperience(renderer, scene, camera, () => view, setView);
 root.add(rover.navLayer);
 diagnostics = new DiagnosticsOverlay(() => rover!.diagnostics());
 rover.addCockpitPanel(diagnostics.panel);
+// Prepare shader programs before the headset enters or changes to the map.
 void renderer.compileAsync(scene, camera).catch(() => {});
 setView(new URLSearchParams(location.search).get("view") === "map" ? "3d" : "camera");
 
