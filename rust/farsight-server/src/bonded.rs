@@ -106,6 +106,9 @@ struct HubInner {
     recorded_at: f64,
     publisher: Option<tokio::task::JoinHandle<()>>,
     recorder: Option<tokio::task::JoinHandle<()>>,
+    /// #110 nav revision lane for the whole bonded session — one lane
+    /// decision per status_seq keeps both paths byte-identical.
+    lane: Option<crate::nav::NavLane>,
     closed: bool,
 }
 
@@ -180,6 +183,7 @@ impl BondedControlHub {
                 recorded_at: f64::NEG_INFINITY,
                 publisher: None,
                 recorder: None,
+                lane: None,
                 closed: false,
             }),
         }
@@ -219,6 +223,12 @@ impl BondedControlHub {
         let path_id = token_hex(16);
         let slot = Arc::new(StatusSlot::new());
         inner.paths.insert(path_id.clone(), PathState { slot: slot.clone() });
+        // A newly attached path gets the nav arrays in its first status
+        // (bonded.py #110): refresh the lane so revision-matching doesn't
+        // starve the newcomer.
+        if inner.lane.is_some() {
+            inner.lane = Some(crate::nav::NavLane::new());
+        }
         if inner.publisher.is_none() {
             let me = Arc::clone(self);
             inner.publisher = Some(tokio::spawn(async move { me.publish_loop().await }));
@@ -280,6 +290,11 @@ impl BondedControlHub {
         if message.get("session_id").and_then(Value::as_str) != Some(session_id.as_str()) {
             self.state.stop("wrong_session", true);
             return false;
+        }
+        if inner.lane.is_none()
+            && message.get("nav_lane").and_then(Value::as_str) == Some("revision")
+        {
+            inner.lane = Some(crate::nav::NavLane::new());
         }
         let seq = match message.get("seq").and_then(|v| v.as_i64()) {
             Some(seq) if (0..=(1i64 << 53) - 1).contains(&seq) => seq,
@@ -356,9 +371,16 @@ impl BondedControlHub {
             obj.remove("secret");
             obj.remove("attach_secret");
         }
+        // One lane decision per status_seq: both paths carry identical
+        // copies (bonded.py #110).
+        let sent = inner
+            .lane
+            .as_mut()
+            .map(|l| l.apply(&status, started))
+            .unwrap_or_else(|| status.clone());
         let mut congested = Vec::new();
         for (path_id, path) in inner.paths.iter() {
-            if !path.slot.offer(status.clone()) {
+            if !path.slot.offer(sent.clone()) {
                 congested.push(path_id.clone());
             }
         }

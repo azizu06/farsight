@@ -191,6 +191,7 @@ pub fn empty_nav(state: &str, message: &str) -> Value {
         "frontiers": [],
         "backend": Value::Null,
         "message": message,
+        "revision": 0,
     })
 }
 
@@ -246,6 +247,10 @@ pub struct NavInner {
     pub seek: Option<Seek>,
     pub seek_seq: i64,
     pub seek_checked: f64,
+    /// Last (path, frontiers) emitted by nav_object, and their version —
+    /// bumped whenever the arrays change (nav.py #110).
+    pub arrays: (Vec<Value>, Vec<Value>),
+    pub revision: i64,
 }
 
 pub struct NavService {
@@ -314,6 +319,8 @@ impl NavService {
                 seek: None,
                 seek_seq: 0,
                 seek_checked: 0.0,
+                arrays: (Vec::new(), Vec::new()),
+                revision: 0,
             }),
         })
     }
@@ -542,7 +549,7 @@ impl NavService {
         } else {
             None
         };
-        let s = self.inner.lock().unwrap();
+        let mut s = self.inner.lock().unwrap();
         let mode = mode.filter(|m| NAV_MODES.contains(m)).map(str::to_string);
         let active = active.unwrap_or(s.active);
         let available = s.bridge.is_some() && (self.clock)() - s.bridge_seen < BRIDGE_TTL;
@@ -643,14 +650,20 @@ impl NavService {
                 50,
                 0.0,
             );
+            let arrays = (path.unwrap_or_default(), frontiers);
+            if arrays != s.arrays {
+                s.arrays = arrays.clone();
+                s.revision += 1;
+            }
             return json!({
                 "state": st,
                 "mode": mode,
                 "goal": goal.unwrap_or(Value::Null),
-                "path": path.unwrap_or_default(),
-                "frontiers": frontiers,
+                "path": arrays.0,
+                "frontiers": arrays.1,
                 "backend": backend,
                 "message": msg,
+                "revision": s.revision,
             });
         } else if matches!(mode.as_deref(), Some("explore") | Some("seek")) {
             state = match phase {
@@ -683,14 +696,20 @@ impl NavService {
                 }
             }
         }
+        let arrays = (path.unwrap_or_default(), frontiers);
+        if arrays != s.arrays {
+            s.arrays = arrays.clone();
+            s.revision += 1;
+        }
         json!({
             "state": state,
             "mode": mode,
             "goal": goal.unwrap_or(Value::Null),
-            "path": path.unwrap_or_default(),
-            "frontiers": frontiers,
+            "path": arrays.0,
+            "frontiers": arrays.1,
             "backend": backend,
             "message": message,
+            "revision": s.revision,
         })
     }
 
@@ -1452,4 +1471,48 @@ impl NavService {
 
 fn r3(v: f64) -> f64 {
     (v * 1000.0).round_ties_even() / 1000.0
+}
+
+/// Per-subscriber filter that keeps bulky nav arrays out of most 40 Hz
+/// control statuses (jetson/nav.py NavLane, #110). A client that opted in
+/// via `"nav_lane": "revision"` gets `nav.path` and `nav.frontiers` only
+/// when `nav.revision` changed (at most every MIN_INTERVAL, coalescing
+/// changes) or as a REFRESH; every other status omits both keys, which
+/// means "unchanged" — clients keep the last arrays (an empty array
+/// clears). The first status always carries them. Lease and status
+/// fields are untouched.
+pub struct NavLane {
+    sent_revision: Option<i64>,
+    sent_at: f64,
+}
+
+impl NavLane {
+    const MIN_INTERVAL: f64 = 0.5;
+    const REFRESH: f64 = 2.0;
+
+    pub fn new() -> Self {
+        Self { sent_revision: None, sent_at: f64::NEG_INFINITY }
+    }
+
+    /// Returns the status to send — full when the arrays are due, a lean
+    /// copy with `nav.path`/`nav.frontiers` removed otherwise.
+    pub fn apply(&mut self, status: &Value, now: f64) -> Value {
+        let Some(nav) = status.get("nav").filter(|n| n.is_object()) else {
+            return status.clone();
+        };
+        let revision = nav.get("revision").and_then(Value::as_i64);
+        if (revision != self.sent_revision && now - self.sent_at >= Self::MIN_INTERVAL)
+            || now - self.sent_at >= Self::REFRESH
+        {
+            self.sent_revision = revision;
+            self.sent_at = now;
+            return status.clone();
+        }
+        let mut lean = status.clone();
+        if let Some(obj) = lean.get_mut("nav").and_then(Value::as_object_mut) {
+            obj.remove("path");
+            obj.remove("frontiers");
+        }
+        lean
+    }
 }

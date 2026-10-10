@@ -338,3 +338,45 @@ fn goal_refused_for_foreign_session_even_while_stopped() {
         _ => panic!("expected refusal"),
     }
 }
+
+/// #110: the opt-in nav revision lane keeps path/frontiers out of most
+/// statuses — first status carries them, changes coalesce to ≥0.5 s, a
+/// 2 s refresh always emits, and lease/status fields are untouched
+/// (mirrors jetson/tests/test_nav.py NavLaneTests).
+#[test]
+fn nav_lane_arrays_only_on_change_with_refresh() {
+    use farsight_server::nav::NavLane;
+    let mut lane = NavLane::new();
+    let status = |revision: i64, path: Vec<serde_json::Value>| json!({
+        "type": "control_status", "permit": "p",
+        "nav": {"state": "driving", "goal": Value::Null, "path": path,
+                "frontiers": [[1.0, 1.0]], "revision": revision}
+    });
+    let now = std::cell::Cell::new(0.0);
+    // The first status always carries the arrays.
+    let s = lane.apply(&status(1, vec![json!([0, 0])]), now.get());
+    assert!(s["nav"].get("path").is_some());
+    // Unchanged revision inside the window omits them; other fields stay.
+    now.set(now.get() + 0.025);
+    let lean = lane.apply(&status(1, vec![json!([0, 0])]), now.get());
+    assert!(lean["nav"].get("path").is_none());
+    assert!(lean["nav"].get("frontiers").is_none());
+    assert_eq!(lean["permit"], "p");
+    assert_eq!(lean["nav"]["revision"], 1);
+    // Changed revision inside 0.5 s still omits (coalescing).
+    now.set(now.get() + 0.1);
+    assert!(lane.apply(&status(2, vec![json!([0, 1])]), now.get())["nav"].get("path").is_none());
+    // Past 0.5 s the newest arrays win (coalesced).
+    now.set(now.get() + 0.4);
+    let changed = lane.apply(&status(3, vec![json!([0, 2])]), now.get());
+    assert_eq!(changed["nav"]["path"], json!([[0, 2]]));
+    assert_eq!(changed["nav"]["revision"], 3);
+    // Refresh at 2 s emits the unchanged arrays.
+    now.set(now.get() + 1.9);
+    assert!(lane.apply(&status(3, vec![json!([0, 2])]), now.get())["nav"].get("path").is_none());
+    now.set(now.get() + 0.2);
+    assert!(lane.apply(&status(3, vec![json!([0, 2])]), now.get())["nav"].get("path").is_some());
+    // A status without a nav object passes through untouched.
+    let plain = json!({"type": "control_status"});
+    assert_eq!(lane.apply(&plain, now.get()), plain);
+}

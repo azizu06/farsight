@@ -1204,6 +1204,9 @@ async fn handle_ws_control(socket: WebSocket, s: Arc<AppState>) {
     let (mut tx, mut rx) = socket.split();
     let control = s.control.clone();
     let on_status = s.control_on_status.clone();
+    // #110 opt-in nav revision lane, latched per socket (control/service.py).
+    let lane = Arc::new(std::sync::Mutex::new(None::<crate::nav::NavLane>));
+    let send_lane = lane.clone();
     let sender = tokio::spawn(async move {
         // Mission recording keeps its 20 Hz control sampling
         // (control/service.py RECORD_INTERVAL), while status publishes at 40 Hz.
@@ -1213,6 +1216,12 @@ async fn handle_ws_control(socket: WebSocket, s: Arc<AppState>) {
             // timeout closes the socket rather than queueing permits.
             let started = now_monotonic();
             let status = control.status(true);
+            let status = send_lane
+                .lock()
+                .unwrap()
+                .as_mut()
+                .map(|l| l.apply(&status, started))
+                .unwrap_or(status);
             match tokio::time::timeout(Duration::from_millis(100), tx.send(Message::Text(status.to_string().into()))).await {
                 Ok(Ok(_)) => {}
                 _ => return,
@@ -1236,6 +1245,12 @@ async fn handle_ws_control(socket: WebSocket, s: Arc<AppState>) {
                 }
                 match serde_json::from_str::<Value>(&text) {
                     Ok(v) => {
+                        if v.get("nav_lane").and_then(Value::as_str) == Some("revision") {
+                            let mut lane = lane.lock().unwrap();
+                            if lane.is_none() {
+                                *lane = Some(crate::nav::NavLane::new());
+                            }
+                        }
                         s.control.accept(&v, &session_id);
                     }
                     Err(_) => s.control.stop("invalid_json", false),
