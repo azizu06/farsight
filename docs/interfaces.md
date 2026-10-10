@@ -34,10 +34,21 @@ explicit ray-cast camera/map and virtual rover sources. See
 | `GET /camera.jpg` | Latest JPEG; `X-Frame-Id`, `X-Frame-Age-Ms`, `X-Frame-Source`; no-store |
 | `GET /control/status` | Read-only control status; no usable permit |
 | `GET /mission/report` | Evidence, persistence/source labels, drill results |
-| `POST /mission/drill` | `{"duration_s":90}`, person-track encounters, not distinct identities |
+| `POST /mission/drill` | `{"duration_s":90,"victims":3}` starts a rescue drill; `GET` polls it. See below |
 | `POST /mission/triage/{key}` | Regenerate one person's SBAR now (`key` from the report, URL-encoded); 404 unknown, 503 busy |
 | `GET /speak` | `{"phrases": [{"id","en","es"}], "speaker": bool, "speaker_cmd", "voices": ["en","es"]}` |
 | `POST /speak` | `{"phrase": "help_coming", "lang": "en"\|"es"}`; see below |
+
+Rescue drill status (`GET`/`POST /mission/drill`, and `drill` in the report) is
+scored on the rover. Older fields stay. `found`/`total`/`found_ids`/`found_at_s` count
+`cls:"face"` tracks whose stable id stayed in view 1 s; one missed frame is
+tolerated, and id flicker does not count. `estops` counts forward drives the
+range stop blocked (0.5 s debounce). `pose`, `breadcrumb` `[{t,x,y}]` and
+`route_home` `[{x,y}]` (rover first, start last) are dead reckoned from the
+applied v/w, in metres, x forward, y left, so they are approximate
+(`route_approximate: true`). `summary` is null while running. Once time runs out
+or every victim is found, it is
+`{time_s, found, total, estops_avoided, found_at_s, breadcrumb}`.
 
 Camera age is receiver receipt age adjusted by reported producer encoding time
 and server queue/decode delay. It does not measure pre-callback sensor exposure

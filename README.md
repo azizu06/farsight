@@ -56,11 +56,13 @@ the phone's local USB network. Enter the Jetson's actual USB-interface IP in the
 app; pairing and local routing must be tested on the rig. Existing Pip Scout
 RGB-D packets remain protocol-compatible; the new app is independent.
 
-Prepare models on the laptop before going offline:
+First-time Jetson setup, from the laptop to a green `/health`, is the ordered runbook in
+[docs/jetson-bringup.md](docs/jetson-bringup.md). Prepare models on the laptop before going offline:
 
 ```sh
 python3 -m tools.export_detector --weights yolo11n.pt
 python3 -m tools.export_detector --weights yolo11n-pose.pt
+python3 -m tools.fetch_models                  # Piper English + Spanish voices, face model, whisper (--groups vlm for Qwen2.5-VL)
 bash tools/push_models.sh USER@JETSON
 ```
 

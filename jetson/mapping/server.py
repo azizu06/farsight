@@ -68,6 +68,8 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                 next_status = time.monotonic() + .1
             await asyncio.sleep(.01)
 
+    if hasattr(control, "state"):  # recorded replays have no live control loop
+        control.state.on_output = mission.drill_motion
     assistant = SceneAssistant(camera_service, perception, control, server_url=assistant_url,
                                whisper_bin=whisper_bin, whisper_model=whisper_model,
                                piper_bin=piper_bin, piper_model=piper_model, output_dir=tts_dir,
@@ -237,12 +239,13 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
         async def images():
             last = None
             while True:
-                frame = await asyncio.to_thread(camera_service.preview)
-                identity = (frame.source, frame.frame_id) if frame else None
-                if frame and frame.age_ms < 500 and identity != last:
-                    yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame.jpeg + b"\r\n"
-                    last = identity
-                await asyncio.sleep(0.1)
+                latest = camera_service.snapshot()  # cheap; only re-encode a frame we have not sent
+                if latest and latest.age_ms < 500 and (latest.source, latest.frame_id) != last:
+                    frame = await asyncio.to_thread(camera_service.preview)
+                    if frame:
+                        yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame.jpeg + b"\r\n"
+                        last = (frame.source, frame.frame_id)
+                await asyncio.sleep(0.02)
         return StreamingResponse(images(), media_type="multipart/x-mixed-replace; boundary=frame")
 
     @app.websocket("/ws/video")
@@ -336,12 +339,15 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
 
     class DrillRequest(BaseModel):
         duration_s: int = 90
+        victims: int = 3
 
     @app.post("/mission/drill")
     async def start_drill(body: DrillRequest):
         if not 10 <= body.duration_s <= 300:
             raise HTTPException(422, "Drill duration must be 10..300 seconds")
-        return mission.start_drill(body.duration_s)
+        if not 1 <= body.victims <= 20:
+            raise HTTPException(422, "Drill victims must be 1..20")
+        return mission.start_drill(body.duration_s, body.victims)
 
     @app.post("/mission/triage/{encounter}")
     async def mission_triage(encounter: str):

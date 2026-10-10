@@ -6,18 +6,22 @@ Exit 0 when ready, 1 on timeout. Stdlib only, so it runs on the Jetson or the Ma
 """
 
 import argparse
-import json
 import os
 import re
-import ssl
 import subprocess
 import sys
 import time
-import urllib.request
+
+from .netutil import fetch_json, tls_context
+
+ROWS = ("camera", "detector", "rover", "video")
 
 
-def evaluate(h):
-    """Return [(name, ok|wait|fail|skip, detail)] for camera, detector, rover, video."""
+def evaluate(h, skip=(), require_tensorrt=False):
+    """Return [(name, ok|wait|fail|skip, detail)] for camera, detector, rover, video (+ assistant when reported).
+
+    `skip` names rows to ignore (bring-up without the Uno or H.264); `require_tensorrt` fails a CPU detector.
+    """
     rows = []
     if h.get("camera"):
         rows.append(("camera", "ok", f"{h.get('camera_source', 'camera')} {h.get('camera_age_ms', '?')} ms old"))
@@ -28,7 +32,13 @@ def evaluate(h):
     elif h.get("detector_error"):
         rows.append(("detector", "fail", h["detector_error"]))
     elif h.get("detector_fps"):
-        rows.append(("detector", "ok", f"{h.get('detector')} {h['detector_fps']:.1f} fps"))
+        backend = h.get("detector_backend") or h.get("detector")
+        latency = f", {h['detector_inference_ms']} ms/frame" if h.get("detector_inference_ms") is not None else ""
+        detail = f"{backend} {h['detector_fps']:.1f} fps{latency}"
+        if require_tensorrt and "tensorrt" not in str(backend):
+            rows.append(("detector", "fail", f"{detail}: CPU backend, expected TensorRT (check the .engine path and detector_error)"))
+        else:
+            rows.append(("detector", "ok", detail))
     else:
         rows.append(("detector", "wait", f"{h.get('detector')} no detections yet"))
     if h.get("rover"):
@@ -45,7 +55,13 @@ def evaluate(h):
         rows.append(("video", "ok", "H.264 init ready"))
     else:
         rows.append(("video", "wait", "encoder starting"))
-    return rows
+    assistant = h.get("assistant")
+    if assistant is not None:
+        parts = [label if assistant.get(key) else f"no {label}"
+                 for key, label in (("vision_model", "vision"), ("whisper", "whisper"), ("piper", "piper"))]
+        rows.append(("assistant", "ok" if any(assistant.get(k) for k in ("vision_model", "whisper", "piper")) else "skip",
+                     ", ".join(parts)))
+    return [(name, "skip", "skipped by --skip") if name in skip else (name, state, detail) for name, state, detail in rows]
 
 
 def is_ready(rows):
@@ -66,19 +82,19 @@ def seconds_since_boot():
 
 
 def fetch(url, context, timeout=2):
-    with urllib.request.urlopen(url.rstrip("/") + "/health", timeout=timeout, context=context) as response:
-        return json.load(response)
+    return fetch_json(url, "/health", context, timeout)
 
 
-def probe(url, timeout=120, interval=0.5, boot_seconds=seconds_since_boot, out=sys.stdout, context=None):
+def probe(url, timeout=120, interval=0.5, boot_seconds=seconds_since_boot, out=sys.stdout, context=None,
+          skip=(), require_tensorrt=False):
     started = time.monotonic()
     last = None
     while True:
         try:
-            rows = [("server", "ok", url)] + evaluate(fetch(url, context))
+            rows = [("server", "ok", url)] + evaluate(fetch(url, context), skip, require_tensorrt)
         except (OSError, ValueError) as exc:
             rows = [("server", "wait", f"{url} unreachable ({type(exc).__name__})")]
-        lines = [f"{name:<9}{state.upper():<5}{detail}" for name, state, detail in rows]
+        lines = [f"{name:<10}{state.upper():<5}{detail}" for name, state, detail in rows]
         if lines != last:
             print(f"[+{time.monotonic() - started:5.1f}s]", *lines, sep="\n  ", file=out, flush=True)
             last = lines
@@ -101,13 +117,15 @@ def main():
     parser.add_argument("--timeout", type=float, default=120)
     parser.add_argument("--ca-file", help="CA PEM for private Jetson TLS")
     parser.add_argument("--insecure", action="store_true", help="Skip certificate verification (local self-signed check)")
+    parser.add_argument("--skip", default="", help=f"Comma-separated rows to ignore, from: {', '.join(ROWS)} (camera-only bring-up: rover,video)")
+    parser.add_argument("--require-tensorrt", action="store_true", help="Fail while the detector runs on CPU (ONNX/HOG)")
     args = parser.parse_args()
-    context = None
-    if args.insecure:
-        context = ssl._create_unverified_context()
-    elif args.ca_file:
-        context = ssl.create_default_context(cafile=args.ca_file)
-    sys.exit(probe(args.url, timeout=args.timeout, context=context))
+    skip = tuple(name for name in args.skip.replace(",", " ").split() if name)
+    unknown = [name for name in skip if name not in ROWS]
+    if unknown:
+        parser.error(f"--skip: unknown row {', '.join(unknown)} (choose from {', '.join(ROWS)})")
+    sys.exit(probe(args.url, timeout=args.timeout, context=tls_context(args.ca_file, args.insecure),
+                   skip=skip, require_tensorrt=args.require_tensorrt))
 
 
 if __name__ == "__main__":

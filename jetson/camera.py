@@ -2,6 +2,7 @@
 
 import asyncio
 from dataclasses import dataclass
+import sys
 import threading
 import time
 import json
@@ -17,6 +18,22 @@ def adjusted_receipt(header, received_at=None):
     if type(delay) not in (int, float) or not math.isfinite(delay) or not 0 <= delay <= 60000:
         raise ValueError("Producer encoding delay must be finite milliseconds in 0..60000")
     return (time.monotonic() if received_at is None else received_at) - delay / 1000
+
+
+def open_capture(device, width, height, fps, platform=sys.platform):
+    """Open a UVC camera. On Linux pin the V4L2 backend (the pip OpenCV wheel has no GStreamer) and request the
+    camera's own MJPG stream first: uncompressed YUYV caps many webcams below 30 fps and loads USB."""
+    index = int(device) if str(device).isdigit() else device
+    capture = cv2.VideoCapture(index, cv2.CAP_V4L2) if platform.startswith("linux") else cv2.VideoCapture(index)
+    capture.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+    capture.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+    capture.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+    capture.set(cv2.CAP_PROP_FPS, fps)
+    capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    if not capture.isOpened():
+        capture.release()
+        raise RuntimeError(f"Camera {device} cannot be opened (check: v4l2-ctl --list-devices; another process may hold it)")
+    return capture
 
 
 @dataclass(frozen=True)
@@ -90,14 +107,7 @@ class CameraService:
 
     def _read(self):
         if self.capture is None or not self.capture.isOpened():
-            device = int(self.device) if str(self.device).isdigit() else self.device
-            self.capture = cv2.VideoCapture(device)
-            self.capture.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
-            self.capture.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
-            self.capture.set(cv2.CAP_PROP_FPS, self.fps)
-            self.capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            if not self.capture.isOpened():
-                raise RuntimeError(f"Camera {self.device} cannot be opened")
+            self.capture = open_capture(self.device, self.width, self.height, self.fps)
         okay, image = self.capture.read()
         if not okay:
             self.capture.release()

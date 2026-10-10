@@ -7,9 +7,11 @@ from pathlib import Path
 import threading
 import time
 
+from .drill import Drill
+
 
 class Mission:
-    def __init__(self, directory=None, record=False):
+    def __init__(self, directory=None, record=False, drill_clock=time.monotonic):
         self.started = time.time()
         self.id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
         self.directory = Path(directory) / self.id if directory else None
@@ -26,8 +28,7 @@ class Mission:
         self.events = deque(maxlen=1000)
         self.encounters = {}
         self.lock = threading.RLock()
-        self.drill_start = None
-        self.drill_duration = 90
+        self.drill_score = Drill(clock=drill_clock)
         self.drill_seen = set()
         self.saved_snapshots = 0
         self.triage = {}
@@ -59,12 +60,14 @@ class Mission:
     def detect(self, packet, frame):
         self.record("detections", packet)
         with self.lock:
+            self.drill_score.observe(packet["boxes"])
+            drilling = self.drill_score.running()
             for box in packet["boxes"]:
                 key = f'{frame.source}:{box["id"]}'
                 previous = self.encounters.get(key)
                 self.encounters[key] = dict(box, source=frame.source, last_seen=time.time(),
                        first_seen=previous["first_seen"] if previous else time.time())
-                if self.drill_start and time.monotonic() - self.drill_start <= self.drill_duration and box["cls"] == "person":
+                if drilling and box["cls"] == "person":
                     self.drill_seen.add(key)
                 if previous:
                     continue
@@ -103,18 +106,19 @@ class Mission:
                 temporary.write_text(json.dumps(self.report()))
                 temporary.replace(self.directory / "report.json")
 
-    def start_drill(self, duration=90):
+    def start_drill(self, duration=90, victims=3):
         with self.lock:
-            self.drill_start = time.monotonic()
-            self.drill_duration = duration
             self.drill_seen.clear()
+            self.drill_score.start(duration, victims)
             return self.drill()
 
+    def drill_motion(self, v, w, blocked):
+        """ControlState.on_output hook: the applied command feeds the route home and e-stop count."""
+        self.drill_score.motion(v, w, blocked)
+
     def drill(self):
-        remaining = max(0, self.drill_duration - (time.monotonic() - self.drill_start)) if self.drill_start else None
-        return dict(active=remaining is not None and remaining > 0, remaining_s=round(remaining, 1) if remaining is not None else None,
-                    person_encounters=len(self.drill_seen), duration_s=self.drill_duration,
-                    note="Tracks are encounters, not verified distinct people")
+        return dict(self.drill_score.status(), person_encounters=len(self.drill_seen),
+                    note="Victims are faces held in view for 1 s; the route home is dead reckoning and approximate")
 
     def report(self):
         with self.lock:

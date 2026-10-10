@@ -22,9 +22,12 @@ The [model and projector](https://huggingface.co/ggml-org/SmolVLM-500M-Instruct-
 must be downloaded before an offline startup.
 
 Build or install llama.cpp and whisper.cpp for the actual Jetson; Mac binaries
-cannot run on Jetson Linux. The existing `jetson/setup.sh` includes source builds
-but may take substantial time and installs system packages. Inspect that script
-before choosing it during the hardware test. Avoid rebuilding or reflashing a
+cannot run on Jetson Linux. `jetson/setup.sh` builds both with CUDA (`--skip-builds` to
+skip) and `jetson/install_service.sh` runs them as `farsight-llm.service` (Qwen2.5-VL-3B on
+port 8092) and `farsight-whisper.service` (whisper-server on 8091), wiring
+`FARSIGHT_ASSISTANT_URL`/`FARSIGHT_WHISPER_URL` in `/etc/farsight.env`; the manual
+commands below are for rehearsal on other machines. Latency commands: `python -m tools.measure ask`
+([jetson-bringup.md](jetson-bringup.md) step 11). Avoid rebuilding or reflashing a
 working JetPack installation just to enable this optional feature.
 
 Run the local model server on the Jetson:

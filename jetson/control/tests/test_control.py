@@ -42,6 +42,24 @@ class PolicyTests(unittest.TestCase):
         self.send(deadman=False)
         self.assertEqual(self.state.output()[:2], (0, 0))
 
+    def test_applied_motion_hook_reports_driven_command_and_forward_blocks(self):
+        applied = []
+        self.state.on_output = lambda v, w, blocked: applied.append((v, w, blocked))
+        self.assertTrue(self.send(v=0.5, w=0.25))
+        self.state.output()
+        self.assertEqual(applied[-1], (0.5, 0.25, False))
+        self.state.update_range(10)
+        self.assertTrue(self.send(v=0.5, w=0))
+        self.state.output()
+        self.assertEqual(applied[-1], (0, 0.0, True))
+        self.assertTrue(self.send(v=-0.5, w=0))  # reversing away is not a block
+        self.state.output()
+        self.assertEqual(applied[-1], (-0.5, 0.0, False))
+        self.assertTrue(self.send(v=1, w=1))  # saturated wheels: applied command is normalised
+        self.state.update_range(100)
+        self.state.output()
+        self.assertEqual(applied[-1], (0.5, 0.5, False))
+
     def test_stale_command_does_not_gain_fresh_lease(self):
         token = self.state.status(issue_permit=True)["permit"]
         self.clock.now += 0.2

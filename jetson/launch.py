@@ -1,10 +1,14 @@
 """Start the rover server from FARSIGHT_* environment variables (see jetson/farsight.env.example).
 
 Used by jetson/farsight.service. Waits briefly for the camera and Uno device nodes,
-then execs `python -m jetson.mapping.server`. A device that never appears is logged and
+then execs `python -m jetson.server`. A device that never appears is logged and
 the server still starts, so /health reports the fault instead of the unit crash-looping.
+
+Dry run, no server started (exit 1 when a configured file or device is missing):
+    jetson/.venv/bin/python -m jetson.launch --check --env-file /etc/farsight.env
 """
 
+import argparse
 import os
 import sys
 import time
@@ -19,31 +23,87 @@ VALUE_FLAGS = (
     ("FARSIGHT_WHISPER_BIN", "--whisper-bin"), ("FARSIGHT_WHISPER_MODEL", "--whisper-model"),
     ("FARSIGHT_PIPER_BIN", "--piper-bin"), ("FARSIGHT_PIPER_MODEL", "--piper-model"),
     ("FARSIGHT_TTS_DIR", "--tts-dir"), ("FARSIGHT_PIPER_MODEL_ES", "--piper-model-es"),
-    ("FARSIGHT_SPEAKER_CMD", "--speaker-cmd"),
+    ("FARSIGHT_SPEAKER_CMD", "--speaker-cmd"), ("FARSIGHT_FACE_MODEL", "--face-model"),
+    ("FARSIGHT_VIDEO_FPS", "--video-fps"), ("FARSIGHT_VIDEO_BITRATE", "--video-bitrate"),
+    ("FARSIGHT_TRIAGE_INTERVAL", "--triage-interval"), ("FARSIGHT_DEPTH_MODEL", "--depth-model"),
+    ("FARSIGHT_SCAN_FOV", "--scan-fov"), ("FARSIGHT_SCAN_TURN_DPS", "--scan-turn-dps"),
 )
-INT_VARS = ("FARSIGHT_PORT", "FARSIGHT_MAX_PWM", "FARSIGHT_MIN_PWM", "FARSIGHT_WAIT_SECONDS")
+BOOL_FLAGS = (("FARSIGHT_H264", "--h264"), ("FARSIGHT_SIMULATE_ROVER", "--simulate-rover"),
+              ("FARSIGHT_SCAN_PAN", "--scan-pan"), ("FARSIGHT_RECORD", "--record"))
+INT_VARS = ("FARSIGHT_PORT", "FARSIGHT_MAX_PWM", "FARSIGHT_MIN_PWM", "FARSIGHT_WAIT_SECONDS",
+            "FARSIGHT_VIDEO_FPS", "FARSIGHT_VIDEO_BITRATE")
+FLOAT_VARS = ("FARSIGHT_TRIAGE_INTERVAL", "FARSIGHT_SCAN_FOV", "FARSIGHT_SCAN_TURN_DPS")
+# Variables whose value is a file that must exist for the feature to work.
+FILE_VARS = ("FARSIGHT_DETECTOR_MODEL", "FARSIGHT_FACE_MODEL", "FARSIGHT_PIPER_MODEL", "FARSIGHT_PIPER_MODEL_ES",
+             "FARSIGHT_WHISPER_MODEL", "FARSIGHT_DEPTH_MODEL", "FARSIGHT_SSL_CERTFILE", "FARSIGHT_SSL_KEYFILE")
 
 
 def _get(env, name):
     return (env.get(name) or "").strip()
 
 
+def _truthy(env, name):
+    return _get(env, name).lower() in ("1", "true", "yes", "on")
+
+
+def read_env_file(path):
+    """Parse a systemd EnvironmentFile (KEY=VALUE, optional quotes, # comments) for manual dry runs."""
+    values = {}
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            values[key.strip()] = value.strip().strip("\"'")
+    return values
+
+
 def build_args(env):
-    for name in INT_VARS:
-        if _get(env, name):
-            try:
-                int(_get(env, name))
-            except ValueError:
-                raise ValueError(f"{name} must be an integer, got {_get(env, name)!r}")
+    for names, kind in ((INT_VARS, int), (FLOAT_VARS, float)):
+        for name in names:
+            if _get(env, name):
+                try:
+                    kind(_get(env, name))
+                except ValueError:
+                    raise ValueError(f"{name} must be {'an integer' if kind is int else 'a number'}, got {_get(env, name)!r}")
+    if _truthy(env, "FARSIGHT_SIMULATE_ROVER") and _get(env, "FARSIGHT_SERIAL_PORT"):
+        raise ValueError("FARSIGHT_SIMULATE_ROVER cannot be combined with FARSIGHT_SERIAL_PORT")
     if bool(_get(env, "FARSIGHT_SSL_CERTFILE")) != bool(_get(env, "FARSIGHT_SSL_KEYFILE")):
         raise ValueError("FARSIGHT_SSL_CERTFILE and FARSIGHT_SSL_KEYFILE must be set together")
     args = ["--host", _get(env, "FARSIGHT_HOST") or "0.0.0.0", "--port", _get(env, "FARSIGHT_PORT") or "8443"]
     for name, flag in VALUE_FLAGS:
         if _get(env, name):
             args += [flag, _get(env, name)]
-    if _get(env, "FARSIGHT_H264").lower() in ("1", "true", "yes", "on"):
-        args.append("--h264")
+    for name, flag in BOOL_FLAGS:
+        if _truthy(env, name):
+            args.append(flag)
+    intrinsics = _get(env, "FARSIGHT_SCAN_INTRINSICS").replace(",", " ").split()
+    if intrinsics:
+        if len(intrinsics) != 4:
+            raise ValueError("FARSIGHT_SCAN_INTRINSICS must be four numbers: FX FY CX CY")
+        for value in intrinsics:
+            try:
+                float(value)
+            except ValueError:
+                raise ValueError(f"FARSIGHT_SCAN_INTRINSICS must be four numbers, got {value!r}")
+        args += ["--scan-intrinsics", *intrinsics]
     return args
+
+
+def preflight(env, exists=os.path.exists):
+    """Problems that would degrade or break the server: missing model/cert files, absent device nodes."""
+    problems = []
+    for name in FILE_VARS:
+        path = _get(env, name)
+        if path and not exists(path):
+            problems.append(f"{name}={path} does not exist")
+    if _get(env, "FARSIGHT_DETECTOR") == "pose" and not _get(env, "FARSIGHT_DETECTOR_MODEL"):
+        problems.append("FARSIGHT_DETECTOR=pose needs FARSIGHT_DETECTOR_MODEL (models/yolo11n-pose.engine)")
+    for path in device_paths(env):
+        if not exists(path):
+            problems.append(f"{path} not present (camera unplugged, Uno on another tty, or udev not settled)")
+    return problems
 
 
 def device_paths(env):
@@ -61,19 +121,35 @@ def wait_for_devices(paths, timeout, exists=os.path.exists, now=time.monotonic, 
     return missing
 
 
-def main(env=None):
-    env = os.environ if env is None else env
+def main(argv=None, env=None, out=sys.stdout):
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--check", action="store_true", help="Print the server command and any missing files/devices, then exit")
+    parser.add_argument("--env-file", help="Read FARSIGHT_* values from this file (the service gets them from systemd)")
+    args = parser.parse_args(argv)
+    env = dict(os.environ if env is None else env)
+    if args.env_file:
+        env = {**read_env_file(args.env_file), **{k: v for k, v in env.items() if k.startswith("FARSIGHT_") and v}}
     try:
-        args = build_args(env)
+        server_args = build_args(env)
     except ValueError as exc:
+        if args.check:
+            print(f"farsight launch: {exc}", file=out)
+            return 1
         sys.exit(f"farsight launch: {exc}")
+    if args.check:
+        print("farsight launch: python -m jetson.server " + " ".join(server_args), file=out)
+        problems = preflight(env)
+        for problem in problems:
+            print(f"  PROBLEM {problem}", file=out)
+        print("  OK" if not problems else f"  {len(problems)} problem(s): the server would start degraded or fail", file=out)
+        return 1 if problems else 0
     timeout = int(_get(env, "FARSIGHT_WAIT_SECONDS") or 30)
     missing = wait_for_devices(device_paths(env), timeout)
     if missing:
         print(f"farsight launch: still missing after {timeout}s: {', '.join(missing)}; starting degraded", flush=True)
-    print("farsight launch: server " + " ".join(args), flush=True)
-    os.execv(sys.executable, [sys.executable, "-m", "jetson.mapping.server", *args])
+    print("farsight launch: server " + " ".join(server_args), flush=True)
+    os.execv(sys.executable, [sys.executable, "-m", "jetson.server", *server_args])
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

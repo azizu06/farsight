@@ -64,6 +64,8 @@ real rig. Record latency and throughput measurements with their source, load,
 and conditions. Keep simulated/recorded sources visible and preserve evidence
 for the pitch and Devpost.
 
+First-time Jetson setup (scripts, service, TLS, measurements): `docs/jetson-bringup.md`.
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.
