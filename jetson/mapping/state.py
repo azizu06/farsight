@@ -33,6 +33,7 @@ class MapState:
         self.demo = demo
         self.connected = demo
         self.identity = ("simulated-room", 1) if demo else None
+        self.dense.source = list(self.identity) if self.identity else None
         self.device = "Ray-cast room" if demo else "No sensor"
         self.generation = 0
         self.processing_generation = 0

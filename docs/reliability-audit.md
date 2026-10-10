@@ -23,6 +23,7 @@ The issue branch and review are [PR #153](https://github.com/azizu06/farsight/pu
 | A silent geometry WebSocket prevents trying another source and keeps status claiming a live connection | Bound the full handshake and heartbeat writes; require matching Pong replies; withdraw connection authority on error or cancellation. Loopback tests cover silent TCP/WS sources, blocked writes and healthy idle geometry |
 | A cancelled session initializer overwrites a new phone, or cancelled cleanup leaves the stream permanently busy | Shield/drain both mutations through repeated cancellation, then release ownership; actual endpoint regressions cover the interleavings |
 | Render capture reports geometry but outputs black idle pictures, or drops the tracked pose at the Python/JS field boundary | Integrate upstream's same-task capture draw and field adapter; preserve real-browser pixel tests and add a Node regression executing the actual producer expression and renderer camera/ray code |
+| The simulation exports dense data without a usable source identity | Initialize its existing source and recognize only the explicit RGB-D simulation identity with a SIMULATED label; Python-to-JS tests cover initial data, reset and continuation |
 
 The frame and motion age cutoffs are preserved. Repairs do not grant face
 recognition or model text authority over motors, synthesize metric geometry, or

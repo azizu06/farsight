@@ -783,7 +783,12 @@ geometry. RGB remains sRGB on wire and is converted to linear in the viewer.
 
 Metadata: `format: "xyz_mm_rgb8_op"`, `epoch`, `source`, `cursor`, `reset`,
 `snapshot`, `anchor`, `more`, `points` (current retained unique cells),
-`voxel_m: 0.01`, `ttl_s: 30`. A mismatched epoch or journal gap returns
+`voxel_m: 0.01`, `ttl_s: 30`. Real RGB-D `source` is `[UUID session, safe integer epoch]`.
+Only the exact RGB-D simulation identity `["simulated-room", safe integer epoch]`
+is admitted without a UUID; it uses a separate `simulated_rgbd` key and the
+`SIMULATED RGB-D` label. It is never admitted on the geometry lane. Missing
+identity with nonempty data, unknown names and unsafe epochs remain errors.
+A mismatched epoch or journal gap returns
 `reset:true` once at bootstrap start: clear the consumer, then follow
 `snapshot`/`anchor`/`cursor` until `snapshot:false`. The final snapshot cursor
 returns to its start anchor so normal deltas replay updates/removals concurrent
