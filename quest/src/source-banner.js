@@ -11,8 +11,8 @@ export class SourceTruth {
   healthAt = -Infinity;
   busy = false;
 
-  /** @param {typeof fetch} fetcher @param {number} now */
-  async refresh(fetcher = fetch, now = performance.now()) {
+  /** @param {typeof fetch} fetcher @param {number} [now] Explicit receipt time for deterministic callers. */
+  async refresh(fetcher = fetch, now) {
     if (this.busy) return;
     this.busy = true;
     try {
@@ -20,7 +20,7 @@ export class SourceTruth {
       if (!response.ok) return;
       const health = await response.json();
       if (!health || typeof health !== "object") return;
-      this.accept(health, now);
+      this.accept(health, now ?? performance.now());
     } catch { /* Retain the last confirmed REPLAY/SIMULATED flags while disconnected. */ }
     finally { this.busy = false; }
   }

@@ -58,7 +58,7 @@ test('immersive camera fetch continues when the browser hides the page surface',
   decode = undefined;
   fetchRequests = 0;
   const view = Object.create(prototype);
-  Object.assign(view, { h264Enabled: false, frameBusy: false, stopped: false,
+  Object.assign(view, { h264Enabled: false, frameRequests: new Map(), frameRequestSeq: 0, displayedFrameRequest: -1, stopped: false,
     renderer: { xr: { isPresenting: true, getSession: () => ({ visibilityState: 'visible' }) } }, getView: () => 'camera',
     gate: { session: 'immersive-session' }, frame: null, frameId: 'old-frame' });
   try {
@@ -69,7 +69,7 @@ test('immersive camera fetch continues when the browser hides the page surface',
     await request;
     assert.equal(view.frameId, '7');
     assert.equal(view.frameSource, 'SIMULATED');
-    assert.equal(view.frameBusy, false);
+    assert.equal(view.frameRequests.size, 0);
   } finally {
     documentFixture.hidden = false;
   }
@@ -78,18 +78,18 @@ test('immersive camera fetch continues when the browser hides the page surface',
 test('camera polling cadence uses the active render-loop clock', () => {
   const view = Object.create(prototype);
   let requests = 0;
-  Object.assign(view, { lastFramePoll: -Infinity, fetchFrame: () => { requests++; } });
+  Object.assign(view, { lastFramePoll: -Infinity, frameRequests: new Map(), fetchFrame: () => { requests++; } });
   view.pollCamera(100);
-  view.pollCamera(259);
-  view.pollCamera(260);
-  assert.equal(requests, 2, 'poll at most every 160 ms, independently of throttled window timers');
+  view.pollCamera(199);
+  view.pollCamera(200);
+  assert.equal(requests, 2, 'poll at most every 100 ms, independently of throttled window timers');
 });
 
 test('JPEG decode begun in an old control session cannot become the new session image', async () => {
   decode = undefined;
   const view = Object.create(prototype);
   let cleared = 0;
-  Object.assign(view, { h264Enabled: false, frameBusy: false, stopped: false,
+  Object.assign(view, { h264Enabled: false, frameRequests: new Map(), frameRequestSeq: 0, displayedFrameRequest: -1, stopped: false,
     renderer: { xr: { isPresenting: false } }, getView: () => 'camera',
     gate: { session: 'old' }, frame: { retained: true }, frameId: 'old-frame',
     pendingFrame: { id: 'old-frame' }, detectionFrames: { clear: () => cleared++ }, sent: new Map() });
@@ -103,7 +103,7 @@ test('JPEG decode begun in an old control session cannot become the new session 
   assert.equal(view.pendingFrame, null);
   assert.equal(view.frameId, '');
   assert.equal(view.lastCanvasDraw, -Infinity);
-  assert.equal(view.frameBusy, false);
+  assert.equal(view.frameRequests.size, 0);
   assert.equal(cleared, 1);
 });
 
