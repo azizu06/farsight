@@ -45,6 +45,8 @@ class ControlState:
         self.link_ms = None
         self.scan_token = None
         self.scan_w = 0.0
+        # Optional on_output(v, w, forward_blocked) observer of the command actually applied.
+        self.on_output = None
 
     def begin_scan(self, session_id, permit):
         """Reserve stopped control; never issue/renew an operator lease here."""
@@ -76,8 +78,6 @@ class ControlState:
         with self.lock:
             if token is self.scan_token:
                 self.stop("scan_finished")
-        # Optional on_output(v, w, forward_blocked) observer of the command actually applied.
-        self.on_output = None
 
     def stop(self, reason, require_release=True):
         with self.lock:

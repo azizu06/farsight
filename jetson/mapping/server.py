@@ -68,7 +68,8 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                 next_status = time.monotonic() + .1
             await asyncio.sleep(.01)
 
-    control.state.on_output = mission.drill_motion
+    if hasattr(control, "state"):  # recorded replays have no live control loop
+        control.state.on_output = mission.drill_motion
     assistant = SceneAssistant(camera_service, perception, control, server_url=assistant_url,
                                whisper_bin=whisper_bin, whisper_model=whisper_model,
                                piper_bin=piper_bin, piper_model=piper_model, output_dir=tts_dir,
