@@ -153,7 +153,8 @@ try {
     xr.getSession = () => session;
     xr.getReferenceSpace = () => reference;
     xr.getCamera = () => camera;
-    let loseLeft = false,
+    let loseRight = false,
+      loseLeft = false,
       viewerY = 0,
       viewerOn = true;
     const frame = {
@@ -166,15 +167,16 @@ try {
               },
             }
           : null,
-      getPose: (space) => (loseLeft && space === left.gripSpace ? null : {}),
+      getPose: (space) => ((loseRight && space === right.gripSpace) || (loseLeft && space === left.gripSpace) ? null : {}),
     };
     subject.update(100, frame);
     const tracked = {
       valid: subject.inputValid,
       held: subject.input.held,
       sampledAt: subject.lastXRAt,
+      leftStickV: Math.abs(subject.input.v),
     };
-    loseLeft = true;
+    loseRight = true;
     viewerY = 0.25;
     subject.update(110, frame);
     const lost = {
@@ -186,7 +188,7 @@ try {
       displayVisible: subject.cockpit.visible,
       headY: subject.cockpit.position.y,
     };
-    loseLeft = false;
+    loseRight = false;
     subject.update(120, frame);
     const recovered = {
       valid: subject.inputValid,
@@ -243,6 +245,7 @@ try {
         subject.lastXRAt,
       ),
       needsRelease: subject.gate.needsRelease,
+      v: subject.input.v,
     };
     session.inputSources = [right, left];
     const rearmed = arm(180);
@@ -288,14 +291,15 @@ try {
       moving: subject.gate.decide(true, 240, true, subject.inputValid, subject.lastXRAt),
       needsRelease: subject.gate.needsRelease,
     };
+    // Right tracking loss latches every button, left Y included: a held Y cannot open a menu on recovery.
     // Left Y held across tracking loss must not open a menu on recovery.
     let scans = 0;
     subject.startScan = async () => { scans++; };
     left.gamepad.buttons = [0, 1, 2, 3, 4, 5].map(() => ({ pressed: false }));
     left.gamepad.buttons[5].pressed = true;
-    loseLeft = true;
+    loseRight = true;
     subject.update(250, frame);
-    loseLeft = false;
+    loseRight = false;
     subject.update(260, frame);
     const menuWhileStillHeld = subject.actionMenu.visible;
     left.gamepad.buttons[5].pressed = false;
@@ -313,7 +317,7 @@ try {
     const settle = () => new Promise((resolve) => setTimeout(resolve, 50));
     const voice = subject.voice;
     left.gamepad.buttons[5].pressed = false;
-    left.gamepad.axes = [0, 0, 0, 0]; // a deflected stick would (correctly) cancel a confirmed Seek
+    right.gamepad.axes = [0, 0, 0, 0]; // a deflected right stick would (correctly) cancel a confirmed Seek
     subject.update(290, frame);
     const offPress = (() => {
       left.gamepad.buttons[0].pressed = true; subject.update(292, frame);
@@ -441,7 +445,8 @@ try {
   assert.ok(result.second.pixel[0] < 50);
   assert.equal(result.second.replaced, true);
   assert.deepEqual([result.second.width, result.second.height], [1280, 720]);
-  assert.deepEqual(result.tracked, { valid: true, held: true, sampledAt: 100 });
+  // The left stick is pushed fully forward here, yet only the right stick drives.
+  assert.deepEqual(result.tracked, { valid: true, held: true, sampledAt: 100, leftStickV: 0 });
   assert.deepEqual(result.lost, {
     valid: false,
     held: true,
@@ -458,10 +463,12 @@ try {
   });
   assert.deepEqual(result.disconnected, { valid: false, v: 0 });
   assert.deepEqual(result.missingFrame, { valid: false, v: 0 });
+  // Driving is right-hand only: losing the left controller neither stops nor re-latches the deadman.
   assert.deepEqual(result.removedLeft, {
     initiallyArmed: true,
-    moving: false,
-    needsRelease: true,
+    moving: true,
+    needsRelease: false,
+    v: 0.45,
   });
   assert.deepEqual(result.replacedRight, {
     rearmed: true,
@@ -551,15 +558,24 @@ try {
       subject.drawnBoxes = [{ id: 7, cls: "person", x: 0, y: 0, w: 1, h: 1 }];
       subject.panelPoint = () => ({ x: .5, y: .5 });
       press(right, 4);
-      const aOverPerson = { view, mode: subject.autonomy.mode, release: subject.gate.needsRelease };
+      const viewWhileAHeld = view;
+      right.gamepad.buttons[4].pressed = false; tick(); // a tap toggles on release
+      const aOverPerson = { view, mode: subject.autonomy.mode, release: subject.gate.needsRelease, viewWhileAHeld };
       press(right, 4); right.gamepad.buttons[4].pressed = false; tick();
 
-      // Hold right trigger + forward left stick, then B must stop and cancel.
-      left.gamepad.axes[3] = -1;
+      // Hold right trigger + forward right stick, then B must stop and cancel.
+      right.gamepad.axes[3] = -1;
       right.gamepad.buttons[0].pressed = false; tick();
       right.gamepad.buttons[0].pressed = true; tick();
-      const drove = messages.at(-1).deadman;
-      left.gamepad.axes[3] = 0; // go-to uses centered sticks; an override would cancel before B
+      const drove = messages.at(-1).deadman && messages.at(-1).v > 0;
+      right.gamepad.axes[3] = 0; // go-to uses a centered stick; an override would cancel before B
+      // A drifting right stick inside the deadzone and a fully deflected left stick both keep Explore.
+      subject.autonomy.toggleExplore();
+      right.gamepad.axes[2] = .2; right.gamepad.axes[3] = -.2; left.gamepad.axes[3] = -1; tick();
+      const drift = { mode: subject.autonomy.mode, v: messages.at(-1).v, w: messages.at(-1).w };
+      right.gamepad.axes[3] = -.6; tick();
+      const override = subject.autonomy.mode;
+      right.gamepad.axes[2] = 0; right.gamepad.axes[3] = 0; left.gamepad.axes[3] = 0; tick();
       subject.autonomy.goto(); subject.nav = { state: "driving", mode: "goto", backend: "nav2", path: [], frontiers: [], goal: { x: 1, z: 0 } };
       press(right, 5);
       const bStopped = { command: messages.at(-1), mode: subject.autonomy.mode, latch: subject.gate.needsRelease, cancels };
@@ -571,7 +587,15 @@ try {
       right.gamepad.buttons[0].pressed = true; tick();
       const resumedAfterRelease = messages.at(-1).deadman;
 
-      left.gamepad.axes[3] = 0;
+      // Holding right A opens Actions without flipping the view.
+      const viewBeforeHold = view;
+      right.gamepad.buttons[4].pressed = false; tick();
+      right.gamepad.buttons[4].pressed = true; tick();
+      const aStart = performance.now();
+      while (performance.now() - aStart < 650) { await new Promise(resolve => setTimeout(resolve, 50)); tick(); }
+      right.gamepad.buttons[4].pressed = false; tick();
+      const holdA = { menu: subject.actionMenu.visible, view, viewBeforeHold };
+      subject.actionMenu.visible = false; tick();
       press(left, 5);
       const menuOpened = subject.actionMenu.visible;
       right.gamepad.buttons[0].pressed = false; tick();
@@ -594,7 +618,7 @@ try {
       right.gamepad.buttons[0].pressed = true;
       right.gamepad.buttons[1].pressed = true; tick();
       const selected = { hover, mode: subject.autonomy.mode, menu: subject.actionMenu.visible, release: subject.gate.needsRelease, motion: messages.at(-1).deadman };
-      return { anchored, afterHeadMove, recentered, aOverPerson, drove, bStopped, heldAfterStop,
+      return { anchored, afterHeadMove, recentered, aOverPerson, drove, drift, override, holdA, bStopped, heldAfterStop,
                bStopsAfterRecovery, resumedAfterRelease, menuOpened, behindMenu, missingRay,
                heldThroughRayRecovery, selected };
     } finally { renderer.xr.isPresenting = false; subject.dispose(); renderer.dispose(); }
@@ -604,8 +628,11 @@ try {
   assert.ok(Math.abs(interactions.recentered.quaternion[0]) < 1e-8 && Math.abs(interactions.recentered.quaternion[2]) < 1e-8, "recenter is yaw-only");
   assert.ok(Math.abs(2 * Math.atan2(interactions.recentered.quaternion[1], interactions.recentered.quaternion[3]) - .8) < 1e-6, "recenter faces the current head yaw");
   assert.equal(interactions.recentered.needsRelease, true);
-  assert.deepEqual(interactions.aOverPerson, { view: "3d", mode: "teleop", release: true });
-  assert.equal(interactions.drove, true);
+  assert.deepEqual(interactions.aOverPerson, { view: "3d", mode: "teleop", release: true, viewWhileAHeld: "camera" });
+  assert.equal(interactions.drove, true, "right stick forward drives");
+  assert.deepEqual(interactions.drift, { mode: "explore", v: 0, w: 0 }, "drift inside the deadzone and the left stick never override Explore");
+  assert.equal(interactions.override, "teleop", "a real right-stick push takes back control");
+  assert.deepEqual(interactions.holdA, { menu: true, view: "camera", viewBeforeHold: "camera" });
   assert.deepEqual([interactions.bStopped.command.deadman, interactions.bStopped.command.v, interactions.bStopped.command.w], [false, 0, 0]);
   assert.deepEqual([interactions.bStopped.mode, interactions.bStopped.latch, interactions.bStopped.cancels], ["teleop", true, 1]);
   assert.equal(interactions.heldAfterStop, false);
@@ -733,8 +760,8 @@ try {
     const renderer = new THREE.WebGLRenderer();
     const camera = new THREE.PerspectiveCamera(75, 4 / 3, 0.01, 100);
     const subject = new RoverExperience(renderer, new THREE.Scene(), camera, () => "camera", () => {});
-    const right = { handedness: "right", gripSpace: {}, gamepad: { connected: true, axes: [0, 0, 0, 0], buttons: [{ pressed: false }] } };
-    const left = { handedness: "left", gripSpace: {}, gamepad: { connected: true, axes: [0, 0, 0, -1], buttons: [{ pressed: false }] } };
+    const right = { handedness: "right", gripSpace: {}, gamepad: { connected: true, axes: [0, 0, 0, -1], buttons: [{ pressed: false }] } };
+    const left = { handedness: "left", gripSpace: {}, gamepad: { connected: true, axes: [0, 0, 0, 0], buttons: [{ pressed: false }] } };
     const session = { visibilityState: "visible", inputSources: [right, left] };
     renderer.xr.isPresenting = true;
     renderer.xr.getSession = () => session;

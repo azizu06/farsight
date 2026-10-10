@@ -56,7 +56,7 @@ test("hidden menu cannot be clicked, and labels require no hidden button mapping
   assert.equal(menu.visible, false);
   assert.equal(menu.hit({ x: .5, y: .76 }), null);
   assert.deepEqual(menu.panel.position.toArray(), [0, 0, -2.2]);
-  for (const text of ["Explore", "Scan", "Rescue drill", "Close", "Point + right grip to select", "Y closes"]) {
+  for (const text of ["Explore", "Scan", "Rescue drill", "Close", "Point + right grip to select", "Hold A closes"]) {
     assert.ok(labels.includes(text));
   }
   menu.visible = true;
