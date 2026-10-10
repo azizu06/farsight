@@ -9,12 +9,20 @@ import time
 
 
 class Mission:
-    def __init__(self, directory=None):
+    def __init__(self, directory=None, record=False):
         self.started = time.time()
         self.id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
         self.directory = Path(directory) / self.id if directory else None
         if self.directory:
             self.directory.mkdir(parents=True, exist_ok=True)
+        self.recording = bool(record)
+        if self.recording and self.directory is None:
+            raise ValueError("Recording requires --mission-dir")
+        self.record_started = time.monotonic()
+        self.record_frames = 0
+        if self.recording:
+            (self.directory / "frames").mkdir()
+            self.finish_recording(elapsed=0)
         self.events = deque(maxlen=1000)
         self.encounters = {}
         self.lock = threading.RLock()
@@ -26,7 +34,30 @@ class Mission:
         # Called as on_person(key, encounter, jpeg, snapshot_url) for each new person track.
         self.on_person = None
 
+    def record(self, kind, value, elapsed=None):
+        """Append replay evidence to the same mission directory, without control tokens."""
+        if not self.recording:
+            return
+        with self.lock:
+            event = dict(kind=kind, t=time.monotonic() - self.record_started if elapsed is None else elapsed,
+                         ts=time.time())
+            if kind == "frame":
+                name = f"frames/{self.record_frames:08d}.jpg"
+                (self.directory / name).write_bytes(value.jpeg)
+                self.record_frames += 1
+                event.update(file=name, frame=value.frame_id, source=value.source)
+            else:
+                event["packet"] = {k: v for k, v in value.items() if k not in ("permit", "session_id", "received")}
+            with (self.directory / "replay.jsonl").open("a") as log:
+                log.write(json.dumps(event) + "\n")
+
+    def finish_recording(self, elapsed=None):
+        if self.recording:
+            (self.directory / "replay.json").write_text(json.dumps(dict(
+                version=1, duration_s=time.monotonic() - self.record_started if elapsed is None else elapsed)))
+
     def detect(self, packet, frame):
+        self.record("detections", packet)
         with self.lock:
             for box in packet["boxes"]:
                 key = f'{frame.source}:{box["id"]}'

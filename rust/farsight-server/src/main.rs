@@ -32,11 +32,14 @@ struct Args {
     #[arg(long, default_value_t = 100)]
     max_pwm: i64,
     /// Bundled CPU person detector
-    #[arg(long, default_value = "hog", value_parser = ["hog", "none"])]
+    #[arg(long, default_value = "hog", value_parser = ["hog", "pose", "none"])]
     detector: String,
     /// YOLOv8/11 detection ONNX path; overrides bundled detector
     #[arg(long)]
     detector_model: Option<String>,
+    /// UltraFace RFB-320 ONNX pass; omitted means off
+    #[arg(long)]
+    face_model: Option<String>,
     /// Enable ffmpeg H264 fragmented MP4 WebSocket
     #[arg(long)]
     h264: bool,
@@ -79,6 +82,7 @@ async fn main() {
         args.simulate_rover,
         if args.detector_model.is_some() { "onnx" } else { &args.detector },
         args.detector_model.clone(),
+        args.face_model.clone(),
         args.h264,
         args.mission_dir,
         args.max_pwm,
