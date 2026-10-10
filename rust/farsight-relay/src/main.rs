@@ -84,10 +84,17 @@ struct Args {
     /// Trusted CA PEM for a private upstream certificate
     #[arg(long)]
     ca_file: Option<PathBuf>,
+    /// Optional farsight-geometry origin. When set, /geometry/* and
+    /// /map/mesh.bin proxy to it instead of the Jetson (board-agreed
+    /// Mac-assembly split: phone mesh -> Mac assembler -> Quest).
+    #[arg(long)]
+    geometry_upstream: Option<String>,
 }
 
 struct AppState {
     origin: Url,
+    /// farsight-geometry origin for assembled-mesh routes (None = Jetson).
+    geometry: Option<Url>,
     dist: PathBuf,
     http: reqwest::Client,     // general pool (limit ~16)
     control: reqwest::Client,  // control pool (limit ~4)
@@ -189,6 +196,7 @@ async fn relay_health(State(s): State<Arc<AppState>>) -> Response {
         Json(json!({
             "relay": true,
             "upstream": s.origin.as_str().trim_end_matches('/'),
+            "geometry_upstream": s.geometry.as_ref().map(|u| u.as_str().trim_end_matches('/')),
             "quest_built": s.dist.join("index.html").is_file(),
         })),
     )
@@ -197,6 +205,14 @@ async fn relay_health(State(s): State<Arc<AppState>>) -> Response {
 
 fn upstream_target(s: &AppState, req: &Request) -> String {
     let path_and_query = req.uri().path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
+    let path = req.uri().path();
+    // Board-agreed split: assembled geometry comes from the Mac service,
+    // everything else from the Jetson.
+    if let Some(g) = &s.geometry {
+        if path.starts_with("/geometry/") || path == "/map/mesh.bin" {
+            return format!("{}{}", g.as_str().trim_end_matches('/'), path_and_query);
+        }
+    }
     format!("{}{}", s.origin.as_str().trim_end_matches('/'), path_and_query)
 }
 
@@ -614,8 +630,17 @@ async fn main() {
     };
     let http_client = make_client(&extra_certs, 16);
     let control_client = make_client(&extra_certs, 4);
+    let geometry = match args.geometry_upstream.as_deref().map(upstream_origin) {
+        Some(Ok(u)) => Some(u),
+        Some(Err(e)) => {
+            eprintln!("error: --geometry-upstream: {e}");
+            std::process::exit(2);
+        }
+        None => None,
+    };
     let state = Arc::new(AppState {
         origin,
+        geometry,
         dist,
         http: http_client,
         control: control_client,
@@ -784,6 +809,7 @@ mod recovery_tests {
         );
         Arc::new(AppState {
             origin: upstream_origin(&format!("http://127.0.0.1:{upstream_port}")).unwrap(),
+            geometry: None,
             dist: PathBuf::from("/nonexistent-dist"),
             http: reqwest::Client::new(),
             control: reqwest::Client::new(),
@@ -885,7 +911,7 @@ mod recovery_tests {
         let up_port = up_listener.local_addr().unwrap().port();
         tokio::spawn(async move {
             let (sock, _) = up_listener.accept().await.unwrap();
-            let mut ws = accept_async(sock).await.unwrap();
+            let _ws = accept_async(sock).await.unwrap();
             // Handshake done; now say nothing and never read, forever.
             std::future::pending::<()>().await;
             drop(ws);
