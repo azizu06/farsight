@@ -107,3 +107,71 @@ belongs to the fallback architecture. It does not qualify this phone-owned
 path, whose Mac upstream is localhost. Physical camera eligibility remains
 separate: current ARKit capture has not yet qualified its exposure clock for
 the new physical-driving gate. Keep that task visible alongside transport work.
+
+## Direct operator path (opt-in)
+
+The operator phone can skip the rover phone and talk straight to the Jetson's
+Tailscale address. Reason: the Jetson-to-operator-phone leg can be a direct
+path (measured IPv6, ~90 ms) while the rover phone is behind DERP, so removing
+the middle hop removes one relay hop and one app that iOS can background.
+
+```text
+Operator iPhone localhost :8081 ──phone Tailscale──▶ Jetson 100.x.y.z:8081
+Jetson farsight-tailnet-forward ──▶ 127.0.0.1:8443 (unchanged server)
+```
+
+Install once on the Jetson (opt-in; never touches `farsight.service`, the
+firewall or Tailscale settings; sudo asks for your password unless it is passwordless):
+
+```sh
+bash jetson/install_tailnet_forward.sh        # --dry-run to preview, --uninstall to remove
+```
+
+`jetson/tailnet_forward.py` binds only the Jetson's Tailscale IPv4 (never
+0.0.0.0), forwards bytes without parsing them and adds no timeout, so HTTP,
+WebSockets and the 250 ms stop lease behave exactly as on `:8443`. Idle
+connections are kept; a dead peer is dropped by TCP keepalive; if the server is
+down the client is closed immediately. The unit is `Restart=always`, independent
+of `farsight.service`, and was verified to come back after `systemctl restart`
+and after `kill -9`. Check: `curl http://<jetson-tailscale-ip>:8081/health`.
+
+On the operator phone choose the Operator role and enter the **Jetson's**
+Tailscale address (instead of the rover phone's) as the rover address, then
+Stop/Start the bridge. The rover phone keeps capturing to the Jetson over USB
+and needs no change.
+
+### Booth default and one-tap fallback
+
+Measured rover-phone path on main with #88 (Mac phone chain, 2026-10-10, not a
+formal two-phone run): control RTT p50/p95/max 119.5 / 167 / 228 ms, 0
+`expired_permit` per 30 s, max permit gap 108 ms. The direct path has not yet
+been measured on the rig with the Jetson showing an established `:8081`
+connection throughout, so until it is, the rover-phone path stays the qualified
+default and the direct path is the fast option to try. Record the direct
+numbers here once measured and switch the default only if RTT p95/max, expiries
+and permit gap are all no worse.
+
+One-tap fallback: re-enter the **rover phone's** Tailscale address in the
+operator app and Stop/Start (the rover phone listener is unchanged). Keep both
+addresses written on the rig sheet.
+
+### Wanted app-side change: automatic failover between two upstreams
+
+Today a path drop (direct Jetson or rover phone) needs a human to retype the
+address. The operator bridge should take an ordered list of two upstreams
+(direct Jetson first, rover phone second) and:
+
+- keep a short TCP connect plus `/health` probe on both, 1 s cadence, at most
+  one in-flight probe each;
+- for every new client connection, dial the first healthy upstream; never
+  splice an existing connection from one upstream to another (a WebSocket
+  control lease must end, not migrate: the stop lease and explicit release stay
+  authoritative);
+- on upstream loss close the client connection at once (the 250 ms lease and
+  500 ms frame freshness then stop motion) and let the client reconnect to the
+  other upstream; require the operator to release before motion resumes, as now;
+- switch back to the preferred upstream only after N consecutive good probes and
+  only between connections, with no flapping inside a drive;
+- show the active upstream and the last switch reason in the bridge status text.
+
+This adds no timeout lengthening and keeps single-owner control.
