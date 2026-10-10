@@ -176,6 +176,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
             yield
         finally:
             await scanner.close()
+            await asyncio.to_thread(state.dense_worker.close)
             for stream_task in (sample_task, record_task, replay_task):
                 if stream_task:
                     stream_task.cancel()

@@ -1,7 +1,8 @@
 # Mac render → actual Quest: operator handoff
 
-Owner: Aziz/Firstmate runs the operator Mac and Quest; Chang owns renderer/viewer;
-Codex owns stream server/protocol and joined transport integration. Track results on [#120](https://github.com/azizu06/farsight/issues/120)
+Owner: Aziz/Firstmate runs the operator Mac, Quest, and H.264 viewer; Devin and
+Dechante coordinate renderer visuals/encoding; Codex owns joined transport
+integration and renderer protocol diagnostics. Confirm current file handoffs on #24. Track results on [#120](https://github.com/azizu06/farsight/issues/120)
 and coordinate on [#24](https://github.com/azizu06/farsight/issues/24).
 This checklist does not itself qualify hardware or authorize a second control session.
 
@@ -27,7 +28,7 @@ git log -1 --format='%H %cI %s' > "$run_dir/checkout-log.txt"
 adb devices -l > "$run_dir/adb-devices.txt"
 adb reverse --list > "$run_dir/adb-reverse-before.txt"
 curl --fail --max-time 3 http://127.0.0.1:8080/relay/health > "$run_dir/relay-health.json"
-curl --fail --max-time 3 http://127.0.0.1:8090/health > "$run_dir/render-health.json"
+curl --fail --max-time 3 http://127.0.0.1:8091/health > "$run_dir/render-health.json"
 curl --fail --max-time 3 http://127.0.0.1:8080/map/status > "$run_dir/map-status-before.json"
 ```
 
@@ -50,7 +51,7 @@ Chromium, and FFmpeg with `h264_videotoolbox`. Check before launching:
 python -c 'import aiohttp; import playwright.async_api'
 ffmpeg -hide_banner -encoders | rg 'h264_videotoolbox'
 python -m tools.mac_render --help
-python -m tools.operator_relay --help
+python -m tools.dense_map --help
 ```
 
 After Firstmate combines the candidate with the current served build:
@@ -61,38 +62,44 @@ npm --prefix quest run build
 
 For a fresh owner-approved launch, use two terminals. Substitute the real source
 and preserve the existing relay flags. The renderer reads the merged map through
-8080; it listens on 8090. The relay routes only the two render sockets to 8090.
+8080; it listens on 8091. The relay routes only the two render sockets to 8091.
 
 ```sh
-# Terminal 1: append this flag to the actual owner-selected relay command.
-python -m tools.operator_relay --upstream "$jetson_origin" --port 8080 \
-  --render-upstream http://127.0.0.1:8090
+# Terminal 1: dense relay; retain the owner's selected runtime flags.
+python -m tools.dense_map --upstream "$jetson_origin" --port 8080 \
+  --render-upstream http://127.0.0.1:8091
 
 # Terminal 2: actual mapped room, not --sim-world.
-python -m tools.mac_render --upstream http://127.0.0.1:8080 --port 8090 \
+python -m tools.mac_render --upstream http://127.0.0.1:8080 --port 8091 \
   --width 1280 --height 720 --fps 30 --hardware videotoolbox
 ```
 
 `jetson_origin` must be the actual existing upstream, set by Firstmate; it is not
-an example address to paste unchanged. If the live renderer's dense feed uses a
-new CLI/API, Chang must supply the final command first. The legacy snapshot
-command above does not prove million-point ingestion. Missing Python/browser
+an example address to paste unchanged. `tools.dense_map` mounts the Mac dense
+accumulator directly; do not add `--dense-map` to that command (that option belongs
+to `tools.demo`). Preserve the selected `--demo-mode`, TLS, bonding and geometry
+flags. The current rig uses 8091 because 8090 is occupied; verify the actual listener
+before changing ports. A reachable upstream `/health`, successful `/dense/status`,
+and positive renderer `/health` counters under `dense` must agree: `retained_cells`,
+`gpu_uploaded_cells`, and `gpu_drawn_cells`. A ready encoder or coarse snapshot
+count alone does not prove dense ingestion. Missing Python/browser
 dependencies are setup failures; `--no-browser` is not a working visual stream.
 
 ## 3. Verify the proxy without sending pose or motion
 
-Run these stream checks sequentially before the headset viewer connects. The
-current renderer supports one stream consumer and one visual pose writer; even
-a receive-only fragment checker takes the stream slot. Density GET checks do
-not take that slot and can run during a session.
+The renderer supports multiple receive-only viewers with independent keyframe-safe
+queues, but only one visual pose writer. Prefer running checks before the headset
+session to keep qualification load explicit. A receive-only checker does not move
+the view; a browser or `--probe-pose` sender does. Density GET checks can run during
+a session.
 
 ```sh
-python -m tools.qualify_macview --origin http://127.0.0.1:8090 \
+python -m tools.qualify_macview --origin http://127.0.0.1:8091 \
   --segments 30 --timeout 20 --output "$run_dir/direct-stream.json"
 python -m tools.qualify_macview --origin http://127.0.0.1:8080 \
   --segments 30 --timeout 20 --output "$run_dir/relay-stream.json"
 python -m tools.inspect_map_density --operator http://127.0.0.1:8080 \
-  --geometry http://127.0.0.1:8484 --renderer http://127.0.0.1:8090 \
+  --geometry http://127.0.0.1:8484 --renderer http://127.0.0.1:8091 \
   --timeout 5 > "$run_dir/density.json"
 adb reverse tcp:8080 tcp:8080
 adb reverse --list > "$run_dir/adb-reverse-after.txt"
@@ -113,7 +120,7 @@ with its error.
 
 For an isolated desktop check of the **standalone** page before an occupied
 headset session, the browser helper records decoding, source/stereo declarations,
-errors and a screenshot:
+errors, seeking events, actual graphics backend and a screenshot:
 
 ```sh
 node tools/qualify_macview_browser.mjs \
@@ -122,7 +129,10 @@ node tools/qualify_macview_browser.mjs \
 
 This page sends its normal desktop visual pose, so run it with an isolated
 renderer rather than alongside the headset's pose sender. Its video-presentation
-cadence is desktop evidence, not XR FPS or pose-to-photon latency.
+cadence is desktop evidence, not XR FPS or pose-to-photon latency. The default
+minimum callback rate is only a decode sanity check: compare measured cadence and
+stalls with the configured stream rate before claiming smooth playback. A private
+seek-suppression experiment is not proof of the deployed viewer.
 
 Only reverse 8080 is needed for the same-origin proxy. Keep one existing Quest
 Browser control page at `http://localhost:8080/?macview=1`. Add `&diag=1` for

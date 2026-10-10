@@ -1,8 +1,9 @@
 """Pipeline behavior for the Mac render server: per-viewer freshness queues,
-keyframe-safe drops, /dense passthrough, and coalesced pose echo. No browser,
-no ffmpeg, no motion."""
+keyframe-safe drops, /dense passthrough, and the capture-side pose handoff.
+No browser, no ffmpeg, no motion."""
 
 import asyncio
+import base64
 import struct
 import unittest
 
@@ -10,12 +11,23 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from tools.mac_render.server import (
-    RenderEncoder, ViewerQueue, _is_keyframe, create_app, parse_args,
+    App, RenderEncoder, ViewerQueue, _CAPTURE_JS, _CAPTURE_POSE_JS,
+    _is_keyframe, create_app, parse_args,
 )
 
 
 def box(kind, payload=b""):
     return struct.pack(">I4s", 8 + len(payload), kind) + payload
+
+
+class FakePage:
+    def __init__(self):
+        self.calls = []
+        self.delay = 0
+
+    async def evaluate(self, script, arg=None):
+        await asyncio.sleep(self.delay)
+        self.calls.append((script, arg))
 
 
 class KeyframeTest(unittest.TestCase):
@@ -71,34 +83,98 @@ class FanoutTest(unittest.TestCase):
         self.assertNotIn(stalled, encoder.viewers)
 
 
-class FakePage:
-    def __init__(self, delay=0.02):
-        self.calls = []
-        self.delay = delay
-
-    async def evaluate(self, script, arg=None):
-        await asyncio.sleep(self.delay)
-        self.calls.append((script, arg))
-
-
 class PoseEchoTest(unittest.IsolatedAsyncioTestCase):
-    async def test_a_pose_burst_coalesces_to_the_newest_page_write(self):
+    """The pose rides the capture evaluate: one browser turn applies it and
+    produces the frame drawn from it, so poses never queue on the page's
+    main thread behind slow draws."""
+
+    async def test_disconnect_clear_wins_over_queued_poses(self):
+        # Same ordering guarantee as the pump version: when the pose socket
+        # closes, the null write beats every earlier queued pose and the
+        # ownership slot stays reserved until the clear is staged.
+        from unittest.mock import patch
+
+        class Socket:
+            async def prepare(self, request):
+                pass
+
+            async def close(self):
+                pass
+
         page = FakePage()
-        encoder = RenderEncoder(page, 320, 240, 30, 100000, False)
+        app = App(parse_args([]), page=page)
+        app.encoder = RenderEncoder(page, 320, 240, 30, 100000, False)
+        with patch("tools.mac_render.server.web.WebSocketResponse", return_value=Socket()):
+            async with app.owned_socket("pose_socket", None):
+                app.encoder.echo_pose({"received_mono_ms": 1})
+                app.encoder.echo_pose({"received_mono_ms": 2})
+            self.assertIsNone(app.pose_socket)
+        self.assertIsNone(app.encoder.latest_pose)
+        script, arg = app.encoder._capture_call()
+        self.assertIs(script, _CAPTURE_POSE_JS)
+        self.assertIsNone(arg, "the disconnect clear replaced the queued poses")
+        self.assertEqual(page.calls, [], "no standalone evaluates — the clear rides the next capture")
+
+    def test_a_pose_burst_coalesces_to_the_newest_capture(self):
+        encoder = RenderEncoder(None, 320, 240, 30, 100000, False)
         poses = [{"received_mono_ms": i, "position": [i, 0, 0]} for i in range(6)]
         for pose in poses:
             encoder.echo_pose(pose)
-        await asyncio.sleep(0.3)
-        writes = [arg for script, arg in page.calls if arg is not None]
-        self.assertLess(len(writes), len(poses), "in-flight poses are dropped, not queued")
-        self.assertIs(writes[-1], poses[-1], "the page always ends on the newest pose")
+        script, arg = encoder._capture_call()
+        self.assertIs(script, _CAPTURE_POSE_JS)
+        self.assertIs(arg, poses[-1], "a burst collapses to the newest pose")
+        self.assertGreaterEqual(arg["receipt_age_ms"], 0)
+        script, arg = encoder._capture_call()
+        self.assertIs(script, _CAPTURE_JS, "the next capture is plain again")
 
-    async def test_untracked_clears_the_page_pose(self):
-        page = FakePage()
-        encoder = RenderEncoder(page, 320, 240, 30, 100000, False)
+    def test_untracked_pose_is_delivered_as_null(self):
+        encoder = RenderEncoder(None, 320, 240, 30, 100000, False)
         encoder.echo_pose(None)
-        await asyncio.sleep(0.1)
-        self.assertIn("__macPose = null", page.calls[-1][0])
+        script, arg = encoder._capture_call()
+        self.assertIs(script, _CAPTURE_POSE_JS)
+        self.assertIsNone(arg)
+
+
+class _FakeStdin:
+    def __init__(self, drain_s):
+        self.drain_s = drain_s
+        self.writes = 0
+
+    def write(self, _data):
+        self.writes += 1
+
+    async def drain(self):
+        await asyncio.sleep(self.drain_s)
+
+
+class _FakeProcess:
+    def __init__(self, drain_s):
+        self.stdin = _FakeStdin(drain_s)
+        self.returncode = None
+
+
+class InputPathTest(unittest.IsolatedAsyncioTestCase):
+    """Input-stage attribution + backpressure-driven capture skip."""
+
+    async def _frame(self, encoder, drain_s):
+        encoder.process = _FakeProcess(drain_s)
+        jpeg = base64.b64encode(b"jpeg-bytes").decode()
+        await encoder._on_frame(None, {"data": jpeg, "meta": {"source": "TEST"}}, 1, 2, eval_ms=240.0)
+        return encoder.samples[-1]
+
+    async def test_stage_timings_are_recorded(self):
+        encoder = RenderEncoder(None, 320, 240, 30, 100000, False)
+        sample = await self._frame(encoder, 0.001)
+        self.assertEqual(sample["eval_ms"], 240.0)
+        self.assertEqual(sample["jpeg_bytes"], len(b"jpeg-bytes"))
+        self.assertIn("decode_ms", sample)
+        self.assertGreaterEqual(sample["feed_wait_ms"], 0.5)
+        self.assertFalse(encoder._feed_behind)
+
+    async def test_a_slow_drain_flags_the_next_capture_as_stale(self):
+        encoder = RenderEncoder(None, 320, 240, 30, 100000, False)
+        await self._frame(encoder, 0.05)  # 50ms drain > 33ms interval
+        self.assertTrue(encoder._feed_behind, "encoder behind -> next capture is skipped")
 
 
 class DenseProxyTest(unittest.IsolatedAsyncioTestCase):

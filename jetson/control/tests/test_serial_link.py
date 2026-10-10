@@ -1,6 +1,7 @@
 import threading
 import time
 import unittest
+import unittest.mock
 
 from jetson.control.serial_link import SerialPump
 from jetson.control.state import ControlState
@@ -16,6 +17,7 @@ class FakeUno:
         self.closed = False
         self.out_waiting = 0
         self.short_write = False
+        self.mute = False
 
     @property
     def in_waiting(self):
@@ -35,7 +37,7 @@ class FakeUno:
             raise OSError("USB disconnected")
         with self.lock:
             self.writes.append((time.monotonic(), data))
-            for line in data.splitlines():
+            for line in data.splitlines() if not self.mute else ():
                 self.replies.extend(b"R 120\n" if line == b"R" else b"OK\n")
         return len(data) - 1 if self.short_write else len(data)
 
@@ -128,6 +130,31 @@ class SerialTests(unittest.TestCase):
 
     def test_short_write_disconnects(self):
         self.assert_fault_disconnects(lambda uno: setattr(uno, "short_write", True))
+
+    def test_silent_uno_disconnects(self):
+        self.assert_fault_disconnects(lambda uno: setattr(uno, "mute", True))
+
+    def test_starved_pump_does_not_blame_the_uno(self):
+        # The pump thread loses 1 s (GIL or scheduler) and sends nothing meanwhile:
+        # no reply was due, so this is not an Uno timeout.
+        from jetson.control import serial_link
+        offset = [0.0]
+        clock = type("Clock", (), {"monotonic": staticmethod(lambda: time.monotonic() + offset[0])})
+        state, uno, opens = ControlState(), FakeUno(), []
+        with unittest.mock.patch.object(serial_link, "time", clock):
+            pump = SerialPump(state, port="FAKE", factory=lambda port, baud, **options: opens.append(1) or uno)
+            pump.start()
+            try:
+                self.wait_for(lambda: state.connected)
+                for _ in range(3):
+                    self.wait_for(lambda: not uno.replies)  # last reply consumed, as before a real stall
+                    writes = len(uno.writes)
+                    offset[0] += 1.0
+                    self.wait_for(lambda: len(uno.writes) > writes + 5)
+                self.assertEqual(len(opens), 1)  # never closed and reopened the port
+                self.assertTrue(state.connected)
+            finally:
+                pump.close()
 
     def test_no_pan_mount_never_sends_p(self):
         state = ControlState(proximity_stop=False, pan_mount="none")

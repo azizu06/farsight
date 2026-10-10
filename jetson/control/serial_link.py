@@ -72,7 +72,7 @@ class SerialPump:
                 servo = self.state.pan_mount == "servo"
                 send(b"M 0 0\nP 90\nR\n" if servo else b"M 0 0\nR\n")
                 pending, started = bytearray(), time.monotonic()
-                last_response = started
+                last_response, unanswered = started, 0
                 next_tick, next_range, last_pan, settle_at = started, started, 90, started
                 ready = False
                 while not self.quit.is_set():
@@ -85,7 +85,7 @@ class SerialPump:
                         raw, _, pending = pending.partition(b"\n")
                         reply = bytes(raw).decode("ascii", errors="replace").strip()
                         if reply == "OK" or reply.startswith("R "):
-                            last_response = now
+                            last_response, unanswered = now, 0
                         if not ready and reply == "OK":
                             self.state.set_connected(True)
                             ready = True
@@ -96,7 +96,9 @@ class SerialPump:
                                 self.state.update_range(-1)
                         if reply.startswith("ERR"):
                             self.state.stop("uno_rejected_command")
-                    if now - last_response > (0.5 if ready else 2):
+                    # Silence only counts while commands go out: a GIL-starved pump sends
+                    # nothing, and blaming the Uno costs a 2 s port reopen and bootloader reset.
+                    if now - last_response > (0.5 if ready else 2) and (unanswered >= 4 or not ready):
                         raise OSError("Uno response timeout")
                     if now >= next_tick:
                         left, right, pan = self.state.output() if ready else (0, 0, 90)
@@ -110,6 +112,7 @@ class SerialPump:
                             data += "R\n"
                             next_range = now + 0.1
                         send(data.encode("ascii"))
+                        unanswered += 1
                         next_tick = now + 0.05
                     self.quit.wait(0.005)
             except Exception as exc:

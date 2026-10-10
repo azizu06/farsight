@@ -1,5 +1,7 @@
 """Actual server/pose contract regressions; no devices or motor commands."""
 import unittest
+import asyncio
+import time
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from tools.mac_render.server import create_app, parse_args, RenderEncoder
@@ -24,6 +26,33 @@ class PoseContractTests(unittest.TestCase):
         self.assertIsNone(encoder.latest_pose)
 
 class MapProxyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_mac_video_reports_measured_fragment_wait_without_removing_transit(self):
+        app = create_app(parse_args(['--no-browser']))
+        encoder = RenderEncoder(None, 320, 240, 30, 100000, False)
+        encoder.init, encoder.mime = b'init', 'video/mp4'
+        app['mac'].encoder = encoder
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            socket = await client.ws_connect('/ws/macview')
+            await socket.receive_json(); await socket.receive_bytes()
+            await socket.send_json(dict(type='next', request_id=17))
+            started = time.monotonic()
+            await asyncio.sleep(.08)
+            captured = (time.monotonic() - .2) * 1000
+            encoder._publish(dict(keyframe=True, payload=b'fragment',
+                sidecar=dict(type='video_segment', capture_mono_ms=captured)))
+            metadata = await socket.receive_json()
+            elapsed = (time.monotonic() - started) * 1000
+            self.assertEqual(metadata['request_id'], 17)
+            self.assertGreater(metadata['server_wait_ms'], 40)
+            self.assertLessEqual(metadata['server_wait_ms'], elapsed)
+            self.assertGreaterEqual(metadata['age_ms'], 200, 'capture age still includes queue wait')
+            self.assertEqual(await socket.receive_bytes(), b'fragment')
+            await socket.close()
+        finally:
+            await client.close()
+
     async def test_merged_map_status_and_identity_headers_cross_real_proxy(self):
         seen=[]
         source=web.Application()
