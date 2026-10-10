@@ -16,6 +16,7 @@ from pydantic import BaseModel, ValidationError
 import uvicorn
 
 from .compress import EncodedCache
+from .wire import DEFAULT_POINTS_CAP, DEFAULT_TRIANGLES_CAP, POINTS_ENV, TRIANGLES_ENV, cap_from_env
 from .demo import stream_demo
 from jetson.sim.stream import SimFeed, stream_world
 from jetson.sim.world import RoverSim
@@ -50,7 +51,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                record=False, replay=None, proximity_stop=True, pan_mount="servo", autonomy_max_pwm=None, nav2=False, nav_speed_mps=0.45,
                nav_turn_radps=3.0, nav_max_v=0.7, nav_max_w=0.8, nav_camera_height=0.15, bulk_limit_mbps=0, drive_profile=None,
                allow_calibration=False, sim_world=None, bonded_control=False, lidar_drive=False,
-               fusion_bypass=False):
+               fusion_bypass=False, map_points_cap=None, map_triangles_cap=None):
     if sim_world is not None:  # closed-loop simulator: a moving ray-cast rover in a test floor plan
         if serial_port or camera_device is not None or replay is not None:
             raise ValueError("--sim-world is simulated; it cannot drive real motors, cameras or replays")
@@ -71,6 +72,13 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
     if scan_pan and pan_mount == "none":
         raise ValueError("--scan-pan needs a physical pan servo (--pan-mount servo)")
     state = MapState(demo, fusion_bypass=fusion_bypass)
+    # Visual wire caps; None reads FARSIGHT_MAP_POINTS_CAP / FARSIGHT_MAP_TRIANGLES_CAP.
+    state.points_cap = (cap_from_env(POINTS_ENV, DEFAULT_POINTS_CAP)
+                        if map_points_cap is None else map_points_cap)
+    state.triangles_cap = (cap_from_env(TRIANGLES_ENV, DEFAULT_TRIANGLES_CAP)
+                           if map_triangles_cap is None else map_triangles_cap)
+    if state.points_cap < 0 or state.triangles_cap < 0:
+        raise ValueError("Map wire caps must be >= 0 (0 disables)")
     sim = (SimFeed(RoverSim(load_world(sim_world), speed_mps=nav_speed_mps, turn_radps=nav_turn_radps))
            if sim_world is not None else None)
     camera_service = CameraService(state, device=camera_device, lidar_drive=lidar_drive)
@@ -763,6 +771,10 @@ def main():
     parser.add_argument("--video-bitrate", type=int, default=500000, help="H264 bit/s; start low for cellular headroom")
     parser.add_argument("--bulk-limit-mbps", type=float, default=0,
                         help="Optional shared bulk payload Mbps cap; 0 disables, control/permits remain unpaced")
+    parser.add_argument("--map-points-cap", type=int, default=None,
+                        help="Visual cap on served/exported map points (env FARSIGHT_MAP_POINTS_CAP, default 30000); 0 disables")
+    parser.add_argument("--map-triangles-cap", type=int, default=None,
+                        help="Visual cap on served mesh triangles (env FARSIGHT_MAP_TRIANGLES_CAP, default 40000); 0 disables")
     parser.add_argument("--record", action="store_true", help="Record JPEG, detections and control in --mission-dir")
     parser.add_argument("--replay", help="Loop a recorded mission directory; motors always disabled")
     parser.add_argument("--mission-dir", help="Persist detection evidence beneath this directory")
@@ -778,6 +790,8 @@ def main():
     parser.add_argument("--triage-interval", type=float, default=3.0, help="Minimum seconds between SBAR model calls")
     parser.add_argument("--tts-dir", default="/tmp/farsight-tts", help="Bounded locally generated speech replies")
     args = parser.parse_args()
+    if (args.map_points_cap or 0) < 0 or (args.map_triangles_cap or 0) < 0:
+        parser.error("--map-points-cap and --map-triangles-cap must be >= 0 (0 disables)")
     try:
         BulkPacer(args.bulk_limit_mbps)
     except ValueError as exc:
@@ -813,7 +827,8 @@ def main():
                 nav_max_v=args.nav_max_v, nav_max_w=args.nav_max_w,
                 nav_camera_height=args.nav_camera_height, sim_world=args.sim_world,
                 bonded_control=args.bonded_control, lidar_drive=args.lidar_drive,
-                fusion_bypass=args.fusion_bypass), host=args.host, port=args.port,
+                fusion_bypass=args.fusion_bypass, map_points_cap=args.map_points_cap,
+                map_triangles_cap=args.map_triangles_cap), host=args.host, port=args.port,
                 ssl_certfile=args.ssl_certfile, ssl_keyfile=args.ssl_keyfile,
                 ws_max_size=8 * 1024 * 1024, access_log=False,
                 timeout_graceful_shutdown=5)

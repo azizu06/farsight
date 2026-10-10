@@ -10,6 +10,7 @@ from .geometry import encode_points, export_ply
 from .phone import reconstruct
 from .surfaces import SurfaceMap
 from .voxel import VoxelMap
+from .wire import decimate_mesh_bin, decimate_points_bin
 from jetson.camera import adjusted_receipt, capture_diagnostics
 
 FUSION_BYPASSED = "Geometry lane external; fusion bypassed"
@@ -47,6 +48,9 @@ class MapState:
         self.depth_range = None
         self.pose_history = OrderedDict()
         self.scan = None
+        # Visual wire caps (0 = uncapped): bound only the served/exported points.bin,
+        # mesh.bin and export.ply; fusion, Nav2 depth/occupancy and labels stay full.
+        self.points_cap = self.triangles_cap = 0
         # Called with every accepted RGB-D frame before fusion (navigation costmaps
         # need the newest depth, not only fused geometry). Must be cheap: keep a
         # reference and return.
@@ -184,6 +188,7 @@ class MapState:
                         tracking=self.tracking if fresh else "stale",
                         points=len(self.cloud.cells), triangles=self.surfaces.count,
                         keyframes=len(self.surfaces.keyframes), frames=self.frames,
+                        capped=self.visual_capped(),
                         rejected=self.rejected, dropped=self.dropped,
                         processing_ms=self.processing_ms, processing_fps=self.fps,
                         age_ms=round(age * 1000) if age is not None else None,
@@ -204,14 +209,26 @@ class MapState:
         value = self.latest_camera
         return value if len(value) == 6 else (*value, False, None)
 
+    def visual_capped(self):
+        """True when a wire cap is currently decimating points or mesh triangles."""
+        with self.lock:
+            return ((0 < self.points_cap < len(self.cloud.cells))
+                    or (0 < self.triangles_cap < self.surfaces.count))
+
     def point_packet(self):
         with self.lock:
-            return encode_points(*self.cloud.snapshot())
+            return decimate_points_bin(encode_points(*self.cloud.snapshot()), self.points_cap)
 
     def mesh_packet(self):
         with self.lock:
-            return self.surfaces.encode()
+            return decimate_mesh_bin(self.surfaces.encode(), self.triangles_cap)
 
     def ply(self):
+        """Follows the capped points, like the Rust server's PLY derived from points.bin."""
         with self.lock:
-            return export_ply(*self.cloud.snapshot())
+            points, colors = self.cloud.snapshot()
+        n, cap = len(points), self.points_cap
+        if 0 < cap < n:
+            keep = np.arange(cap, dtype=np.int64) * n // cap
+            points, colors = points[keep], colors[keep]
+        return export_ply(points, colors)

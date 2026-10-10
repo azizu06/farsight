@@ -526,6 +526,17 @@ supported coding stay identity. Responses always carry `Vary: Accept-Encoding`. 
 encodes once per map version (generation, revision, mesh revision) and reuses it across clients.
 Decoded bytes are identical to the uncompressed body; no other route is compressed.
 
+### Visual map wire cap (additive)
+
+`/map/points.bin`, `/map/mesh.bin`, `/map/export.ply` and the legacy `/ws/map` binary push are
+bounded for display: `FARSIGHT_MAP_POINTS_CAP` (`--map-points-cap`, default 30000) and
+`FARSIGHT_MAP_TRIANGLES_CAP` (`--map-triangles-cap`, default 40000); `0` disables. Python and
+Rust decimate identically at encode time: points keep records `i*N/cap`; the mesh keeps
+triangles `i*T/cap`, then sends only their vertices in first-use order with remapped indices.
+Binary layouts are unchanged; the PLY follows the capped points. Map status (`/health`,
+`/ws/map`) gains `capped: true` while either cap is decimating; `points` and `triangles` still
+count the full map. Fusion, Nav2 depth/occupancy and scan results keep full resolution.
+
 ### Cellular map subscription (additive)
 
 `/ws/map?points=http` opts into status-only delivery. Each status acknowledges
