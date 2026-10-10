@@ -281,13 +281,19 @@ every `/ws/control` status. Coordinates are voxel-map world metres: map `x, z`
   frontier goal points (widest first) that Explore chooses from. `goal`: the
   go-to point, or in a Nav2 Seek the standoff point 0.8 m short of the person
   (it moves with them); `null` in Explore.
-- `POST /nav/goal` with exactly `{"x": 2.0, "z": -1.5}` (metres, millimetre
-  precision) returns `202` with the nav object, or `409` `{"nav": <nav object>,
+- `POST /nav/goal` with `{"x": 2.0, "z": -1.5}` (metres, millimetre
+  precision; optional `session_id` from the `/ws/control` status binds it to that
+  controller) returns `202` with the nav object, or `409` `{"nav": <nav object>,
   "message": reason}` when the backend is unavailable, navigation sensors are
-  missing, no live operator permit is held (deadman not held, release required,
-  camera stale) or a scan is running;
-  `422` for non-finite values. `POST /nav/cancel` (no body) cancels and returns the
-  nav object. `GET /nav/status` adds a diagnostic `detail` object.
+  missing, no controller is connected (or `session_id` names another one), a scan
+  is running, or the deadman is held but the permit or camera is not valid;
+  `422` for non-finite values. Posted while the deadman is not held (released,
+  lease expired, release required), the goal is **staged**: `202` with `mode: null`,
+  `state: "idle"` and the `goal`. Nothing moves until a new deadman press, after
+  an ordered release when `requires_release` is set, passes the usual heartbeat
+  gates (permit, drive-ready camera) and carries `mode: "goto"`. `POST /nav/cancel`
+  (no body) cancels and returns the nav object. `GET /nav/status` adds a diagnostic
+  `detail` object.
 - `mode: "goto"` heartbeats are accepted like `explore`/`seek`: same session,
   ordered sequence, server-issued permit, held deadman and fresh-video checks, and
   any nonzero `v`/`w` latches stick override. A `202` only arms the goal: it never
