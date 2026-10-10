@@ -29,10 +29,14 @@ ros2 launch farsight_nav nav.launch.py                 # or the farsight-nav sys
   and Explore/Seek drive the reactive policy. Nothing restarts or waits on ROS.
 - **Gating:** the bridge is not a controller. Nav2's `cmd_vel` only moves the rover
   while the operator holds the deadman in an autonomy mode with a live 250 ms lease.
-  A command older than 250 ms stops, the forward range stop still applies (unless
-  `--proximity-stop off`), and stick input, STOP or cancel disarm the goal.
-- **Velocity mapping:** with `--drive-profile`, `cmd_vel` goes through
-  `DriveProfile.wheel_pwm` exactly like `velocity` heartbeats
+  `POST /nav/goal` only arms a goal; motion starts with the operator's own `goto`
+  heartbeats. A command older than 250 ms, or computed for an earlier goal or
+  before the current deadman press, stops; the forward range stop still applies
+  (unless `--proximity-stop off`); stick input, STOP, cancel, a controller change
+  or a serial disconnect disarm the goal.
+- **Velocity mapping:** with `--drive-profile`, `cmd_vel` is clamped to the
+  profile's top linear and angular speed at `--max-pwm`, then goes through
+  `DriveProfile.wheel_pwm` like `velocity` heartbeats
   ([drive calibration](drive-calibration.md)). Without it, `linear / --nav-speed-mps`
   and `angular / --nav-turn-radps` become normalized `v, w`, capped by
   `--nav-max-v` / `--nav-max-w`. Keep Nav2's `vx_max` / `wz_max` at or under the
@@ -70,7 +74,7 @@ Loopback only; one bridge at a time; other hosts get close code 1008.
 | server -> bridge | `pose {transform (16, column-major ARKit camera-to-world), tracking, source, age_ms, floor_y}` every 40 ms; `floor_y` is `-nav_camera_height` |
 | server -> bridge | binary depth: `uint32` header length, JSON header (`frame_id, width, height, fx, fy, cx, cy, transform, floor_y, source, age_ms`; intrinsics scaled to the subsampled size), `uint16` millimetres (0 = no return), at most 160 px wide |
 | server -> bridge | `range {cm, age_ms}` at 10 Hz; `intent {active, mode, goal {x, y, yaw} in odom, goal_id, target_id}` on change and every 200 ms |
-| bridge -> server | `cmd_vel {linear, angular}` (m/s, rad/s counter-clockwise) at the controller rate |
+| bridge -> server | `cmd_vel {linear, angular, goal_id}` (m/s, rad/s counter-clockwise) at the controller rate; go-to commands for another `goal_id` are dropped |
 | bridge -> server | `status {state, goal_id, path, frontiers, message, controller_hz, recoveries, nav2}` at 4 Hz; `path` and `frontiers` in odom |
 
 The bridge publishes `/odom`, TF, `/farsight/depth/points` (PointCloud2),

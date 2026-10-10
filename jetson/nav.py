@@ -193,12 +193,16 @@ class NavService:
             if mode in ("explore", "seek") and self.goal is not None:
                 self.goal = None  # selecting another autonomy mode disarms go-to-point
             # A release keeps the goal armed; the next held "goto" heartbeat resumes it.
-            self.mode, self.target_id, self.active = mode, target_id, bool(active and mode)
+            active = bool(active and mode)
+            if active and not self.active:
+                self.cmd = None  # never resume on a command computed before this press
+            self.mode, self.target_id, self.active = mode, target_id, active
 
     def disarm(self):
-        """Stick input, cancel or STOP: forget the go-to-point goal."""
+        """Stick input, cancel, STOP or a controller change: forget the go-to-point goal."""
         with self.lock:
             self.goal = None
+            self.cmd = None
 
     # -- backend state ----------------------------------------------------------------
 
@@ -281,6 +285,7 @@ class NavService:
         return [[round(x, 3) + 0.0, round(z, 3) + 0.0] for x, z in points]  # no "-0.0" in JSON
 
     def detail(self):
+        pose_source = self.pose_snapshot()[2] if self.mapping is not None else None  # never under self.lock
         with self.lock:
             return dict(available=self.available(), bridge=self.bridge is not None,
                         bridge_age_ms=None if self.bridge is None else round((self.clock() - self.bridge_seen) * 1000),
@@ -288,7 +293,7 @@ class NavService:
                         remote={key: self.remote.get(key) for key in ("state", "goal_id", "message", "controller_hz",
                                                                       "planner_ms", "recoveries", "result", "costmap",
                                                                       "nav2")},
-                        pose_source=self.pose_snapshot()[2] if self.mapping is not None else None,
+                        pose_source=pose_source,
                         speed_mps=self.speed_mps, turn_radps=self.turn_radps, max_v=self.max_v, max_w=self.max_w)
 
     # -- pose and sensor streams for the bridge ---------------------------------------
@@ -296,10 +301,11 @@ class NavService:
     def pose_snapshot(self):
         """(camera-to-world transform, tracking, source, age_s) or (None, ...) when the pose is lost."""
         mapping = self.mapping
-        with mapping.lock:
-            transform, tracking = mapping.pose.copy(), mapping.tracking
-            received, connected = mapping.last_received, mapping.connected
-            scan, demo, identity = mapping.scan, mapping.demo, mapping.identity
+        # Lock-free read: MapState replaces (never mutates) these, and fusion holds
+        # mapping.lock for whole voxel integrations that pose streaming must not wait on.
+        transform, tracking = mapping.pose.copy(), mapping.tracking
+        received, connected = mapping.last_received, mapping.connected
+        scan, demo, identity = mapping.scan, mapping.demo, mapping.identity
         now = time.monotonic()
         age = now - received if received else None
         if connected and age is not None and age < self.POSE_TTL and not scan:
@@ -349,6 +355,9 @@ class NavService:
                 linear, angular = message.get("linear"), message.get("angular")
                 if not all(type(x) in (int, float) and math.isfinite(x) for x in (linear, angular)):
                     raise ValueError("cmd_vel needs finite linear and angular")
+                if self.mode == "goto" and message.get("goal_id", self.goal_id) != self.goal_id:
+                    self.bridge_seen = now
+                    return  # computed for an earlier goal
                 # ROS angular.z is counter-clockwise (left); ControlState positive w turns right.
                 v = max(-self.max_v, min(self.max_v, linear / self.speed_mps))
                 w = max(-self.max_w, min(self.max_w, -angular / self.turn_radps))
@@ -369,10 +378,12 @@ class NavService:
             return
         token = object()
         with self.lock:
-            if self.bridge is not None:
-                await ws.close(code=1008, reason="Another navigation bridge is connected")
-                return
-            self.bridge = token
+            busy = self.bridge is not None
+            if not busy:
+                self.bridge = token
+        if busy:  # never await while holding the threading lock
+            await ws.close(code=1008, reason="Another navigation bridge is connected")
+            return
         try:
             hello = await asyncio.wait_for(ws.receive_json(), 10)
             if not isinstance(hello, dict) or hello.get("type") != "hello" or hello.get("version") != PROTOCOL:
@@ -406,8 +417,7 @@ class NavService:
                         await ws.send_bytes(packet)
                         sent_frame = seq
                     if self.control is not None and now - last_range >= 0.1:
-                        with self.control.lock:
-                            cm, at = self.control.range_cm, self.control.range_at
+                        cm, at = self.control.range_cm, self.control.range_at  # no control.lock on the event loop
                         await ws.send_json(dict(type="range", cm=cm,
                                                 age_ms=None if not math.isfinite(at) else round((self.control.clock() - at) * 1000)))
                         last_range = now
@@ -470,17 +480,15 @@ class NavService:
                 raise Refused(state.status()["nav"], "Go-to-point needs a live operator permit: hold the deadman")
             if state.scan_token is not None:
                 raise Refused(state.status()["nav"], "A scan is running")
+            # Arm only: the operator's own held "goto" heartbeats start motion. A POST
+            # never changes the drive mode, so no other client can make the rover move.
             with self.lock:
                 self.goal_id += 1
                 self.goal = (float(x), float(z))
+                self.cmd = None
                 self.remote = dict(self.remote, state="planning", path=[])
             state.stick_override = False
-            state.goto_race_permits = frozenset(state.permits)
-            state.autonomy.select("goto", None, now)
-            with self.lock:
-                self.mode, self.target_id, self.active = "goto", None, True
-                self.goal = (float(x), float(z))  # select may have synced a previous mode
-            return state.status()["nav"]
+            return self.nav_object("goto", "goto", True)
 
     def cancel(self):
         state = self.control
@@ -489,12 +497,10 @@ class NavService:
                 if state.autonomy is not None and state.autonomy.mode in NAV_MODES:
                     state.autonomy.reset()
                     state.stick_override = False
-                with self.lock:
-                    self.goal = None
+                self.disarm()
                 state.output()
                 return state.status()["nav"]
-        with self.lock:
-            self.goal = None
+        self.disarm()
         return self.nav_object()
 
     async def post_goal(self, body: GoalRequest):

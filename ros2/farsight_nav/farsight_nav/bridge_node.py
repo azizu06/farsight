@@ -366,7 +366,8 @@ class FarsightBridge(Node):
         now = time.monotonic()
         with self.lock:
             self.cmd_times = [t for t in self.cmd_times if now - t < 2.0] + [now]
-        self.send(protocol.cmd_vel(message.linear.x, message.angular.z))
+            goal_id = self.goal_id
+        self.send(protocol.cmd_vel(message.linear.x, message.angular.z, goal_id))
 
     def send_status(self):
         with self.lock:

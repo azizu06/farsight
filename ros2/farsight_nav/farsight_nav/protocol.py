@@ -29,8 +29,9 @@ def hello(**fields):
     return dict(type="hello", version=VERSION, node="farsight_bridge", **fields)
 
 
-def cmd_vel(linear, angular):
-    return dict(type="cmd_vel", linear=float(linear), angular=float(angular))
+def cmd_vel(linear, angular, goal_id=None):
+    """goal_id: the server goal this command drives toward; the server drops mismatches."""
+    return dict(type="cmd_vel", linear=float(linear), angular=float(angular), goal_id=goal_id)
 
 
 def status(state, goal_id, *, path=(), frontiers=(), message="", **extra):

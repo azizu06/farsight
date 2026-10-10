@@ -110,11 +110,12 @@ class LeaseTests(unittest.TestCase):
         self.assertEqual(set(nav), NAV_KEYS)
         self.assertEqual((nav["mode"], nav["state"], nav["backend"]), ("goto", "planning", "nav2"))
         self.assertEqual(nav["goal"], {"x": 1.0, "z": -2.0})
+        self.assertFalse(self.nav.intent()["active"])  # armed only; the operator's goto heartbeat starts it
+        self.assertTrue(self.send(mode="goto"))
+        self.assertEqual(self.state.output()[:2], (0, 0))  # no command yet
         intent = self.nav.intent()
         self.assertTrue(intent["active"])
         self.assertEqual(intent["goal"], {"x": 2.0, "y": -1.0, "yaw": None})
-        self.assertTrue(self.send(mode="goto"))
-        self.assertEqual(self.state.output()[:2], (0, 0))  # no command yet
         # ROS angular.z is counter-clockwise; negative turns right (left wheel faster).
         self.bridge(type="cmd_vel", linear=0.225, angular=-1.5)
         left, right, _ = self.state.output()
@@ -162,22 +163,45 @@ class LeaseTests(unittest.TestCase):
         left, right, _ = self.state.output()
         self.assertEqual((left, right), profile.wheel_pwm(0.3, 0.8, max_pwm=self.state.max_pwm))
         self.assertGreater(right, left)
+        self.bridge(type="cmd_vel", linear=5.0, angular=0.0)  # beyond the calibrated top speed
+        top = profile.max_linear_mps(self.state.max_pwm)
+        self.assertEqual(self.state.output()[:2], profile.wheel_pwm(top, 0.0, max_pwm=self.state.max_pwm))
         self.clock.now += 0.15
         self.assertTrue(self.send(mode="goto"))
         self.clock.now += 0.15  # command older than CMD_TTL stops even with a held lease
         self.assertEqual(self.state.output()[:2], (0, 0))
 
-    def test_pre_post_teleop_heartbeat_keeps_goto_but_new_teleop_cancels(self):
+    def test_controller_change_or_serial_fault_disarms_the_goal(self):
+        self.bridge(type="status", state="idle", goal_id=None)
+        self.assertTrue(self.send())
+        self.nav.set_goal(0.5, -1.0)
+        self.state.end(self.session)
+        self.assertIsNone(self.nav.goal)
+        self.session = self.state.begin()
+        self.send(deadman=False)
+        self.assertTrue(self.send())
+        self.nav.set_goal(0.5, -1.0)
+        self.state.set_connected(False)
+        self.assertIsNone(self.nav.goal)
+
+    def test_goal_post_only_arms_and_never_moves_a_teleop_operator(self):
         self.bridge(type="status", state="idle", goal_id=None)
         self.assertTrue(self.send())
         old = self.state.status(issue_permit=True)["permit"]
-        self.nav.set_goal(0.5, -1.0)
-        self.seq += 1
+        self.nav.set_goal(0.5, -1.0)  # e.g. another client on the network
+        self.bridge(type="cmd_vel", linear=0.3, angular=0)
+        self.seq += 1  # the operator's in-flight centred-stick teleop heartbeat, permit from before the POST
         self.assertTrue(self.state.accept(dict(session_id=self.session, permit=old, seq=self.seq, deadman=True, v=0,
                                                w=0, pan=0, mode="teleop", video_fresh=True, video_age_ms=0),
                                           self.session))
-        self.assertEqual(self.state.status()["mode"], "goto")
+        self.assertEqual(self.state.status()["mode"], "teleop")
+        self.assertEqual(self.state.output()[:2], (0, 0))
         self.assertTrue(self.send(mode="goto"))
+        self.assertEqual(self.state.output()[:2], (0, 0))  # the pre-press command is discarded
+        self.bridge(type="cmd_vel", linear=0.3, angular=0, goal_id=self.nav.goal_id - 1)
+        self.assertEqual(self.state.output()[:2], (0, 0))  # computed for an earlier goal
+        self.bridge(type="cmd_vel", linear=0.3, angular=0, goal_id=self.nav.goal_id)
+        self.assertGreater(self.state.output()[0], 0)
         self.assertTrue(self.send(mode="teleop"))
         self.assertEqual(self.state.status()["mode"], "teleop")
         self.assertIsNone(self.state.status()["nav"]["mode"])
@@ -281,14 +305,14 @@ class ServerTests(unittest.TestCase):
                     reply = client.post("/nav/goal", json=dict(x=0.4, z=-1.5))
                     self.assertEqual(reply.status_code, 202, reply.text)
                     self.assertEqual(reply.json()["mode"], "goto")
-                    bridge.send_json(dict(type="cmd_vel", linear=0.2, angular=0.0))
-                    status = ws.receive_json()
-                    ws.send_json(dict(session_id=status["session_id"], permit=status["permit"], seq=2, deadman=True,
-                                      v=0, w=0, pan=0, mode="goto", video_fresh=True, video_age_ms=0))
-                    for _ in range(20):
+                    for seq in range(2, 40):
                         status = ws.receive_json()
-                        if status["seq"] == 2 and status["left_pwm"] > 0:
-                            break
+                        ws.send_json(dict(session_id=status["session_id"], permit=status["permit"], seq=seq,
+                                          deadman=True, v=0, w=0, pan=0, mode="goto", video_fresh=True, video_age_ms=0))
+                        if status["mode"] == "goto":
+                            bridge.send_json(dict(type="cmd_vel", linear=0.2, angular=0.0))
+                            if status["left_pwm"] > 0:
+                                break
                     self.assertEqual(status["mode"], "goto")
                     self.assertGreater(status["left_pwm"], 0)
                     self.assertEqual(status["nav"]["goal"], {"x": 0.4, "z": -1.5})

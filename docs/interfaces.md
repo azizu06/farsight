@@ -268,14 +268,15 @@ every `/ws/control` status. Coordinates are voxel-map world metres: map `x, z`
   nav object. `GET /nav/status` adds a diagnostic `detail` object.
 - `mode: "goto"` heartbeats are accepted like `explore`/`seek`: same session,
   ordered sequence, server-issued permit, held deadman and fresh-video checks, and
-  any nonzero `v`/`w` latches stick override. Only a `202` arms go-to; held-deadman
-  heartbeats then carry `mode: "goto"` (no `target_id`, `v: 0`, `w: 0`), and releases
-  still carry `mode: "teleop"`. A release or view change needs a new deadman press
-  but keeps the goal armed; the next held `goto` heartbeat resumes it. Stick input,
-  STOP, cancel, a new goal or selecting Explore/Seek disarm it. As with Scan, a
-  zero-stick `teleop` heartbeat whose permit was issued before the goal was set
-  counts as `goto` (the POST and the socket travel separately); a newer held
-  `teleop` heartbeat ends go-to for that press.
+  any nonzero `v`/`w` latches stick override. A `202` only arms the goal: it never
+  changes the drive mode, so the rover moves only once the operator's own held
+  heartbeats carry `mode: "goto"` (no `target_id`, `v: 0`, `w: 0`); releases still
+  carry `mode: "teleop"`, and a zero-stick `teleop` heartbeat in flight during the
+  POST simply leaves the goal armed. A release or view change needs a new deadman
+  press but keeps the goal armed; the next held `goto` heartbeat resumes it, using
+  only Nav2 commands computed after that press. Stick input, STOP, cancel, a new
+  goal, selecting Explore/Seek, the controller socket closing (or a new one taking
+  over) and a serial disconnect disarm it.
 - Viewer (`quest/src/nav-view.js`, `nav-overlay.ts`): an unknown `state` hides the
   overlay, and a path with any non-finite point is not drawn at all. Stick input,
   STOP and cancel send `POST /nav/cancel`. Servers that do not accept

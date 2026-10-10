@@ -67,7 +67,6 @@ class ControlState:
         # Same race for POST /nav/goal: permits issued before the goal was set may
         # still carry a zero-stick teleop heartbeat sent before the client switched
         # to mode "goto".
-        self.goto_race_permits = frozenset()
         # Optional on_output(v, w, forward_blocked) observer of the command actually applied.
         self.on_output = None
 
@@ -122,6 +121,8 @@ class ControlState:
         with self.lock:
             if value != self.connected:
                 self.stop("release_required" if value else (reason or "serial_disconnected"))
+                if self.navigator is not None:
+                    self.navigator.disarm()  # a serial fault needs a fresh goal, not a silent resume
                 self.permits.clear()
                 self.range_cm = None
                 self.range_at = -math.inf
@@ -137,6 +138,8 @@ class ControlState:
             self.seq = -1
             self.permits.clear()
             self.stop("release_required")
+            if self.navigator is not None:
+                self.navigator.disarm()
             return self.session_id
 
     def end(self, session_id):
@@ -145,6 +148,8 @@ class ControlState:
                 self.stop("controller_disconnected")
                 self.session_id = None
                 self.permits.clear()
+                if self.navigator is not None:
+                    self.navigator.disarm()  # a go-to goal belongs to the controller that set it
 
     def update_range(self, cm):
         with self.lock:
@@ -237,11 +242,6 @@ class ControlState:
             if not (-1 <= v <= 1 and -1 <= w <= 1 and -80 <= pan <= 80):
                 self.stop("invalid_command")
                 return False
-            if (self.autonomy and self.autonomy.mode == "goto" and mode == "teleop" and not v and not w
-                    and token in self.goto_race_permits):
-                mode = "goto"  # pre-POST /nav/goal heartbeat; the client switches to goto next
-            elif mode == "goto":
-                self.goto_race_permits = frozenset()
             if (self.scan_token is not None and mode == "teleop" and not v and not w
                     and token in self.scan_race_permits):
                 mode = "scan"  # pre-POST heartbeat: renews like a scan heartbeat, within its own permit
@@ -356,8 +356,11 @@ class ControlState:
             if engaged and self.navigator is not None and self.navigator.handles(self.autonomy.mode):
                 # Nav2 drives this mode; a missing or stale velocity command stops.
                 if self.profile is not None:  # calibrated: Nav2 m/s, rad/s straight to wheel PWM
-                    command = self.navigator.command(si=True)
-                    return self._drive_output("velocity", command if command is not None else (0.0, 0.0))
+                    command = self.navigator.command(si=True) or (0.0, 0.0)
+                    top_v = self.profile.max_linear_mps(self.max_pwm)
+                    top_w = self.profile.max_angular_radps(self.max_pwm)
+                    return self._drive_output("velocity", (max(-top_v, min(top_v, command[0])),
+                                                           max(-top_w, min(top_w, command[1]))))
                 command = self.navigator.command()
                 v, w = command if command is not None else (0.0, 0.0)
             elif engaged:
