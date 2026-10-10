@@ -45,11 +45,11 @@ Do the cold boot in [demo-checklist.md](demo-checklist.md) until `tools.ready` p
 | **Left X** | Centre pan |
 | **Left Y** (with trigger held, sticks centred) | Camera-only 3D scan |
 | **Left grip** | Start the 90 s rescue drill |
+| **Left trigger (hold)** | Ask the local assistant by voice; release to send. Enable in Settings first. Confirms a pending proposal |
 | Any stick input during Seek/Explore | Takes over; autonomy stays off until trigger release |
 
-`quest/README.md` and `README.md` still say "B centers pan"; the code above is authoritative. The
-canonical controls are being re-integrated under #40, so re-check this table against
-`quest/src/rover.ts` right before rehearsal.
+`quest/README.md` and `README.md` match this table; `quest/src/rover.ts` stays authoritative,
+so re-check it right before rehearsal.
 
 ## The 90 seconds
 
@@ -82,7 +82,7 @@ Cue the spotter, not the clock: if Seek is slow, extend that beat and drop 1:05-
 | **Phone LiDAR map** | Pro iPhone capture app to `/phone`; show the 3D map | Needs a LiDAR iPhone paired and routed; an ordinary iPhone gives RGB only |
 | **Rescue drill** | **Left grip**; 90 s timer; faces held in view 1 s count as found; route-home summary | Faces model loaded; real people as victims; reports "observed face tracks" |
 | **Speak** | Settings, phrase picker, Say EN / Say ES | USB speaker verified; otherwise the browser plays it and says so |
-| **Voice ask** | Settings, Ask by voice, approve mic | Mic checked on the Quest browser; in-VR push-to-talk is not built |
+| **Voice ask** | Settings, Ask by voice, approve mic; or Enable in-VR voice, then hold **left trigger** in VR | Mic, permission and in-headset playback checked on the physical Quest (push-to-talk is desktop/synthetic-XR tested only) |
 
 ## What not to attempt live
 

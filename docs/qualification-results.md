@@ -169,3 +169,69 @@ exclude real sensor exposure/ISP latency and do not verify Quest decoding, WebXR
 USB tethering, cellular radio conditions, Jetson CPU/GPU performance, or physical
 Uno watchdog timing. Run the hardware checklist in [transport-setup.md](transport-setup.md)
 and the 15-minute battery/failure rehearsal before calling the demo qualified.
+
+## Backend load profile (issue #41, October 10)
+
+New measurements on Apple M5 Pro, macOS 27.0.1 ARM64, Python 3.13.5, OpenCV 4.14.0, ONNX Runtime 1.31.0 and FFmpeg 9.0.2. These are software-only observations on a shared host; unrelated host pauses were not controlled. Read-only `tools.preflight --role operator` identified this host as non-Jetson. No camera, Quest, phone or physical motors were opened by these trials.
+
+The RGB source repeats the same moving 640x480 bus-photo scene at 15 fps, labelled `SIMULATED RGB 15 FPS`, with capture timestamps before JPEG encoding. Pose uses the official YOLO11n-pose weights exported with `tools.export_detector` (Ultralytics 8.4.175, opset 12, input `[1,3,640,640]`, output `[1,56,8400]`). Model SHA-256: `b4d3abde2f7233a9f4f869e8ff1048263ef6ed28957bad1382504ade24bd6299`. Scene SHA-256: `c02019c4979c191eb739ddd944445ef408dad5679acab6fd520ef9d434bfbc63`.
+
+Every trial uses the real production FFmpeg encoder, 10 fps / 500 kbps / 200 ms VBV, two requested fragments, fixed 20 Hz permits and commands, the 250 ms lease and 500 ms view guard, plus 50 ms each-way delay and shared 2 Mbps bandwidth. Combined load adds one bounded five-view scan-kernel burst and one `/ask` request every two seconds. Scan bursts run production synthetic-frame/back-projection/voxel integration kernels; they do not exercise scan control admission or a depth model. Assistant requests use the real local observation summary, with no VLM/STT/TTS model. Thus this does not qualify full assistant-model contention.
+
+First, the requested cadence comparison ran both policies for 20 seconds twice. All four trials sustained 100% settled simulated motion; arrival p95 was 281–294 ms, with no recorded server lag above the fixture's 5 ms threshold. Production cadence was left at 20 Hz.
+
+With pose enabled, the second quiet baseline reproduced a stop: 229.6 ms server lag, 84.8 ms client lag, capture-receipt p95 641 ms, and 43.0% settled moving samples. The last accepted command used a 248.5 ms old permit, leaving about 1.5 ms before expiry. The lease and view guards correctly stopped motion. The trace also measured inference queue wait up to 110.9 ms and detector work up to 466.3 ms.
+
+The only runtime change bounds the CPU pose session to two intra-op workers. [ONNX Runtime documents](https://onnxruntime.ai/docs/performance/tune-performance/threading.html) that its default pool uses physical cores and enables worker spinning. The paired measurements below establish lower process CPU use and fewer threads, with inference still within the 100 ms target period in the final trials. They do not establish that this change eliminates unrelated process stalls. OpenCV, FFmpeg, camera/control/relay code, capture identity, queues and safety settings were unchanged.
+
+Each row is a separate 20-second trial. CPU is process p95 sampled every 100 ms (100% = one core); threads are process p95, including native pools and executor workers. Inference is ONNX `run` wall time. H.264 latency includes raw input submission through complete fragment publication, including mux/pipe delay; it is not pure codec execution time.
+
+| Build | Load | Repeat | CPU p95 | Threads p95 | ONNX p95 | Server lag max | Arrival age p95 | Settled moving |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| Before | quiet | 1 | 244.0% | 30 | 20.1 ms | 22.9 ms | 313.2 ms | 100.0% |
+| Before | combined | 1 | 245.5% | 31 | 26.5 ms | 35.2 ms | 325.9 ms | 100.0% |
+| Before | quiet | 2 | 270.1% | 30 | 253.7 ms | 229.6 ms | 641.0 ms | 43.0% |
+| Before | combined | 2 | 240.4% | 31 | 24.1 ms | 33.3 ms | 314.8 ms | 100.0% |
+| After | quiet | 1 | 85.7% | 25 | 22.6 ms | 21.9 ms | 311.2 ms | 100.0% |
+| After | combined | 1 | 132.3% | 25 | 26.8 ms | 31.5 ms | 339.3 ms | 100.0% |
+| After | quiet | 2 | 63.0% | 26 | 19.2 ms | 22.1 ms | 308.6 ms | 100.0% |
+| After | combined | 2 | 129.1% | 26 | 23.2 ms | 31.0 ms | 317.0 ms | 100.0% |
+
+The intermediate experiment explicitly overriding two ONNX workers also sustained motion in all four quiet/combined repeats. Quiet CPU p95 was 84.5–88.4%; combined CPU p95 was 132.0–133.7%. Final production trials omit the override. The non-stalled before/after rows show a CPU reduction of roughly 46–74%, while typical scheduling lag changes little. Retain the original failed baseline rather than attributing its entire improvement to the pool limit.
+
+| Final source / detector | Load | Repeat | Detector work p95 | JPEG encode p95 | H.264 input-to-fragment p95 | Server lag max | Settled moving |
+|---|---|---:|---:|---:|---:|---:|---:|
+| RGB / pose | quiet | 1 | 28.4 ms | 0.8 ms | 118.8 ms | 21.9 ms | 100.0% |
+| RGB / pose | combined | 1 | 35.4 ms | 0.8 ms | 126.8 ms | 31.5 ms | 100.0% |
+| RGB / pose | quiet | 2 | 24.0 ms | 0.7 ms | 118.4 ms | 22.1 ms | 100.0% |
+| RGB / pose | combined | 2 | 29.7 ms | 0.8 ms | 119.9 ms | 31.0 ms | 100.0% |
+| RGB / HOG | quiet | 1 | 17.3 ms | 1.2 ms | 126.9 ms | 30.7 ms | 100.0% |
+| RGB / HOG | combined | 1 | 5.5 ms | 1.3 ms | 127.3 ms | 34.0 ms | 100.0% |
+| RGB / HOG | quiet | 2 | 4.5 ms | 1.2 ms | 126.7 ms | 38.3 ms | 100.0% |
+| RGB / HOG | combined | 2 | 20.7 ms | 1.3 ms | 127.6 ms | 32.4 ms | 100.0% |
+| Room map / pose | quiet | 1 | 28.7 ms | inside map processing | 118.6 ms | 29.8 ms | 0.0% |
+| Room map / pose | quiet | 2 | 25.2 ms | inside map processing | 119.9 ms | 21.5 ms | 1.6% |
+
+Detailed stage queue/work times, CPU/thread samples, permit/command timing, first failure and all repeated summaries are retained in [the measurement artifact](qualification/issue41-backend-profile.json). Raw per-trial profiler reports also retain the qualification traces. HOG is a comparison workload, not a pose replacement. The slower room/map source remains a separate freshness-limited case and must not be advertised as continuous-driving qualified.
+
+### Reproduce the load profile
+
+Install the optional profiling dependency (`python -m pip install psutil`), plus ONNX Runtime for the CPU pose measurements. Prepare the model with the existing exporter; model files remain ignored artifacts. The bus scene is from [Ultralytics](https://raw.githubusercontent.com/ultralytics/ultralytics/main/ultralytics/assets/bus.jpg). Run one profiler at a time:
+
+```sh
+python -m tools.export_detector --weights yolo11n-pose.pt
+curl -L --fail https://raw.githubusercontent.com/ultralytics/ultralytics/main/ultralytics/assets/bus.jpg -o models/profile-bus.jpg
+# Reproduce the old unrestricted CPU pool on current code:
+python -m tools.profile_backend --detector pose --model models/yolo11n-pose.onnx --scene models/profile-bus.jpg --ort-threads 0 --duration 20 --repeats 2 --report before.json
+# Measure the production two-worker CPU pool:
+python -m tools.profile_backend --detector pose --model models/yolo11n-pose.onnx --scene models/profile-bus.jpg --duration 20 --repeats 2 --report after.json
+python -m tools.profile_backend --detector hog --scene models/profile-bus.jpg --duration 20 --repeats 2 --report hog.json
+# Production create_app(demo=True, simulate_rover=True), equivalent source flags:
+python -m tools.profile_backend --source map5 --detector pose --model models/yolo11n-pose.onnx --duration 20 --repeats 2 --loads quiet --report map.json
+```
+
+The tool starts isolated localhost ports, uses simulated motors only, bounds stage samples to 4096 and encoder sample bookkeeping to 600, rejects overlapping scan-kernel bursts, and closes its own processes. Profiling routes are fixture-only. Executor timing separates queue wait from worker execution; repeated frame identities retain their original capture timestamps. An invalid detector or missing combined burst is a failed workload, not a passing qualification.
+
+Full VLM/audio models, real camera capture, Jetson CUDA/TensorRT, Quest decode/display, physical scan behavior and motor stop timing remain unverified. Keep #12 and the physical rig gates open.
+
+Validation after rebasing onto current main: `pytest jetson/control/tests jetson/mapping/tests jetson/tests tools/tests -q` passed 359 tests and 84 subtests (5 skipped). The actual FFmpeg recovery/freeze/outage and freshness/release regressions passed. Quest tests passed 49/49 and its production build passed. A separate real-ONNX comparison on four shifted bus scenes found four people in each and matching boxes/keypoints (rtol 1e-5, atol 1e-3), confidence (absolute error <1e-5) and down flags with unrestricted versus two-worker sessions. The CPU-budget regression was observed failing before the runtime change and passing afterward.

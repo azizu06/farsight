@@ -66,6 +66,12 @@ struct Args {
     /// Persist detection evidence beneath this directory
     #[arg(long)]
     mission_dir: Option<PathBuf>,
+    /// Record JPEG, detections and control in --mission-dir
+    #[arg(long)]
+    record: bool,
+    /// Loop a recorded mission directory; motors always disabled
+    #[arg(long)]
+    replay: Option<PathBuf>,
     /// Local llama-server origin, e.g. http://127.0.0.1:8082
     #[arg(long)]
     assistant_url: Option<String>,
@@ -110,6 +116,18 @@ async fn main() {
     if args.demo && args.camera.is_some() {
         panic!("Choose --demo or a real --camera, not both");
     }
+    if args.record && args.mission_dir.is_none() {
+        panic!("--record requires --mission-dir");
+    }
+    if args.replay.is_some()
+        && (args.serial_port.is_some()
+            || args.camera.is_some()
+            || args.demo
+            || args.simulate_rover
+            || args.record)
+    {
+        panic!("Replay cannot be combined with serial, live/simulated sources, or recording");
+    }
     let state = server::build_state(
         args.demo,
         args.camera,
@@ -138,6 +156,8 @@ async fn main() {
         args.scan_turn_dps,
         args.video_fps,
         args.video_bitrate,
+        args.record,
+        args.replay,
     );
     server::start_services(&state);
     let dist = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../quest/dist");

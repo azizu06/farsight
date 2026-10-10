@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { ReplayBadge } from "./replay-badge.js";
+import { SourceTruth } from "./source-banner.js";
 import { ControlSafety, stick } from "./control-safety.js";
 import { H264Viewer } from "./h264";
 import { cameraCrop, croppedBox } from "./camera-view.js";
@@ -19,7 +19,15 @@ type ControlStatus = {
 
 /** Same-origin only: Quest talks through USB/ADB to the operator relay. */
 export class RoverExperience {
-  private replayBadge = new ReplayBadge();
+  private sourceTruth = new SourceTruth();
+  private sourceBanner: HTMLElement;
+  private bannerCanvas = document.createElement("canvas");
+  private bannerTexture = new THREE.CanvasTexture(this.bannerCanvas);
+  private bannerPanel = new THREE.Mesh(new THREE.PlaneGeometry(2.8, 0.35), new THREE.MeshBasicMaterial({ map: this.bannerTexture, transparent: true, toneMapped: false, depthTest: false }));
+  private voiceCanvas = document.createElement("canvas");
+  private voiceTexture = new THREE.CanvasTexture(this.voiceCanvas);
+  private voicePanel = new THREE.Mesh(new THREE.PlaneGeometry(1.2, 0.8), new THREE.MeshBasicMaterial({ map: this.voiceTexture, transparent: true, toneMapped: false, depthTest: false }));
+  private talkDown = false;
   private gate = new ControlSafety();
   private socket: WebSocket | null = null;
   private detectionsSocket: WebSocket | null = null;
@@ -112,8 +120,12 @@ export class RoverExperience {
       <p id="rover-details">Motion disabled until camera and control are fresh.</p>
       <button id="rover-hold" class="hold-button">Hold to enable · WASD to drive</button>
       <button id="rover-explore" aria-pressed="false">Explore (E)</button>
-      <p class="rover-help">Quest: hold right trigger + left stick. A: seek pointed person (else camera/map). B: explore. X: center pan. Y: scan. Left grip: start rescue drill.<br>Desktop: hold Space + WASD in camera view; click a person to seek; E explores. Stick/WASD takes back control.</p>`;
+      <p class="rover-help">Quest: hold right trigger + left stick. A: seek pointed person (else camera/map). B: explore. X: center pan. Y: scan. Left grip: start rescue drill. Hold left trigger: ask by voice (enable in Settings first).<br>Desktop: hold Space + WASD in camera view; click a person to seek; E explores. Stick/WASD takes back control.</p>`;
     document.querySelector("main")!.append(panel);
+    this.sourceBanner = document.createElement("div");
+    this.sourceBanner.className = "source-banner"; this.sourceBanner.setAttribute("role", "status");
+    this.sourceBanner.innerHTML = "<strong></strong><span></span>";
+    document.querySelector("main")!.append(this.sourceBanner);
     this.message = panel.querySelector("#rover-message")!;
     this.details = panel.querySelector("#rover-details")!;
     this.holdButton = panel.querySelector("#rover-hold")!;
@@ -148,7 +160,13 @@ export class RoverExperience {
     this.drillTexture.colorSpace = THREE.SRGBColorSpace;
     this.drillPanel.position.set(2.15, 0.15, -2.1); this.drillPanel.rotation.y = -0.35; this.drillPanel.renderOrder = 12; this.drillPanel.visible = false;
     document.querySelector("#full-camera")!.append(this.drillHud.canvas); this.drillHud.canvas.hidden = true;
-    this.cockpit.add(screen, hud, this.drillPanel); this.cockpit.visible = false;
+    this.bannerCanvas.width = 1024; this.bannerCanvas.height = 128;
+    this.bannerTexture.colorSpace = THREE.SRGBColorSpace;
+    this.bannerPanel.position.set(0, 1.45, -2.32); this.bannerPanel.renderOrder = 13;
+    this.voiceCanvas.width = 768; this.voiceCanvas.height = 512;
+    this.voiceTexture.colorSpace = THREE.SRGBColorSpace;
+    this.voicePanel.position.set(-2.15, 0.15, -2.1); this.voicePanel.rotation.y = 0.35; this.voicePanel.renderOrder = 12; this.voicePanel.visible = false;
+    this.cockpit.add(screen, hud, this.drillPanel, this.bannerPanel, this.voicePanel); this.cockpit.visible = false;
     this.cameraScreen = screen;
     this.scene.add(this.cockpit);
     this.h264 = new H264Viewer(() => {
@@ -172,10 +190,11 @@ export class RoverExperience {
       this.recenter = true; this.xrLive = true; this.setView("camera");
       this.renderer.xr.getSession()?.addEventListener("visibilitychange", () => {
         this.suspended = this.renderer.xr.getSession()?.visibilityState !== "visible";
-        if (this.suspended) this.stop("Headset inactive: release trigger");
+        if (this.suspended) { this.voice?.stopListening("Headset inactive: voice question cancelled"); this.stop("Headset inactive: release trigger"); }
       });
     });
     this.renderer.xr.addEventListener("sessionend", () => {
+      this.voice?.stopListening("VR session ended: voice question cancelled");
       this.stop("VR session ended: release deadman"); this.suspended = false;
       this.lastXRAt = -Infinity;
       this.rightSource = null; this.movementSource = null;
@@ -191,8 +210,8 @@ export class RoverExperience {
       this.stop("Camera mount changed: release deadman"); this.dirty = true;
     };
     this.connectControl(); this.connectDetections();
-    void this.replayBadge.refresh();
-    this.timers.push(window.setInterval(() => void this.replayBadge.refresh(), 2000));
+    void this.sourceTruth.refresh();
+    this.timers.push(window.setInterval(() => void this.sourceTruth.refresh(), 2000));
     this.timers.push(window.setInterval(() => this.pump(), 50));
     this.timers.push(window.setInterval(() => void this.fetchFrame(), 160));
     void this.fetchFrame();
@@ -321,6 +340,7 @@ export class RoverExperience {
       const left = sources.find(source => source.handedness === "left" && source.gamepad);
       const movement = left ?? right;
       if ((right ?? null) !== this.rightSource || (movement ?? null) !== this.movementSource) {
+        this.voice?.stopListening("Controller changed: voice question cancelled");
         this.stop("Controller changed: release trigger");
         this.rightSource = right ?? null; this.movementSource = movement ?? null;
         this.latchButtons();
@@ -343,6 +363,7 @@ export class RoverExperience {
       }
       if (!tracked) {
         this.inputValid = false;
+        this.voice?.stopListening("XR tracking lost: voice question cancelled");
         if (Number.isFinite(this.lastXRAt) || this.input.held)
           this.stop("XR tracking unavailable: release trigger");
         else this.gate.invalidate("XR tracking unavailable: release trigger");
@@ -364,6 +385,11 @@ export class RoverExperience {
       const explore = !!right?.gamepad?.buttons[5]?.pressed;
       const center = !!left?.gamepad?.buttons[4]?.pressed;
       const drill = !!left?.gamepad?.buttons[1]?.pressed;
+      const talk = !!left?.gamepad?.buttons[0]?.pressed;
+      if (talk && !this.talkDown) this.talkPressed();
+      else if (!talk && this.talkDown) this.voice?.pushEnd();
+      this.talkDown = talk;
+      if (center && !this.recenterDown && this.voice?.pendingAction) this.voice.dismissAction();
       if (drill && !this.drillDown) void this.startDrill();
       this.drillDown = drill;
       if (toggle && !this.toggleDown) {
@@ -432,6 +458,12 @@ export class RoverExperience {
     if (this.scanning || this.scanPending) this.stop("Scan cancelled: Explore selected");
     this.autonomy.toggleExplore(); this.dirty = true;
   }
+  /** Left trigger: confirm a pending rover proposal, otherwise start push-to-talk. */
+  private talkPressed() {
+    if (!this.voice) return;
+    if (this.voice.pendingAction) { this.voice.confirmAction(); this.dirty = true; return; }
+    if (this.voice.pushStart()) this.stop("Voice question: release trigger");
+  }
   get vrCameraView() { return this.renderer.xr.isPresenting && this.xrLive; }
 
   private pump() {
@@ -439,6 +471,8 @@ export class RoverExperience {
     const connected = this.socket?.readyState === WebSocket.OPEN;
     const contextActive = this.renderer.xr.isPresenting ? this.xrLive && !this.suspended : this.getView() === "camera" && !document.querySelector("dialog[open]");
     const available = this.inputValid && contextActive && !document.hidden && !this.contextLost && now - this.lastCanvasDraw < 250;
+    // No motion while the microphone is requested or open; release is required afterwards.
+    if (this.voice?.capturing) this.gate.invalidate("Voice question: release trigger");
     const moving = this.gate.decide(this.input.held, now, connected, available,
       this.renderer.xr.isPresenting ? this.lastXRAt : undefined);
     // Never add another command behind buffered traffic. Reset the session instead.
@@ -584,7 +618,7 @@ export class RoverExperience {
   }
   /** Held buttons from a lost or replaced controller act only after an observed release. */
   private latchButtons() {
-    this.toggleDown = this.exploreDown = this.recenterDown = this.scanDown = this.drillDown = true;
+    this.toggleDown = this.exploreDown = this.recenterDown = this.scanDown = this.drillDown = this.talkDown = true;
   }
   private createCameraTexture() {
     const texture = new THREE.CanvasTexture(this.canvas);
@@ -605,9 +639,11 @@ export class RoverExperience {
       this.renderer.xr.isPresenting ? this.lastXRAt : undefined);
     const videoAge = this.gate.videoAge(now);
     const age = Number.isFinite(videoAge) ? `${Math.ceil(videoAge)} ms` : "unavailable";
-    const simulation = this.status?.simulated || this.frameSource === "SIMULATED";
+    this.sourceTruth.observe(this.frameSource, this.status);
+    const source = this.sourceTruth.state({ now, frameSource: this.frameSource, frameId: this.frameId, videoAgeMs: videoAge });
+    const simulation = source.kind === "SIMULATED" || source.kind === "REPLAY";
     const moving = this.input.held && !this.gate.needsRelease && !ready;
-    const headline = `${this.replayBadge.label(this.frameSource)}${simulation ? "SIMULATED · " : ""}${ready ?? this.gate.reason}`;
+    const headline = `${source.kind === "LIVE" ? "" : source.kind + " · "}${ready ?? this.gate.reason}`;
     const ack = this.ackMs === null ? "ack pending" : `control ack ${Math.round(this.ackMs)} ms`;
     const range = this.status?.range_cm == null ? "range unknown" : `${Math.round(this.status.range_cm)} cm`;
     const matching = this.matchingDetections(now);
@@ -631,15 +667,52 @@ export class RoverExperience {
     c.fillText(`${this.h264Enabled ? "H.264" : "JPEG"} video ${age} · ${range} · ${panMode}`, 28, 90);
     c.fillText(`${ack} · ${detection}${this.status?.estop ? " · FORWARD BLOCKED" : ""}`, 28, 126);
     if (drill || autonomy) { c.font = "18px system-ui"; c.fillText([autonomy, drill].filter(Boolean).join(" · "), 28, 150); }
-    const hint = "Trigger: deadman · Stick: drive · A: seek/map · B: explore · X: center · Y: scan · L grip: drill";
+    const hint = "R trigger: deadman · Stick: drive · A: seek/map · B: explore · X: center · Y: scan · L grip: drill · L trigger: ask";
     c.font = "22px system-ui";
     if (c.measureText(hint).width > this.hudCanvas.width - 56) c.font = "18px system-ui";
     c.fillText(hint, 28, 170);
     c.fillText(this.scanMessage.slice(0, 84), 28, 202);
     this.hudTexture.needsUpdate = true;
+    this.drawSource(source);
+    this.drawVoice();
     const drawn = this.drillHud.draw(now);
     this.drillPanel.visible = drawn; this.drillHud.canvas.hidden = !drawn;
     if (drawn) this.drillTexture.needsUpdate = true;
+  }
+
+  private drawSource(source: ReturnType<SourceTruth["state"]>) {
+    const colors = { LIVE: ["#14532d", "#bbf7d0"], SIMULATED: ["#7c4a03", "#ffe3a3"], REPLAY: ["#4c1d95", "#e9d5ff"], UNVERIFIED: ["#5b1f1f", "#ffd2ca"] }[source.kind];
+    this.sourceBanner.dataset.kind = source.kind;
+    this.sourceBanner.querySelector("strong")!.textContent = source.title;
+    this.sourceBanner.querySelector("span")!.textContent = source.detail;
+    const c = this.bannerCanvas.getContext("2d")!;
+    c.clearRect(0, 0, 1024, 128); c.fillStyle = colors[0]; c.fillRect(0, 0, 1024, 128);
+    c.strokeStyle = colors[1]; c.lineWidth = 6; c.strokeRect(3, 3, 1018, 122);
+    c.fillStyle = colors[1]; c.font = "bold 54px system-ui"; c.fillText(source.title, 28, 62);
+    c.font = "26px system-ui"; c.fillText(source.detail.slice(0, 72), 28, 106);
+    this.bannerTexture.needsUpdate = true;
+  }
+  private drawVoice() {
+    const voice = this.voice, action = voice?.pendingAction ?? null;
+    const visible = !!voice && this.renderer.xr.isPresenting && (voice.phase !== "idle" || !!action);
+    this.voicePanel.visible = visible;
+    if (!visible) return;
+    const c = this.voiceCanvas.getContext("2d")!;
+    const accent = { idle: "#dce5ee", permission: "#ffc779", listening: "#ff8a7a", processing: "#a6c9ec", answer: "#a6edc4", error: "#ffb3a8" }[voice.phase];
+    c.clearRect(0, 0, 768, 512); c.fillStyle = "#111b25ee"; c.fillRect(0, 0, 768, 512);
+    c.strokeStyle = accent; c.lineWidth = 6; c.strokeRect(3, 3, 762, 506);
+    c.fillStyle = accent; c.font = "bold 44px system-ui";
+    c.fillText({ idle: "VOICE", permission: "OPENING MIC", listening: "● LISTENING", processing: "PROCESSING", answer: "ANSWER", error: "VOICE ERROR" }[voice.phase], 28, 60);
+    c.fillStyle = "#dce5ee"; c.font = "28px system-ui";
+    const body = voice.phase === "answer" && voice.answerText ? voice.answerText : voice.statusText;
+    let y = 110;
+    for (const line of wrapLines(c, body, 712).slice(0, action ? 8 : 11)) { c.fillText(line, 28, y); y += 36; }
+    if (action) {
+      c.fillStyle = "#ffc779"; c.font = "bold 30px system-ui";
+      c.fillText(action.type === "seek" ? `Seek person #${action.target_id}?` : "Scan the room?", 28, 432);
+      c.font = "26px system-ui"; c.fillText("Left trigger: confirm · X: dismiss", 28, 476);
+    }
+    this.voiceTexture.needsUpdate = true;
   }
 
   private addAssistant() {
@@ -658,6 +731,7 @@ export class RoverExperience {
         if (action.type === "scan") {
           this.stop("Scan confirmed: release, then hold deadman in live view");
           this.scanArmed = true;
+          this.scanMessage = "Scan armed: release, then hold the deadman with sticks centered";
           result.textContent = "Scan armed: close Settings, release, then hold the deadman with sticks centered. Release or move a stick to cancel.";
           return;
         }
@@ -768,5 +842,19 @@ export class RoverExperience {
     window.removeEventListener("blur", this.blur); window.removeEventListener("click", this.click); document.removeEventListener("visibilitychange", this.visibility);
     document.removeEventListener("keydown", this.escapeStop);
     this.cameraTexture.dispose(); this.hudTexture.dispose(); this.drillTexture.dispose(); this.drillHud.canvas.remove();
+    this.bannerTexture.dispose(); this.voiceTexture.dispose(); this.sourceBanner.remove();
   }
+}
+
+function wrapLines(context: CanvasRenderingContext2D, text: string, width: number) {
+  const lines: string[] = [];
+  for (const paragraph of text.split("\n")) {
+    let line = "";
+    for (const word of paragraph.split(/\s+/).filter(Boolean)) {
+      const next = line ? `${line} ${word}` : word;
+      if (line && context.measureText(next).width > width) { lines.push(line); line = word; } else line = next;
+    }
+    lines.push(line);
+  }
+  return lines;
 }

@@ -42,6 +42,8 @@ pub struct ControlInner {
     pub scan_w: f64,
 }
 
+pub type OnOutput = Box<dyn Fn(f64, f64, bool) + Send + Sync>;
+
 pub struct ControlState {
     pub simulated: bool,
     pub max_pwm: i64,
@@ -50,6 +52,9 @@ pub struct ControlState {
     pub detections: Option<Detections>,
     pub clock: Clock,
     pub inner: Mutex<ControlInner>,
+    /// Telemetry sink invoked with (v, w, blocked) after motor clamping;
+    /// must never affect motor output. Port of `state.on_output`.
+    pub on_output: Mutex<Option<OnOutput>>,
 }
 
 fn round1(v: f64) -> f64 {
@@ -101,6 +106,7 @@ impl ControlState {
                 scan_serial: 0,
                 scan_w: 0.0,
             }),
+            on_output: Mutex::new(None),
         })
     }
 
@@ -431,12 +437,16 @@ impl ControlState {
             v = 0.0;
             w = 0.0;
         }
-        if v > 0.0 && self.forward_blocked(s) {
+        let blocked = v > 0.0 && self.forward_blocked(s);
+        if blocked {
             v = 0.0;
             s.reason = "forward_blocked".into();
         }
         let (left, right) = (v + w, v - w); // positive w turns right
         let scale = 1.0f64.max(left.abs()).max(right.abs());
+        if let Some(hook) = self.on_output.lock().unwrap().as_ref() {
+            hook(v / scale, w / scale, blocked);
+        }
         let pwm = |value: f64| -> i64 {
             if value == 0.0 {
                 return 0;

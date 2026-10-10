@@ -115,7 +115,15 @@ impl PerceptionService {
     }
 
     pub fn start(self: Arc<Self>) {
+        if self.mode == "replay" {
+            return; // Recorded inference only; never rerun a detector.
+        }
         std::thread::spawn(move || self.run());
+    }
+
+    /// Replay only: inject a recorded detection packet (ReplayPerception).
+    pub fn set_packet(&self, packet: Value) {
+        self.inner.lock().unwrap().packet = packet;
     }
 
     fn run(self: Arc<Self>) {

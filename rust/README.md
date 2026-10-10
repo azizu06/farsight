@@ -33,9 +33,10 @@ cargo test --workspace
 CLI mirrors the Python argparse flags: `--demo --host --port --ssl-certfile
 --ssl-keyfile --camera --serial-port --simulate-rover --max-pwm --detector
 hog|none --detector-model --h264 --video-fps --video-bitrate --mission-dir
---depth-model --scan-pan --scan-fov --scan-intrinsics --scan-turn-dps
---assistant-url --whisper-url --whisper-bin --whisper-model --piper-bin
---piper-model --piper-model-es --speaker-cmd --triage-interval --tts-dir`.
+--record --replay --depth-model --scan-pan --scan-fov --scan-intrinsics
+--scan-turn-dps --assistant-url --whisper-url --whisper-bin --whisper-model
+--piper-bin --piper-model --piper-model-es --speaker-cmd --triage-interval
+--tts-dir`.
 
 ## Run — operator (MacBook)
 
@@ -64,8 +65,10 @@ no Rust runtime); `--detector none` works everywhere.
 - `/map/points.bin` `u32le` count + 16-byte records; `/map/mesh.bin`,
   `/map/export.ply`, `surfaces` keyframe encoding identical to Python
 - `/ws/control` permits, 250 ms lease, deadman release, seq monotonicity,
-  forward estop (<25 cm), camera-guard, autonomy `explore`/`seek`/`stick_override`,
-  `begin_scan`/`scan_command` bounded sweep lease (`w` ±.35, `pan` ±80)
+  20 Hz adaptive status + `on_status` hook, `on_output` telemetry feed
+  (v/w/blocked), forward estop (<25 cm), camera-guard, autonomy
+  `explore`/`seek`/`stick_override`, `begin_scan`/`scan_command` bounded
+  sweep lease (`w` ±.35, `pan` ±80)
 - `/ws/video` fMP4 init/fragment flow (ffmpeg must be installed for `--h264`);
   pipelined `{"type":"next","request_id"}` window of 4, `server_wait_ms`,
   1013 teardown on invalid/excessive requests or consumer lag
@@ -74,6 +77,13 @@ no Rust runtime); `--detector none` works everywhere.
   reports `state|running|simulated|approximate|backend|views|points|scan_ms|markers|error`
 - `POST /mission/triage/{key}` SBAR notes (`404` unknown encounter, `503` while a
   note is in flight); `mission/report` gains `triage` map + `encounters[].key|sbar`
+- `GET|POST /mission/drill`: full scorer — face dwell (1 s, 0.7 s gap, 1
+  miss), estop debounce, dead-reckoned `pose`/`breadcrumb`/`route_home`,
+  `summary` on end; POST `duration_s` 10..300, `victims` 1..20
+- `--record` writes `replay.jsonl` (frame/control/detections events,
+  permit/session_id/received stripped) + `frames/*.jpg` + `replay.json`;
+  `--replay` replays a recorded dir read-only (`ReplayControl` status
+  shape, commands discarded, `replay`/`recording` health fields)
 - `GET|POST /speak` survivor phrases: GET returns `{phrases,speaker,speaker_cmd,voices}`,
   POST `{phrase,lang}` → `{phrase,lang,text,audio_url,played,speaker_warning?}`
   (`404` unknown phrase, `400` bad lang, `503` missing voice/output dir);

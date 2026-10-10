@@ -21,10 +21,9 @@ struct Inner {
     events: VecDeque<Value>,
     encounters: indexmap::IndexMap<String, Value>,
     triage: indexmap::IndexMap<String, Value>,
-    drill_start: Option<f64>,
-    drill_duration: f64,
     drill_seen: std::collections::HashSet<String>,
     saved_snapshots: u64,
+    record_frames: u64,
 }
 
 type OnPerson = Box<dyn Fn(&str, &Value, &[u8], &Value) + Send + Sync>;
@@ -33,31 +32,95 @@ pub struct Mission {
     pub started: f64,
     pub id: String,
     pub directory: Option<PathBuf>,
+    pub recording: bool,
+    pub record_started: f64,
     inner: Mutex<Inner>,
     on_person: Mutex<Option<OnPerson>>,
+    pub drill_score: crate::drill::Drill,
 }
 
 impl Mission {
-    pub fn new(directory: Option<PathBuf>) -> Self {
+    pub fn new(directory: Option<PathBuf>, record: bool) -> Result<Self, String> {
         let id = chrono::Utc::now().format("%Y%m%dT%H%M%S").to_string();
         let directory = directory.map(|d| d.join(&id));
         if let Some(d) = &directory {
             let _ = std::fs::create_dir_all(d);
         }
-        Self {
+        if record && directory.is_none() {
+            return Err("Recording requires --mission-dir".into());
+        }
+        if record {
+            let _ = std::fs::create_dir_all(directory.as_ref().unwrap().join("frames"));
+        }
+        let mission = Self {
             started: epoch(),
             id,
             directory,
+            recording: record,
+            record_started: now_monotonic(),
             inner: Mutex::new(Inner {
                 events: VecDeque::new(),
                 encounters: indexmap::IndexMap::new(),
                 triage: indexmap::IndexMap::new(),
-                drill_start: None,
-                drill_duration: 90.0,
                 drill_seen: std::collections::HashSet::new(),
                 saved_snapshots: 0,
+                record_frames: 0,
             }),
             on_person: Mutex::new(None),
+            drill_score: crate::drill::Drill::new(),
+        };
+        if record {
+            mission.finish_recording(Some(0.0));
+        }
+        Ok(mission)
+    }
+
+    /// Append replay evidence to the mission directory, without control tokens.
+    pub fn record(&self, kind: &str, packet: &Value, frame: Option<&CameraFrame>) {
+        if !self.recording {
+            return;
+        }
+        let mut inner = self.inner.lock().unwrap();
+        let mut event = json!({
+            "kind": kind,
+            "t": now_monotonic() - self.record_started,
+            "ts": epoch(),
+        });
+        if kind == "frame" {
+            if let (Some(f), Some(dir)) = (frame, &self.directory) {
+                let name = format!("frames/{:08}.jpg", inner.record_frames);
+                let _ = std::fs::write(dir.join(&name), &f.jpeg);
+                inner.record_frames += 1;
+                event["file"] = json!(name);
+                event["frame"] = json!(f.frame_id);
+                event["source"] = json!(f.source);
+            } else {
+                return;
+            }
+        } else {
+            let mut stripped = packet.as_object().cloned().unwrap_or_default();
+            for key in ["permit", "session_id", "received"] {
+                stripped.remove(key);
+            }
+            event["packet"] = Value::Object(stripped);
+        }
+        if let Some(dir) = &self.directory {
+            if let Ok(mut log) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("replay.jsonl")) {
+                use std::io::Write;
+                let _ = writeln!(log, "{}", serde_json::to_string(&event).unwrap());
+            }
+        }
+    }
+
+    pub fn finish_recording(&self, elapsed: Option<f64>) {
+        if self.recording {
+            if let Some(dir) = &self.directory {
+                let duration = elapsed.unwrap_or_else(|| now_monotonic() - self.record_started);
+                let _ = std::fs::write(
+                    dir.join("replay.json"),
+                    serde_json::to_string(&json!({"version": 1, "duration_s": duration})).unwrap(),
+                );
+            }
         }
     }
 
@@ -68,7 +131,12 @@ impl Mission {
     }
 
     pub fn detect(&self, packet: &Value, frame: &CameraFrame) {
+        self.record("detections", packet, None);
         let mut inner = self.inner.lock().unwrap();
+        if let Some(boxes) = packet["boxes"].as_array() {
+            self.drill_score.observe(boxes);
+        }
+        let drilling = self.drill_score.running();
         let mut new_persons: Vec<(String, Value, Value)> = Vec::new();
         let Some(boxes) = packet["boxes"].as_array() else { return };
         for boxv in boxes {
@@ -85,10 +153,8 @@ impl Mission {
             encounter["first_seen"] = json!(first_seen);
             let is_new = !inner.encounters.contains_key(&key);
             inner.encounters.insert(key.clone(), encounter);
-            if let Some(ds) = inner.drill_start {
-                if now_monotonic() - ds <= inner.drill_duration && boxv["cls"].as_str() == Some("person") {
-                    inner.drill_seen.insert(key.clone());
-                }
+            if drilling && boxv["cls"].as_str() == Some("person") {
+                inner.drill_seen.insert(key.clone());
             }
             if !is_new {
                 continue;
@@ -160,7 +226,7 @@ impl Mission {
                 use std::io::Write;
                 let _ = writeln!(log, "{}", serde_json::to_string(&Value::Object(entry)).unwrap());
             }
-            let report = Self::report_locked(&self.id, self.started, self.directory.is_some(), &inner);
+            let report = self.report_locked(&self.id.clone(), self.started, self.directory.is_some(), &inner);
             let temporary = dir.join("report.json.tmp");
             if std::fs::write(&temporary, serde_json::to_string(&report).unwrap()).is_ok() {
                 let _ = std::fs::rename(&temporary, dir.join("report.json"));
@@ -168,32 +234,33 @@ impl Mission {
         }
     }
 
-    fn drill_locked(inner: &Inner) -> Value {
-        let remaining = inner
-            .drill_start
-            .map(|ds| (inner.drill_duration - (now_monotonic() - ds)).max(0.0));
-        json!({
-            "active": remaining.map(|r| r > 0.0).unwrap_or(false),
-            "remaining_s": remaining.map(|r| (r * 10.0).round() / 10.0),
-            "person_encounters": inner.drill_seen.len(),
-            "duration_s": inner.drill_duration,
-            "note": "Tracks are encounters, not verified distinct people",
-        })
+    fn drill_locked(&self, inner: &Inner) -> Value {
+        let mut status = self.drill_score.status();
+        status["person_encounters"] = json!(inner.drill_seen.len());
+        status["note"] = json!("Victims are faces held in view for 1 s; the route home is dead reckoning and approximate");
+        status
     }
 
-    pub fn start_drill(&self, duration: f64) -> Value {
+    pub fn start_drill(&self, duration: f64, victims: i64) -> Value {
         let mut inner = self.inner.lock().unwrap();
-        inner.drill_start = Some(now_monotonic());
-        inner.drill_duration = duration;
         inner.drill_seen.clear();
-        Self::drill_locked(&inner)
+        drop(inner);
+        self.drill_score.start(duration, victims);
+        self.drill()
+    }
+
+    /// ControlState.on_output hook: the applied command feeds the route home
+    /// and e-stop count.
+    pub fn drill_motion(&self, v: f64, w: f64, blocked: bool) {
+        self.drill_score.motion(v, w, blocked);
     }
 
     pub fn drill(&self) -> Value {
-        Self::drill_locked(&self.inner.lock().unwrap())
+        let inner = self.inner.lock().unwrap();
+        self.drill_locked(&inner)
     }
 
-    fn report_locked(id: &str, started: f64, persisted: bool, inner: &Inner) -> Value {
+    fn report_locked(&self, id: &str, started: f64, persisted: bool, inner: &Inner) -> Value {
         json!({
             "mission_id": id,
             "started_at": started,
@@ -211,13 +278,13 @@ impl Mission {
             ),
             "saved_snapshots": inner.saved_snapshots,
             "snapshot_limit": 1000,
-            "drill": Self::drill_locked(inner),
+            "drill": self.drill_locked(inner),
         })
     }
 
     pub fn report(&self) -> Value {
         let inner = self.inner.lock().unwrap();
-        Self::report_locked(&self.id, self.started, self.directory.is_some(), &inner)
+        self.report_locked(&self.id, self.started, self.directory.is_some(), &inner)
     }
 
     /// Serve a persisted detection snapshot; enforces the same name
