@@ -42,19 +42,25 @@ class CoreSetupTests(unittest.TestCase):
                       "fixture@localhost", cwd=ROOT)
         self.assertEqual(preview.returncode, 0, preview.stderr)
         program = preview.stdout.split("<<script\n", 1)[1].split("\n  script\n", 1)[0]
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as home:
+            # Fake HOME and no user/system git config so signing, hooks, or a
+            # symlinked real home cannot change what the fixture does.
+            env = {**os.environ, "HOME": home, "GIT_CONFIG_GLOBAL": os.devnull,
+                   "GIT_CONFIG_SYSTEM": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+            remote_dir = "checkout"
+            directory = str(Path(home) / remote_dir)
             checkout = Path(directory)
-            self.assertEqual(run("git", "init", "-q", directory).returncode, 0)
+            self.assertEqual(run("git", "init", "-q", directory, env=env).returncode, 0)
             tracked = checkout / "tracked.txt"
             tracked.write_text("original\n")
-            self.assertEqual(run("git", "-C", directory, "add", ".").returncode, 0)
+            self.assertEqual(run("git", "-C", directory, "add", ".", env=env).returncode, 0)
             commit = run("git", "-C", directory, "-c", "user.name=Fixture", "-c",
-                         "user.email=fixture@example.invalid", "commit", "-qm", "initial")
+                         "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false",
+                         "commit", "-qm", "initial", env=env)
             self.assertEqual(commit.returncode, 0, commit.stderr)
             tracked.write_text("teammate change\n")
-            remote_dir = os.path.relpath(checkout, Path.home())
             result = run("bash", "-s", "--", remote_dir, "unreachable.invalid/repo", "main",
-                         input=program, cwd=ROOT)
+                         input=program, cwd=ROOT, env=env)
             self.assertEqual(result.returncode, 1, result.stderr)
             self.assertIn("stopping bootstrap", result.stdout)
             self.assertEqual(tracked.read_text(), "teammate change\n")
