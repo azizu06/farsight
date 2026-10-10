@@ -287,7 +287,7 @@ export class RoverExperience {
     if (this.h264Enabled) {
       this.h264.update();
     }
-    if (this.dirty) this.drawCamera(now);
+    if (this.dirty || now - this.lastCanvasDraw > 100) this.drawCamera(now);
     if (now - this.lastHudAt > 100) { this.drawHUD(now); this.lastHudAt = now; }
   }
   get vrCameraView() { return this.renderer.xr.isPresenting && this.xrLive; }
@@ -343,6 +343,9 @@ export class RoverExperience {
         if (this.gate.acceptFrame(pending.id, pending.age + now - pending.at, now)) this.lastCanvasDraw = now;
         this.pendingFrame = null;
       }
+      // Repainting a retained frame proves display-loop liveness, while its
+      // original capture age continues growing; duplicate IDs never renew it.
+      if (this.gate.frameId === this.frameId) this.lastCanvasDraw = now;
       const matching = this.detections && String(this.detections.frame) === this.frameId && now - this.detectionsAt < 500;
       if (matching) {
         context.strokeStyle = "#8dffa9"; context.fillStyle = "#8dffa9";
