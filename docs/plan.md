@@ -39,6 +39,21 @@ collapse, hazardous plant areas), and trainees who need to practice that search 
 Rubric (General): Originality, Technical Understanding (diagrams help), Functionality (90% working,
 end to end), Design, Wow. See `docs/hackers-guide.md`.
 
+## Prior art: RIIS (LA Hacks 2026)
+[RIIS](https://github.com/srinisriram/RIIS) is close: a search-and-rescue rover (Pi + PiCar-X), YOLO
+pose for survivors, and a VR walkthrough. Their VR is **after the mission**: archived frames go to
+MASt3R + InstantSplat on a cloud GPU, and the resulting Gaussian splat is loaded into a Unity build on
+the Quest. Their dashboard replays pre-computed detections, and the autonomy is a random-walk with one
+ultrasonic sensor.
+
+**Our difference, say it in the pitch:** RIIS shows you the building afterwards; Farsight puts you in
+it *live*. Head-coupled camera, live teleop, and detection plus safety running on the robot's own
+GPU, in real time.
+
+Ideas we took (ideas only, no code): recorded-run fallback (#18), pose model for skeletons and a
+"person down" flag (#9), Explore random-walk before Seek (#13), frame archive (#17), mock hardware
+so the code runs without the rover (#2).
+
 ## Scope rules
 - P0 first, end to end, before anything else. Teleop must be boringly reliable.
 - No 3D mapping or SLAM: without phone pose tracking it will not be ready in time.
@@ -52,4 +67,4 @@ Load is weighted on purpose: hardest and most work first.
 | @azizu06 | 1 | #1 Jetson bring-up, #9 TensorRT detection, #7 control + safety, #11 launcher, #13 Seek, #14 depth |
 | @GodlyDonuts | 2 | #3 Uno firmware, #6 power + mount, #5 network + HTTPS, #17 mission log |
 | @mchdich | 3 | #4 WebXR shell, #8 controls, #10 HUD, #16 rescue drill |
-| @chang-pro | 3 | #2 mock server, #12 measurements, #15 video + Devpost + diagram |
+| @chang-pro | 3 | #2 mock server, #18 recorded-run replay, #12 measurements, #15 video + Devpost + diagram |
