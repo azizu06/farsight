@@ -149,7 +149,7 @@ controller_server:
       use_rotate_to_heading: true
       allow_reversing: false
       rotate_to_heading_min_angle: 0.6
-      max_angular_accel: 4.0
+      max_angular_accel: 8.0          # ramps from measured odom w: at 4 the first 0.2 rad/s step fell below the wheel floors and rotate-to-heading stalled (sim popup)
       max_robot_pose_search_dist: 4.0
       interpolate_curvature_after_goal: false
       cost_scaling_dist: 0.22
