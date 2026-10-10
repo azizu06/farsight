@@ -34,6 +34,8 @@ class Mission:
         self.triage = {}
         # Called as on_person(key, encounter, jpeg, snapshot_url) for each new person track.
         self.on_person = None
+        # Returns {face_detector, face_error}; the server points it at the perception service.
+        self.face_status = dict
 
     def record(self, kind, value, elapsed=None):
         """Append replay evidence to the same mission directory, without control tokens."""
@@ -117,7 +119,7 @@ class Mission:
         self.drill_score.motion(v, w, blocked)
 
     def drill(self):
-        return dict(self.drill_score.status(), person_encounters=len(self.drill_seen),
+        return dict(self.drill_score.status(), person_encounters=len(self.drill_seen), **self.face_status(),
                     note="Victims are faces held in view for 1 s; the route home is dead reckoning and approximate")
 
     def report(self):

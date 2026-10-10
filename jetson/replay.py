@@ -50,6 +50,9 @@ class ReplayPerception(PerceptionService):
     async def start(self):
         pass  # Recorded inference only; never rerun a detector.
 
+    def face_status(self):
+        return {}  # Recorded boxes may include faces; no live face model to report.
+
 
 class ReplayControl:
     def __init__(self):
