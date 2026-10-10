@@ -1,0 +1,36 @@
+[package]
+name = "farsight-server"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Rust port of the Farsight Jetson server: RGB-D fusion, video, control, mission"
+
+[features]
+default = []
+detector = ["dep:ort"]
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.8", features = ["ws"] }
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+tower-http = { version = "0.6", features = ["fs"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+bytes = "1"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+uuid = { version = "1", features = ["v4"] }
+base64 = "0.22"
+rand = "0.9"
+serialport = "4"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+indexmap = "2"
+async-stream = "0.3"
+ort = { version = "2.0.0-rc.10", optional = true, features = ["load-dynamic"] }
+
+[dev-dependencies]
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "json"] }

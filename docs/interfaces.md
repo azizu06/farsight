@@ -46,7 +46,7 @@ Optional pose fields (YOLO11-pose), present when the detector is a pose model:
 
 - `kpts`: 17 COCO keypoints (nose, eyes, ears, shoulders, elbows, wrists, hips, knees, ankles), each `[x, y, conf]`. Omitted if the detector has no pose.
 - `down`: true when the person looks fallen (body axis more than 60 degrees from vertical, or a wide box when keypoints are unreliable). Omitted fields mean false/absent; clients must ignore unknown fields.
-- `id` comes from the server's simple IoU tracker, so it stays stable while a person stays in view.
+- `id` is stable across frames: the server runs a small IoU + velocity tracker (`jetson/tracker.py`) over every detector mode, keeping an id through brief dropouts (about 5 frames or 2 s) and never reusing one. Clients may rely on it for `target_id`.
 
 ## WebSocket `/ws/control` (Quest -> Jetson), JSON, 20 Hz while the deadman is held
 
