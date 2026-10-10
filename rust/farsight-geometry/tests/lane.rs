@@ -25,7 +25,11 @@ fn upd(seq: u64, op: geom::Op, m: Option<geom::ChunkMesh>) -> geom::Update {
         seq,
         op,
         anchor: [seq as u8; 16],
-        transform: [0.0; 16],
+        transform: {
+            let mut m = [0.0f32; 16];
+            m[0] = 1.0; m[5] = 1.0; m[10] = 1.0; m[15] = 1.0;
+            m
+        },
         mesh: m,
     }
 }
