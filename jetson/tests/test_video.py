@@ -94,6 +94,19 @@ class VideoTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(queue.get_nowait())
         self.assertNotIn(queue, service.subscribers)
 
+    async def test_late_join_and_backlog_resume_only_at_newest_keyframe(self):
+        service = VideoService(None)
+        queue = service.subscribe()
+        item = lambda n, key: dict(frame=n, keyframe=key)
+        service.publish(item(1, False))
+        self.assertTrue(queue.empty())
+        service.publish(item(2, True))
+        service.publish(item(3, False))
+        service.publish(item(4, True))
+        self.assertEqual((await queue.get())["frame"], 4)
+        service.publish(item(5, False))
+        self.assertEqual((await queue.get())["frame"], 5)
+
     @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg required for real encoding check")
     async def test_real_ffmpeg_produces_decodable_mp4(self):
         jpeg = simulated_frame(0, 0).jpeg
@@ -112,6 +125,9 @@ class VideoTests(unittest.IsolatedAsyncioTestCase):
             queue = service.subscribe()
             fragments = [await asyncio.wait_for(queue.get(), 3) for _ in range(7)]
             self.assertTrue(all(b"moof" in fragment["payload"] and b"mdat" in fragment["payload"] for fragment in fragments))
+            self.assertTrue(fragments[0]["keyframe"])
+            self.assertTrue(all(len(fragment["samples"]) == 1 for fragment in fragments))
+            self.assertTrue(all(fragment["jetson_encode_ms"] >= 0 for fragment in fragments))
             self.assertTrue(all(fragment["received"] <= time.monotonic() for fragment in fragments))
             self.assertTrue(all(fragment["media_end_s"] > fragment["media_start_s"] for fragment in fragments))
             decoder = await asyncio.create_subprocess_exec("ffmpeg", "-v", "error", "-i", "pipe:0",

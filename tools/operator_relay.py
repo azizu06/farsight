@@ -10,6 +10,8 @@ from contextlib import suppress
 import json
 from pathlib import Path
 import ssl
+import time
+import math
 
 import aiohttp
 from aiohttp import web
@@ -123,12 +125,17 @@ def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5, bonded_upstr
     app["origin"] = origin
     control_closures = ControlClosures()
     render_connections = 0
+    video_stats = dict(fragments=0, stale_disconnects=0, request_ms=None,
+                       network_bound_ms=None, residence_ms=None, send_ms=None)
 
     async def sessions(app):
         timeout = aiohttp.ClientTimeout(total=None, connect=5, sock_read=10)
         # Separate pools: video downloads cannot exhaust the control connection pool.
         app["http"] = aiohttp.ClientSession(timeout=timeout, auto_decompress=False,
             connector=aiohttp.TCPConnector(limit=16, ssl=tls))
+        # Camera never waits for any of the sixteen map/bulk connection slots.
+        app["video"] = aiohttp.ClientSession(timeout=timeout, auto_decompress=False,
+            connector=aiohttp.TCPConnector(limit=4, ssl=tls))
         app["control"] = aiohttp.ClientSession(timeout=timeout,
             connector=aiohttp.TCPConnector(limit=4, ssl=tls))
         if render is not None:
@@ -153,6 +160,7 @@ def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5, bonded_upstr
                 await app["bonded"].close()
             if render is not None:
                 await app["render"].close()
+            await app["video"].close()
             await app["http"].close()
             await app["control"].close()
 
@@ -161,6 +169,7 @@ def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5, bonded_upstr
     async def relay_health(request):
         packet = {"relay": True, "upstream": str(origin),
                   "demo_mode": demo_mode,
+                  "video": dict(video_stats),
                   "quest_built": (dist / "index.html").is_file(),
                   "control_closures": control_closures.status(enabled=second is None),
                   "render": {"configured": render is not None, "endpoints": list(RENDER_PATHS),
@@ -174,7 +183,9 @@ def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5, bonded_upstr
 
     async def websocket(request, target, render_lane=False):
         control = request.path == "/ws/control"
-        session = app["render"] if render_lane else app["control"] if control else app["http"]
+        camera_video = request.path == "/ws/video"
+        video_requests = {}
+        session = app["video"] if camera_video else app["render"] if render_lane else app["control"] if control else app["http"]
         pose = render_lane and request.path == "/ws/macview-pose"
         message_limit = 16384 if control or pose else 8 * 1024 * 1024
         diagnostic = control_closures.begin() if control else None
@@ -203,7 +214,7 @@ def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5, bonded_upstr
                 raise
             if diagnostic is not None:
                 diagnostic.opened()
-            deadline = min(send_timeout, 0.1) if control or pose else min(send_timeout, 0.5) if render_lane else send_timeout
+            deadline = min(send_timeout, 0.1) if control or pose else min(send_timeout, 0.5) if render_lane else min(send_timeout, .15) if camera_video else send_timeout
 
             async def send(operation, client_to_rover):
                 try:
@@ -216,7 +227,9 @@ def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5, bonded_upstr
                     raise
 
             async def pipe_body(source, destination, client_to_rover=False):
+                pending_picture = False
                 async for message in source:
+                    arrived = time.monotonic()
                     if message.type == aiohttp.WSMsgType.TEXT:
                         data = message.data
                         # The relay never holds or replays drive input. Default
@@ -240,6 +253,37 @@ def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5, bonded_upstr
                                     diagnostic.end("quest", "invalid_control", local.close_code, remote.close_code, exc)
                                 await local.close(code=1008, message=b"Invalid control JSON")
                                 return
+                        if camera_video:
+                            with suppress(ValueError, TypeError, KeyError):
+                                packet = json.loads(data)
+                                if not isinstance(packet, dict):
+                                    raise ValueError("Video metadata must be an object")
+                                if client_to_rover and packet.get("type") == "next":
+                                    request_id = packet.get("request_id")
+                                    if type(request_id) is int:
+                                        video_requests[request_id] = time.monotonic()
+                                        while len(video_requests) > 4:
+                                            del video_requests[next(iter(video_requests))]
+                                elif not client_to_rover and packet.get("type") == "video_segment":
+                                    pending_picture = True
+                                    began = video_requests.pop(packet.get("request_id"), None)
+                                    elapsed = (arrived - began) * 1000 if began is not None else None
+                                    wait = packet.get("server_wait_ms", 0)
+                                    wait = wait if type(wait) in (int, float) and math.isfinite(wait) and wait >= 0 else 0
+                                    bound = max(0, elapsed - min(wait, elapsed)) if elapsed is not None else None
+                                    residence = (time.monotonic() - arrived) * 1000
+                                    # This is a round-trip bound, not an assumed
+                                    # one-way tailnet age or a cross-host clock subtraction.
+                                    packet.update(relay_request_ms=elapsed, relay_network_bound_ms=bound,
+                                                  relay_residence_ms=residence)
+                                    video_stats.update(request_ms=elapsed, network_bound_ms=bound,
+                                                       residence_ms=residence)
+                                    age = packet.get("age_ms")
+                                    if type(age) in (int, float) and math.isfinite(age) and age >= 500:
+                                        video_stats["stale_disconnects"] += 1
+                                        await local.close(code=1013, message=b"Stale camera; reconnect for latest keyframe")
+                                        return
+                                    data = json.dumps(packet)
                         if not client_to_rover and not render_lane:
                             # Assistant/telemetry messages may contain absolute audio URLs.
                             with suppress(ValueError, TypeError):
@@ -252,7 +296,14 @@ def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5, bonded_upstr
                                                local.close_code, remote.close_code)
                             await local.close(code=1008, message=b"Control requires JSON")
                             return
+                        began = time.monotonic()
                         await send(destination.send_bytes(message.data), client_to_rover)
+                        if camera_video and not client_to_rover:
+                            video_stats["send_ms"] = (time.monotonic() - began) * 1000
+                            # Initialization is not a picture; only count matched requests.
+                            if pending_picture:
+                                video_stats["fragments"] += 1
+                                pending_picture = False
                     else:
                         return
 
@@ -341,7 +392,9 @@ def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5, bonded_upstr
             headers = {key: value for key, value in headers.items() if key.lower() != "accept-encoding"}
             headers["Accept-Encoding"] = ((request.headers.get("Accept-Encoding") or "identity")
                                           if request.path in ENCODED_PATHS else "identity")
-            async with app["http"].request(request.method, target,
+            camera_path = request.path in ("/camera.jpg", "/stream.mjpg") or request.path.startswith("/video/")
+            session = app["video"] if camera_path else app["http"]
+            async with session.request(request.method, target,
                     headers=headers, data=request.content.iter_chunked(65536),
                     allow_redirects=False) as remote:
                 headers = forward_headers(remote.headers)
@@ -366,7 +419,7 @@ def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5, bonded_upstr
                 response = web.StreamResponse(status=remote.status, headers=headers)
                 await response.prepare(request)
                 async for chunk in remote.content.iter_chunked(65536):
-                    await asyncio.wait_for(response.write(chunk), send_timeout)
+                    await asyncio.wait_for(response.write(chunk), min(send_timeout, .15) if camera_path else send_timeout)
                 await response.write_eof()
                 return response
         except (aiohttp.ClientError, asyncio.TimeoutError, OSError, ValueError) as exc:

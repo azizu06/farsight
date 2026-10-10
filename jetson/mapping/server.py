@@ -249,7 +249,8 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                       detector=perception.mode, detector_error=perception.error,
                       detector_fps=perception.snapshot()["fps"] if perception.snapshot()["fresh"] else 0,
                       video=dict(enabled=h264, ready=video_service.ready, error=video_service.error,
-                                 fps=video_fps, bitrate=video_bitrate),
+                                 fps=video_fps, bitrate=video_bitrate, encoded_frames=video_service.encoded,
+                                 jetson_encode_ms=video_service.encode_ms, camera_ingest_ms=video_service.ingest_ms),
                       assistant=dict(vision_model=bool(assistant_url), whisper=bool(whisper_url or (whisper_bin and whisper_model)),
                                      piper=bool(piper_model)),
                       speech=await asyncio.to_thread(phrases.status), triage=triage.status())
@@ -258,6 +259,13 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
         if sim is not None:
             status["sim_world"] = sim_world
         return status
+
+    @app.get("/video/status")
+    async def video_status():
+        # Lock-free camera diagnostics remain observable while fusion is busy.
+        return dict(**camera_service.status(), mapping_processing_ms=state.processing_ms,
+                    enabled=h264, ready=video_service.ready, error=video_service.error,
+                    jetson_encode_ms=video_service.encode_ms, encoded_frames=video_service.encoded)
 
     if sim is not None:
         @app.get("/sim/state")
@@ -448,6 +456,8 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                         return
                     async def send_fragment(payload):
                         metadata = {key: value for key, value in fragment.items() if key not in ("payload", "received")}
+                        if time.monotonic() - fragment["received"] >= .5:
+                            raise ValueError("Stale encoded camera frame; reconnect at a fresh keyframe")
                         metadata.update(type="video_segment", request_id=request_id,
                                         server_wait_ms=wait_ms,
                                         age_ms=max(0, round((time.monotonic() - fragment["received"]) * 1000)))
@@ -633,21 +643,34 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
             return
         owner = object()
         app.state.phone_owner = owner
-        worker = None
+        workers = []
         permits = None
         queue = asyncio.Queue(maxsize=1)
+        camera_queue = asyncio.Queue(maxsize=1)
+        pose_queue = asyncio.Queue(maxsize=1)
         try:
             hello = Hello.model_validate_json(await asyncio.wait_for(ws.receive_text(), timeout=10))
             if not hello.supports_scene_depth:
                 raise ValueError("This mapper requires measured scene depth")
             identity = hello.session_id, hello.map_epoch
-            # ARKit RGB-D has no supported sensor-to-host clock contract yet.
-            # In particular, claiming the RGB-only AVCapture clock on this
-            # endpoint cannot make an ARKit frame eligible for physical drive.
             permits = CapturePermits(*identity, enabled=hello.supports_capture_permits,
                                      supported_clocks=())
-            camera_service.phone_rgb = None
+            camera_service.begin_phone(permits)
             await asyncio.to_thread(state.start_session, identity, hello.device)
+
+            def offer(target, item):
+                if target.full():
+                    target.get_nowait()
+                    if target is queue:
+                        state.dropped += 1
+                    elif target is camera_queue:
+                        camera_service.ingest_dropped += 1
+                target.put_nowait(item)
+
+            def reject(exc):
+                with state.lock:
+                    state.rejected += 1
+                    state.reason = f"Frame rejected: {str(exc)[:180]}"
 
             async def consume():
                 while True:
@@ -657,26 +680,49 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                         frame.header["_received_monotonic"] = received_at
                         await asyncio.to_thread(state.process, frame, permits=permits)
                     except (ValueError, TypeError, KeyError, ValidationError) as exc:
-                        with state.lock:
-                            state.rejected += 1
-                            state.reason = f"Frame rejected: {str(exc)[:180]}"
+                        await asyncio.to_thread(reject, exc)
 
-            worker = asyncio.create_task(consume())
-            async def receive_frames():
+            async def camera_frames():
+                previous = -1
+                while True:
+                    packet, received_at = await camera_queue.get()
+                    previous = await asyncio.to_thread(camera_service.accept_phone_rgbd, packet, identity,
+                                                       previous, received_at, permits)
+                    # Offer only after camera publication, without waiting for fusion.
+                    offer(queue, (packet, received_at))
+
+            def observe(header, transform):
+                with state.lock:
+                    if state.connected and state.identity == identity:
+                        state.observe_pose(header, transform)
+
+            async def poses():
+                while True:
+                    header, transform = await pose_queue.get()
+                    await asyncio.to_thread(observe, header, transform)
+
+            async def reader():
                 while True:
                     message = await ws.receive()
                     if message["type"] == "websocket.disconnect":
-                        break
+                        return
                     if message.get("bytes") is not None:
-                        if queue.full():
-                            queue.get_nowait()
-                            state.dropped += 1
-                        queue.put_nowait((message["bytes"], time.monotonic()))
+                        offer(camera_queue, (message["bytes"], time.monotonic()))
                     elif message.get("text"):
                         header = json.loads(message["text"])
-                        if header.get("type") != "pose":
+                        if not isinstance(header, dict) or header.get("type") != "pose":
                             raise ValueError("Expected a pose message or binary RGB-D frame")
-                        await asyncio.to_thread(state.observe_pose, header, validate_pose(header, identity))
+                        transform = validate_pose(header, identity)
+                        # Tracking loss must revoke opt-in LiDAR drive without
+                        # waiting for the pose/map worker's fusion lock.
+                        camera_service.observe_phone_tracking(header)
+                        offer(pose_queue, (header, transform))
+
+            async def receive_frames():
+                workers.extend(asyncio.create_task(job()) for job in (reader, camera_frames, poses, consume))
+                done, _ = await asyncio.wait(workers, return_when=asyncio.FIRST_COMPLETED)
+                for task in done:
+                    task.result()
             await permits.run(ws, receive_frames)
         except (ValueError, TypeError, KeyError, ValidationError, asyncio.TimeoutError) as exc:
             with suppress(RuntimeError, WebSocketDisconnect):
@@ -686,10 +732,10 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
         finally:
             if permits:
                 permits.close()
-            if worker:
+            for worker in workers:
                 worker.cancel()
-                with suppress(asyncio.CancelledError):
-                    await worker
+            with suppress(asyncio.CancelledError):
+                await asyncio.gather(*workers, return_exceptions=True)
             if app.state.phone_owner is owner:
                 app.state.phone_owner = None
                 def disconnect_sensor():
@@ -707,18 +753,35 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
             return
         owner = object()
         app.state.phone_owner = owner
-        previous = -1
         permits = None
+        workers = []
+        queue = asyncio.Queue(maxsize=1)
         try:
             hello = Hello.model_validate_json(await asyncio.wait_for(ws.receive_text(), 10))
             permits = CapturePermits(hello.session_id, hello.map_epoch, enabled=hello.supports_capture_permits)
-            camera_service.phone_rgb = None
-            async def receive_frames():
-                nonlocal previous
+            camera_service.begin_phone(permits)
+
+            async def reader():
                 while True:
                     packet = await ws.receive_bytes()
+                    received = time.monotonic()
+                    if queue.full():
+                        queue.get_nowait()
+                        camera_service.ingest_dropped += 1
+                    queue.put_nowait((packet, received))
+
+            async def consume():
+                previous = -1
+                while True:
+                    packet, received = await queue.get()
                     previous = await asyncio.to_thread(camera_service.accept_phone_rgb, packet, hello.session_id,
-                                                       previous, time.monotonic(), permits)
+                                                       previous, received, permits)
+
+            async def receive_frames():
+                workers.extend(asyncio.create_task(job()) for job in (reader, consume))
+                done, _ = await asyncio.wait(workers, return_when=asyncio.FIRST_COMPLETED)
+                for task in done:
+                    task.result()
             await permits.run(ws, receive_frames)
         except (WebSocketDisconnect, RuntimeError, OSError):
             pass
@@ -728,6 +791,10 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
         finally:
             if permits:
                 permits.close()
+            for worker in workers:
+                worker.cancel()
+            with suppress(asyncio.CancelledError):
+                await asyncio.gather(*workers, return_exceptions=True)
             if app.state.phone_owner is owner:
                 app.state.phone_owner = None
                 # Preserve the last image for inspection; its receipt age keeps increasing.

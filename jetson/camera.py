@@ -1,7 +1,7 @@
 """One latest camera frame, shared by video, inference, and mission capture."""
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import sys
 import threading
 import time
@@ -58,6 +58,9 @@ class CameraFrame:
     source: str
     capture_verified: bool = False
     capture_binding: object = None
+    tracking: str | None = None
+    socket_received: float | None = None
+    published: float | None = None
 
     @property
     def age_ms(self):
@@ -79,6 +82,9 @@ class CameraService:
         self.task = None
         self.phone_rgb = None
         self.phone_capture_diagnostics = {}
+        self.phone_pose = (-1, None)
+        self.phone_binding = None
+        self.ingest_dropped = 0
         # One bounded preview, shared by overlapping JPEG/MJPEG requests.
         # This lock never protects capture or map fusion work.
         self.preview_lock = threading.Lock()
@@ -97,6 +103,29 @@ class CameraService:
             return CameraFrame(jpeg, received, frame_id, source, verified, binding) if jpeg is not None else None
         with self.lock:
             return self.frame
+
+    def observe_phone_tracking(self, header):
+        with self.lock:
+            if header["t_capture"] >= self.phone_pose[0]:
+                self.phone_pose = (header["t_capture"], header["tracking"])
+
+    def begin_phone(self, binding):
+        with self.lock:
+            self.phone_binding = binding
+            self.phone_pose = (-1, None)
+            self.phone_rgb = None
+
+    def _publish_phone(self, frame, header):
+        # An old socket's in-flight decoder cannot overwrite a newer session.
+        # Its final image can remain viewable; the inactive issuer revokes drive.
+        with self.lock:
+            if self.phone_binding is not None and frame.capture_binding is not self.phone_binding:
+                return False
+            if frame.tracking is not None and header["t_capture"] >= self.phone_pose[0]:
+                self.phone_pose = (header["t_capture"], frame.tracking)
+            self.phone_capture_diagnostics = capture_diagnostics(header)
+            self.phone_rgb = frame
+        return True
 
     def accept_phone_rgb(self, packet, session_id, previous_frame=-1, received_at=None, permits=None):
         arrived = time.monotonic() if received_at is None else received_at
@@ -123,17 +152,34 @@ class CameraService:
         received = adjusted_receipt(header, arrived)
         if origin is not None:
             received = min(origin, received)
-        self.phone_rgb = CameraFrame(jpeg, received, frame_id, "PHONE RGB", origin is not None, permits)
-        self.phone_capture_diagnostics = capture_diagnostics(header)
-        return frame_id
+        frame = CameraFrame(jpeg, received, frame_id, "PHONE RGB", origin is not None, permits,
+                            socket_received=arrived, published=time.monotonic())
+        return frame_id if self._publish_phone(frame, header) else previous_frame
+
+    def accept_phone_rgbd(self, packet, identity, previous_frame=-1, received_at=None, permits=None):
+        # This lane validates the JPEG and packet independently of RGB-D fusion.
+        from .mapping.phone import decode_frame
+        arrived = time.monotonic() if received_at is None else received_at
+        header, jpeg = decode_frame(packet, identity, camera_only=True)
+        frame_id = header["frame_id"]
+        if frame_id <= previous_frame:
+            raise ValueError("RGB-D camera frame ordering is invalid")
+        received = adjusted_receipt(header, arrived)
+        # ARKit does not have a qualified sensor clock; never elevate it to a
+        # verified capture just because the camera bypasses the map worker.
+        frame = CameraFrame(jpeg, received, frame_id, "IPHONE LIDAR", False, permits,
+                            header["tracking"], arrived, time.monotonic())
+        return frame_id if self._publish_phone(frame, header) else previous_frame
 
     def status(self):
         frame = self.snapshot()
         fresh = bool(frame and frame.age_ms < 500)
         bound = bool(frame and frame.capture_verified and frame.capture_binding
                      and frame.capture_binding.active)
-        lidar = (self.lidar_drive and fresh and frame.source == "IPHONE LIDAR"
-                 and getattr(self.mapping, "lidar_drive_eligible", lambda: False)())
+        live_lidar = (self.phone_pose[1] == "normal" and frame.capture_binding is not None
+                      and frame.capture_binding.active) if self.phone_rgb is not None and frame else (
+                          getattr(self.mapping, "lidar_drive_eligible", lambda: False)())
+        lidar = self.lidar_drive and fresh and frame.source == "IPHONE LIDAR" and live_lidar
         drive_ready = fresh and (self.device is not None or bound or lidar
                                  or frame.source == "SIMULATED" or frame.source.startswith("REPLAY"))
         return dict(camera=fresh, camera_drive_ready=bool(drive_ready),
@@ -141,6 +187,9 @@ class CameraService:
                     camera_capture_diagnostics=(self.phone_capture_diagnostics if self.phone_rgb is not None
                                                 else getattr(self.mapping, "capture_diagnostics", {})),
                     camera_age_ms=frame.age_ms if frame else None,
+                    camera_ingest_dropped=self.ingest_dropped,
+                    camera_ingest_ms=(round((frame.published - frame.socket_received) * 1000, 2)
+                                      if frame and frame.published is not None and frame.socket_received is not None else None),
                     camera_frame=frame.frame_id if frame else None,
                     camera_source=frame.source if frame else "USB CAMERA" if self.device is not None else "WAITING",
                     camera_error=self.error)
@@ -212,5 +261,4 @@ class CameraService:
                 self.preview_key = key
             # Only pixels are cached. Receipt and permit state always come
             # from this snapshot; a cache hit never renews capture freshness.
-            return CameraFrame(self.preview_jpeg, frame.received, frame.frame_id, frame.source,
-                               frame.capture_verified, frame.capture_binding)
+            return replace(frame, jpeg=self.preview_jpeg)

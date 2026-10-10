@@ -420,6 +420,44 @@ Never subtract network transit. Congestion resets the complete stream from
 initialization/keyframe; no dependent fragments are silently dropped and reused.
 An encoder failure clears readiness, closes consumers, and restarts the encoder.
 
+The `/phone` receiver hands RGB-D packets to a latest-only camera validator
+(one active JPEG decode plus one replaceable pending packet). It publishes the
+validated camera JPEG before offering the packet to the separate map worker;
+pose/fusion/dense/detection work cannot hold up this receiver. `/phone/rgb` uses
+the same bounded pending policy. New pose tracking loss revokes opt-in LiDAR
+drive immediately, without waiting for fusion. ARKit capture remains unverified;
+this does not introduce a sensor clock qualification or relax the 500 ms view
+guard, 250 ms control permit, disconnect stop, or explicit demo-mode behavior.
+
+Jetson fragments contain one encoded frame, no B-frames, with IDRs at most
+250 ms apart. Late joins wait for an IDR; a newer queued IDR supersedes older
+queued fragments. Each subscriber retains at most two fragments; overflow of
+dependent fragments and stale (500 ms) output close the stream for recovery.
+The relay reserves a separate four-connection camera pool, and camera sends
+have a 150 ms backpressure deadline. These bounds reset slow consumers rather
+than accumulating seconds of video; they are not a glass-to-glass guarantee.
+
+Optional `video_segment` diagnostics (all milliseconds):
+
+| Field | Measurement |
+| --- | --- |
+| `camera_ingest_ms` | Jetson socket receipt to validated camera publication, including receiver queue/decode delay; null for sources without this instrumentation |
+| `jetson_encode_ms` | ffmpeg raw-frame handoff to complete MP4 fragment, including pipe/encoder/mux delay |
+| `relay_request_ms` | Relay forwarding `next` to receipt of the matching metadata (round trip plus server wait) |
+| `relay_network_bound_ms` | `relay_request_ms` minus only bounded `server_wait_ms`; a round-trip bound, **not** measured one-way tailnet transit |
+| `relay_residence_ms` | Metadata receipt to forwarding preparation on the relay |
+
+Existing `age_ms` and `server_wait_ms` retain their freshness meaning; clients
+must not add these diagnostics again to the existing conservative request age
+bound. `GET /video/status` exposes camera age/ingest/drop metrics, encoder timing
+and `mapping_processing_ms` without acquiring the map lock. `/health.video`
+also exposes encoder timing. Mac `GET /relay/health` adds `video` last-hop metrics,
+completed fragment count, send duration and stale-disconnect count. These are
+local monotonic durations; phone-to-Jetson one-way transit cannot be inferred
+from unrelated device clocks. Measure physical phone/USB, tailnet and Quest
+presentation separately when the rig returns; software loopback is not that
+qualification.
+
 ## `POST /ask` (Quest -> Jetson), local assistant
 
 Request: `multipart/form-data` with `audio` (webm/wav from the Quest mic) or JSON `{"text": "what do you see?"}`.
