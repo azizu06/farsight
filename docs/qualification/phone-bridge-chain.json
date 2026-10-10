@@ -1,0 +1,42 @@
+{
+  "h264": true,
+  "stops": [
+    {
+      "fault": "release",
+      "observed_stop_ms": 13.9,
+      "reason": "deadman_released"
+    },
+    {
+      "fault": "lease",
+      "observed_stop_ms": 237.4,
+      "reason": "lease_expired"
+    },
+    {
+      "fault": "disconnect",
+      "observed_stop_ms": 13.8,
+      "reason": "controller_disconnected"
+    },
+    {
+      "fault": "stop-operator",
+      "observed_stop_ms": 7.7,
+      "reason": "controller_disconnected"
+    },
+    {
+      "fault": "stop-rover",
+      "observed_stop_ms": 6.9,
+      "reason": "controller_disconnected"
+    }
+  ],
+  "scope": "Two unchanged production Network.framework TCP bridges on macOS loopback, production operator relay, canonical simulated Jetson server. No phones, usbmux, cellular, Quest or physical motors.",
+  "simulated": true,
+  "native_bridge_hops": 2,
+  "verified": [
+    "HTTP health",
+    "JPEG source/frame headers",
+    "simulated detections WebSocket",
+    "H264 initialization and six ordered metadata/binary fragments",
+    "simulated release/lease/disconnect/bridge-stop behavior",
+    "restart remains stopped and requires release"
+  ],
+  "hardware_qualified": false
+}

@@ -117,8 +117,10 @@ final class PhoneBridgeServer {
         let token = generation
         do {
             let parameters = bridgeTCPParameters()
+            // The bind address and port come only from requiredLocalEndpoint: also passing the
+            // port to NWListener(using:on:) makes iOS fail the listener with POSIX(22) EINVAL.
             parameters.requiredLocalEndpoint = .hostPort(host: .ipv4(config.local), port: config.localPort)
-            let listener = try NWListener(using: parameters, on: config.localPort)
+            let listener = try NWListener(using: parameters)
             self.listener = listener
             listener.stateUpdateHandler = { [weak self] state in
                 guard let self, self.generation == token else { return }
