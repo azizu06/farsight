@@ -49,3 +49,17 @@ test('first admission and opaque revision transitions do not depend on frame cou
   assert.equal(chooseMapTransfer(state({ pointsOnly: true, pointRevision: 'epoch2:1', appliedPoints: 'epoch1:99' })), 'points');
   assert.equal(chooseMapTransfer(state({ meshRevision: 'same', appliedMesh: 'same' })), null);
 });
+
+test('a capped mesh alternates with HTTP points instead of standing in for them', () => {
+  const capped = changes => state({ capped: true, ...changes });
+  assert.equal(chooseMapTransfer(capped()), 'mesh');
+  assert.equal(chooseMapTransfer(capped({ lastKind: 'mesh' })), 'points');
+  assert.equal(chooseMapTransfer(capped({ lastKind: 'points' })), 'mesh');
+  // Whichever is stale goes next; nothing when both are current.
+  assert.equal(chooseMapTransfer(capped({ appliedMesh: 9 })), 'points');
+  assert.equal(chooseMapTransfer(capped({ lastKind: 'mesh', appliedPoints: 12 })), 'mesh');
+  assert.equal(chooseMapTransfer(capped({ appliedMesh: 9, appliedPoints: 12 })), null);
+  assert.equal(chooseMapTransfer(capped({ lastKind: 'mesh', pointsTransport: 'ws' })), 'mesh');
+  // Still one transfer per five seconds.
+  assert.equal(chooseMapTransfer(capped({ lastKind: 'mesh', now: 14999 })), null);
+});

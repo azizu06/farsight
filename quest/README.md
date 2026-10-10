@@ -113,6 +113,29 @@ qualification. The scoped redesign measurement is saved in
   With no H.264 choice, `/health.video.enabled: true` selects H.264 for that page
   (unsaved); if no verified decoded frame arrives within 6 s it reverts to JPEG.
 
+## Walk-through map (VR)
+
+`src/map-walk.js` exports the shared `mapWalk`. In walk mode, the reconstructed
+map renders in XR at 1:1 scale: the map's low-percentile floor sits on the
+headset floor, and the viewer starts at the map origin (the rover start pose).
+Head tracking stays free. Walk mode keeps map transfers running while the
+deadman is held or the rover explores. Overview mode keeps the earlier
+tabletop map, which is hidden in live camera view.
+
+The controls layer drives it:
+
+- `mapWalk.setMode("walk" | "overview")`: AUTO uses walk mode.
+- `mapWalk.moveViewer(forward, right = 0, up = 0, turn = 0)`: metres relative
+  to the gaze heading, and radians where positive turns left about the head.
+- `mapWalk.reset()`: return to the rover start pose.
+
+`?walk=1` starts in walk mode for testing. A new map generation resets the
+viewer. Display only: this module sends no commands and gates no motion.
+
+When the server reports `capped: true` for a Jetson mesh, the 3D view pulls
+`/map/points.bin` too, alternating with `/map/mesh.bin` under the same 5 s,
+one-at-a-time gate. It no longer derives points from the sparse capped mesh.
+
 ## Freshness and bandwidth
 
 The client echoes the rover's opaque, expiring permit at 20 Hz. The server remains
