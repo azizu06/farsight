@@ -1,5 +1,11 @@
 # Operator transport and hardware rehearsal
 
+The confirmed [phone-owned relay](phone-relay.md) is being implemented: both
+iPhones own the cellular tunnel, and the Mac's upstream is a local USB port
+forward. The computer-side Tailscale steps below describe the fallback path,
+whose operator USB tether has been intermittent. Keep using the established
+path until the native phone bridge passes actual hardware checks.
+
 The operator relay serves the built Quest app from the MacBook on
 `127.0.0.1:8080`. All rover HTTP and WebSocket routes travel through that origin.
 The Quest reaches the MacBook using ADB reverse over USB. The MacBook reaches
@@ -67,7 +73,7 @@ Only one control socket can own the rover. Close the Quest/browser page before
 running the qualifier, then reopen it afterward. A second controller is rejected
 rather than taking control away from the current operator.
 
-## First hardware connection
+## Fallback hardware connection: USB tethering
 
 1. Keep the rover wheels raised. Connect the Uno to the Jetson by USB and the
    camera locally. Start the documented rover service with real serial selected;

@@ -1,5 +1,11 @@
 # Cellular demo connectivity plan
 
+**The confirmed architecture now puts the cellular relay on the iPhones.**
+See [phone relay](phone-relay.md) for the implementation and qualification path.
+The computer-side Tailscale/USB-tether arrangement below is the fallback design;
+its operator USB tether has been intermittent. Neither is yet a fully qualified
+cellular-to-Quest driving demo.
+
 We will put an iPhone 17 and the Jetson on the rover, use a second phone beside a
 MacBook, and plug the Quest into the MacBook. Both phones supply cellular data
 over short USB cables. This removes venue Wi-Fi from the live demo and leaves

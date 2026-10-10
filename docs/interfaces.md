@@ -1,14 +1,19 @@
 # Interfaces
 
-The contract that lets four people build in parallel. Change it only in a PR that
-every affected owner has seen.
+Coordinate contract changes with affected owners on the agent message board.
+Direct commits to main follow the current team workflow.
 
 ```
 Quest 2 (WebXR, three.js)
    |  http://localhost:8080 via USB ADB reverse (secure origin on the headset)
    v
 MacBook operator relay (tools/operator_relay.py, serves the Quest app, proxies HTTP + WebSocket)
-   |  Tailscale over two USB-tethered phones (HTTP inside the tailnet, or HTTPS if the service has TLS)
+   |  localhost:18443 -> USB-only iproxy
+   v
+Operator iPhone localhost:8081 -> native phone Tailscale over cellular
+   |
+   v
+Rover iPhone Tailscale IP:8081 -> fixed local USB upstream
    v
 Jetson Orin Nano (on the rover)  -- the brain
    camera -> TensorRT YOLO -> detections
@@ -19,11 +24,14 @@ Jetson Orin Nano (on the rover)  -- the brain
 Arduino Uno (ELEGOO V4 board) -> motors, ultrasonic (pan servo optional; the phone camera is fixed, look-around is digital)
 ```
 
-The current rover service runs on the Jetson at port `8443` (HTTP inside
-Tailscale or configured HTTPS). The MacBook serves the Quest app and proxies
+The confirmed phone-owned relay is being implemented and is not yet hardware
+qualified; see [phone relay](phone-relay.md). The rover service runs on the
+Jetson at port `8443`. The MacBook serves the Quest app and proxies
 HTTP/WebSockets on `localhost:8080`; Quest accesses it through USB ADB reverse.
-Two USB-tethered phones supply the cellular tunnel. The private LAN is an
-alternative, not a venue-network dependency. `tools.demo --simulate` launches
+The iPhones own the cellular tunnel; raw rover capture stays on local USB.
+The earlier computer-side Tailscale/USB-tether path remains a fallback, whose
+operator tether has been intermittent. Neither path depends on venue Wi-Fi.
+`tools.demo --simulate` launches
 explicit ray-cast camera/map and virtual rover sources. See
 [transport setup](transport-setup.md) and [native phone capture](../ios/README.md).
 
