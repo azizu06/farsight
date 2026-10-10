@@ -172,6 +172,45 @@ class ScanSafetyTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.state.scan_command(token, w=.3)
 
+    def test_scan_cancel_reports_first_stop_after_later_release(self):
+        for failure, reason in (("expiry", "lease_expired"), ("camera", "camera_stale"),
+                                ("range", "scan_range_stop"), ("override", "scan_override"),
+                                ("release", "deadman_released"),
+                                ("disconnect", "controller_disconnected")):
+            with self.subTest(failure=failure):
+                self.setUp()
+                token = self.state.begin_scan(self.session, self.permit)
+                self.state.scan_command(token, w=.3)
+                if failure == "expiry":
+                    self.now += .251
+                elif failure == "camera":
+                    self.state.camera_ready = lambda: False
+                elif failure == "range":
+                    self.state.update_range(20)
+                elif failure == "override":
+                    self.send()
+                elif failure == "release":
+                    self.send(deadman=False)
+                else:
+                    self.state.end(self.session)
+                self.state.output()
+                # The viewer responds to a safety stop with an immediate release.
+                # That later status must not erase the scan's initiating cause.
+                self.state.stop("deadman_released")
+                self.state.stop("release_required")
+                with self.assertRaisesRegex(ValueError, rf"Scan cancelled:.*{reason}"):
+                    self.state.scan_command(token)
+
+    def test_new_scan_clears_previous_stop_reason(self):
+        token = self.state.begin_scan(self.session, self.permit)
+        self.send(deadman=False)
+        self.send()
+        fresh = self.state.begin_scan(self.session, self.permit)
+        self.state.camera_ready = lambda: False
+        with self.assertRaisesRegex(ValueError, r"Scan cancelled:.*camera_stale"):
+            self.state.scan_command(fresh)
+        self.assertIsNot(token, fresh)
+
 
 class ScanDeliveryTests(unittest.TestCase):
     def test_markers_use_matching_capture_and_same_yaw_geometry(self):

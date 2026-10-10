@@ -45,7 +45,7 @@ explicit ray-cast camera/map and virtual rover sources. See
 | `GET /` | Quest WebXR app (built `quest/dist`) |
 | `GET /stream.mjpg` | Camera, MJPEG, 640x480, 15 fps by default (camera capture loop, `jetson/camera.py`) |
 | `GET /health` | `{"camera": bool, "detector_fps": float, "rover": bool, "estop": bool}`; optional `camera_pan: bool` (see below); optional `face_detector: bool`, `face_error: string\|null` (see below) |
-| `GET /camera.jpg` | Latest JPEG; `X-Frame-Id`, `X-Frame-Age-Ms`, `X-Frame-Source`; no-store |
+| `GET /camera.jpg` | Latest JPEG; `X-Frame-Id`, `X-Frame-Age-Ms`, `X-Frame-Source`, optional `X-Frame-Server-Wait-Ms`; no-store |
 | `GET /control/status` | Read-only control status; no usable permit |
 | `GET /mission/report` | Evidence, persistence/source labels, drill results, control `summary` and `timeline` (below) |
 | `POST /mission/drill` | `{"duration_s":90,"victims":3}` starts a rescue drill; `GET` polls it. See below |
@@ -109,6 +109,16 @@ time and server queue/decode delay. It excludes pre-callback exposure and transi
 Native verified RGB instead uses the earlier of receiver token issuance and
 adjusted receipt, giving a conservative capture-age bound without synchronizing
 phone and server clocks. Neither value measures camera-to-display latency.
+
+JPEG `X-Frame-Server-Wait-Ms` optionally reports completed camera-handler
+residence, rounded down. `X-Frame-Age-Ms` is measured after that work and still
+refers to the original capture receipt. Quest subtracts a finite, nonnegative
+server wait only when it does not exceed the request interval observed at
+header arrival; network, body transfer, decode and presentation delays remain
+in the displayed-age bound. Missing or malformed wait metadata retains the
+full request interval. This optional header changes no capture eligibility,
+source expiry or motion cutoff; legacy consumers and Rust servers remain
+compatible. Repeating a frame ID never renews its displayed capture age.
 
 ### Native capture freshness
 

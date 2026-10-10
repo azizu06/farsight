@@ -32,8 +32,9 @@ function fixture({ decode = () => Promise.resolve() } = {}) {
     URL: { createObjectURL: () => { urls.created++; return 'blob:fixture'; }, revokeObjectURL() { urls.revoked++; } },
     fetch: (_url, { signal }) => new Promise((resolve, reject) => {
       signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
-      requests.push({ signal, startedAt: clock.now, settled: false, reply(id, age = 100) { this.settled = true; resolve({ ok: true, bodyUsed: false,
-        headers: { get: key => ({ 'X-Frame-Id': String(id), 'X-Frame-Age-Ms': String(age), 'X-Frame-Source': 'PHONE RGB' })[key] },
+      requests.push({ signal, startedAt: clock.now, settled: false, reply(id, age = 100, serverWait = null) { this.settled = true; resolve({ ok: true, bodyUsed: false,
+        headers: { get: key => ({ 'X-Frame-Id': String(id), 'X-Frame-Age-Ms': String(age), 'X-Frame-Source': 'PHONE RGB',
+          'X-Frame-Server-Wait-Ms': serverWait == null ? serverWait : String(serverWait) })[key] },
         blob: async () => ({ size: 15, type: 'image/jpeg' }), body: { cancel: async () => {} } }); } });
     }),
   });
@@ -132,6 +133,61 @@ test('invalid capture-age metadata cannot replace validated pixels or freshness'
     f.clock.now = 200; f.requests[1].reply(2, -1); await flush();
     assert.equal(f.view.frame, frame);
     assert.equal(f.view.pendingFrame, pending);
+  } finally { await f.cleanup(); }
+});
+
+test('measured server wait is counted once while decode and visible render age still accrue', async () => {
+  const f = fixture({ decode: async () => { f.clock.now += 40; } });
+  f.view.pump = () => {};
+  try {
+    f.view.pollCamera(0);
+    // A new capture arrives while this request is queued on the server.
+    f.clock.now = 600; f.requests[0].reply(1, 20, 580); await flush();
+    assert.equal(f.view.pendingFrame.age, 80, '20 capture + 20 network + 40 decode; server wait is already reflected by header age');
+    f.clock.now = 650; f.view.drawCamera(650);
+    assert.equal(f.view.gate.frameId, null, 'drawn evidence still waits for a successful visible render');
+    f.clock.now = 660; f.view.afterRender(660);
+    assert.equal(f.view.gate.videoAge(660), 100, 'the remaining decode-to-display delay is still counted');
+    f.view.gate.acceptStatus({ session_id: 'session', permit: 'fresh', permit_ms: 250, rover: true }, 660);
+    f.view.gate.decide(false, 660, true, true, 660);
+    assert.equal(f.view.gate.decide(true, 661, true, true, 661), true, 'a fresh capture meets the existing cutoff without borrowing server residence twice');
+  } finally { await f.cleanup(); }
+});
+
+test('server wait never renews the original age of a genuinely stale capture', async () => {
+  const f = fixture(); f.view.pump = () => {};
+  try {
+    f.view.pollCamera(0);
+    f.clock.now = 600; f.requests[0].reply(1, 620, 580); await flush();
+    f.view.drawCamera(600); f.view.afterRender(600);
+    assert.equal(f.view.gate.videoAge(600), 640);
+    f.view.gate.acceptStatus({ session_id: 'session', permit: 'fresh', permit_ms: 250, rover: true }, 600);
+    assert.match(f.view.gate.readiness(600, true, 600), /Camera stale/);
+  } finally { await f.cleanup(); }
+});
+
+test('missing or invalid server wait retains the complete request age bound', async () => {
+  for (const wait of [null, '', '  ', 'bad', 'Infinity', '-1', '301']) {
+    const f = fixture();
+    try {
+      f.view.pollCamera(0);
+      f.clock.now = 300; f.requests[0].reply(1, 50, wait); await flush();
+      assert.equal(f.view.pendingFrame.age, 350, `full bound for wait ${JSON.stringify(wait)}`);
+    } finally { await f.cleanup(); }
+  }
+});
+
+test('a duplicate capture with a new server wait cannot renew displayed freshness', async () => {
+  const f = fixture(); f.view.pump = () => {};
+  try {
+    f.view.pollCamera(0);
+    f.clock.now = 100; f.requests[0].reply(1, 80, 90); await flush();
+    f.view.drawCamera(100); f.view.afterRender(100);
+    assert.equal(f.view.gate.videoAge(100), 90);
+    f.view.pollCamera(100);
+    f.clock.now = 400; f.requests[1].reply(1, 0, 300); await flush();
+    f.view.drawCamera(400); f.view.afterRender(400);
+    assert.equal(f.view.gate.videoAge(400), 390, 'duplicate frame identity retains its original age');
   } finally { await f.cleanup(); }
 });
 

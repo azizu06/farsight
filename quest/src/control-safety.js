@@ -10,6 +10,14 @@ const DEMO_INPUT_MS = 1000;
 const GENERIC_CAUSES = new Set(["Waiting for live camera and rover", "Release deadman to continue",
   "Connected: release deadman", "New control session: release deadman", "release_required", "deadman_released"]);
 
+/** Optional diagnostics receive copied primitives after a decision is committed. */
+function traceSafety(value) {
+  try {
+    const trace = globalThis.__farsightControlSafetyTrace;
+    if (typeof trace === "function") trace(value);
+  } catch { /* Diagnostics cannot affect stopping or recovery. */ }
+}
+
 export class ControlSafety {
   /** @param {{ demo?: boolean }} [options] demo: see demo-config.js; the owner may toggle `demo` per frame. */
   constructor({ demo = false } = {}) {
@@ -32,6 +40,8 @@ export class ControlSafety {
     if (!this.needsRelease || this.cause === null || GENERIC_CAUSES.has(this.cause)) this.cause = reason;
     this.needsRelease = true;
     this.reason = reason;
+    traceSafety({ event: "stop", reason, cause: this.cause,
+      needsRelease: this.needsRelease, hardLatch: this.hardLatch });
   }
   stop(input, reason, hard = false) {
     // Zero commands without inventing a release of the physical trigger/key.
@@ -60,6 +70,7 @@ export class ControlSafety {
     this.frameId = id;
     this.frameAge = age;
     this.frameAt = now;
+    traceSafety({ event: "frame", age });
     return true;
   }
   videoAge(now) { return this.frameAge + Math.max(0, now - this.frameAt); }

@@ -378,11 +378,17 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
 
     @app.get("/camera.jpg")
     async def camera():
+        started = time.monotonic()
         frame = await asyncio.to_thread(camera_service.preview)
         if frame is None:
             raise HTTPException(503, "Waiting for a camera frame")
+        # The age below already includes preview/executor residence. Report
+        # only completed handler time, rounded down, so clients can avoid
+        # counting that same interval again without subtracting network time.
+        wait_ms = max(0, int((time.monotonic() - started) * 1000))
         return bulk_response(frame.jpeg, live, media_type="image/jpeg", headers={"Cache-Control": "no-store",
               "X-Frame-Id": str(frame.frame_id), "X-Frame-Age-Ms": str(frame.age_ms),
+              "X-Frame-Server-Wait-Ms": str(wait_ms),
               "X-Frame-Source": frame.source})
 
     @app.get("/depth.jpg")

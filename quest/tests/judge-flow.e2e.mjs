@@ -1,6 +1,7 @@
 // Judge-flow smoke test (#57): docs/judge-demo.md against the simulator and the replay fixture.
 //
 //   npm --prefix quest run test:judge            # or: node quest/tests/judge-flow.e2e.mjs [--out report.json]
+//   --trace-control saves bounded, credential-free scan timing observations in the report.
 //
 // Starts `python -m tools.demo --simulate --build` (simulated rover, ray-cast room) and a
 // `--replay tools/fixtures/replay-demo` server behind its own operator relay, then drives the
@@ -17,6 +18,7 @@ const root = fileURLToPath(new URL("../..", import.meta.url));
 const python = process.env.FARSIGHT_PYTHON ?? (existsSync(`${root}.venv/bin/python`) ? `${root}.venv/bin/python` : "python3");
 const outIndex = process.argv.indexOf("--out");
 const outPath = outIndex > 0 ? process.argv[outIndex + 1] : null;
+const traceControl = process.argv.includes("--trace-control");
 const SYNTHETIC_ID = 900001;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -47,15 +49,15 @@ function stopAll(signal = "SIGTERM") {
 }
 async function stopAndWait() {
   stopAll();
-  const deadline = Date.now() + 5000;
-  while (Date.now() < deadline && processes.some(({ child }) => child.pid && child.exitCode === null)) await sleep(100);
+  const deadline = performance.now() + 5000;
+  while (performance.now() < deadline && processes.some(({ child }) => child.pid && child.exitCode === null)) await sleep(100);
   stopAll("SIGKILL");
 }
 
 async function waitFor(label, check, timeoutMs, intervalMs = 100) {
-  const deadline = Date.now() + timeoutMs;
+  const deadline = performance.now() + timeoutMs;
   let last;
-  while (Date.now() < deadline) {
+  while (performance.now() < deadline) {
     try {
       const value = await check();
       if (value) return value;
@@ -86,38 +88,86 @@ async function waitHttp(url, entry, timeoutMs) {
 const results = [];
 let liveSeen = null;
 let hudPage = null; // page whose HUD text is appended to a failure
+const controlTraces = new WeakMap();
+const scanControlTraces = [];
 async function failure(error) {
+  const trace = hudPage ? controlTraces.get(hudPage) : null;
+  if (trace?.enabled) {
+    trace.enabled = false;  // freeze before diagnostic HTTP/DOM reads can overwrite the first cause
+    scanControlTraces.push({ state: "failed", firstStop: trace.firstStop, records: [...trace.records],
+                            camera: [...trace.camera] });
+  }
   const hud = hudPage ? await hudPage.evaluate(() => `${document.querySelector("#rover-message")?.textContent} | ${document.querySelector("#rover-details")?.textContent.split(" · ").at(-1)}`).catch(() => null) : null;
-  return error.message.split("\n")[0] + (hud ? ` [HUD: ${hud}]` : "");
+  const control = hudPage ? await json(new URL("/control/status", hudPage.url()).href).catch(() => null) : null;
+  return error.message.split("\n")[0] + (hud ? ` [HUD: ${hud}]` : "")
+    + (control ? ` [control: ${control.reason}, mode ${control.mode}, seq ${control.seq}, release ${control.requires_release}]` : "")
+    + (trace?.firstStop ? ` [first client stop: ${trace.firstStop.reason}; cause ${trace.firstStop.cause}]` : "");
 }
 // Held-deadman steps get one visible retry: on a loaded machine the viewer's own freshness guards
 // (500 ms video, 250 ms display) can invalidate a hold, exactly as they would on a slow rig.
 // Fatal errors (a server-side abort) are never retried.
 async function step(name, run, { retries = 0 } = {}) {
-  const started = Date.now();
+  const started = performance.now();
   const attempts = [];
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       if (hudPage) await releaseAll(hudPage);
       const detail = await run();
       const note = attempts.length ? ` (passed on retry; first attempt: ${attempts.join("; ")})` : "";
-      results.push({ step: name, result: "PASS", ms: Date.now() - started, detail: String(detail ?? "") + note });
+      results.push({ step: name, result: "PASS", ms: Math.round(performance.now() - started), detail: String(detail ?? "") + note });
       return;
     } catch (error) {
       attempts.push(await failure(error));
       if (error.fatal) break;
     }
   }
-  results.push({ step: name, result: "FAIL", ms: Date.now() - started, detail: attempts.join(" | then: ") });
+  results.push({ step: name, result: "FAIL", ms: Math.round(performance.now() - started), detail: attempts.join(" | then: ") });
 }
 
 async function openViewer(browser, origin, { injectPerson = () => false, injectNav = () => null, counters = {} } = {}) {
   const page = await browser.newPage({ viewport: { width: 960, height: 600 } });
+  const trace = { enabled: false, started: 0, firstStop: null, records: [], camera: [] };
+  controlTraces.set(page, trace);
+  const record = (kind, fields) => {
+    if (!trace.enabled) return;
+    const value = { ms: Math.round((performance.now() - trace.started) * 10) / 10, kind, ...fields };
+    trace.records.push(value);
+    if (trace.records.length > 64) trace.records.shift();
+    if (kind === "gate" && trace.firstStop === null) trace.firstStop = value;
+  };
+  if (traceControl) {
+    await page.exposeBinding("__recordControlSafety", (_, value) => {
+      if (value.event === "frame") record("frame", { browser_ms: value.browser_ms, age: value.age });
+      else record("gate", { browser_ms: value.browser_ms, reason: value.reason, cause: value.cause,
+                            needsRelease: value.needsRelease, hardLatch: value.hardLatch });
+    });
+    await page.addInitScript(() => {
+      globalThis.__farsightControlSafetyTrace = value => {
+        void globalThis.__recordControlSafety({ ...value, browser_ms: performance.now() }).catch(() => {});
+      };
+    });
+  }
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   counters.frames = 0; counters.detections = 0;
+  const cameraRequests = new WeakMap();
+  if (traceControl) page.on("request", request => {
+    if (request.url().includes("/camera.jpg")) cameraRequests.set(request, performance.now());
+  });
   page.on("response", (response) => {
     if (response.url().includes("/camera.jpg") && response.status() === 200) counters.frames++;
+    if (!trace.enabled || !response.url().includes("/camera.jpg")) return;
+    const at = performance.now(), started = cameraRequests.get(response.request());
+    void Promise.all([response.headerValue("x-frame-id"), response.headerValue("x-frame-age-ms"),
+                      response.headerValue("x-frame-server-wait-ms")]).then(([id, age, wait]) => {
+      if (!trace.enabled) return;
+      trace.camera.push({ ms: Math.round((at - trace.started) * 10) / 10, frame: id,
+                          serverAge: age === null ? null : Number(age),
+                          serverWait: wait === null ? null : Number(wait),
+                          requestMs: started === undefined ? null : Math.round((at - started) * 10) / 10,
+                          status: response.status() });
+      if (trace.camera.length > 32) trace.camera.shift();
+    }).catch(() => {});
   });
   // Pass real detector packets through unchanged; when asked, append one clearly synthetic person
   // box (the ray-cast room has no people) so box rendering and click-to-seek can be exercised.
@@ -137,7 +187,20 @@ async function openViewer(browser, origin, { injectPerson = () => false, injectN
   // its real control status so the path overlay and go-to controls can be exercised end to end.
   await page.routeWebSocket("**/ws/control", (ws) => {
     const server = ws.connectToServer();
+    if (traceControl) ws.onMessage((message) => {
+      try {
+        const packet = JSON.parse(String(message));
+        record("out", { seq: packet.seq, mode: packet.mode, deadman: packet.deadman,
+                        videoFresh: packet.video_fresh, videoAge: packet.video_age_ms });
+      } catch { /* Observation never changes delivery, including malformed input. */ }
+      server.send(message);
+    });
     server.onMessage((message) => {
+      try {
+        const packet = JSON.parse(String(message));
+        record("in", { seq: packet.seq, mode: packet.mode, reason: packet.reason,
+                       requiresRelease: packet.requires_release });
+      } catch { /* Observation never changes delivery. */ }
       const nav = injectNav();
       if (!nav) return ws.send(message);
       try { ws.send(JSON.stringify({ ...JSON.parse(String(message)), nav })); } catch { ws.send(message); }
@@ -236,35 +299,35 @@ async function main() {
         const s = await status();
         return s.left_pwm > 0 && s.right_pwm > 0 && s.reason === "active" && s;
       }, 4000, 50);
-      const heldAt = Date.now();
+      const heldAt = performance.now();
       let heldSamples = 0;
-      while (Date.now() - heldAt < 3000) {
+      while (performance.now() - heldAt < 3000) {
         const s = await status();
         if (!(s.left_pwm > 0 && s.right_pwm > 0 && s.reason === "active"))
-          throw new Error(`held forward drive interrupted after ${Date.now() - heldAt} ms: ${s.reason}, PWM ${s.left_pwm}/${s.right_pwm}`);
+          throw new Error(`held forward drive interrupted after ${Math.round(performance.now() - heldAt)} ms: ${s.reason}, PWM ${s.left_pwm}/${s.right_pwm}`);
         heldSamples++;
         await sleep(25);
       }
       await releaseAll(page);
-      const releasedAt = Date.now();
+      const releasedAt = performance.now();
       const stopped = await waitFor("rover did not stop after release", async () => {
         const s = await status();
         return s.left_pwm === 0 && s.right_pwm === 0 && s;
       }, 2000, 20);
-      return `PWM ${moving.left_pwm}/${moving.right_pwm}; ${heldSamples} moving samples over 3 s held; 0/0 (${stopped.reason}) ${Date.now() - releasedAt} ms after release (simulated rover)`;
+      return `PWM ${moving.left_pwm}/${moving.right_pwm}; ${heldSamples} moving samples over 3 s held; 0/0 (${stopped.reason}) ${Math.round(performance.now() - releasedAt)} ms after release (simulated rover)`;
     }, { retries: 1 });
 
     await step("Explore select", async () => {
       await page.keyboard.press("KeyE");
       await holdDeadman(page, simOrigin);
       const s = await waitFor("server never entered explore", async () => { const v = await status(); return v.mode === "explore" && v; }, 4000, 50);
-      const heldAt = Date.now();
+      const heldAt = performance.now();
       let heldSamples = 0;
       const phases = new Set();
-      while (Date.now() - heldAt < 6000) {
+      while (performance.now() - heldAt < 6000) {
         const current = await status();
         if (current.mode !== "explore" || !(current.left_pwm || current.right_pwm))
-          throw new Error(`clear-room Explore interrupted after ${Date.now() - heldAt} ms: ${current.reason}, ${current.autonomy_state}, PWM ${current.left_pwm}/${current.right_pwm}`);
+          throw new Error(`clear-room Explore interrupted after ${Math.round(performance.now() - heldAt)} ms: ${current.reason}, ${current.autonomy_state}, PWM ${current.left_pwm}/${current.right_pwm}`);
         phases.add(current.autonomy_state);
         heldSamples++;
         await sleep(25);
@@ -353,6 +416,8 @@ async function main() {
       await waitFor("settings still open", async () => !(await page.locator("#settings").evaluate((d) => d.open)), 2000);
       await holdDeadman(page, simOrigin);
       await waitFor("deadman not ready for scan", async () => { const v = await status(); return v.reason === "active"; }, 4000, 50);
+      const trace = controlTraces.get(page);
+      Object.assign(trace, { enabled: traceControl, started: performance.now(), firstStop: null, records: [], camera: [] });
       await page.locator("#rover-scan").click();
       const done = await waitFor("scan never completed", async () => {
         const r = await json(`${simOrigin}/scan`);
@@ -369,6 +434,9 @@ async function main() {
         return /points/.test(details) || /View changed/.test(await roverMessage(page));
       }, 3000);
       await releaseAll(page);
+      trace.enabled = false;
+      if (traceControl) scanControlTraces.push({ state: "complete", firstStop: trace.firstStop, records: [...trace.records],
+                                                camera: [...trace.camera] });
       if (!done.simulated) throw new Error("scan result not flagged simulated");
       return `${done.views?.length} views, ${done.points} points, ${(done.scan_ms / 1000).toFixed(1)} s, simulated=${done.simulated}, backend ${done.backend}`;
     }, { retries: 1 });
@@ -443,7 +511,7 @@ async function main() {
 }
 
 process.on("SIGINT", () => { stopAll(); process.exit(130); });
-const began = Date.now();
+const began = performance.now();
 let fatal = null;
 try {
   await main();
@@ -457,6 +525,7 @@ console.log("\nJudge-flow smoke (SIMULATED + REPLAY; no hardware, not live evide
 for (const r of results) console.log(`${r.result}  ${r.step.padEnd(width)}  ${String(r.ms).padStart(5)} ms  ${r.detail}`);
 const failed = results.filter((r) => r.result !== "PASS").length;
 if (fatal) console.log(`\nSETUP FAILED: ${fatal.message}\n${processes.map((p) => `--- ${p.name}\n${p.log()}`).join("\n")}`);
-console.log(`\n${results.length - failed}/${results.length} passed in ${((Date.now() - began) / 1000).toFixed(1)} s`);
-if (outPath) writeFileSync(outPath, JSON.stringify({ environment: "Chromium/SwiftShader; desktop controls; tools.demo --simulate and --replay fixture; synthetic person box for render/seek", results, fatal: fatal?.message ?? null }, null, 2));
+console.log(`\n${results.length - failed}/${results.length} passed in ${((performance.now() - began) / 1000).toFixed(1)} s`);
+if (outPath) writeFileSync(outPath, JSON.stringify({ environment: "Chromium/SwiftShader; desktop controls; tools.demo --simulate and --replay fixture; synthetic person box for render/seek", results, scanControlTraces, fatal: fatal?.message ?? null }, null, 2));
+else if (scanControlTraces.length) console.log(`Scan control trace: ${JSON.stringify(scanControlTraces)}`);
 process.exit(fatal || failed ? 1 : 0);

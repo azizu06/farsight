@@ -24,18 +24,26 @@ class VoxelMap:
         xyz, rgb = np.zeros((len(unique), 3)), np.zeros((len(unique), 3))
         np.add.at(xyz, inverse, points)
         np.add.at(rgb, inverse, colors)
-        for i, key in enumerate(map(tuple, unique)):
-            pos, color = xyz[i] / counts[i], rgb[i] / counts[i]
-            if key in self.cells:
-                old_pos, old_color, weight = self.cells[key]
-                # Bound observation weight so new evidence can still update a cell.
-                alpha = 1 / (min(weight, 30) + 1)
-                pos = old_pos * (1 - alpha) + pos * alpha
-                color = old_color * (1 - alpha) + color * alpha
-                weight = min(weight + 1, 30)
-            else:
-                weight = 1
-            self.cells[key] = (pos, color, weight)
+        # Do arithmetic once per capture, rather than thousands of tiny NumPy
+        # operations under the GIL that delay camera and control workers.
+        xyz /= counts[:, None]
+        rgb /= counts[:, None]
+        keys = list(map(tuple, unique))
+        previous = [self.cells.get(key) for key in keys]
+        present = np.array([i for i, value in enumerate(previous) if value is not None], dtype=np.intp)
+        weights = np.ones(len(keys), dtype=np.int64)
+        if len(present):
+            old_xyz = np.array([previous[i][0] for i in present])
+            old_rgb = np.array([previous[i][1] for i in present])
+            old_weights = np.array([previous[i][2] for i in present])
+            # Bound observation weight so new evidence can still update a cell.
+            alpha = (1 / (np.minimum(old_weights, 30) + 1))[:, None]
+            xyz[present] = old_xyz * (1 - alpha) + xyz[present] * alpha
+            rgb[present] = old_rgb * (1 - alpha) + rgb[present] * alpha
+            weights[present] = np.minimum(old_weights + 1, 30)
+        for key, position, color, weight in zip(keys, xyz, rgb, weights):
+            # A retained voxel owns its small arrays, never an entire capture batch.
+            self.cells[key] = (position.copy(), color.copy(), int(weight))
             self.cells.move_to_end(key)
         while len(self.cells) > self.capacity:
             self.cells.popitem(last=False)

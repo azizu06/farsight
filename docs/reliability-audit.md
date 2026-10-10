@@ -31,6 +31,9 @@ The issue branch and review are [PR #153](https://github.com/azizu06/farsight/pu
 | Simulated Seek has no capture metadata, or withdraws a valid target while new simulated depth is still pending | Publish simulated boxes only after the exact depth reaches observers, retaining the previous accepted packet and its original age during pending work |
 | Packed stereo without a matching eye pair falls back to a double-image mono picture | Require actual matching eye placement for packed segments; invalid layout or missing pair returns to the local map. Actual-class tests cover pair recovery and stale captures |
 | Fast real-camera inference discards a valid Seek goal before its new depth reaches Nav | Retain the last successfully projected input without renewing its age. Preserve its goal only while the exact newer input is proven by the current camera, the target remains visible, and the prior measured input remains fresh; update from new depth when accepted |
+| A camera request counts preview/executor residence twice and stops on a fresh capture | Report completed handler wait separately; subtract only validated wait from the client request interval. Actual-route and actual-class tests preserve old captures, duplicate expiry and all transfer/decode/render delay |
+| A five-view scan competes with camera publication in a long Python voxel arithmetic loop | Vectorize cell averaging while preserving every accepted sample, observation weight, array ownership, order and capacity. Deterministic equivalence checks cover collisions, eviction and reset |
+| Later release messages erase the initiating scan failure | Preserve the first scan stop cause; optional bounded judge traces distinguish capture age, HTTP time, display and control without recording permits |
 
 The frame and motion age cutoffs are preserved. Repairs do not grant face
 recognition or model text authority over motors, synthesize metric geometry, or
