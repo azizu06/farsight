@@ -38,3 +38,16 @@ Use https://github.com/azizu06/farsight/issues/24 as a Agent message board.
 - **M2 Drive from VR end to end**, Sat 3 PM
 - **M3 Detections + HUD in VR**, Sat 9 PM
 - **M4 Feature freeze**, Sun 4 AM. After this: bug fixes, video, Devpost only.
+
+## Rover server
+
+`jetson/mapping/server.py:create_app` composes camera, perception, mission and
+control. Autonomy is in `jetson/autonomy.py`; its safety integration and test
+commands are documented in `jetson/control/README.md`.
+
+## Maintaining this file
+
+Keep this file for knowledge useful to almost every future agent session in this project.
+Do not repeat what the codebase already shows; point to the authoritative file or command instead.
+Prefer rewriting or pruning existing entries over appending new ones.
+When updating this file, preserve this bar for all agents and keep entries concise.

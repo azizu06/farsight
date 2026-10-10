@@ -39,7 +39,8 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
     mission = Mission(mission_dir)
     perception = PerceptionService(camera_service, model=detector_model, mode=detector, on_detection=mission.detect)
     control = ControlService(serial_port=serial_port, simulate=simulate_rover, max_pwm=max_pwm, min_pwm=min_pwm,
-                             camera_ready=lambda: camera_service.status()["camera"])
+                             camera_ready=lambda: camera_service.status()["camera"],
+                             detections=perception.snapshot)
     assistant = SceneAssistant(camera_service, perception, control, server_url=assistant_url,
                                whisper_bin=whisper_bin, whisper_model=whisper_model,
                                piper_bin=piper_bin, piper_model=piper_model, output_dir=tts_dir)

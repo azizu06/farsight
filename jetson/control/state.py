@@ -11,18 +11,25 @@ import threading
 import time
 import uuid
 
+from jetson.autonomy import Autonomy
+
 
 class ControlState:
     LEASE = 0.250
     RANGE_TTL = 0.350
 
-    def __init__(self, simulated=False, max_pwm=100, clock=time.monotonic, camera_ready=None, min_pwm=0):
+    def __init__(self, simulated=False, max_pwm=100, clock=time.monotonic, camera_ready=None, min_pwm=0,
+                 detections=None):
         if (type(min_pwm) is not int or type(max_pwm) is not int
                 or not 0 <= min_pwm < max_pwm <= 255):
             raise ValueError("PWM bounds must satisfy 0 <= min_pwm < max_pwm <= 255")
         self.clock, self.simulated, self.max_pwm = clock, simulated, max_pwm
         self.min_pwm = min_pwm
         self.camera_ready = camera_ready
+        # Optional, bounded in-memory snapshot reader; never inference or I/O.
+        self.detections = detections
+        self.autonomy = Autonomy() if detections is not None else None
+        self.stick_override = False
         self.lock = threading.RLock()
         self.session_id = None
         self.permits = OrderedDict()
@@ -42,6 +49,9 @@ class ControlState:
             self.v = self.w = 0.0
             self.deadline = 0.0
             self.reason = reason
+            if self.autonomy:
+                self.autonomy.reset()
+            self.stick_override = False
             if require_release:
                 self.requires_release = True
 
@@ -124,8 +134,13 @@ class ControlState:
             if not self.camera_is_ready():
                 self.stop("camera_stale")
                 return False
-            if message.get("mode", "teleop") != "teleop":
+            mode = message.get("mode", "teleop")
+            if mode != "teleop" and (not self.autonomy or mode not in ("explore", "seek")):
                 self.stop("unsupported_mode")
+                return False
+            target_id = message.get("target_id") if mode == "seek" else None
+            if mode == "seek" and (type(target_id) is not int or not 0 <= target_id <= 2**53 - 1):
+                self.stop("invalid_target")
                 return False
             video_age = message.get("video_age_ms")
             if (message.get("video_fresh") is not True or type(video_age) not in (int, float)
@@ -140,6 +155,16 @@ class ControlState:
             if not (-1 <= v <= 1 and -1 <= w <= 1 and -80 <= pan <= 80):
                 self.stop("invalid_command")
                 return False
+            if self.autonomy:
+                if mode == "teleop":
+                    self.autonomy.reset()
+                    self.stick_override = False
+                elif v or w or self.stick_override:
+                    self.autonomy.reset()
+                    self.stick_override = True
+                else:
+                    self.autonomy.select(mode, target_id, now)
+                    pan = 0  # autonomy needs a forward-facing ultrasonic/camera
             if round(pan) != self.pan:
                 # A reading from a previous servo direction is not a forward
                 # obstacle reading, even when the servo returns to the centre.
@@ -155,9 +180,17 @@ class ControlState:
         with self.lock:
             if self.deadline and self.clock() >= self.deadline:
                 self.stop("lease_expired")
-            if (self.v or self.w) and not self.camera_is_ready():
+            autonomous = self.autonomy is not None and self.autonomy.mode != "teleop"
+            if (self.v or self.w or autonomous) and not self.camera_is_ready():
                 self.stop("camera_stale")
             v, w = self.v, self.w
+            if self.autonomy and self.autonomy.mode != "teleop" and self.deadline:
+                cm = self.range_cm if self.clock() - self.range_at < self.RANGE_TTL else None
+                try:
+                    v, w = self.autonomy.step(self.clock(), cm, self.detections())
+                except Exception:
+                    self.stop("autonomy_unavailable")
+                    v = w = 0
             if not self.connected:
                 v = w = 0
             if v > 0 and self.forward_blocked():
@@ -186,7 +219,10 @@ class ControlState:
             return {"type": "control_status", "session_id": self.session_id,
                     "permit": permit, "permit_ms": 250, "seq": self.seq,
                     "range_cm": self.range_cm, "estop": self.forward_blocked(),
-                    "mode": "teleop", "link_ms": self.link_ms,
+                    "mode": self.autonomy.mode if self.autonomy else "teleop", "link_ms": self.link_ms,
+                    "autonomy_state": ("stick_override" if self.stick_override else
+                                       self.autonomy.phase if self.autonomy else "idle"),
+                    "target_id": self.autonomy.target_id if self.autonomy else None,
                     "rover": self.connected, "simulated": self.simulated,
                     "requires_release": self.requires_release, "reason": self.reason,
                     "left_pwm": left, "right_pwm": right, "pan_deg": pan,
