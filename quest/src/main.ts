@@ -226,9 +226,12 @@ pointsMaterial.onBeforeCompile = (shader) => {
 };
 const cloud = new THREE.Points(new THREE.BufferGeometry(), pointsMaterial);
 root.add(cloud);
+// Matte, physically shaded reconstruction: Lambert BRDF (albedo / pi) under one key
+// light fixed to the map and a soft sky/ground fill, keeping measured vertex colours.
+// Per-pixel diffuse only, no shadows or AO: cheap enough for Quest 2.
 const surfaces = new THREE.Mesh(
   new THREE.BufferGeometry(),
-  new THREE.MeshBasicMaterial({
+  new THREE.MeshLambertMaterial({
     vertexColors: true,
     side: THREE.DoubleSide,
     toneMapped: false,
@@ -238,6 +241,11 @@ const surfaces = new THREE.Mesh(
   }),
 );
 root.add(surfaces);
+// Key + fill sum to ~pi on lit upward faces so albedo reads near its measured colour.
+const keyLight = new THREE.DirectionalLight(0xffffff, 2.2);
+keyLight.position.set(3, 6, 2);
+root.add(keyLight, keyLight.target);
+scene.add(new THREE.HemisphereLight(0xdfe8ff, 0x4a4036, 1.6));
 const marker = new THREE.Group();
 const markerMesh = new THREE.Mesh(
   new THREE.ConeGeometry(0.055, 0.15, 4),
@@ -318,6 +326,9 @@ renderer.setAnimationLoop((_time, frame) => {
   if (walking !== wasWalking) { wasWalking = walking; visibility(); syncMapConnection(); }
   root.visible = walking || !rover?.vrCameraView;
   if (walking) placeWalk(); else rover?.placeMapOverview(root, vrMapCenter, vrMapSpan);
+  // Nav goals/path/reticle sit on the map's floor in walk mode (the floor is on the headset
+  // floor there); the layer only moves in y, so /nav/goal keeps AR-world x/z.
+  if (rover) rover.navLayer.position.y = walking ? mapWalk.floorY : 0;
   mapAxes.visible = !renderer.xr.isPresenting;
   grid.visible = !walking;
   if (renderer.xr.isPresenting) {
@@ -355,7 +366,7 @@ function replaceGeometry(
     new THREE.BufferAttribute(data.positions, 3),
   );
   geometry.setAttribute("color", new THREE.BufferAttribute(data.colors, 3));
-  if (indices) geometry.setIndex(new THREE.BufferAttribute(indices, 1));
+  if (indices) { geometry.setIndex(new THREE.BufferAttribute(indices, 1)); geometry.computeVertexNormals(); }
   geometry.computeBoundingSphere();
   if (object === cloud) {
     geometry.computeBoundingBox();
