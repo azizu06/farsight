@@ -279,7 +279,8 @@ class PerceptionService:
                     # Inference results retain the input timestamp, not completion freshness.
                     self.packet = dict(ts=time.time(), frame=frame.frame_id, fps=round(rate, 1), inference_ms=round(duration * 1000, 1),
                            boxes=boxes, detector=self.mode,
-                           source=frame.source, received=frame.received, age_ms=frame.age_ms)
+                           source=frame.source, received=frame.received, age_ms=frame.age_ms,
+                           sensor_key=getattr(frame, "sensor_key", None), mirrored=getattr(frame, "mirrored", False))
                     self.error = None
                     if self.on_detection:
                         await asyncio.to_thread(self.on_detection, self.packet, frame)

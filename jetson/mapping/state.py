@@ -151,6 +151,8 @@ class MapState:
             # Bind observers to this accepted socket lifetime. Overwrite any producer field:
             # an observer can finish after a reconnect even when sensor identity is reused.
             frame.header["_mapping_socket_generation"] = self.socket_generation
+            frame.header["_mapping_sensor_key"] = (*self.identity, self.socket_generation,
+                                                    frame.header["frame_id"], frame.header["t_capture"])
             generation = self.processing_generation
             self.observe_pose(frame.header, frame.transform, camera_receipt, socket_generation=socket_generation)
             self.jpeg = frame.jpeg

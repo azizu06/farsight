@@ -178,6 +178,17 @@ class DensePublicationTests(unittest.TestCase):
         state.process(value, socket_generation=generation)
         self.assertEqual(observed, [generation])
 
+    def test_accepted_frame_overwrites_producer_supplied_sensor_key(self):
+        state = MapState(fusion_bypass=True)
+        self.addCleanup(state.dense_worker.close)
+        generation = state.start_session(('test', 1), 'Fixture')
+        value = frame(1)
+        value.header['_mapping_sensor_key'] = ('different', 99, generation + 1, 200, 999.)
+        observed = []
+        state.frame_observers.append(lambda capture: observed.append(capture.header['_mapping_sensor_key']))
+        state.process(value, socket_generation=generation)
+        self.assertEqual(observed, [('test', 1, generation, 1, 1.)])
+
 
 class PoseReceiptTests(unittest.TestCase):
     def test_delayed_rgbd_processing_does_not_renew_pose_receipt(self):

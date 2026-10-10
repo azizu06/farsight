@@ -1,12 +1,16 @@
 import math
+import concurrent.futures
+import threading
 import time
 import unittest
+from unittest.mock import patch
 
 import cv2
 import numpy as np
 from fastapi.testclient import TestClient
 
-from jetson.camera import CameraFrame
+from jetson.camera import CameraFrame, CameraService
+from jetson.capture_permits import CapturePermits
 from jetson.mapping.demo import simulated_frame
 from jetson.mapping.orientation import CONFIRM_FRAMES, UprightNormalizer, rotate_jpeg_180, up_cosine, upright_view
 from jetson.mapping.people import PersonLocator, torso_point
@@ -83,6 +87,32 @@ class OrientationDetectionTests(unittest.TestCase):
 
 
 class PersonMarkerTests(unittest.TestCase):
+    def test_rgb_only_source_cannot_reuse_native_lidar_pixels(self):
+        held = simulated_frame(1.0, 4)
+        locator = PersonLocator()
+        locator.offer_frame(held)
+        camera = CameraFrame(held.jpeg, 0., 4, 'PHONE RGB')
+        box = dict(x=.31, y=.22, w=.2, h=.4, cls='person', id=1)
+        self.assertNotIn('world', locator.annotate([box], camera)[0])
+
+    def test_mirrored_camera_with_another_picture_cannot_use_held_depth(self):
+        held = simulated_frame(1.0, 4)
+        locator = PersonLocator()
+        locator.offer_frame(held)
+        camera = CameraFrame(b'new socket picture', 0., 4, 'IPHONE LIDAR', mirrored=True)
+        box = dict(x=.31, y=.22, w=.2, h=.4, cls='person', id=1)
+        self.assertNotIn('world', locator.annotate([box], camera)[0])
+
+    def test_repeated_native_pixels_from_another_socket_cannot_use_held_depth(self):
+        held = simulated_frame(1.0, 4)
+        held.header['_mapping_sensor_key'] = (*IDENTITY, 1, 4, 1.)
+        locator = PersonLocator()
+        locator.offer_frame(held)
+        camera = CameraFrame(held.jpeg, 0., 4, 'IPHONE LIDAR', mirrored=True,
+                             native_jpeg=held.jpeg, sensor_key=(*IDENTITY, 2, 4, 1.))
+        box = dict(x=.31, y=.22, w=.2, h=.4, cls='person', id=1)
+        self.assertNotIn('world', locator.annotate([box], camera)[0])
+
     def test_box_on_the_upright_picture_finds_the_same_depth_and_world_point(self):
         upright = simulated_frame(1.0, 4)
         sensor = decode_frame(bundle(phone_upside_down(upright)), IDENTITY)  # sensor-native, no pose edit
@@ -100,13 +130,83 @@ class PersonMarkerTests(unittest.TestCase):
         locator = PersonLocator()
         locator.offer_frame(flipped)
         camera = CameraFrame(rotate_jpeg_180(flipped.jpeg), 0.0, flipped.header["frame_id"], "IPHONE LIDAR",
-                             mirrored=True)
+                             mirrored=True, native_jpeg=flipped.jpeg)
         box = dict(x=0.31, y=0.22, w=0.2, h=0.4, cls="person", id=1)
         expected = torso_point(box, decode_frame(bundle(upright), IDENTITY))
         np.testing.assert_allclose(locator.annotate([dict(box)], camera)[0]["world"], expected, atol=2e-3)
 
 
+class CameraMountBindingTests(unittest.TestCase):
+    def test_late_old_decoder_cannot_advance_the_reconnected_mount(self):
+        camera = CameraService(None)
+        old, current = CapturePermits(*IDENTITY), CapturePermits(*IDENTITY)
+        camera.begin_phone(old)
+        inverted = phone_upside_down(simulated_frame(1., 4))
+        entered, release = threading.Event(), threading.Event()
+
+        def delayed_decode(*args, **kwargs):
+            result = decode_frame(*args, **kwargs)
+            entered.set()
+            release.wait(2)
+            return result
+
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                with patch('jetson.mapping.phone.decode_frame', delayed_decode):
+                    pending = pool.submit(camera.accept_phone_rgbd, bundle(inverted), IDENTITY, -1, None, old)
+                    self.assertTrue(entered.wait(1))
+                    camera.begin_phone(current)
+                    release.set()
+                    self.assertEqual(pending.result(timeout=1), -1)
+                for number in (5, 6):
+                    inverted.header.update(frame_id=number, t_capture=float(number))
+                    camera.accept_phone_rgbd(bundle(inverted), IDENTITY, -1, None, current)
+                self.assertFalse(camera.mount.inverted, 'An old socket counted toward the new mount confirmation')
+                inverted.header.update(frame_id=7, t_capture=7.)
+                camera.accept_phone_rgbd(bundle(inverted), IDENTITY, -1, None, current)
+                self.assertTrue(camera.mount.inverted)
+        finally:
+            release.set()
+            old.close()
+            current.close()
+
+
 class OrientationServerTests(unittest.TestCase):
+    def test_camera_and_map_share_the_receiver_bound_native_capture(self):
+        inverted = phone_upside_down(simulated_frame(1., 4))
+        app = create_app(detector='none', fusion_bypass=True)
+        accepted = {}
+        app.state.mapping.frame_observers.append(lambda frame: accepted.update({frame.header['frame_id']: frame}))
+        with TestClient(app) as client:
+            with client.websocket_connect('/phone') as phone:
+                phone.send_json(dict(version=1, type='hello', session_id=IDENTITY[0], map_epoch=IDENTITY[1],
+                                     supports_scene_depth=True))
+                for number in range(1, CONFIRM_FRAMES + 1):
+                    header = dict(inverted.header, frame_id=number, t_capture=float(number),
+                                  _mapping_sensor_key=['producer', 99, 99, 99, 99.])
+                    value = type(inverted)(header, inverted.rgb, inverted.depth, inverted.confidence,
+                                           inverted.calibration, inverted.transform, inverted.jpeg)
+                    phone.send_bytes(bundle(value))
+                    deadline = time.monotonic() + 1
+                    while (number not in accepted or app.state.camera.phone_rgb is None
+                           or app.state.camera.phone_rgb.frame_id != number) and time.monotonic() < deadline:
+                        time.sleep(.005)
+                    self.assertIn(number, accepted)
+                camera = app.state.camera.snapshot()
+                key = (*IDENTITY, app.state.mapping.socket_generation, CONFIRM_FRAMES, float(CONFIRM_FRAMES))
+                self.assertEqual(camera.sensor_key, key)
+                self.assertEqual(accepted[CONFIRM_FRAMES].header['_mapping_sensor_key'], key)
+                self.assertTrue(camera.mirrored)
+                self.assertEqual(camera.native_jpeg, inverted.jpeg)
+                preview = app.state.camera.preview(max_width=160)
+                self.assertEqual(preview.sensor_key, key)
+                self.assertEqual(preview.native_jpeg, inverted.jpeg)
+                locator = PersonLocator()
+                locator.offer_frame(accepted[CONFIRM_FRAMES])
+                box = dict(x=.31, y=.22, w=.2, h=.4, cls='person', id=1)
+                expected = torso_point(box, upright_view(accepted[CONFIRM_FRAMES]))
+                self.assertEqual(locator.annotate([box], camera)[0].get('world'), expected)
+
     def test_camera_view_follows_a_live_flip_while_the_map_is_untouched(self):
         upright = simulated_frame(1.0, 4)
         flipped = phone_upside_down(upright)

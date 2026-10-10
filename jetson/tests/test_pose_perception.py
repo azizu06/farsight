@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import threading
 import time
@@ -11,6 +12,7 @@ import cv2
 import numpy as np
 
 from jetson.perception import PerceptionService
+from jetson.camera import CameraFrame
 from jetson.pose import Detection, make_pose_detector
 from jetson.pose.boxes import detection_to_box
 from jetson.pose.trt_backend import TensorRTPoseDetector
@@ -152,6 +154,44 @@ class GpuRecoveryTests(unittest.TestCase):
         service = self.service()
         self.assertFalse(service._recover_gpu(ValueError("bad frame")))
         self.assertEqual(service.rebuilds, 0)
+
+
+class DetectionAssociationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_delayed_inference_retains_its_input_capture_and_orientation(self):
+        key = ('phone', 1, 7, 1, 1.)
+        image = jpeg()
+        first = CameraFrame(image, time.monotonic(), 1, 'IPHONE LIDAR', mirrored=True,
+                            native_jpeg=image, sensor_key=key)
+        second = CameraFrame(image, time.monotonic(), 2, 'IPHONE LIDAR', mirrored=False,
+                             native_jpeg=image, sensor_key=('phone', 1, 7, 2, 2.))
+        camera = SimpleNamespace(current=first)
+        camera.snapshot = lambda: camera.current
+        service = PerceptionService(camera, mode='none')
+        entered, release = threading.Event(), threading.Event()
+
+        def detect(_):
+            entered.set()
+            release.wait(2)
+            return []
+
+        service._detect = detect
+        service.task = asyncio.create_task(service._run())
+        try:
+            async with asyncio.timeout(1):
+                while not entered.is_set():
+                    await asyncio.sleep(.001)
+            camera.current = second
+            release.set()
+            async with asyncio.timeout(1):
+                while service.packet['frame'] != 1:
+                    await asyncio.sleep(.001)
+            packet = json.loads(json.dumps(service.snapshot()))
+            self.assertEqual(packet.get('sensor_key'), list(key))
+            self.assertIs(packet.get('mirrored'), True)
+            self.assertEqual(packet['source'], 'IPHONE LIDAR')
+        finally:
+            release.set()
+            await service.close()
 
 
 class GpuStartupRecoveryTests(unittest.IsolatedAsyncioTestCase):

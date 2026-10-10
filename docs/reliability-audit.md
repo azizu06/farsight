@@ -25,6 +25,8 @@ The issue branch and review are [PR #153](https://github.com/azizu06/farsight/pu
 | Render capture reports geometry but outputs black idle pictures, or drops the tracked pose at the Python/JS field boundary | Integrate upstream's same-task capture draw and field adapter; preserve real-browser pixel tests and add a Node regression executing the actual producer expression and renderer camera/ray code |
 | The simulation exports dense data without a usable source identity | Initialize its existing source and recognize only the explicit RGB-D simulation identity with a SIMULATED label; Python-to-JS tests cover initial data, reset and continuation |
 | Cinematic camera easing renders an intermediate pose while the frame echoes the latest tracked pose | Draw at the exact accepted pose so Quest's matched-pose placement is valid; preserve cinematic styling. Small head-move/yaw regressions reproduce the mismatch under default settings and `camera=smooth` |
+| Old camera decoding changes a replacement socket's upside-down mount state | Check the current binding while updating mount hysteresis; recheck publication after rotating pixels |
+| Upright person boxes reuse unrelated depth just because their frame number matches | Retain native JPEG and a server-created capture key; match the exact socket/capture and source before projecting markers |
 
 The frame and motion age cutoffs are preserved. Repairs do not grant face
 recognition or model text authority over motors, synthesize metric geometry, or
@@ -36,6 +38,16 @@ Use the same revision for the Python navigation server and rebuilt ROS bridge;
 see [navigation.md](navigation.md#server-and-bridge-protocol-wsnav-version-1).
 An old bridge lacks mandatory command/status generations and cannot drive the
 updated server. This intentional hold must not be diagnosed as joystick loss.
+
+The checked-in production service (`jetson.launch`) and `tools.demo --simulate`
+launch Python. The separate `farsight-server` Rust backend is not qualified as
+an equivalent replacement by its workspace test count. Before switching the
+rover backend to Rust, port and regress the current socket-generation authority,
+capture/depth age after queueing and encoding, reset-before-depth ordering, and
+exact camera/native-JPEG/source association for upright detections and LiDAR
+lookups. Neither backend currently reports an explicit runtime or build revision
+in `/health`; record the actual launch command and deployed revision at the
+selected backend origin before claiming parity.
 
 For the selected production topology and bounded route checker, see
 [demo-connectivity.md](demo-connectivity.md) and

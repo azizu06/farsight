@@ -64,6 +64,8 @@ class CameraFrame:
     mirrored: bool = False  # JPEG was rotated 180 (phone mounted upside down); depth stays sensor-native
     socket_received: float | None = None
     published: float | None = None
+    native_jpeg: bytes | None = None  # sensor pixels behind the upright detector/display picture
+    sensor_key: tuple | None = None   # trusted socket generation and exact RGB-D capture
 
     @property
     def age_ms(self):
@@ -161,7 +163,8 @@ class CameraService:
                             socket_received=arrived, published=time.monotonic())
         return frame_id if self._publish_phone(frame, header) else previous_frame
 
-    def accept_phone_rgbd(self, packet, identity, previous_frame=-1, received_at=None, permits=None):
+    def accept_phone_rgbd(self, packet, identity, previous_frame=-1, received_at=None, permits=None,
+                          *, socket_generation=None):
         # This lane validates the JPEG and packet independently of RGB-D fusion.
         from .mapping.phone import decode_frame, rigid_transform
         arrived = time.monotonic() if received_at is None else received_at
@@ -169,15 +172,24 @@ class CameraService:
         frame_id = header["frame_id"]
         if frame_id <= previous_frame:
             raise ValueError("RGB-D camera frame ordering is invalid")
-        # Gravity in the ARKit pose says which way up the phone is mounted; show it upright.
-        mirrored = self.mount.observe(rigid_transform(header["transform"]))
+        native_jpeg = jpeg
+        transform = rigid_transform(header["transform"])
+        # Only the current socket may advance the current mount's hysteresis.
+        # Decode and rotation stay outside the publication lock; the final publish
+        # checks the binding again if a reconnect happened during JPEG rotation.
+        with self.lock:
+            if self.phone_binding is not None and permits is not self.phone_binding:
+                return previous_frame
+            mirrored = self.mount.observe(transform)
         if mirrored:
             jpeg = rotate_jpeg_180(jpeg)
         received = adjusted_receipt(header, arrived)
         # ARKit does not have a qualified sensor clock; never elevate it to a
         # verified capture just because the camera bypasses the map worker.
         frame = CameraFrame(jpeg, received, frame_id, "IPHONE LIDAR", False, permits,
-                            header["tracking"], mirrored, arrived, time.monotonic())
+                            header["tracking"], mirrored, arrived, time.monotonic(), native_jpeg,
+                            (*identity, socket_generation, frame_id, header["t_capture"])
+                            if type(socket_generation) is int else None)
         return frame_id if self._publish_phone(frame, header) else previous_frame
 
     def status(self):

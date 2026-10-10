@@ -150,6 +150,15 @@ as previously defined.
 ```
 
 Box coordinates are normalized 0..1, top-left origin, relative to the MJPEG frame.
+For phone RGB-D, that picture can be rotated 180 degrees to match the mount.
+`mirrored` records that rotation; depth and fused geometry remain sensor-native.
+`sensor_key` is the server-created five-element capture key
+`[session_id, map_epoch, socket_generation, frame_id, t_capture]`, or null for
+sources without paired depth. The socket generation changes even when a phone
+reconnects with the same session/epoch. Together with `source`, this key binds
+inference to its exact retained depth capture; missing, stale or mismatched keys
+cannot select a Nav Seek target. JPEG bytes stay internal. Clients may ignore
+these fields when drawing ordinary 2D boxes.
 
 Optional pose fields (YOLO11-pose), present when the detector is a pose model:
 

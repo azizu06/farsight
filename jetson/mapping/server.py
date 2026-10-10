@@ -705,7 +705,8 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                 while True:
                     packet, received_at = await camera_queue.get()
                     previous = await asyncio.to_thread(camera_service.accept_phone_rgbd, packet, identity,
-                                                       previous, received_at, permits)
+                                                       previous, received_at, permits,
+                                                       socket_generation=socket_generation)
                     # Offer only after camera publication, without waiting for fusion.
                     offer(queue, (packet, received_at))
 
