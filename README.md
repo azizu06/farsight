@@ -1,6 +1,8 @@
 # Farsight
 
-Judging: [90 s demo](docs/judge-demo.md), [fallback playbook](docs/fallback-playbook.md), [architecture](docs/architecture.md), [Devpost evidence](docs/devpost-checklist.md).
+Judging: [90 s demo](docs/judge-demo.md), [fallback playbook](docs/fallback-playbook.md), [architecture](docs/architecture.md), [Devpost evidence](docs/devpost-checklist.md), [Devpost draft](docs/devpost-draft.md).
+
+[![Farsight architecture: operator kit and rover kit linked by cellular and Tailscale](docs/assets/architecture.svg)](docs/architecture.md)
 
 Optional camera-only room snapshot: [scan setup, model contract and local evidence](docs/scan.md).
 
