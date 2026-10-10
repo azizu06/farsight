@@ -1294,7 +1294,7 @@ async fn chunks_delta(
         };
     let truncated = bootstrap && after > 0;
     let mut entries: Vec<(u64, Op, [u8; 16], Option<ChunkMesh>)> = Vec::new();
-    let mut next_seq = after;
+    let next_seq;
     if bootstrap {
         // Synthetic Reset first — never sorted into the middle: a consumer
         // must clear before applying chunks, not after.
