@@ -110,7 +110,8 @@ export class MacAutoView {
         this.lastFrameId = shown.id;
         if (fresh) {
           this.stereoShown = kind === "stereo" && this.placeEyes(shown.pose);
-          if (!this.stereoShown) this.place(shown.pose, shown.fovY);
+          if (kind === "stereo" && !this.stereoShown) this.lastFrameAt = -Infinity;
+          else if (!this.stereoShown) this.place(shown.pose, shown.fovY);
         }
       }
     }

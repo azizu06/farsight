@@ -131,8 +131,8 @@ function presentation() {
     eyeQuads: [new THREE.Object3D(), new THREE.Object3D()], stereoShown: false,
     labelCanvas: { getContext: () => context }, labelTexture: {}, labelText: "",
   });
-  const show = (now, id, age) => {
-    view.viewer.displayedFrame = id === null ? null : { id, age, pose: null };
+  const show = (now, id, age, metadata = null, pose = null) => {
+    view.viewer.displayedFrame = id === null ? null : { id, age, metadata, pose };
     return view.update(now, true);
   };
   return { view, show };
@@ -185,6 +185,25 @@ test("Mac view is opt-in and never owns rover control", () => {
 });
 
 const stereoMeta = { stereo: true, layout: "sbs-left-right", eye_width: 960, eye_height: 1080 };
+
+test("AUTO hides packed stereo when the exact eye pair is unavailable, then recovers", () => {
+  const { view, show } = presentation();
+  assert.equal(show(10000, "mono", 20), true);
+  assert.equal(show(10001, "unknown-eyes", 20, stereoMeta, { pose_id: 99 }), false);
+  assert.equal(view.picture.visible, false, "packed stereo cannot become a mono picture");
+  assert.ok(view.eyeQuads.every(quad => !quad.visible));
+  const projection = new THREE.PerspectiveCamera(90, 1, .1, 100).projectionMatrix.elements;
+  view.ring.push({ id: 7, mono: 10002, position: [0, 1.6, 0], quaternion: [0, 0, 0, 1],
+    eyes: [-.032, .032].map(x => ({ position: [x, 1.6, 0], quaternion: [0, 0, 0, 1], projection })) });
+  assert.equal(show(10003, "paired", 20, stereoMeta, { pose_id: 7 }), true);
+  assert.equal(view.picture.visible, false);
+  assert.ok(view.eyeQuads.every(quad => quad.visible));
+  assert.equal(show(10004, "invalid-layout", 20, { ...stereoMeta, layout: "top-bottom" }, { pose_id: 7 }), false);
+  assert.ok(view.eyeQuads.every(quad => !quad.visible));
+  assert.equal(show(10005, "paired-again", 20, stereoMeta, { pose_id: 7 }), true);
+  assert.equal(show(10006, "stale-pair", MAC_STALE_MS, stereoMeta, { pose_id: 7 }), false);
+  assert.ok(view.eyeQuads.every(quad => !quad.visible));
+});
 
 test("stereo is a separate opt-in on top of the Mac view and asks the renderer for packed pairs", () => {
   assert.equal(macStereoEnabled("?macview=1"), false);

@@ -1,10 +1,15 @@
 import math
+import concurrent.futures
+import threading
 import time
 import unittest
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
 from jetson.mapping.server import create_app
+from jetson.mapping.state import MapState
+from jetson.nav import NavService
 from jetson.sim.stream import SimFeed
 from jetson.sim.world import Block, RoverSim, World
 from jetson.sim.worlds import WORLDS, load
@@ -70,9 +75,122 @@ class RoverSimTests(unittest.TestCase):
         self.assertFalse(feed.detections()["fresh"])
         frame = feed.frame(time.monotonic())
         self.assertEqual(frame.depth.shape, (120, 160))
+        state = MapState(demo=True, fusion_bypass=True)
+        self.addCleanup(state.dense_worker.close)
+        state.frame_observers.append(feed.offer_frame)
+        state.process(frame)
         snapshot = feed.detections()
         self.assertTrue(snapshot["fresh"])
         self.assertEqual(snapshot["boxes"][0]["cls"], "person")
+
+    def test_feed_pairs_seek_with_its_exact_accepted_capture(self):
+        state = MapState(demo=True, fusion_bypass=True)
+        self.addCleanup(state.dense_worker.close)
+        nav = NavService(state)
+        state.frame_observers.append(nav.offer_frame)
+        feed = SimFeed(RoverSim(load('seek')))
+        state.frame_observers.append(feed.offer_frame)
+        frame = feed.frame(time.monotonic())
+        state.process(frame)
+        feed.header(time.monotonic(), frame.transform)  # Pose heartbeat advances a different frame ID.
+        packet = feed.detections()
+        self.assertEqual(packet.get('sensor_key'), frame.header['_mapping_sensor_key'])
+        self.assertEqual(packet.get('frame'), frame.header['frame_id'])
+        self.assertEqual(packet.get('source'), 'SIMULATED')
+        self.assertIs(packet.get('mirrored'), False)
+        nav.mode, nav.active, nav.target_id = 'seek', True, packet['boxes'][0]['id']
+        nav.update_seek(packet)
+        self.assertEqual(nav.seek['state'], 'driving')
+        self.assertIsNotNone(nav.seek['goal'])
+
+    def test_unaccepted_capture_is_not_fresh_or_given_a_guessed_key(self):
+        feed = SimFeed(RoverSim(load('seek')))
+        frame = feed.frame(time.monotonic())
+        packet = feed.detections()
+        self.assertFalse(packet['fresh'])
+        self.assertEqual(packet['boxes'], [])
+        self.assertIsNone(packet.get('sensor_key'))
+        self.assertEqual(packet.get('frame'), -1)
+
+    def test_pending_render_keeps_the_previous_accepted_packet_until_publication(self):
+        state = MapState(demo=True, fusion_bypass=True)
+        self.addCleanup(state.dense_worker.close)
+        feed = SimFeed(RoverSim(load('seek')))
+        state.frame_observers.append(feed.offer_frame)
+        first = feed.frame(time.monotonic())
+        state.process(first)
+        previous = feed.detections()
+        self.assertTrue(previous['fresh'])
+        second = feed.frame(time.monotonic())
+        pending = feed.detections()
+        self.assertTrue(pending['fresh'], 'A pending render withdrew a valid accepted capture')
+        self.assertEqual(pending['sensor_key'], previous['sensor_key'])
+        self.assertEqual(pending['frame'], first.header['frame_id'])
+        with patch('jetson.sim.stream.time.monotonic', return_value=first.header['_received_monotonic'] + 2):
+            stale = feed.detections()
+        self.assertFalse(stale['fresh'], 'An unfinished render renewed the previous capture age')
+        self.assertEqual(stale['boxes'], [])
+        self.assertEqual(stale['sensor_key'], previous['sensor_key'])
+        state.process(second)
+        published = feed.detections()
+        self.assertEqual(published['sensor_key'], second.header['_mapping_sensor_key'])
+        self.assertEqual(published['frame'], second.header['frame_id'])
+
+    def test_bound_packet_waits_until_navigation_has_received_its_depth(self):
+        state = MapState(demo=True, fusion_bypass=True)
+        self.addCleanup(state.dense_worker.close)
+        nav = NavService(state)
+        feed = SimFeed(RoverSim(load('seek')))
+        entered, release = threading.Event(), threading.Event()
+
+        def delayed(frame):
+            if frame.header['frame_id'] == 2:
+                entered.set()
+                release.wait(2)
+
+        state.frame_observers.extend((delayed, nav.offer_frame, feed.offer_frame))
+        first = feed.frame(time.monotonic())
+        state.process(first)
+        previous = feed.detections()
+        second = feed.frame(time.monotonic())
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            job = pool.submit(state.process, second)
+            try:
+                self.assertTrue(entered.wait(1))
+                self.assertIn('_mapping_sensor_key', second.header)
+                packet = feed.detections()
+                self.assertEqual(packet['sensor_key'], previous['sensor_key'],
+                                 'Capture stamp was published before the navigation observer received it')
+                with nav.lock:
+                    self.assertIsNotNone(nav._seek_capture(packet, time.monotonic()))
+            finally:
+                release.set()
+                job.result(timeout=1)
+        self.assertEqual(feed.detections()['sensor_key'], second.header['_mapping_sensor_key'])
+
+    def test_feed_retains_old_capture_key_across_reset_and_expires_its_boxes(self):
+        state = MapState(demo=True, fusion_bypass=True)
+        self.addCleanup(state.dense_worker.close)
+        nav = NavService(state)
+        state.frame_observers.append(nav.offer_frame)
+        feed = SimFeed(RoverSim(load('seek')))
+        state.frame_observers.append(feed.offer_frame)
+        received = time.monotonic()
+        frame = feed.frame(received)
+        state.process(frame)
+        original_key = frame.header['_mapping_sensor_key']
+        state.start_session(feed.identity, 'Restarted simulated sensor')
+        packet = feed.detections()
+        self.assertEqual(packet.get('sensor_key'), original_key, 'Reset relabelled old boxes as a new capture')
+        self.assertNotEqual(packet['sensor_key'][2], state.socket_generation)
+        nav.sync_generation()
+        with nav.lock:
+            self.assertIsNone(nav._seek_capture(packet, time.monotonic()))
+        with patch('jetson.sim.stream.time.monotonic', return_value=received + 2):
+            expired = feed.detections()
+        self.assertFalse(expired['fresh'])
+        self.assertEqual(expired['boxes'], [])
+        self.assertEqual(expired['sensor_key'], original_key)
 
 
 class SimServerTests(unittest.TestCase):

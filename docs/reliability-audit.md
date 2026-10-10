@@ -28,6 +28,8 @@ The issue branch and review are [PR #153](https://github.com/azizu06/farsight/pu
 | Old camera decoding changes a replacement socket's upside-down mount state | Check the current binding while updating mount hysteresis; recheck publication after rotating pixels |
 | Upright person boxes reuse unrelated depth just because their frame number matches | Retain native JPEG and a server-created capture key; match the exact socket/capture and source before projecting markers |
 | Seek projects upright or delayed detections into the newest unrelated native depth | Retain 12 exact captures and use the detector input's source, socket, frame and orientation. Recheck after projection; invalid pairing withdraws the old goal, while delayed valid inference uses its retained measured capture |
+| Simulated Seek has no capture metadata, or withdraws a valid target while new simulated depth is still pending | Publish simulated boxes only after the exact depth reaches observers, retaining the previous accepted packet and its original age during pending work |
+| Packed stereo without a matching eye pair falls back to a double-image mono picture | Require actual matching eye placement for packed segments; invalid layout or missing pair returns to the local map. Actual-class tests cover pair recovery and stale captures |
 
 The frame and motion age cutoffs are preserved. Repairs do not grant face
 recognition or model text authority over motors, synthesize metric geometry, or
