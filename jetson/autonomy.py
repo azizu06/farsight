@@ -56,22 +56,17 @@ class Autonomy:
         boxes = (snapshot.get("boxes", []) if snapshot.get("fresh") and not snapshot.get("error")
                  and isinstance(age, (int, float)) and 0 <= age < 1000 else [])
         boxes = [box for box in boxes if valid_person(box)]
-        if self.mode == "explore":
-            person = next((box for box in boxes if box.get("cls") == "person"), None)
-            if person:
-                self.mode, self.target_id = "seek", person["id"]
-                self.last_seen = now
-            else:
-                if self.phase == "turning":
-                    if now - self.phase_at < 1:
-                        return 0, self.direction * .35
-                    self.phase, self.phase_at = "forward", now
-                if (known and range_cm < 70) or now - self.phase_at >= 4:
-                    self.phase, self.phase_at = "turning", now
-                    self.direction = self.choose_turn()
+        if self.mode == "explore":  # people never switch Explore to Seek; Seek is chosen explicitly
+            if self.phase == "turning":
+                if now - self.phase_at < 1:
                     return 0, self.direction * .35
-                self.phase = "forward"
-                return .25, 0
+                self.phase, self.phase_at = "forward", now
+            if (known and range_cm < 70) or now - self.phase_at >= 4:
+                self.phase, self.phase_at = "turning", now
+                self.direction = self.choose_turn()
+                return 0, self.direction * .35
+            self.phase = "forward"
+            return .25, 0
         target = next((box for box in boxes if box.get("id") == self.target_id
                        and box.get("cls") == "person"), None)
         if target is None:

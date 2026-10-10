@@ -40,8 +40,9 @@ ros2 launch farsight_nav nav.launch.py                 # or the farsight-nav sys
     Planning gaps get up to 4 s of locally measured creep. With insufficient
     support it scans in place for up to one measured full turn (10 s ceiling),
     rescoring every second and departing as soon as a wide frontier qualifies.
-    No useful wide frontier after that ends Explore as `arrived`. As in the
-    reactive policy, the first detected person switches Explore to Seek.
+    No useful wide frontier after that ends Explore as `arrived`. A detected
+    person never switches Explore to Seek: people are moving obstacles in the
+    LiDAR costmaps. Seek runs only when the operator selects it.
     The 20 Hz planning-gap arbiter uses the current validated depth and pose
     (each under 0.5 s) and a costmap under 2.5 s. It projects the sampled swept
     corridor at rover body height into the depth camera: every ray needs a real
@@ -142,17 +143,19 @@ the goal.
   clearing only) raytraces the floor returns that the height filter would
   otherwise drop, so free floor clears stale obstacles.
 - **Global costmap:** 40 x 40 m, not rolling, `track_unknown_space` so explored and
-  unexplored space stay distinct for frontiers and replanning.
+  unexplored space stay distinct for frontiers and replanning. Updated at 10 Hz:
+  `IsPathValid` checks it, so a person stepping onto the path invalidates it within 0.1 s.
 - **Inflation:** `robot_radius` 0.16 m (a ~0.12 m chassis plus 4 cm for tracking
   error at corners), inflation 0.28 m, cost scaling 8, so a 0.65 m gap keeps a
   zero-cost centre line. With 0.35 m inflation the rover dithered at such gaps;
   with a 0.13 m radius RPP clipped a wall end.
 - **Planner:** `SmacPlanner2D`, `allow_unknown` (goals are often in unseen space),
   0.25 m tolerance.
-- **Controller:** Regulated Pure Pursuit by default (20 Hz, 0.28 m/s, 0.35 m
+- **Controller:** Regulated Pure Pursuit by default (20 Hz, 0.50 m/s, 0.35 m
   lookahead, rotate to heading, cost-regulated slow-down near obstacles), or MPPI
-  with `controller:=mppi` (1000 samples, 2 s horizon, `vx_max` 0.30 m/s, `wz_max`
-  1.6 rad/s). Both are loaded; the bridge picks one through the latched
+  with `controller:=mppi` (1000 samples, 2 s horizon, `vx_max` 0.50 m/s, `wz_max`
+  2.0 rad/s). These suit `FARSIGHT_AUTONOMY_MAX_PWM=150` on the 2026-10-10 drive
+  profile (0.55 m/s, 3.5 rad/s); the earlier simulated results used 0.28-0.30 m/s. Both are loaded; the bridge picks one through the latched
   `controller_selector` topic. RPP is the default because it was faster in every
   simulated world and lighter (see the results below); MPPI hesitated in 0.65 m
   gaps. RPP does not dodge obstacles by itself: the 0.4 s replanning does, which is
