@@ -51,6 +51,8 @@ export class RoverExperience {
   private recenterDown = false;
   private xrLive = true;
   private lastXRAt = -Infinity;
+  private rightSource: XRInputSource | null = null;
+  private movementSource: XRInputSource | null = null;
   private canvas = document.createElement("canvas");
   private ctx: CanvasRenderingContext2D;
   private hudCanvas = document.createElement("canvas");
@@ -141,6 +143,7 @@ export class RoverExperience {
     this.renderer.xr.addEventListener("sessionstart", () => {
       this.stop("VR session started: release trigger");
       this.lastXRAt = -Infinity;
+      this.rightSource = null; this.movementSource = null;
       this.inputValid = false; this.keys.clear(); this.pointerHeld = false;
       this.recenter = true; this.xrLive = true; this.setView("camera");
       this.renderer.xr.getSession()?.addEventListener("visibilitychange", () => {
@@ -151,6 +154,7 @@ export class RoverExperience {
     this.renderer.xr.addEventListener("sessionend", () => {
       this.stop("VR session ended: release deadman"); this.suspended = false;
       this.lastXRAt = -Infinity;
+      this.rightSource = null; this.movementSource = null;
       this.inputValid = false; this.keys.clear(); this.pointerHeld = false;
     });
     this.renderer.domElement.addEventListener("webglcontextlost", () => { this.contextLost = true; this.stop("Display lost: release deadman"); });
@@ -279,12 +283,18 @@ export class RoverExperience {
       const right = sources.find(source => source.handedness === "right" && source.gamepad);
       const left = sources.find(source => source.handedness === "left" && source.gamepad);
       const movement = left ?? right;
+      if ((right ?? null) !== this.rightSource || (movement ?? null) !== this.movementSource) {
+        this.stop("Controller changed: release trigger");
+        this.rightSource = right ?? null; this.movementSource = movement ?? null;
+      }
       const reference = this.renderer.xr.getReferenceSpace();
+      let viewerTracked = false;
       let tracked = false;
       try {
-        tracked = Boolean(session.visibilityState === "visible" && frame && reference &&
+        viewerTracked = Boolean(session.visibilityState === "visible" && frame && reference && frame.getViewerPose(reference));
+        tracked = Boolean(viewerTracked && frame && reference &&
           right?.gamepad?.connected && movement?.gamepad?.connected &&
-          right.gripSpace && movement.gripSpace && frame.getViewerPose(reference) &&
+          right.gripSpace && movement.gripSpace &&
           frame.getPose(right.gripSpace, reference) && frame.getPose(movement.gripSpace, reference));
       } catch { /* An ended/inactive frame cannot provide current tracking. */ }
       if (!tracked) {
@@ -293,8 +303,15 @@ export class RoverExperience {
           this.stop("XR tracking unavailable: release trigger");
         else this.gate.invalidate("XR tracking unavailable: release trigger");
         this.lastXRAt = -Infinity;
-        this.cockpit.visible = false;
-        if (this.dirty) this.drawCamera(now);
+        // Keep the camera and stop reason visible when only a controller is lost.
+        this.cockpit.visible = viewerTracked;
+        this.cameraScreen.visible = this.xrLive;
+        if (viewerTracked) {
+          const xrCamera = this.renderer.xr.getCamera();
+          xrCamera.getWorldQuaternion(this.quat); xrCamera.getWorldPosition(this.position);
+          this.cockpit.position.copy(this.position); this.cockpit.quaternion.copy(this.quat);
+        }
+        if (this.dirty || now - this.lastCanvasDraw > 100) this.drawCamera(now);
         if (now - this.lastHudAt > 100) { this.drawHUD(now); this.lastHudAt = now; }
         return;
       }
