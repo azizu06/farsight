@@ -42,11 +42,13 @@ On a heavily loaded machine a headless render stall can trip the viewer's 250 ms
   opened the 3D map (sim and rig alike). It now also enters scan completion on `release_required`
   and lets `/scan` decide complete vs aborted. Regression FAIL text:
   `viewer cancelled a scan the server completed`.
-- *Open (rare): server aborts at view 0* with `server aborted scan after 0 views: Scan cancelled:
-  operator lease, override, or safety stop` and the control reason back at `active`. Likely cause:
-  the zero-stick `teleop` heartbeat sent just before `POST /scan` reaches the rover after
-  `begin_scan` (separate WebSocket and HTTP paths through the relay) and is treated as
-  `scan_override`. Press Y again.
+- *Fixed (#14): server aborted at view 0* with `server aborted scan after 0 views: Scan cancelled:
+  operator lease, override, or safety stop` (2 of 12 loaded runs). The zero-stick `teleop`
+  heartbeat sent just before `POST /scan` reached the rover after `begin_scan` (separate
+  WebSocket and HTTP paths through the relay) and was treated as `scan_override`. Such a
+  heartbeat, carrying a permit issued before the scan began, now renews like a scan heartbeat
+  (`docs/interfaces.md` scan section); regression tests in
+  `jetson/control/tests/test_control.py` `ScanStartRaceTests`.
 
 **Boxes between detector frames (#64).** The detector runs slower than the camera (`--demo`:
 ~3 fps vs ~15 Hz), so most displayed frames have no packet of their own. The viewer draws the

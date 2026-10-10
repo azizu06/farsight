@@ -204,6 +204,105 @@ class PolicyTests(unittest.TestCase):
         self.assertFalse(self.send())
 
 
+class ScanStartRaceTests(unittest.TestCase):
+    """The operator's last teleop heartbeat (WebSocket) and POST /scan (HTTP)
+    carry the same permit but travel separately, so either may arrive first."""
+
+    def setUp(self):
+        self.clock = Clock()
+        self.state = ControlState(clock=self.clock)
+        self.state.set_connected(True)
+        self.session = self.state.begin()
+        self.state.update_range(100)
+        self.seq = 0
+        self.send(deadman=False)
+        self.send()
+        self.permit = self.state.status(issue_permit=True)["permit"]  # held by the client for both paths
+
+    def send(self, permit=None, **values):
+        self.seq += 1
+        if permit is None:
+            permit = self.state.status(issue_permit=True)["permit"]
+        message = {"session_id": self.session, "permit": permit, "seq": self.seq,
+                   "deadman": True, "v": 0, "w": 0, "pan": 0, "mode": "teleop",
+                   "video_fresh": True, "video_age_ms": 0}
+        message.update(values)
+        return self.state.accept(message, self.session)
+
+    def assert_sweeping(self, token):
+        self.state.scan_command(token, w=.3)
+        self.assertGreater(self.state.output()[0], 0)
+        self.assertEqual(self.state.status()["mode"], "scan")
+
+    def assert_cancelled(self, token, reason=None, wheels=(0, 0)):
+        """Stopped with `reason`, or (override) handed to the operator's teleop command."""
+        self.assertEqual(self.state.output()[:2], wheels)
+        if reason:
+            self.assertEqual(self.state.reason, reason)
+        with self.assertRaises(ValueError):
+            self.state.scan_command(token, w=.3)
+        self.assertNotEqual(self.state.status()["mode"], "scan")
+
+    def test_heartbeat_then_begin_scan_keeps_scan(self):
+        self.assertTrue(self.send(permit=self.permit))
+        token = self.state.begin_scan(self.session, self.permit)
+        self.assert_sweeping(token)
+        self.clock.now += .05
+        self.assertTrue(self.send(mode="scan"))
+        self.assert_sweeping(token)
+
+    def test_begin_scan_then_zero_teleop_heartbeat_keeps_scan(self):
+        token = self.state.begin_scan(self.session, self.permit)
+        self.clock.now += .02
+        self.assertTrue(self.send(permit=self.permit))
+        self.assert_sweeping(token)
+        self.assertEqual(self.state.reason, "active")
+        self.clock.now += .05
+        self.assertTrue(self.send(mode="scan"))
+        self.assert_sweeping(token)
+
+    def test_racing_heartbeat_cannot_steer_pan_or_outlive_its_permit(self):
+        token = self.state.begin_scan(self.session, self.permit)
+        self.clock.now += .2
+        self.assertTrue(self.send(permit=self.permit, pan=40))
+        self.assertEqual(self.state.pan, 0)
+        self.assert_sweeping(token)
+        self.clock.now += .051  # past the permit, though under 250 ms since the heartbeat
+        self.assert_cancelled(token, "lease_expired")
+        self.assertTrue(self.state.requires_release)
+
+    def test_racing_heartbeat_with_stick_input_still_cancels(self):
+        for values, wheels in (({"v": .2}, (20, 20)), ({"w": -.1}, (-10, 10)), ({"mode": "seek"}, (0, 0))):
+            with self.subTest(**values):
+                self.setUp()
+                token = self.state.begin_scan(self.session, self.permit)
+                self.send(permit=self.permit, **values)
+                self.assert_cancelled(token, wheels=wheels)
+
+    def test_racing_release_or_stale_view_still_cancels(self):
+        for values, reason in (({"deadman": False}, "deadman_released"),
+                               ({"video_age_ms": 501}, "video_stale"),
+                               ({"video_fresh": False}, "video_stale")):
+            with self.subTest(reason=reason, **values):
+                self.setUp()
+                token = self.state.begin_scan(self.session, self.permit)
+                self.send(permit=self.permit, **values)
+                self.assert_cancelled(token, reason)
+                self.assertFalse(self.send(mode="scan"))  # no scan to resume
+
+    def test_teleop_heartbeat_with_a_post_scan_permit_still_cancels(self):
+        token = self.state.begin_scan(self.session, self.permit)
+        self.clock.now += .02
+        self.send()  # the client never entered scan mode (e.g. lost POST reply)
+        self.assert_cancelled(token)
+
+    def test_teleop_heartbeat_after_scan_mode_still_cancels(self):
+        token = self.state.begin_scan(self.session, self.permit)
+        self.assertTrue(self.send(mode="scan"))
+        self.send(permit=self.permit)
+        self.assert_cancelled(token)
+
+
 class SocketTests(unittest.TestCase):
     def setUp(self):
         self.service = ControlService(simulate=True)
