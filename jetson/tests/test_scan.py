@@ -13,6 +13,45 @@ from jetson.mapping.voxel import VoxelMap
 from jetson.control.state import ControlState
 
 
+class LatestControlStatus:
+    """Drain telemetry independently of HTTP/map work, as the real client does."""
+    def __init__(self, ws):
+        self.ws = ws
+        self.condition = threading.Condition()
+        self.status = None
+        self.stopped = threading.Event()
+        self.thread = threading.Thread(target=self.receive, daemon=True)
+
+    def __enter__(self):
+        self.thread.start()
+        self.latest()
+        return self
+
+    def receive(self):
+        while not self.stopped.is_set():
+            try:
+                status = self.ws.receive_json()
+            except Exception:
+                return
+            with self.condition:
+                self.status = status
+                self.condition.notify_all()
+
+    def latest(self, predicate=lambda value: True, timeout=2):
+        deadline = time.monotonic() + timeout
+        with self.condition:
+            while self.status is None or not predicate(self.status):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise AssertionError(f"Control telemetry condition timed out: {self.status}")
+                self.condition.wait(remaining)
+            return dict(self.status)
+
+    def __exit__(self, *args):
+        self.stopped.set()
+        self.thread.join(timeout=.3)
+
+
 class ScanGeometryTests(unittest.TestCase):
     def test_wall_at_two_metres_and_right_yaw_use_viewer_negative_z(self):
         depth = np.full((3, 3), 2, np.float32)
@@ -168,15 +207,21 @@ class ScanDeliveryTests(unittest.TestCase):
                         return [np.full((1, 308, 406), 2, np.float32)]
                 app = create_app(demo=True, simulate_rover=True, detector="none")
                 app.state.scanner.depth = MetricDepth(session=Session())
-                with TestClient(app) as client, client.websocket_connect("/ws/control") as ws:
-                    status = ws.receive_json()
+                with TestClient(app) as client, client.websocket_connect("/ws/control") as ws, LatestControlStatus(ws) as telemetry:
+                    status = telemetry.latest(lambda value: value["rover"])
                     def send(seq, held, mode):
+                        status = telemetry.latest()
                         ws.send_json(dict(session_id=status["session_id"], permit=status["permit"], seq=seq,
                             deadman=held, v=0, w=0, pan=0, mode=mode, video_fresh=True, video_age_ms=0))
                     send(1, False, "teleop")
-                    status = ws.receive_json()
+                    telemetry.latest(lambda value: value["seq"] >= 1)
+                    deadline = time.monotonic() + 2
+                    while not client.get("/health").json()["camera"]:
+                        self.assertLess(time.monotonic(), deadline)
+                        time.sleep(.02)
                     send(2, True, "teleop")
-                    time.sleep(.03)
+                    telemetry.latest(lambda value: value["seq"] >= 2)
+                    status = telemetry.latest()
                     self.assertEqual(client.post("/scan", json=dict(session_id=status["session_id"], permit=status["permit"])).status_code, 202)
                     self.assertTrue(entered.wait(1))
                     if interrupt == "reset":
@@ -185,12 +230,12 @@ class ScanDeliveryTests(unittest.TestCase):
                         send(3, False, "scan")
                     finish.set()
                     for seq in range(4, 35):
-                        status = ws.receive_json()
                         if interrupt == "reset":
                             send(seq, True, "scan")
                         result = client.get("/scan").json()
                         if not result["running"]:
                             break
+                        time.sleep(.04)
                     self.assertEqual(result["state"], "aborted", result)
                     self.assertIsNone(app.state.mapping.scan)
                     self.assertEqual(app.state.control.state.output()[:2], (0, 0))
@@ -198,31 +243,36 @@ class ScanDeliveryTests(unittest.TestCase):
     def test_simulated_sweep_replaces_existing_map_and_survives_reset(self):
         from jetson.mapping.server import create_app
         app = create_app(demo=True, simulate_rover=True, detector="none")
-        with TestClient(app) as client, client.websocket_connect("/ws/control") as ws:
-            status = ws.receive_json()
+        with TestClient(app) as client, client.websocket_connect("/ws/control") as ws, LatestControlStatus(ws) as telemetry:
+            status = telemetry.latest(lambda value: value["rover"])
             seq = 0
             def heartbeat(held, mode="teleop"):
                 nonlocal seq
                 seq += 1
+                status = telemetry.latest()
                 ws.send_json(dict(session_id=status["session_id"], permit=status["permit"], seq=seq,
                     deadman=held, v=0, w=0, pan=0, mode=mode, video_fresh=True, video_age_ms=0))
 
             self.assertEqual(client.post("/scan", json={}).status_code, 422)
             heartbeat(False)
-            time.sleep(.12)
-            status = ws.receive_json()
+            telemetry.latest(lambda value: value["seq"] >= seq)
+            deadline = time.monotonic() + 2
+            while not client.get("/health").json()["camera"]:
+                self.assertLess(time.monotonic(), deadline)
+                time.sleep(.02)
             heartbeat(True)
-            time.sleep(.05)
+            telemetry.latest(lambda value: value["seq"] >= seq)
+            status = telemetry.latest()
             self.assertEqual(client.post("/scan", json=dict(session_id=status["session_id"], permit="invalid")).status_code, 409)
             response = client.post("/scan", json=dict(session_id=status["session_id"], permit=status["permit"]))
             self.assertEqual(response.status_code, 202, response.text)
             deadline = time.monotonic() + 8
             while time.monotonic() < deadline:
-                status = ws.receive_json()
                 heartbeat(True, "scan")
                 result = client.get("/scan").json()
                 if not result["running"]:
                     break
+                time.sleep(.04)
             self.assertEqual(result["state"], "complete", result)
             self.assertEqual(len(result["views"]), 5)
             self.assertTrue(result["simulated"])

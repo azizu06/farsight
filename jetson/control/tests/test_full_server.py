@@ -153,7 +153,10 @@ class FullServerTests(unittest.TestCase):
                 mapping.process(simulated_frame(2, 1, identity))
                 self.assertTrue(client.get("/health").json()["camera"])
                 self.motion(ws, stopped, 2)
-                refused = self.wait_status(ws, lambda value: value["reason"] == "release_required")
+                # Fusion can outlive the stopped packet's 250 ms permit. Both
+                # rejection paths must preserve the held-trigger release latch.
+                refused = self.wait_status(ws, lambda value: value["requires_release"]
+                                           and value["reason"] in ("release_required", "expired_permit"))
                 self.assertEqual(refused["left_pwm"], 0)
                 status = self.release(ws, refused, 3)
                 self.motion(ws, status, 4)
