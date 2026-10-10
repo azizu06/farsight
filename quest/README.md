@@ -9,7 +9,10 @@ crop geometry, and control safety checks. `npm run test:browser` runs the
 production `RoverExperience` in headless Chromium (SwiftShader, simulated XR
 poses, generated camera pixels, stubbed microphone, no backend) for resize,
 tracking-loss, left-trigger push-to-talk and source-banner cases;
-run `npx playwright install chromium-headless-shell` once first. Use the [operator launcher](../tools/demo.py)
+run `npx playwright install chromium-headless-shell` once first. `npm run perf`
+profiles the built app under an emulated Quest 2 (IWER) against a running
+simulator; see the [first-run guide](../docs/quest-first-run.md#7-frame-budget).
+Use the [operator launcher](../tools/demo.py)
 for the integrated app; Vite development mode uses port 8443 as its upstream.
 Do not confuse an old server already on that port with a freshly launched demo.
 
@@ -106,8 +109,20 @@ speech voice; no cloud speech recognition is used. The rescue drill counts
 observed person tracks as encounters, rather than claiming distinct people. The
 mission report and any saved snapshots come from the rover.
 
+## Rendering budget and diagnostics
+
+Camera, HUD and source-banner canvases are uploaded as textures. To keep upload
+spikes out of single frames, `paint()` repaints the camera first whenever it is
+due, defers the HUD up to 200 ms while the camera is painting, and paints the
+headset banner on a later frame (at most 100 ms after the HUD). HUD and banner
+canvases skip repaint and upload when their text is unchanged. Freshness and
+liveness timing are unchanged. The diagnostics overlay (`src/diagnostics.js`,
+`src/diagnostics-overlay.ts`) is off by default: Settings, the I key or
+`?diag=1`. It is display only and never feeds the control gate.
+
 ## First headset rehearsal
 
+Step-by-step setup and failure checks: [docs/quest-first-run.md](../docs/quest-first-run.md).
 These are required physical checks; desktop tests do not prove them.
 
 1. Use the MacBook relay and ADB reverse described in the

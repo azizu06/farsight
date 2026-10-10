@@ -131,5 +131,6 @@ test("inactive headset or unobserved input cannot invent a deadman release", () 
 test("XR input age uses monotonic observation time, not the predicted XR display time", async () => {
   const { readFileSync } = await import("node:fs");
   const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
-  assert.match(main, /setAnimationLoop\(\(_time, frame\) => \{\s*rover\?\.update\(performance\.now\(\), frame\)/);
+  // The frame start may be held in a local (diagnostics timing) as long as it is performance.now().
+  assert.match(main, /setAnimationLoop\(\(_time, frame\) => \{\s*(?:rover\?\.update\(performance\.now\(\), frame\)|const (\w+) = performance\.now\(\);\s*rover\?\.update\(\1, frame\))/);
 });

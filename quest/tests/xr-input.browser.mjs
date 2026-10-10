@@ -387,6 +387,14 @@ try {
     const banner = subject.sourceBanner;
     subject.drawHUD(420);
     const simulated = { kind: banner.dataset.kind, title: banner.querySelector("strong").textContent, vr: subject.bannerPanel.visible && subject.bannerPanel.parent === subject.cockpit };
+    // The headset banner repaints on a later frame than the HUD, and never for unchanged text.
+    const queued = !!subject.bannerPending;
+    subject.bannerPending.at = -Infinity;
+    subject.paint(421);
+    const painted = !subject.bannerPending;
+    const bannerPixel = [...subject.bannerCanvas.getContext("2d").getImageData(1010, 100, 1, 1).data].slice(0, 3);
+    subject.drawHUD(421); // identical text, including the displayed age
+    const headsetBanner = { queued, painted, bannerPixel, unchangedQueued: !!subject.bannerPending };
     subject.sourceTruth.accept({ replay: true }, 430);
     subject.drawHUD(430);
     const replay = banner.dataset.kind;
@@ -425,8 +433,10 @@ try {
       trackingLoss,
       heldThroughLoss,
       banners: { simulated, replay, live, liveExpired },
+      headsetBanner,
     };
   });
+  assert.deepEqual(result.headsetBanner, { queued: true, painted: true, bannerPixel: [0x7c, 0x4a, 0x03], unchangedQueued: false });
   assert.ok(result.first.pixel[0] > 200);
   assert.ok(result.second.pixel[2] > 200);
   assert.ok(result.second.pixel[0] < 50);
