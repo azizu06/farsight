@@ -10,6 +10,9 @@ import { AutonomyIntent, autonomyLabel, containPoint, pickTarget, rayPanelPoint 
 import { PHRASE_LABELS, sbarLines, speakPhrase } from "./survivor-phrases.js";
 import { DRILL_TRAINS, DrillHud, endLines } from "./drill-hud.js";
 import { DetectionCache, PACKET_FRESH_MS } from "./detection-match.js";
+import { defaultMount, loadSettings, pageStorage, saveSettings } from "./viewer-settings.js";
+import { PanSmoother } from "./pan-smoothing.js";
+import { encounterLine, summaryLines, timelineLines } from "./mission-report.js";
 
 type Box = { id?: number; cls: string; conf: number; x: number; y: number; w: number; h: number; kpts?: number[][]; down?: boolean };
 type Detections = { frame: number | string; boxes: Box[]; fps?: number; source?: string; simulated?: boolean };
@@ -76,6 +79,9 @@ export class RoverExperience {
   private suspended = false;
   private recenter = true;
   private baseYaw = 0;
+  private panSmoother = new PanSmoother();
+  private lastPanAt = 0;
+  private panDt() { const now = performance.now(), dt = this.lastPanAt ? (now - this.lastPanAt) / 1000 : 0; this.lastPanAt = now; return Math.min(dt, 0.1); }
   private toggleDown = false;
   private recenterDown = false;
   private xrLive = true;
@@ -103,6 +109,9 @@ export class RoverExperience {
   private h264: H264Viewer;
   private h264Enabled = false;
   private digitalPan = false;
+  private settings = loadSettings();
+  private mountSelect!: HTMLSelectElement;
+  private videoToggle!: HTMLInputElement;
   private drawnPan = 0;
   private cameraScreen: THREE.Mesh;
   private lastVideoAt = 0;
@@ -189,14 +198,8 @@ export class RoverExperience {
     const videoOption = document.createElement("label"); videoOption.className = "check";
     videoOption.innerHTML = '<input type="checkbox"/> H.264 video (experimental; requires decoded freshness)';
     document.querySelector("#settings")!.append(videoOption);
-    videoOption.querySelector("input")!.onchange = event => {
-      this.h264Enabled = (event.target as HTMLInputElement).checked;
-      if (this.h264Enabled) this.request?.abort();
-      this.stop("Video format changed: release deadman");
-      this.gate.frameAt = -Infinity; this.gate.frameAge = Infinity; this.pendingFrame = null; this.lastCanvasDraw = -Infinity;
-      if (this.h264Enabled) this.h264.start(); else this.h264.stop();
-      this.dirty = true;
-    };
+    this.videoToggle = videoOption.querySelector("input")!;
+    this.videoToggle.onchange = () => this.setVideo(this.videoToggle.checked, true);
     this.renderer.xr.addEventListener("sessionstart", () => {
       this.stop("VR session started: release trigger");
       this.lastXRAt = -Infinity;
@@ -220,13 +223,14 @@ export class RoverExperience {
     const cameraOption = document.createElement("label"); cameraOption.className = "camera-mount-option";
     cameraOption.innerHTML = '<span>Camera mounting</span><select aria-label="Camera mounting mode"><option value="servo">Camera mounted on servo</option><option value="fixed">Fixed camera · digital look-around</option></select><small>Fixed mode crops measured pixels and keeps the physical pan command centered.</small>';
     document.querySelector("#settings")!.append(cameraOption);
-    cameraOption.querySelector("select")!.onchange = event => {
-      this.digitalPan = (event.target as HTMLSelectElement).value === "fixed";
-      this.stop("Camera mount changed: release deadman"); this.dirty = true;
-    };
+    this.mountSelect = cameraOption.querySelector("select")!;
+    this.mountSelect.onchange = () => this.setMount(this.mountSelect.value === "fixed", true);
+    this.setMount(this.settings.values.mount === "fixed", false);
     this.connectControl(); this.connectDetections();
-    void this.sourceTruth.refresh();
-    this.timers.push(window.setInterval(() => void this.sourceTruth.refresh(), 2000));
+    if (this.settings.values.h264) this.setVideo(true, false);
+    const refreshHealth = () => void this.sourceTruth.refresh().then(() => this.applyRoverMount());
+    refreshHealth();
+    this.timers.push(window.setInterval(refreshHealth, 2000));
     this.timers.push(window.setInterval(() => this.pump(), 50));
     this.timers.push(window.setInterval(() => void this.fetchFrame(), 160));
     void this.fetchFrame();
@@ -252,6 +256,34 @@ export class RoverExperience {
   private keyUp = (event: KeyboardEvent) => { this.keys.delete(event.code); };
   private blur = () => { this.keys.clear(); this.pointerHeld = false; this.stop("Window inactive: release deadman"); };
   private visibility = () => { if (document.hidden) this.blur(); };
+  /** Fixed: crop measured pixels and command pan 0. Servo: send head yaw as pan. */
+  private setMount(fixed: boolean, save: boolean) {
+    if (save) { this.settings.origin.mount = "saved"; saveSettings(pageStorage(), { mount: fixed ? "fixed" : "servo" }); }
+    this.mountSelect.value = fixed ? "fixed" : "servo";
+    if (fixed === this.digitalPan) return;
+    this.digitalPan = fixed;
+    this.stop("Camera mount changed: release deadman"); this.dirty = true;
+  }
+  /** With no query or saved mount, a rover reporting no physical pan selects fixed. */
+  private applyRoverMount() {
+    if (this.stopped || this.settings.origin.mount !== "default") return;
+    const mount = defaultMount(this.sourceTruth.health);
+    if (!mount) return;
+    this.settings.origin.mount = "rover";
+    this.setMount(mount === "fixed", false);
+  }
+  private setVideo(enabled: boolean, save: boolean) {
+    if (save) saveSettings(pageStorage(), { h264: enabled });
+    this.videoToggle.checked = enabled;
+    if (enabled === this.h264Enabled) return;
+    this.h264Enabled = enabled;
+    if (this.h264Enabled) this.request?.abort();
+    this.stop("Video format changed: release deadman");
+    this.gate.frameAt = -Infinity; this.gate.frameAge = Infinity; this.pendingFrame = null; this.lastCanvasDraw = -Infinity;
+    if (this.h264Enabled) this.h264.start(); else this.h264.stop();
+    this.dirty = true;
+  }
+
   private escapeStop = (event: KeyboardEvent) => { if (event.key === "Escape") this.stop("Stopped: release deadman"); };
 
   stop(reason: string) {
@@ -417,13 +449,13 @@ export class RoverExperience {
       if (center && !this.recenterDown) this.recenter = true;
       this.toggleDown = toggle; this.exploreDown = explore; this.recenterDown = center;
       this.euler.setFromQuaternion(this.quat, "YXZ");
-      if (this.recenter && pose) { this.baseYaw = this.euler.y; this.recenter = false; }
+      if (this.recenter && pose) { this.baseYaw = this.euler.y; this.recenter = false; this.panSmoother.reset(); }
       const yaw = Math.atan2(Math.sin(this.euler.y - this.baseYaw), Math.cos(this.euler.y - this.baseYaw));
       this.inputValid = true;
       this.input = { held,
         v: -stick(axes.length >= 4 ? axes[3] : axes[1]) * 0.45,
         w: stick(axes.length >= 4 ? axes[2] : axes[0]) * 0.55,
-        pan: THREE.MathUtils.clamp(-THREE.MathUtils.radToDeg(yaw), -80, 80) };
+        pan: this.panSmoother.step(-THREE.MathUtils.radToDeg(yaw), this.panDt()) };
       if (scan && !this.scanDown) void this.startScan();
       this.scanDown = scan;
       this.cockpit.position.copy(this.position); this.cockpit.quaternion.copy(this.quat);
@@ -697,7 +729,7 @@ export class RoverExperience {
     const drill = this.drillLine(now);
     const intent = this.autonomy.mode === "seek" ? `Seek #${this.autonomy.targetId} armed` : this.autonomy.mode === "explore" ? "Explore armed" : "";
     const autonomy = [intent, autonomyLabel(this.status)].filter(Boolean).join(" → ");
-    const panMode = `${this.digitalPan ? "Digital pan (fixed camera)" : "Servo pan"} ${Math.round(this.input.pan)}°`;
+    const panMode = `${this.digitalPan ? "Fixed mount · digital pan" : "Servo mount · pan"} ${Math.round(this.input.pan)}°`;
     const detail = `${link.text} · ${this.frameSource} · ${panMode} · ${this.h264Enabled ? "H.264" : "JPEG"} video ${age} · ${ack} · ${range} · ${detection}${drill ? " · " + drill : ""}${this.h264Enabled && !this.h264.displayedFrame ? " · " + this.h264.state : ""} · ${this.scanMessage}`;
     this.message.textContent = headline;
     this.message.dataset.state = moving ? "moving" : ready ? "unsafe" : "ready";
@@ -822,6 +854,8 @@ export class RoverExperience {
         this.autonomy.select(action.target_id);
         result.textContent = `Seek person #${action.target_id} armed: hold the deadman to approach; move the stick to cancel.`;
       });
+    this.voice.onVREnabled = () => saveSettings(pageStorage(), { voice: true });
+    if (this.settings.values.voice) this.voice.restoreVR();
     const phrase = block.querySelector<HTMLSelectElement>(".survivor-phrases select")!, phraseStatus = block.querySelector<HTMLElement>("#phrase-status")!;
     for (const say of block.querySelectorAll<HTMLButtonElement>(".survivor-phrases button")) {
       say.onclick = async () => {
@@ -870,6 +904,12 @@ export class RoverExperience {
       summary.textContent = `${report.mission_id ?? "Mission"} · ${Number(report.duration_s) || 0}s · ${encounters.length} observed tracks · ${Number(report.saved_snapshots) || 0} saved snapshots · ${report.persisted ? "Saved on rover" : "In-memory evidence only"}`;
       const source = document.createElement("p"); source.textContent = `Sources: ${sources.length ? sources.join(", ") : this.frameSource}. Tracks are encounters, not verified distinct people.`;
       content.replaceChildren(summary, source);
+      const evidenceLines = summaryLines(report);
+      if (evidenceLines.length) {
+        const telemetry = document.createElement("ul"); telemetry.className = "mission-summary";
+        for (const line of evidenceLines) { const item = document.createElement("li"); item.textContent = line; telemetry.append(item); }
+        content.append(telemetry);
+      }
       if (sources.includes("SIMULATED") || this.status?.simulated) {
         const label = document.createElement("p"); label.className = "mission-simulated"; label.textContent = "SIMULATED: these observations do not prove a physical rescue."; content.append(label);
       }
@@ -882,7 +922,7 @@ export class RoverExperience {
       const list = document.createElement("ul"); list.className = "mission-tracks";
       for (const entry of encounters.slice(-20).reverse()) {
         const item = document.createElement("li");
-        item.textContent = `${String(entry.cls ?? "object")} · track ${entry.id ?? "?"} · ${Math.round((Number(entry.conf) || 0) * 100)}% · ${entry.source ?? "unknown source"}`;
+        item.textContent = encounterLine(entry, report.started_at);
         const sbar = sbarLines(entry.sbar);
         if (sbar.length) {
           const note = document.createElement("p"); note.className = "mission-sbar";
@@ -893,6 +933,13 @@ export class RoverExperience {
       }
       if (!encounters.length) { const empty = document.createElement("p"); empty.textContent = "No detection encounters recorded."; content.append(empty); }
       else content.append(list);
+      const flagged = timelineLines(report);
+      if (flagged.length) {
+        const heading = document.createElement("h3"); heading.textContent = "Timeline";
+        const timeline = document.createElement("ol"); timeline.className = "mission-timeline";
+        for (const line of flagged) { const item = document.createElement("li"); item.textContent = line; timeline.append(item); }
+        content.append(heading, timeline);
+      }
       const evidence = document.createElement("div"); evidence.className = "mission-images";
       for (const event of events.filter((entry: { snapshot_url?: string }) => typeof entry.snapshot_url === "string" && /^\/mission\/snapshots\/detection-[A-Za-z0-9._-]+\.jpg$/.test(entry.snapshot_url)).slice(-6)) {
         const image = document.createElement("img"); image.src = event.snapshot_url; image.loading = "lazy";

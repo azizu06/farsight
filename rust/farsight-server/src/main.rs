@@ -130,6 +130,9 @@ async fn main() {
     if args.record && args.mission_dir.is_none() {
         panic!("--record requires --mission-dir");
     }
+    if args.detector == "pose" && args.detector_model.is_none() {
+        panic!("--detector pose requires --detector-model (YOLO11-pose ONNX)");
+    }
     if args.replay.is_some()
         && (args.serial_port.is_some()
             || args.camera.is_some()

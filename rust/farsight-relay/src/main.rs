@@ -30,6 +30,10 @@ const PROXY_PATHS: &[&str] = &["/health", "/control/status", "/camera.jpg", "/de
 /// HTTP requests on these paths are control-plane traffic: they use the
 /// dedicated upstream pool so bulk downloads can never take their slots.
 const CONTROL_PATHS: &[&str] = &["/control/status", "/scan", "/ask"];
+/// Only binary map downloads keep the client's Accept-Encoding across the
+/// cellular leg; everything else asks upstream for identity because the
+/// relay decodes and rewrites JSON (operator_relay.py parity).
+const ENCODED_PATHS: &[&str] = &["/map/points.bin", "/map/mesh.bin", "/map/export.ply"];
 
 #[derive(Parser)]
 #[command(about = "Serve Quest over USB and relay the rover through a private network")]
@@ -345,12 +349,23 @@ async fn proxy_http(s: Arc<AppState>, req: Request) -> Response {
         // WebSocket upgrades are routed separately by the router.
         return (StatusCode::BAD_REQUEST, "Expected WebSocket upgrade").into_response();
     }
-    // Forward the client's Accept-Encoding: the jetson leg of the proxy is
-    // the cellular hop, so the server must compress for it and the body
-    // passes through to the browser still encoded.
-    let headers = forward_headers(req.headers());
     let method = req.method().clone();
     let path = req.uri().path().to_string();
+    // Binary map downloads keep the client's Accept-Encoding: the jetson leg
+    // is the cellular hop and encoded bodies pass straight through. Every
+    // other path asks upstream for identity — the relay decodes and rewrites
+    // JSON, so a compressed JSON body would be unmungeable here.
+    let mut headers = forward_headers(req.headers());
+    let ae = if ENCODED_PATHS.contains(&path.as_str()) {
+        req.headers()
+            .get(header::ACCEPT_ENCODING)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("identity")
+            .to_string()
+    } else {
+        "identity".to_string()
+    };
+    headers.insert(header::ACCEPT_ENCODING, HeaderValue::from_str(&ae).unwrap());
     let body = req.into_body();
     let body_bytes = match axum::body::to_bytes(body, 8 * 1024 * 1024).await {
         Ok(b) => b,
@@ -541,5 +556,57 @@ mod tests {
         for dropped in ["host", "connection", "x-junk", "te", "keep-alive"] {
             assert!(out.get(dropped).is_none(), "{dropped} leaked");
         }
+    }
+}
+
+#[cfg(test)]
+mod contract_tests {
+    /// Port of tools/tests/test_relay_contract.py (#73): every rover path the
+    /// Quest source calls must be proxied by this relay.
+    #[test]
+    fn every_quest_path_is_proxied() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../quest/src");
+        let call = regex::Regex::new(
+            r#"(?:fetch|fetchImpl|api|endpoint|URL)\(\s*["'`](/[A-Za-z0-9_./-]*)"#,
+        )
+        .unwrap();
+        let local = ["/relay/health"];
+        let mut missing = Vec::new();
+        if !src.is_dir() {
+            return; // quest/ not present in a rust-only checkout
+        }
+        for entry in walkdir(&src) {
+            let path = entry.to_string_lossy().replace('\\', "/");
+            if !(path.ends_with(".ts") || path.ends_with(".js")) {
+                continue;
+            }
+            let text = std::fs::read_to_string(&entry).unwrap_or_default();
+            for cap in call.captures_iter(&text) {
+                let p = cap[1].to_string();
+                if local.contains(&p.as_str())
+                    || !super::PROXY_PATHS.contains(&p.as_str())
+                        && !super::PROXY_PREFIXES.iter().any(|pre| p.starts_with(pre))
+                {
+                    missing.push((p, path.clone()));
+                }
+            }
+        }
+        assert!(missing.is_empty(), "Quest calls paths the relay does not proxy: {missing:?}");
+    }
+
+    fn walkdir(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let mut out = Vec::new();
+        if let Ok(rd) = std::fs::read_dir(dir) {
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    out.extend(walkdir(&p));
+                } else {
+                    out.push(p);
+                }
+            }
+        }
+        out
     }
 }

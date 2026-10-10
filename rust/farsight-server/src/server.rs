@@ -51,6 +51,9 @@ pub struct AppState {
     pub scanner: Arc<ScanService>,
     pub record: bool,
     pub replay: Option<Arc<ReplaySession>>,
+    /// Physical camera pan installed (--scan-pan); additive /health field
+    /// the viewer uses to pick the fixed-vs-servo mount default.
+    pub camera_pan: bool,
     /// Read-only control packet source when --replay is active.
     pub replay_control: Option<Arc<ReplayControl>>,
     /// Per-status-emission telemetry sink (control.on_status in Python).
@@ -216,6 +219,7 @@ pub fn build_state(
         phrases,
         scanner,
         record,
+        camera_pan: scan_pan,
         replay: replay_session,
         replay_control,
         control_on_status,
@@ -340,6 +344,7 @@ async fn health(State(s): State<Arc<AppState>>) -> Json<Value> {
     obj.insert("replay".into(), json!(s.replay.is_some()));
     obj.insert("recording".into(), json!(s.record));
     obj.insert("scan".into(), s.scanner.result());
+    obj.insert("camera_pan".into(), json!(s.camera_pan));
     for (k, v) in s.perception.health().as_object().unwrap() {
         obj.insert(k.clone(), v.clone());
     }

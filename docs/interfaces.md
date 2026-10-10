@@ -33,10 +33,10 @@ explicit ray-cast camera/map and virtual rover sources. See
 |---|---|
 | `GET /` | Quest WebXR app (built `quest/dist`) |
 | `GET /stream.mjpg` | Camera, MJPEG, 640x480, 15 fps by default (camera capture loop, `jetson/camera.py`) |
-| `GET /health` | `{"camera": bool, "detector_fps": float, "rover": bool, "estop": bool}` |
+| `GET /health` | `{"camera": bool, "detector_fps": float, "rover": bool, "estop": bool}`; optional `camera_pan: bool` (see below); optional `face_detector: bool`, `face_error: string\|null` (see below) |
 | `GET /camera.jpg` | Latest JPEG; `X-Frame-Id`, `X-Frame-Age-Ms`, `X-Frame-Source`; no-store |
 | `GET /control/status` | Read-only control status; no usable permit |
-| `GET /mission/report` | Evidence, persistence/source labels, drill results |
+| `GET /mission/report` | Evidence, persistence/source labels, drill results, control `summary` and `timeline` (below) |
 | `POST /mission/drill` | `{"duration_s":90,"victims":3}` starts a rescue drill; `GET` polls it. See below |
 | `POST /mission/triage/{key}` | Regenerate one person's SBAR now (`key` from the report, URL-encoded); 404 unknown, 503 busy |
 | `GET /speak` | `{"phrases": [{"id","en","es"}], "speaker": bool, "speaker_cmd", "voices": ["en","es"]}` |
@@ -52,6 +52,15 @@ applied v/w, in metres, x forward, y left, so they are approximate
 (`route_approximate: true`). `summary` is null while running. Once time runs out
 or every victim is found, it is
 `{time_s, found, total, estops_avoided, found_at_s, breadcrumb}`.
+
+Optional `face_detector: bool` and `face_error: string|null` appear in `/health` and
+in `GET`/`POST /mission/drill`. The drill scores only `cls:"face"` boxes, which exist
+only when the rover runs with `--face-model`. `face_detector` is true once that model
+loaded; false means a drill can never score. `face_error` names why a given model
+failed to load (a bad path disables only the face pass; `detector_error` stays
+null and the primary detector keeps running) and is null otherwise. Replay servers
+omit both. The Quest drill HUD and the settings drill line show "No face model:
+victims cannot be found" when `face_detector` is false; absent means no warning.
 
 Camera age is receiver receipt age adjusted by reported producer encoding time
 and server queue/decode delay. It does not measure pre-callback sensor exposure
@@ -218,6 +227,36 @@ Accepted `audio`: WAV, WebM/Opus, Ogg/Opus, or MP4/AAC (whatever the browser's M
 Headset (`quest/src/assistant-voice.ts`): a proposal shows "Seek person #3?" with Confirm / Dismiss for
 20 seconds; a new question, cancel, or expiry clears it.
 
+## Mission telemetry (additive fields on `GET /mission/report`)
+
+The server samples `control.status()` read-only at most 10 Hz for the whole run (no
+`--record` needed); it never issues permits or commands, and states shorter than 100 ms
+can be missed. Timestamps are Unix seconds, like `started_at`. All new fields are optional
+for consumers; Quest renders them in the mission report dialog (`quest/src/mission-report.js`).
+
+```json
+{"summary": {"samples": 412, "sample_hz": 10, "last_sample_ts": 1791640100.2,
+   "min_range_cm": 18, "min_range_at": 1791640065.0, "estop_count": 1,
+   "stop_reasons": {"forward_blocked": {"count": 2, "first_ts": 1791640010.0, "last_ts": 1791640065.0}},
+   "lost": {"rover_link": {"count": 1, "total_s": 3.5, "intervals": [{"start": 1791640080.0, "end": 1791640083.5, "duration_s": 3.5}]},
+            "controller": {"count": 0, "total_s": 0, "intervals": []},
+            "camera": {"count": 0, "total_s": 0, "intervals": []}},
+   "detections_by_class": {"person": 2}, "encounters": 2},
+ "timeline": [{"kind": "estop", "ts": 1791640065.0, "range_cm": 18, "reason": "forward_blocked"}]}
+```
+
+- `estop_count`: rising edges (0.5 s debounce) of `estop:true` with `range_cm < 25` or
+  `reason:"forward_blocked"`; a missing range alone is not an e-stop.
+- `stop_reasons`: each change into a non-`active` `reason`, counted with first/last time; at most 64 reasons.
+- `lost`: `rover_link` is `rover:false`, `controller` is no control session, `camera` is a stale camera,
+  each counted only after it was up once. An open interval has `end: null`. At most 100 intervals per kind.
+- `timeline`: newest 300 flagged events, `kind` one of `detection` (`cls`, `key`, `range_cm`), `estop`,
+  `stop` (`reason`, `range_cm`, `requires_release`), `<rover_link|controller|camera>_lost` and
+  `_restored` (`lost_s`). With `--mission-dir`, non-detection flags also append to `events.jsonl`
+  (first 10,000), beside the existing detection events.
+- Each `encounters[]` entry gains `first_range_cm`: the forward ultrasonic range within 1 s of
+  first sight (not a measured distance to that object), or `null`. `first_seen`/`last_seen` are Unix seconds.
+
 ## SBAR triage (additive fields on `GET /mission/report`)
 
 Every new person track gets an SBAR note at once: a deterministic template, then (with
@@ -235,6 +274,14 @@ template stays with a `warning`. `report.triage` maps encounter key (`"<source>:
 Each `encounters[]` entry also gains `key` and `sbar` (the same object or `null`). With
 `--mission-dir`, notes append to `triage.jsonl` and `report.json` is rewritten on every note.
 `/health` gains `triage: {"enabled", "pending", "generated", "last_ms", "min_interval_s"}`.
+
+## `/health.camera_pan` (Jetson -> Quest), default camera mount
+
+Optional `camera_pan: bool` is `true` only when the server runs with `--scan-pan` (a physical
+pan servo is installed). Python and Rust servers both report it. The Quest viewer uses it only when the operator has chosen no mount
+(`?mount=` or a saved choice): `false` selects the fixed mount, which sends `pan: 0`, so head
+yaw never trips the server's and Uno's off-center forward block. A missing field (older
+servers) keeps the servo default. It never changes any safety rule.
 
 ## `POST /speak` (Quest -> Jetson), survivor phrases
 

@@ -72,6 +72,15 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                 next_status = time.monotonic() + .1
             await asyncio.sleep(.01)
 
+    async def sample_mission():
+        # Read-only: mission telemetry never issues permits or commands.
+        def sample():
+            mission.observe_control(control.status(), camera=camera_service.status()["camera"])
+        while True:
+            with suppress(Exception):
+                await asyncio.to_thread(sample)
+            await asyncio.sleep(1 / mission.telemetry.SAMPLE_HZ)
+
     if hasattr(control, "state"):  # recorded replays have no live control loop
         control.state.on_output = mission.drill_motion
     assistant = SceneAssistant(camera_service, perception, control, server_url=assistant_url,
@@ -91,6 +100,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
         task = asyncio.create_task(stream_demo(state, camera_service)) if demo else None
         replay_task = asyncio.create_task(replay_session.run.play(replay_session.publish)) if replay_session else None
         record_task = asyncio.create_task(record_run()) if record else None
+        sample_task = asyncio.create_task(sample_mission())
         control.start()
         await camera_service.start()
         await video_service.start()
@@ -100,7 +110,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
             yield
         finally:
             await scanner.close()
-            for stream_task in (record_task, replay_task):
+            for stream_task in (sample_task, record_task, replay_task):
                 if stream_task:
                     stream_task.cancel()
                     with suppress(asyncio.CancelledError):
@@ -125,6 +135,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
     app.state.video = video_service
     app.state.control = control
     app.state.perception = perception
+    mission.face_status = perception.face_status
     app.state.mission = mission
     app.state.assistant = assistant
     app.state.triage = triage
@@ -158,6 +169,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
         rover = control.status()
         status.update(perception.health())
         status.update(replay=replay is not None, recording=record, rover=rover["rover"], estop=rover["estop"], control=rover,
+                      camera_pan=scan_pan,
                       detector=perception.mode, detector_error=perception.error,
                       detector_fps=perception.snapshot()["fps"] if perception.snapshot()["fresh"] else 0,
                       video=dict(enabled=h264, ready=video_service.ready, error=video_service.error,
