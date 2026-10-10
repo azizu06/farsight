@@ -119,6 +119,10 @@ struct Args {
     /// reserved headroom on a constrained link. 0 disables pacing.
     #[arg(long, default_value_t = 0.0)]
     bulk_limit_mbps: f64,
+    /// Opt-in bonded upstream control: adds /ws/control/bonded for trusted
+    /// operator-relay paths; /ws/control single-owner behaviour unchanged
+    #[arg(long)]
+    bonded_control: bool,
 }
 
 #[global_allocator]
@@ -205,6 +209,7 @@ async fn main() {
         args.proximity_stop == "on",
         &args.pan_mount,
         args.autonomy_max_pwm,
+        args.bonded_control,
     );
     server::start_services(&state);
     let dist = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../quest/dist");

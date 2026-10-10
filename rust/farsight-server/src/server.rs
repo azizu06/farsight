@@ -17,6 +17,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use tower_http::services::ServeDir;
 
+use crate::bonded::BondedControlHub;
 use crate::camera::CameraService;
 use crate::control::{ControlState, SerialPump};
 use crate::mission::Mission;
@@ -58,6 +59,9 @@ pub struct AppState {
     pub replay_control: Option<Arc<ReplayControl>>,
     /// Per-status-emission telemetry sink (control.on_status in Python).
     pub control_on_status: Option<Arc<dyn Fn(&Value) + Send + Sync>>,
+    /// Opt-in bonded upstream hub (--bonded-control); owns /ws/control/bonded
+    /// when enabled. The legacy /ws/control owner path is unchanged.
+    pub bonded: Option<Arc<BondedControlHub>>,
 }
 
 pub fn build_state(
@@ -96,6 +100,7 @@ pub fn build_state(
     proximity_stop: bool,
     pan_mount: &str,
     autonomy_max_pwm: Option<i64>,
+    bonded: bool,
 ) -> Arc<AppState> {
     if scan_pan && pan_mount == "none" {
         panic!("--scan-pan needs a physical pan servo (--pan-mount servo)");
@@ -227,7 +232,7 @@ pub fn build_state(
         mapping,
         camera,
         video,
-        control,
+        control: control.clone(),
         pump,
         perception,
         mission,
@@ -246,7 +251,8 @@ pub fn build_state(
         camera_pan: scan_pan,
         replay: replay_session,
         replay_control,
-        control_on_status,
+        control_on_status: control_on_status.clone(),
+        bonded: bonded.then(|| Arc::new(BondedControlHub::new(control.clone(), control_on_status))),
     })
 }
 
@@ -948,6 +954,143 @@ async fn handle_ws_control(socket: WebSocket, s: Arc<AppState>) {
     s.control.end(&session_id);
 }
 
+/// Opt-in bonded upstream (jetson/control/service.py bonded_websocket):
+/// the first frame, within 3 s, is a v1 JSON attach; a second path joins the
+/// live owner with the private credential. The relay strips attachment data.
+async fn ws_control_bonded(ws: WebSocketUpgrade, State(s): State<Arc<AppState>>) -> Response {
+    ws.on_upgrade(move |socket| handle_ws_control_bonded(socket, s))
+}
+
+async fn handle_ws_control_bonded(socket: WebSocket, s: Arc<AppState>) {
+    let hub = s.bonded.clone().expect("/ws/control/bonded requires --bonded-control");
+    let (tx, rx) = socket.split();
+    run_bonded_session(tx, rx, hub).await
+}
+
+async fn run_bonded_session<TxErr, RxErr, Tx, Rx>(mut tx: Tx, mut rx: Rx, hub: Arc<BondedControlHub>)
+where
+    Tx: futures_util::Sink<Message, Error = TxErr> + Unpin + Send + 'static,
+    Rx: futures_util::Stream<Item = Result<Message, RxErr>> + Unpin + Send + 'static,
+    TxErr: Send + 'static,
+{
+    let close = |code: u16| {
+        Message::Close(Some(axum::extract::ws::CloseFrame { code, reason: "".into() }))
+    };
+    // Attach frame: text JSON within 3 s, {"type":"attach","version":1} with
+    // an optional 64-character path secret for joining the live owner.
+    let attachment = async {
+        let text = match tokio::time::timeout(Duration::from_secs(3), rx.next()).await {
+            Ok(Some(Ok(Message::Text(t)))) => t,
+            _ => return Err(()),
+        };
+        if text.chars().count() > 2048 {
+            return Err(());
+        }
+        let message: Value = serde_json::from_str(&text).map_err(|_| ())?;
+        let valid = message
+            .as_object()
+            .map(|o| {
+                o.get("type").and_then(Value::as_str) == Some("attach")
+                    && o.get("version").and_then(Value::as_i64) == Some(1)
+                    && o.keys().all(|k| matches!(k.as_str(), "type" | "version" | "secret"))
+            })
+            .unwrap_or(false);
+        if !valid {
+            return Err(());
+        }
+        let secret = match message.get("secret") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(s)) if s.len() == 64 => Some(s.clone()),
+            _ => return Err(()),
+        };
+        hub.attach(secret.as_deref()).map_err(|_| ())
+    }
+    .await;
+    let Ok(attachment) = attachment else {
+        // Rejected attachments close without affecting the existing owner.
+        let _ = tx.send(close(1000)).await;
+        return;
+    };
+    let reply = json!({
+        "type": "attached",
+        "version": 1,
+        "session_id": attachment.session_id.clone(),
+        "secret": attachment.secret.clone(),
+        "path_id": attachment.path_id.clone(),
+    });
+    let sent = tokio::time::timeout(
+        Duration::from_millis(100),
+        tx.send(Message::Text(reply.to_string().into())),
+    )
+    .await;
+    if sent.map(|r| r.is_err()).unwrap_or(true) {
+        hub.detach(&attachment.path_id);
+        let _ = tx.send(close(1000)).await;
+        return;
+    }
+    let shared_tx = Arc::new(tokio::sync::Mutex::new(tx));
+    // Publisher drains this path's single-slot status queue; a send past the
+    // 100 ms deadline or the detach sentinel ends the session. Whichever
+    // side finishes first tears the session down (FIRST_COMPLETED parity).
+    let writer = shared_tx.clone();
+    let path_id = attachment.path_id.clone();
+    let publish = tokio::spawn(async move {
+        while let Some(status) = attachment.next_status().await {
+            let mut out = writer.lock().await;
+            let ok = tokio::time::timeout(
+                Duration::from_millis(100),
+                out.send(Message::Text(status.to_string().into())),
+            )
+            .await
+            .map(|r| r.is_ok())
+            .unwrap_or(false);
+            drop(out);
+            if !ok {
+                return;
+            }
+        }
+    });
+    let control = hub.control().clone();
+    let hub_recv = hub.clone();
+    let recv_path = path_id.clone();
+    let receive = async move {
+        while let Some(Ok(message)) = rx.next().await {
+            match message {
+                Message::Text(text) => {
+                    if text.chars().count() > 2048 {
+                        control.stop("oversized_command", true);
+                        return;
+                    }
+                    match serde_json::from_str::<Value>(&text) {
+                        Ok(v) => {
+                            hub_recv.accept(&v, &recv_path);
+                        }
+                        Err(_) => control.stop("invalid_json", true),
+                    }
+                }
+                Message::Binary(_) => {
+                    control.stop("binary_control_rejected", true);
+                    return;
+                }
+                Message::Close(_) => return,
+                _ => {}
+            }
+        }
+    };
+    tokio::pin!(publish);
+    tokio::pin!(receive);
+    tokio::select! {
+        _ = &mut publish => {}
+        _ = &mut receive => {}
+    }
+    publish.abort();
+    hub.detach(&path_id);
+    {
+        let mut out = shared_tx.lock().await;
+        let _ = tokio::time::timeout(Duration::from_millis(250), out.send(close(1000))).await;
+    }
+}
+
 async fn ws_detections(ws: WebSocketUpgrade, State(s): State<Arc<AppState>>) -> Response {
     ws.on_upgrade(move |socket| async move {
         let (mut tx, _) = socket.split();
@@ -1403,6 +1546,13 @@ pub fn router(state: Arc<AppState>, dist: Option<PathBuf>) -> Router {
         .route("/tts/{name}", get(tts))
         .route("/nav/goal", post(nav_goal))
         .route("/nav/cancel", post(nav_cancel));
+    // Opt-in bonded upstream (experimental v1): only mounted with
+    // --bonded-control; /ws/control keeps its single-owner behaviour.
+    let app = if state.bonded.is_some() {
+        app.route("/ws/control/bonded", get(ws_control_bonded))
+    } else {
+        app
+    };
     let app = if let Some(dist) = dist {
         if dist.is_dir() {
             app.fallback_service(ServeDir::new(dist).append_index_html_on_directories(true))
@@ -1489,6 +1639,7 @@ mod phone_lifecycle_tests {
             false,      // proximity_stop
             "servo",    // pan_mount
             None,       // autonomy_max_pwm
+            false,      // bonded
         )
     }
 
@@ -1499,7 +1650,7 @@ mod phone_lifecycle_tests {
         )
     }
 
-    fn to_ts(m: Message) -> TsMsg {
+    pub(super) fn to_ts(m: Message) -> TsMsg {
         match m {
             Message::Text(t) => TsMsg::Text(t.as_str().to_string().into()),
             Message::Binary(b) => TsMsg::Binary(b),
@@ -1514,7 +1665,7 @@ mod phone_lifecycle_tests {
         }
     }
 
-    fn from_ts(m: TsMsg) -> Option<Message> {
+    pub(super) fn from_ts(m: TsMsg) -> Option<Message> {
         Some(match m {
             TsMsg::Text(t) => Message::Text(t.as_str().to_string().into()),
             TsMsg::Binary(b) => Message::Binary(b),
@@ -1530,7 +1681,7 @@ mod phone_lifecycle_tests {
         })
     }
 
-    struct TxA(SplitSink<WebSocketStream<DuplexStream>, TsMsg>);
+    pub(super) struct TxA(pub(super) SplitSink<WebSocketStream<DuplexStream>, TsMsg>);
     impl Sink<Message> for TxA {
         type Error = tokio_tungstenite::tungstenite::Error;
         fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -1547,7 +1698,7 @@ mod phone_lifecycle_tests {
         }
     }
 
-    struct RxA(SplitStream<WebSocketStream<DuplexStream>>);
+    pub(super) struct RxA(pub(super) SplitStream<WebSocketStream<DuplexStream>>);
     impl Stream for RxA {
         type Item = Result<Message, tokio_tungstenite::tungstenite::Error>;
         fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -1618,5 +1769,386 @@ mod phone_lifecycle_tests {
             Box::pin(run_phone_session(tx, rx, s))
         })
         .await;
+    }
+}
+
+#[cfg(test)]
+mod bonded_ws_tests {
+    //! Opt-in bonded upstream over real tungstenite WS pairs, mirroring
+    //! phone_lifecycle_tests. Mirrors jetson/control/tests/test_bonded.py +
+    //! test_bonded_transport.py: attach flows, credential rejects without
+    //! owner revocation, canonical dedup, stale copies, conflicting seq,
+    //! per-path congestion detach, and last-detach owner teardown.
+
+    use super::phone_lifecycle_tests::{RxA, TxA};
+    use super::*;
+    use std::time::Instant;
+    use tokio::io::DuplexStream;
+    use tokio_tungstenite::tungstenite::protocol::Role;
+    use tokio_tungstenite::tungstenite::Message as TsMsg;
+    use tokio_tungstenite::WebSocketStream;
+
+    fn bonded_setup() -> (Arc<ControlState>, Arc<BondedControlHub>) {
+        let control = Arc::new(
+            ControlState::new(false, 0, 100, None, None, None, None, false, false, "servo", None)
+                .unwrap(),
+        );
+        control.set_connected(true, None);
+        control.update_range(100.0);
+        (
+            control.clone(),
+            Arc::new(BondedControlHub::new(control, None)),
+        )
+    }
+
+    async fn bonded_ws_cap(hub: &Arc<BondedControlHub>, cap: usize) -> WebSocketStream<DuplexStream> {
+        let (client_io, server_io) = tokio::io::duplex(cap);
+        let server = WebSocketStream::from_raw_socket(server_io, Role::Server, None).await;
+        let client = WebSocketStream::from_raw_socket(client_io, Role::Client, None).await;
+        let (tx, rx) = server.split();
+        tokio::spawn(run_bonded_session(TxA(tx), RxA(rx), hub.clone()));
+        client
+    }
+
+    async fn bonded_ws(hub: &Arc<BondedControlHub>) -> WebSocketStream<DuplexStream> {
+        bonded_ws_cap(hub, 128 * 1024).await
+    }
+
+    async fn send_text(client: &mut WebSocketStream<DuplexStream>, text: String) {
+        client.send(TsMsg::Text(text.into())).await.unwrap();
+    }
+
+    /// Next incoming text frame as (parsed JSON, raw text); panics if a
+    /// non-text frame or the stream end arrives first.
+    async fn recv_json(client: &mut WebSocketStream<DuplexStream>) -> (Value, String) {
+        match tokio::time::timeout(Duration::from_secs(5), client.next()).await {
+            Ok(Some(Ok(TsMsg::Text(t)))) => {
+                (serde_json::from_str(&t).unwrap(), t.to_string())
+            }
+            other => panic!("expected a text frame, got {other:?}"),
+        }
+    }
+
+    async fn expect_closed(client: &mut WebSocketStream<DuplexStream>) {
+        let frame = tokio::time::timeout(Duration::from_secs(5), client.next()).await;
+        assert!(
+            matches!(frame, Ok(Some(Ok(TsMsg::Close(_))))),
+            "expected a close frame, got {frame:?}"
+        );
+    }
+
+    async fn attach(client: &mut WebSocketStream<DuplexStream>, secret: Option<&str>) -> Value {
+        let mut req = json!({"type": "attach", "version": 1});
+        if let Some(s) = secret {
+            req["secret"] = json!(s);
+        }
+        send_text(client, req.to_string()).await;
+        let (v, _) = recv_json(client).await;
+        assert_eq!(v["type"], "attached");
+        assert_eq!(v["version"], 1);
+        v
+    }
+
+    /// First status frame matching `pred` (checked on parsed status objects
+    /// only; attached replies are skipped).
+    async fn status_until(
+        client: &mut WebSocketStream<DuplexStream>,
+        pred: impl Fn(&Value) -> bool,
+    ) -> Value {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let (v, _) = recv_json(client).await;
+            if v.get("type").and_then(Value::as_str) != Some("control_status") {
+                continue;
+            }
+            if pred(&v) {
+                return v;
+            }
+            assert!(Instant::now() < deadline, "timed out waiting for status");
+        }
+    }
+
+    /// Control command text; `shuffled` puts the keys in a different order —
+    /// a different on-wire encoding of the same canonical payload.
+    fn command_text(
+        status: &Value,
+        seq: i64,
+        held: bool,
+        v: f64,
+        permit: Option<&str>,
+        shuffled: bool,
+    ) -> String {
+        let session = status["session_id"].as_str().unwrap_or("");
+        let permit = permit
+            .map(str::to_string)
+            .unwrap_or_else(|| status["permit"].as_str().unwrap_or("").to_string());
+        let parts = [
+            format!("\"seq\":{seq}"),
+            format!("\"session_id\":\"{session}\""),
+            format!("\"permit\":\"{permit}\""),
+            format!("\"deadman\":{held}"),
+            format!("\"v\":{v}"),
+            "\"w\":0".to_string(),
+            "\"pan\":0".to_string(),
+            "\"mode\":\"teleop\"".to_string(),
+            "\"video_fresh\":true".to_string(),
+            "\"video_age_ms\":0".to_string(),
+        ];
+        let mut body = parts.to_vec();
+        if shuffled {
+            body.rotate_left(4);
+        }
+        format!("{{{}}}", body.join(","))
+    }
+
+    #[tokio::test]
+    async fn bonded_two_paths_share_one_owner_and_status_hides_credential() {
+        let (control, hub) = bonded_setup();
+        let mut a = bonded_ws(&hub).await;
+        let att_a = attach(&mut a, None).await;
+        assert_eq!(att_a["secret"].as_str().unwrap().len(), 64);
+        assert!(att_a["secret"]
+            .as_str()
+            .unwrap()
+            .chars()
+            .all(|c| c.is_ascii_hexdigit()));
+        let mut b = bonded_ws(&hub).await;
+        let att_b = attach(&mut b, Some(att_a["secret"].as_str().unwrap())).await;
+        assert_eq!(att_a["session_id"], att_b["session_id"]);
+        assert_ne!(att_a["path_id"], att_b["path_id"]);
+        // One logical stream: once b is attached both paths carry the same
+        // status_seq values with identical payloads.
+        let (vb, _) = recv_json(&mut b).await;
+        let mut va = recv_json(&mut a).await.0;
+        while va["status_seq"].as_i64().unwrap() < vb["status_seq"].as_i64().unwrap() {
+            va = recv_json(&mut a).await.0;
+        }
+        assert_eq!(va, vb);
+        assert!(va["status_seq"].as_i64().unwrap() >= 1);
+        assert!(!va.to_string().contains(att_a["secret"].as_str().unwrap()));
+        assert!(va.get("path_id").is_none());
+        assert_eq!(va["session_id"], att_a["session_id"]);
+        assert_eq!(hub.path_count(), 2);
+        assert_eq!(
+            control.inner.lock().unwrap().session_id.as_deref(),
+            Some(att_a["session_id"].as_str().unwrap())
+        );
+        drop((a, b));
+    }
+
+    #[tokio::test]
+    async fn bonded_wrong_secret_rejected_without_revoking_owner() {
+        let (control, hub) = bonded_setup();
+        let mut a = bonded_ws(&hub).await;
+        let att = attach(&mut a, None).await;
+        let mut bad = bonded_ws(&hub).await;
+        send_text(
+            &mut bad,
+            json!({"type": "attach", "version": 1, "secret": "0".repeat(64)}).to_string(),
+        )
+        .await;
+        expect_closed(&mut bad).await;
+        assert_eq!(hub.path_count(), 1);
+        assert_eq!(
+            control.inner.lock().unwrap().session_id.as_deref(),
+            Some(att["session_id"].as_str().unwrap())
+        );
+        let s = status_until(&mut a, |_| true).await;
+        assert_eq!(s["session_id"], att["session_id"]);
+    }
+
+    #[tokio::test]
+    async fn bonded_third_path_rejected_without_revoking_owner() {
+        let (control, hub) = bonded_setup();
+        let mut a = bonded_ws(&hub).await;
+        let att = attach(&mut a, None).await;
+        let mut b = bonded_ws(&hub).await;
+        attach(&mut b, Some(att["secret"].as_str().unwrap())).await;
+        // Even the correct credential is refused once both paths are live.
+        let mut c = bonded_ws(&hub).await;
+        send_text(
+            &mut c,
+            json!({"type": "attach", "version": 1, "secret": att["secret"]}).to_string(),
+        )
+        .await;
+        expect_closed(&mut c).await;
+        assert_eq!(hub.path_count(), 2);
+        assert_eq!(
+            control.inner.lock().unwrap().session_id.as_deref(),
+            Some(att["session_id"].as_str().unwrap())
+        );
+        let s = status_until(&mut a, |_| true).await;
+        assert_eq!(s["session_id"], att["session_id"]);
+    }
+
+    #[tokio::test]
+    async fn bonded_attach_must_be_a_valid_first_frame() {
+        let (control, hub) = bonded_setup();
+        let mut c = bonded_ws(&hub).await;
+        send_text(&mut c, "{\"type\":\"attach\",\"version\":2}".to_string()).await;
+        expect_closed(&mut c).await;
+        assert!(control.inner.lock().unwrap().session_id.is_none());
+        assert_eq!(hub.path_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn bonded_identical_copy_is_deduplicated_without_state_reentry() {
+        let (control, hub) = bonded_setup();
+        let mut a = bonded_ws(&hub).await;
+        let att_a = attach(&mut a, None).await;
+        let mut b = bonded_ws(&hub).await;
+        attach(&mut b, Some(att_a["secret"].as_str().unwrap())).await;
+        let s0 = status_until(&mut b, |s| s["permit"].is_string()).await;
+        send_text(&mut a, command_text(&s0, 0, false, 0.0, None, false)).await;
+        let s = status_until(&mut b, |v| v["seq"] == 0).await;
+        send_text(&mut a, command_text(&s, 1, true, 0.5, None, false)).await;
+        let s1 = status_until(&mut b, |v| v["seq"] == 1).await;
+        assert_eq!(s1["left_pwm"], 50);
+        assert_eq!(s1["right_pwm"], 50);
+        // Identical canonical copy with a different key order on path B:
+        // deduped before control state, so no stale_sequence stop.
+        send_text(&mut b, command_text(&s, 1, true, 0.5, None, true)).await;
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let inner = control.inner.lock().unwrap();
+        assert_eq!(inner.seq, 1);
+        assert_eq!(inner.reason, "active");
+        assert!(!inner.requires_release);
+        drop(inner);
+        let s2 = status_until(&mut b, |v| {
+            v["status_seq"].as_i64() > s1["status_seq"].as_i64()
+        })
+        .await;
+        assert_eq!(s2["reason"], "active");
+        assert_eq!(s2["requires_release"], false);
+        assert_eq!(s2["left_pwm"], 50);
+    }
+
+    #[tokio::test]
+    async fn bonded_stale_release_copy_is_ignored() {
+        let (control, hub) = bonded_setup();
+        let mut a = bonded_ws(&hub).await;
+        let att_a = attach(&mut a, None).await;
+        let mut b = bonded_ws(&hub).await;
+        attach(&mut b, Some(att_a["secret"].as_str().unwrap())).await;
+        let s0 = status_until(&mut b, |s| s["permit"].is_string()).await;
+        let release0 = command_text(&s0, 0, false, 0.0, None, false);
+        send_text(&mut a, release0.clone()).await;
+        let s = status_until(&mut b, |v| v["seq"] == 0).await;
+        send_text(&mut a, command_text(&s, 1, true, 0.5, None, false)).await;
+        status_until(&mut b, |v| v["seq"] == 1).await;
+        // A stale copy of the earlier release arriving on the other path
+        // must not stop the newer hold.
+        send_text(&mut b, release0).await;
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let inner = control.inner.lock().unwrap();
+        assert_eq!(inner.seq, 1);
+        assert_eq!(inner.v, 0.5);
+        assert_eq!(inner.reason, "active");
+        assert!(!inner.requires_release);
+    }
+
+    #[tokio::test]
+    async fn bonded_conflicting_duplicate_stops_and_needs_fresh_release() {
+        let (_control, hub) = bonded_setup();
+        let mut a = bonded_ws(&hub).await;
+        let att_a = attach(&mut a, None).await;
+        let mut b = bonded_ws(&hub).await;
+        attach(&mut b, Some(att_a["secret"].as_str().unwrap())).await;
+        let s0 = status_until(&mut b, |s| s["permit"].is_string()).await;
+        send_text(&mut a, command_text(&s0, 0, false, 0.0, None, false)).await;
+        let s = status_until(&mut b, |v| v["seq"] == 0).await;
+        send_text(&mut a, command_text(&s, 1, true, 0.5, None, false)).await;
+        status_until(&mut b, |v| v["seq"] == 1).await;
+        // Same seq with a different payload: conflicting_duplicate stop.
+        send_text(&mut b, command_text(&s, 1, true, -0.5, None, false)).await;
+        let sc = status_until(&mut b, |v| v["reason"] == "conflicting_duplicate").await;
+        assert_eq!(sc["requires_release"], true);
+        assert_eq!(sc["left_pwm"], 0);
+        // A fresh press while release is required is refused.
+        let s_cur = status_until(&mut b, |v| v["permit"].is_string()).await;
+        send_text(&mut a, command_text(&s_cur, 2, true, 0.5, None, false)).await;
+        status_until(&mut b, |v| v["reason"] == "release_required").await;
+        // A fresh release unlocks and new presses apply again.
+        send_text(&mut a, command_text(&s_cur, 3, false, 0.0, None, false)).await;
+        status_until(&mut b, |v| v["seq"] == 3).await;
+        let s3 = status_until(&mut b, |v| v["requires_release"] == false).await;
+        send_text(&mut a, command_text(&s3, 4, true, 0.5, None, false)).await;
+        let s4 = status_until(&mut b, |v| v["seq"] == 4).await;
+        assert_eq!(s4["left_pwm"], 50);
+        assert_eq!(s4["reason"], "active");
+    }
+
+    #[tokio::test]
+    async fn bonded_stalled_path_is_detached_while_owner_survives() {
+        let (control, hub) = bonded_setup();
+        let mut a = bonded_ws_cap(&hub, 4 * 1024).await;
+        let att_a = attach(&mut a, None).await;
+        // a never reads again: its socket buffer fills, the writer misses the
+        // 100 ms deadline, and only this path is torn down.
+        let mut b = bonded_ws(&hub).await;
+        attach(&mut b, Some(att_a["secret"].as_str().unwrap())).await;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while hub.path_count() == 2 {
+            assert!(Instant::now() < deadline, "stalled path was not detached");
+            let _ = status_until(&mut b, |_| true).await;
+        }
+        assert_eq!(
+            control.inner.lock().unwrap().session_id.as_deref(),
+            Some(att_a["session_id"].as_str().unwrap())
+        );
+        let s = status_until(&mut b, |_| true).await;
+        assert_eq!(s["session_id"], att_a["session_id"]);
+    }
+
+    #[tokio::test]
+    async fn bonded_last_detach_ends_owner_and_retires_credential() {
+        let (control, hub) = bonded_setup();
+        let mut a = bonded_ws(&hub).await;
+        let att_a = attach(&mut a, None).await;
+        let session = att_a["session_id"].as_str().unwrap().to_string();
+        let mut b = bonded_ws(&hub).await;
+        attach(&mut b, Some(att_a["secret"].as_str().unwrap())).await;
+        // Losing one path keeps the owner live.
+        drop(a);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while hub.path_count() != 1 {
+            assert!(Instant::now() < deadline, "first detach never landed");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            control.inner.lock().unwrap().session_id.as_deref(),
+            Some(session.as_str())
+        );
+        let s = status_until(&mut b, |_| true).await;
+        assert_eq!(s["session_id"], session);
+        // Losing the last path ends ownership and retires the credential.
+        drop(b);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            {
+                let inner = control.inner.lock().unwrap();
+                if inner.session_id.is_none() {
+                    assert!(inner.requires_release);
+                    break;
+                }
+            }
+            assert!(Instant::now() < deadline, "last detach never ended owner");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(hub.path_count(), 0);
+        // The retired secret cannot mint a new owner.
+        let mut c = bonded_ws(&hub).await;
+        send_text(
+            &mut c,
+            json!({"type": "attach", "version": 1, "secret": att_a["secret"]}).to_string(),
+        )
+        .await;
+        expect_closed(&mut c).await;
+        // A fresh owner still has to release before driving.
+        let mut d = bonded_ws(&hub).await;
+        let att_d = attach(&mut d, None).await;
+        assert_ne!(att_d["session_id"], session);
+        let s = status_until(&mut d, |_| true).await;
+        assert_eq!(s["requires_release"], true);
     }
 }

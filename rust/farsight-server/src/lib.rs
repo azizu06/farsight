@@ -4,6 +4,7 @@
 pub mod ask_intent;
 pub mod assistant;
 pub mod autonomy;
+pub mod bonded;
 pub mod camera;
 pub mod capture_permits;
 pub mod control;

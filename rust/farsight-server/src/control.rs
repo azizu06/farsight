@@ -327,25 +327,32 @@ impl ControlState {
 
     pub fn accept(&self, message: &Value, session_id: &str) -> bool {
         let mut s = self.inner.lock().unwrap();
+        self.accept_locked(&mut s, message, session_id)
+    }
+
+    /// Accept while the caller already holds `inner`. Bonded dedup checks
+    /// the seq history and applies the command under one lock hold, mirroring
+    /// jetson/control/bonded.py's `with state.lock:` re-entry.
+    pub(crate) fn accept_locked(&self, s: &mut ControlInner, message: &Value, session_id: &str) -> bool {
         if !message.is_object() || s.session_id.as_deref() != Some(session_id) {
             return false;
         }
         if message.get("session_id").and_then(Value::as_str) != Some(session_id) {
-            Self::stop_locked(&mut s, "wrong_session", true);
+            Self::stop_locked(s, "wrong_session", true);
             return false;
         }
         // JSON integer in 0..2^53-1; booleans and floats rejected.
         let seq = match message.get("seq").and_then(Self::json_int) {
             Some(seq) if (0..=(1i64 << 53) - 1).contains(&seq) => seq,
             _ => {
-                Self::stop_locked(&mut s, "invalid_sequence", true);
+                Self::stop_locked(s, "invalid_sequence", true);
                 return false;
             }
         };
         // Any release stops, including stale releases, but only an ordered
         // release can unlock the next press.
         if message.get("deadman") == Some(&Value::Bool(false)) {
-            Self::stop_locked(&mut s, "deadman_released", true);
+            Self::stop_locked(s, "deadman_released", true);
             if seq > s.seq {
                 s.seq = seq;
                 s.requires_release = false;
@@ -353,7 +360,7 @@ impl ControlState {
             return true;
         }
         if seq <= s.seq || message.get("deadman") != Some(&Value::Bool(true)) {
-            Self::stop_locked(&mut s, "stale_sequence", true);
+            Self::stop_locked(s, "stale_sequence", true);
             return false;
         }
         let token = message.get("permit").and_then(Value::as_str);
@@ -362,41 +369,41 @@ impl ControlState {
             .unwrap_or(0.0);
         let now = self.now();
         if expires <= now {
-            Self::stop_locked(&mut s, "expired_permit", true);
+            Self::stop_locked(s, "expired_permit", true);
             return false;
         }
         if !s.connected || s.requires_release {
             let reason = if s.connected { "release_required" } else { "serial_disconnected" };
-            Self::stop_locked(&mut s, reason, true);
+            Self::stop_locked(s, reason, true);
             return false;
         }
         if !self.camera_is_ready() {
-            Self::stop_locked(&mut s, "camera_stale", true);
+            Self::stop_locked(s, "camera_stale", true);
             return false;
         }
         let mut mode = message.get("mode").and_then(Value::as_str).unwrap_or("teleop");
         if mode == "scan" {
             if s.scan_token.is_none() {
-                Self::stop_locked(&mut s, "scan_not_active", true);
+                Self::stop_locked(s, "scan_not_active", true);
                 return false;
             }
         } else if mode == "calibrate" && !self.allow_calibration {
-            Self::stop_locked(&mut s, "unsupported_mode", true);
+            Self::stop_locked(s, "unsupported_mode", true);
             return false;
         } else if mode == "velocity" && self.drive_profile.is_none() {
-            Self::stop_locked(&mut s, "unsupported_mode", true);
+            Self::stop_locked(s, "unsupported_mode", true);
             return false;
         } else if !(mode == "teleop" || mode == "calibrate" || mode == "velocity")
             && (s.autonomy.is_none() || !(mode == "explore" || mode == "seek"))
         {
-            Self::stop_locked(&mut s, "unsupported_mode", true);
+            Self::stop_locked(s, "unsupported_mode", true);
             return false;
         }
         let target_id = if mode == "seek" {
             match message.get("target_id").and_then(Self::json_int) {
                 Some(t) if (0..=(1i64 << 53) - 1).contains(&t) => Some(t),
                 _ => {
-                    Self::stop_locked(&mut s, "invalid_target", true);
+                    Self::stop_locked(s, "invalid_target", true);
                     return false;
                 }
             }
@@ -407,21 +414,21 @@ impl ControlState {
         if message.get("video_fresh") != Some(&Value::Bool(true))
             || !video_age.map(|a| (0.0..=500.0).contains(&a)).unwrap_or(false)
         {
-            Self::stop_locked(&mut s, "video_stale", true);
+            Self::stop_locked(s, "video_stale", true);
             return false;
         }
         if mode == "calibrate" || mode == "velocity" {
-            return self.accept_drive(&mut s, mode, message, seq, now, expires);
+            return self.accept_drive(s, mode, message, seq, now, expires);
         }
         let v = message.get("v").and_then(Self::json_num);
         let w = message.get("w").and_then(Self::json_num);
         let pan = message.get("pan").map(Self::json_num).unwrap_or(Some(0.0));
         let (Some(v), Some(w), Some(pan)) = (v, w, pan) else {
-            Self::stop_locked(&mut s, "invalid_command", true);
+            Self::stop_locked(s, "invalid_command", true);
             return false;
         };
         if !(-1.0..=1.0).contains(&v) || !(-1.0..=1.0).contains(&w) || !(-80.0..=80.0).contains(&pan) {
-            Self::stop_locked(&mut s, "invalid_command", true);
+            Self::stop_locked(s, "invalid_command", true);
             return false;
         }
         let mut pan = pan;
@@ -440,7 +447,7 @@ impl ControlState {
         }
         if s.scan_token.is_some() {
             if mode != "scan" || v != 0.0 || w != 0.0 {
-                Self::stop_locked(&mut s, "scan_override", false);
+                Self::stop_locked(s, "scan_override", false);
                 mode = "teleop";
             } else {
                 pan = s.pan as f64;
