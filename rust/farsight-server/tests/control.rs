@@ -16,7 +16,7 @@ fn fixture() -> Fixture {
     let now = Arc::new(Mutex::new(10.0f64));
     let n = now.clone();
     let clock: Clock = Arc::new(move || *n.lock().unwrap());
-    let state = ControlState::new(false, 0, 100, None, None, Some(clock), None, false, true).unwrap();
+    let state = ControlState::new(false, 0, 100, None, None, Some(clock), None, false, true, "servo").unwrap();
     state.set_connected(true, None);
     let session = state.begin().unwrap();
     state.update_range(100.0);
@@ -148,9 +148,9 @@ fn pwm_scaling() {
 #[test]
 fn pwm_validation_and_floor() {
     for (floor, ceiling) in [(-1, 100), (100, 100), (101, 100), (0, 256), (0, 0)] {
-        assert!(ControlState::new(false, floor, ceiling, None, None, None, None, false, true).is_err());
+        assert!(ControlState::new(false, floor, ceiling, None, None, None, None, false, true, "servo").is_err());
     }
-    let state = ControlState::new(false, 70, 110, None, None, None, None, false, true).unwrap();
+    let state = ControlState::new(false, 70, 110, None, None, None, None, false, true, "servo").unwrap();
     let status = state.status(false);
     assert_eq!(status["min_pwm"], 70);
     assert_eq!(status["max_pwm"], 110);
@@ -174,7 +174,7 @@ fn camera_guard() {
         None,
         Some(Arc::new(move || *n.lock().unwrap())),
         None,
-        false, true,
+        false, true, "servo",
     ).unwrap();
     state.set_connected(true, None);
     let session = state.begin().unwrap();
@@ -271,7 +271,7 @@ fn mode_fixture(
     let n = now.clone();
     let clock: Clock = Arc::new(move || *n.lock().unwrap());
     let state = ControlState::new(
-        false, min_pwm, 100, None, None, Some(clock), drive_profile, allow_calibration, true,
+        false, min_pwm, 100, None, None, Some(clock), drive_profile, allow_calibration, true, "servo",
     ).unwrap();
     state.set_connected(true, None);
     let session = state.begin().unwrap();
@@ -350,7 +350,7 @@ fn proximity_stop_off_lets_forward_run_without_range() {
     let now = Arc::new(Mutex::new(10.0f64));
     let n = now.clone();
     let clock: Clock = Arc::new(move || *n.lock().unwrap());
-    let state = ControlState::new(false, 0, 100, None, None, Some(clock), None, false, false).unwrap();
+    let state = ControlState::new(false, 0, 100, None, None, Some(clock), None, false, false, "servo").unwrap();
     state.set_connected(true, None);
     let session = state.begin().unwrap();
     let f = Fixture { state, session, seq: std::cell::Cell::new(0), now };
@@ -374,4 +374,58 @@ fn drive_calibrate_raw_pwm_and_bounds() {
     assert_eq!(f.state.status(false)["drive_mode"], "calibrate");
     assert!(!f.send(json!({"mode": "calibrate", "left_pwm": 101, "right_pwm": 0})));
     assert_eq!(f.output(), (0, 0));
+}
+
+// --- NoPanMountTests: --pan-mount none; the headset pans digitally and
+// nothing else about the gates changes (control/tests/test_control.py). ---
+
+fn no_pan_fixture() -> Fixture {
+    let now = Arc::new(Mutex::new(10.0f64));
+    let n = now.clone();
+    let clock: Clock = Arc::new(move || *n.lock().unwrap());
+    let state =
+        ControlState::new(false, 0, 100, None, None, Some(clock), None, false, false, "none")
+            .unwrap();
+    state.set_connected(true, None);
+    let session = state.begin().unwrap();
+    let f = Fixture { state, session, seq: std::cell::Cell::new(0), now };
+    f.send(json!({"deadman": false}));
+    f
+}
+
+#[test]
+fn no_pan_commanded_pan_never_blocks_forward_or_moves_a_servo() {
+    let f = no_pan_fixture();
+    assert!(f.send(json!({"pan": 40})));
+    assert_eq!(f.state.output(), (50, 50, 90));
+    assert!(f.send(json!({"pan": -80, "v": 0.5, "w": 0.25})));
+    let (left, right, pan) = f.state.output();
+    assert!(left > right);
+    assert_eq!(pan, 90);
+    assert_eq!(f.state.status(false)["pan_deg"], 90);
+    assert_eq!(f.state.status(false)["estop"], false);
+}
+
+#[test]
+fn no_pan_is_still_validated_and_every_stop_remains() {
+    let mut f = no_pan_fixture();
+    assert!(!f.send(json!({"pan": 90}))); // outside -80..80 is still invalid
+    assert_eq!(f.state.status(false)["reason"], "invalid_command");
+    f.send(json!({"deadman": false}));
+    assert!(f.send(json!({"pan": 40})));
+    *f.now.lock().unwrap() += 0.26;
+    assert_eq!(f.state.output(), (0, 0, 90));
+    assert_eq!(f.state.status(false)["reason"], "lease_expired");
+    f.send(json!({"deadman": false}));
+    assert!(f.send(json!({"pan": 40})));
+    f.send(json!({"deadman": false}));
+    assert_eq!(f.state.output(), (0, 0, 90));
+    f.state.camera_ready = Some(Arc::new(|| false));
+    assert!(!f.send(json!({"pan": 40})));
+    assert_eq!(f.state.output(), (0, 0, 90));
+}
+
+#[test]
+fn no_pan_unknown_mount_is_rejected() {
+    assert!(ControlState::new(false, 0, 100, None, None, None, None, false, false, "gimbal").is_err());
 }

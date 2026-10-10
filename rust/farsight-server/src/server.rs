@@ -94,7 +94,11 @@ pub fn build_state(
     drive_profile: Option<crate::drive_profile::DriveProfile>,
     allow_calibration: bool,
     proximity_stop: bool,
+    pan_mount: &str,
 ) -> Arc<AppState> {
+    if scan_pan && pan_mount == "none" {
+        panic!("--scan-pan needs a physical pan servo (--pan-mount servo)");
+    }
     if replay.is_some()
         && (serial_port.is_some() || camera_device.is_some() || demo || simulate_rover || record)
     {
@@ -141,8 +145,9 @@ pub fn build_state(
             drive_profile,
             allow_calibration,
             proximity_stop,
+            pan_mount,
         )
-        .expect("PWM bounds"),
+        .expect("control config"),
     );
     let pump = Arc::new(SerialPump::new(control.clone(), serial_port, simulate_rover));
     let replay_control = replay.as_ref().map(|_| Arc::new(ReplayControl::new()));
@@ -895,6 +900,9 @@ async fn handle_ws_control(socket: WebSocket, s: Arc<AppState>) {
     let control = s.control.clone();
     let on_status = s.control_on_status.clone();
     let sender = tokio::spawn(async move {
+        // Mission recording keeps its 20 Hz control sampling
+        // (control/service.py RECORD_INTERVAL), while status publishes at 40 Hz.
+        let mut recorded = f64::NEG_INFINITY;
         loop {
             // A congested status path makes continued control unsafe; a send
             // timeout closes the socket rather than queueing permits.
@@ -905,10 +913,13 @@ async fn handle_ws_control(socket: WebSocket, s: Arc<AppState>) {
                 _ => return,
             }
             if let Some(hook) = &on_status {
-                hook(&status);
+                if started - recorded >= 0.045 {
+                    recorded = started;
+                    hook(&status);
+                }
             }
-            // 20 Hz target accounting for emit cost, per control/service.py.
-            tokio::time::sleep(Duration::from_secs_f64((0.05 - (now_monotonic() - started)).max(0.0))).await;
+            // 40 Hz target accounting for emit cost, per control/service.py.
+            tokio::time::sleep(Duration::from_secs_f64((0.025 - (now_monotonic() - started)).max(0.0))).await;
         }
     });
     while let Some(Ok(message)) = rx.next().await {
@@ -1370,8 +1381,33 @@ pub fn router(state: Arc<AppState>, dist: Option<PathBuf>) -> Router {
     app.with_state(state)
 }
 
+/// TcpListener wrapper that sets TCP_NODELAY on every accepted socket
+/// (control/service.py parity for both plain and TLS paths).
+pub struct NodelayListener(pub tokio::net::TcpListener);
+
+impl axum::serve::Listener for NodelayListener {
+    type Io = tokio::net::TcpStream;
+    type Addr = SocketAddr;
+
+    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+        loop {
+            match self.0.accept().await {
+                Ok((io, addr)) => {
+                    let _ = io.set_nodelay(true);
+                    return (io, addr);
+                }
+                Err(_) => tokio::time::sleep(Duration::from_millis(10)).await,
+            }
+        }
+    }
+
+    fn local_addr(&self) -> std::io::Result<Self::Addr> {
+        self.0.local_addr()
+    }
+}
+
 /// Serve the app over plain HTTP (TLS handled in main via axum-server).
 pub async fn serve_http(app: Router, addr: SocketAddr) -> std::io::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await
+    axum::serve(NodelayListener(listener), app).await
 }

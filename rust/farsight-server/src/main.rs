@@ -43,6 +43,9 @@ struct Args {
     /// Ultrasonic stop: range < 25 cm or stale range blocks forward (default on); 'off' is an explicit opt-in for navigation runs that steer around obstacles
     #[arg(long, default_value = "on", value_parser = ["on", "off"])]
     proximity_stop: String,
+    /// servo: a pan servo follows the commanded pan and forward drive is blocked while it is off-centre (default). none: no pan hardware; the headset pans digitally, the Uno never gets P and pan never blocks forward drive
+    #[arg(long, default_value = "servo", value_parser = ["servo", "none"])]
+    pan_mount: String,
     /// Bundled CPU person detector
     #[arg(long, default_value = "hog", value_parser = ["hog", "pose", "none"])]
     detector: String,
@@ -198,6 +201,7 @@ async fn main() {
         drive_profile,
         args.allow_calibration,
         args.proximity_stop == "on",
+        &args.pan_mount,
     );
     server::start_services(&state);
     let dist = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../quest/dist");
@@ -212,7 +216,12 @@ async fn main() {
             let config = axum_server::tls_rustls::RustlsConfig::from_pem_file(cert, key)
                 .await
                 .expect("TLS config");
-            axum_server::bind_rustls(addr, config)
+            // NoDelayAcceptor sets TCP_NODELAY on the accepted socket before
+            // the TLS handshake (control/service.py parity).
+            let acceptor = axum_server::tls_rustls::RustlsAcceptor::new(config)
+                .acceptor(axum_server::accept::NoDelayAcceptor::new());
+            axum_server::Server::bind(addr)
+                .acceptor(acceptor)
                 .serve(app.into_make_service())
                 .await
                 .unwrap();

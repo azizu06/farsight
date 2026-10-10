@@ -16,6 +16,7 @@ use crate::state::now_monotonic;
 
 pub const LEASE: f64 = 0.250;
 pub const RANGE_TTL: f64 = 0.350;
+pub const PAN_MOUNTS: [&str; 2] = ["servo", "none"];
 
 pub type CameraReady = Arc<dyn Fn() -> bool + Send + Sync>;
 pub type Clock = Arc<dyn Fn() -> f64 + Send + Sync>;
@@ -76,6 +77,11 @@ pub struct ControlState {
     /// Ultrasonic stop (range < 25 cm or stale) blocks forward; `off` is an
     /// explicit opt-in for navigation runs that steer around obstacles.
     pub proximity_stop: bool,
+    /// "servo": a physical pan head follows the commanded pan, and forward
+    /// drive is blocked while it is off-centre. "none": no pan hardware; the
+    /// headset pans digitally, so a valid commanded pan is accepted but never
+    /// moves anything or blocks forward drive (pan stays 0, the Uno gets no P).
+    pub pan_mount: String,
     pub camera_ready: Option<CameraReady>,
     pub detections: Option<Detections>,
     pub clock: Clock,
@@ -106,9 +112,13 @@ impl ControlState {
         drive_profile: Option<crate::drive_profile::DriveProfile>,
         allow_calibration: bool,
         proximity_stop: bool,
+        pan_mount: &str,
     ) -> Result<Self, String> {
         if !(0 <= min_pwm && min_pwm < max_pwm && max_pwm <= 255) {
             return Err("PWM bounds must satisfy 0 <= min_pwm < max_pwm <= 255".into());
+        }
+        if !PAN_MOUNTS.contains(&pan_mount) {
+            return Err(format!("pan_mount must be one of {PAN_MOUNTS:?}"));
         }
         Ok(Self {
             simulated,
@@ -117,6 +127,7 @@ impl ControlState {
             drive_profile,
             allow_calibration,
             proximity_stop,
+            pan_mount: pan_mount.to_string(),
             camera_ready,
             detections: detections.clone(),
             clock: clock.unwrap_or_else(|| Arc::new(now_monotonic)),
@@ -251,7 +262,7 @@ impl ControlState {
             return Err("Scan command outside bounded sweep".into());
         }
         s.scan_w = w;
-        s.pan = pan.round_ties_even() as i64;
+        s.pan = if self.pan_mount == "servo" { pan.round_ties_even() as i64 } else { 0 };
         self.output_locked(&mut s);
         if token != s.scan_token {
             return Err("Scan cancelled: camera or range unavailable".into());
@@ -281,7 +292,8 @@ impl ControlState {
     }
 
     fn forward_blocked(&self, s: &ControlInner) -> bool {
-        // The pan rule protects the ultrasonic/camera mount and stays on.
+        // The pan rule protects a servo pan mount and stays on with one;
+        // without one, pan is always 0 here.
         self.range_unsafe(s) || s.pan.abs() > 10
     }
 
@@ -436,6 +448,9 @@ impl ControlState {
                 autonomy.select(mode, target_id, now);
                 pan = 0.0; // autonomy needs a forward-facing ultrasonic/camera
             }
+        }
+        if self.pan_mount == "none" {
+            pan = 0.0; // validated above; the headset pans digitally
         }
         let pan_i = pan.round_ties_even() as i64;
         if pan_i != s.pan {
@@ -780,7 +795,10 @@ impl SerialPump {
             return Ok(());
         }
         let _ = device.clear(serialport::ClearBuffer::All);
-        device.write_all(b"M 0 0\nP 90\nR\n").map_err(|e| e.to_string())?;
+        let servo = self.state.pan_mount == "servo";
+        device
+            .write_all(if servo { b"M 0 0\nP 90\nR\n" as &[u8] } else { b"M 0 0\nR\n" })
+            .map_err(|e| e.to_string())?;
         let mut pending: Vec<u8> = Vec::new();
         let started = self.state.now();
         let mut last_response = started;
@@ -827,7 +845,7 @@ impl SerialPump {
                 // Commands are never buffered for replay; recompute from
                 // monotonic lease immediately before every serial write.
                 let mut data = format!("M {left} {right}\n");
-                if pan != last_pan {
+                if servo && pan != last_pan {
                     data.push_str(&format!("P {pan}\n"));
                     last_pan = pan;
                     settle_at = now + 0.2;
