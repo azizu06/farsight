@@ -328,3 +328,65 @@ After integrating main through `5b3f087`, all required suites passed:
 `npm --prefix quest run build`. The final packaging-only main change passed its
 13 tests and 10 subtests separately; the camera/control runtime did not change.
 The two additional 20-second quiet map5 repeats above both sustained 100% motion.
+
+## Client-pause follow-up (issue #52, October 10)
+
+The retained 126.8 ms **client loop pause was measured in the Python fixture
+client**, not the operator browser. `tools.profile_backend` calls
+`tools.tests.test_demo_qualification.motion_trial`; its `Controller` monitors
+an asyncio loop, and `VideoClient` receives MP4 fragments without decoding or
+painting them. That trace cannot identify browser JSON parsing, GC, geometry
+decoding, texture uploads or H.264 display as the cause.
+
+Two new 20-second combined-load repeats on the same host, at `cd0e4dc`, did not
+reproduce the lease stop. Both used map5 fusion, real CPU pose inference and
+FFmpeg, scan-kernel/local-summary bursts, 50 ms each-way delay and shared
+2 Mbps bandwidth. No runtime code changed between these repeats and the
+previous failed combined run. These are additional baselines, not before/after
+evidence for a fix.
+
+| Repeat | Settled moving | Client loop lag max | Command gap max | Server loop lag max | Arrival p95 | Held view peak |
+|---|---:|---:|---:|---:|---:|---:|
+| 1 | 100% | 38.3 ms | 56.0 ms | 40.3 ms | 345.0 ms | 488.8 ms |
+| 2 | 100% | below 5 ms monitor threshold | 52.4 ms | 36.1 ms | 359.6 ms | 486.7 ms |
+
+Both workloads were valid, fused frames and ran pose successfully. Neither
+recorded a backend lease failure or client invalidation. The raw repeated
+results are retained in [issue52-client-baseline.json](qualification/issue52-client-baseline.json).
+Reproduce one profiler at a time with the existing ignored pose model:
+
+```sh
+python -m tools.profile_backend --source map5 --detector pose --model models/yolo11n-pose.onnx --duration 20 --repeats 2 --loads combined --report baseline.json
+```
+
+A separate exploratory run used the production viewer in headless Chromium
+156.0.8078.4 with the Chromium/SwiftShader launch flags from
+`quest/tests/xr-input.browser.mjs`, against an isolated `Rig` with the same
+combined backend workload. Instrumentation installed before navigation measured
+WebSocket send/status timestamps, a 10 ms timer and the Long Tasks API. After
+enabling actual H.264 playback, it attempted Space+W driving for 10 seconds,
+then released input and selected the map for five seconds.
+
+During the camera phase, control-send gaps were p95 71.2 ms / max 101.0 ms,
+status-arrival gaps were p95 74.6 ms / max 96.4 ms, and timer lag peaked at
+62.8 ms. There were no tasks of at least 50 ms in that phase. Startup separately
+recorded one unattributed 119 ms long task. Backend status-publication gaps
+peaked at 95.3 ms; ASGI control sends took p95 0.057 ms / max 0.762 ms. These
+observations do not isolate the source of shorter scheduling delays.
+
+**The browser run did not qualify motion:** it sent zero active commands,
+polled zero moving samples, and decoded-view age exceeded 500 ms (camera-phase
+peak 859 ms). The release latch remained in force. Camera view deliberately
+pauses map transfers; no binary map snapshot completed during the subsequent
+five-second map phase, so this run also does not cover point/mesh decoding or
+map uploads. Its procedure, phase summaries, backend timings and successful
+burst results are retained in
+[issue52-client-browser.json](qualification/issue52-client-browser.json).
+
+No demonstrated browser cause emerged from this short probe, so no production
+change follows. The original combined failure remains retained and unexplained;
+two passing Python repeats do not eliminate intermittent scheduling stalls or
+qualify browser driving. The 250 ms lease, 500 ms view guard, 20 Hz permits and
+commands, two-fragment window, release latches and wire schemas are unchanged.
+All observations are software-only: no Quest, camera, phone, Jetson inference
+or physical motors were tested.

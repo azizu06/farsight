@@ -70,8 +70,10 @@ pub struct Inner {
 pub struct MapState {
     pub demo: bool,
     pub inner: Mutex<Inner>,
-    /// Encoded packet cache keyed on (frames, keyframe count); cleared via generation.
-    packets: Mutex<Option<(u64, u64, usize, Vec<u8>, Vec<u8>)>>,
+    /// Encoded packet cache keyed on (generation, frames, keyframe count).
+    /// Compressible variants (br/gzip) are cached per map version like
+    /// jetson/mapping/compress.py — no re-encoding per request.
+    packets: Mutex<Option<PacketCache>>,
 }
 
 impl MapState {
@@ -350,35 +352,60 @@ impl MapState {
         )
     }
 
-    /// Packets keyed on (frames, keyframes); encoding the whole cloud per
-    /// request was the hot spot — Quest polls these every interval.
-    fn packets(&self) -> (Vec<u8>, Vec<u8>) {
+    /// Cache slot for one encoded resource with lazy compressed variants.
+    fn packet_cached(&self) -> std::sync::MutexGuard<'_, Option<PacketCache>> {
         let s = self.inner.lock().unwrap();
         let key = (s.generation, s.frames, s.surfaces.keyframes.len());
-        {
-            let cache = self.packets.lock().unwrap();
-            if let Some((g, f, k, pts, mesh)) = cache.as_ref() {
-                if (*g, *f, *k) == key {
-                    return (pts.clone(), mesh.clone());
+        let mut cache = self.packets.lock().unwrap();
+        let stale = cache.as_ref().map(|c| c.key != key).unwrap_or(true);
+        if stale {
+            // Snapshot under the lock, encode after releasing it — the
+            // 16 B/point byte expansion must not stall frame fusion.
+            let (points, colors) = s.cloud.snapshot();
+            let mesh = s.surfaces.encode();
+            drop(s);
+            let pts = encode_points(&points, &colors);
+            *cache = Some(PacketCache { key, pts, mesh, pts_gz: None, pts_br: None, mesh_gz: None, mesh_br: None });
+        }
+        cache
+    }
+
+    /// Returns (body, content-encoding or "") for one map binary route.
+    /// Mirrors jetson/mapping/compress.py: cached per map version, br > gzip,
+    /// identity below the 1 KiB floor.
+    pub fn packet(&self, which: PacketKind, accept_encoding: &str) -> (Vec<u8>, &'static str) {
+        let coding = negotiate_encoding(accept_encoding);
+        let mut cache = self.packet_cached();
+        let c = cache.as_mut().unwrap();
+        let (raw, gz, br) = match which {
+            PacketKind::Points => (&c.pts, &mut c.pts_gz, &mut c.pts_br),
+            PacketKind::Mesh => (&c.mesh, &mut c.mesh_gz, &mut c.mesh_br),
+        };
+        if coding.is_none() || raw.len() < 1024 {
+            return (raw.clone(), "");
+        }
+        match coding.unwrap() {
+            Coding::Br => {
+                if br.is_none() {
+                    *br = Some(brotli_compress(raw));
                 }
+                (br.clone().unwrap(), "br")
+            }
+            Coding::Gzip => {
+                if gz.is_none() {
+                    *gz = Some(gzip_compress(raw));
+                }
+                (gz.clone().unwrap(), "gzip")
             }
         }
-        // Snapshot under the lock, encode after releasing it — the 16 B/point
-        // byte expansion is the slow part and must not stall frame fusion.
-        let (points, colors) = s.cloud.snapshot();
-        let mesh = s.surfaces.encode();
-        drop(s);
-        let pts = encode_points(&points, &colors);
-        *self.packets.lock().unwrap() = Some((key.0, key.1, key.2, pts.clone(), mesh.clone()));
-        (pts, mesh)
     }
 
-    pub fn point_packet(&self) -> Vec<u8> {
-        self.packets().0
+    pub fn point_packet(&self, accept_encoding: &str) -> (Vec<u8>, &'static str) {
+        self.packet(PacketKind::Points, accept_encoding)
     }
 
-    pub fn mesh_packet(&self) -> Vec<u8> {
-        self.packets().1
+    pub fn mesh_packet(&self, accept_encoding: &str) -> (Vec<u8>, &'static str) {
+        self.packet(PacketKind::Mesh, accept_encoding)
     }
 
     pub fn ply(&self) -> Vec<u8> {
@@ -406,4 +433,64 @@ impl MapState {
 
 pub fn now_monotonic() -> f64 {
     monotonic()
+}
+
+#[derive(Clone, Copy)]
+pub enum PacketKind {
+    Points,
+    Mesh,
+}
+
+struct PacketCache {
+    key: (u64, u64, usize),
+    pts: Vec<u8>,
+    mesh: Vec<u8>,
+    pts_gz: Option<Vec<u8>>,
+    pts_br: Option<Vec<u8>>,
+    mesh_gz: Option<Vec<u8>>,
+    mesh_br: Option<Vec<u8>>,
+}
+
+#[derive(Clone, Copy)]
+enum Coding {
+    Br,
+    Gzip,
+}
+
+/// br preferred over gzip; any q=0 refusal drops the coding.
+fn negotiate_encoding(accept: &str) -> Option<Coding> {
+    let mut br = false;
+    let mut gz = false;
+    for part in accept.split(',') {
+        let mut seg = part.trim().splitn(2, ';');
+        let name = seg.next().unwrap_or("").trim().to_ascii_lowercase();
+        let refused = seg.next().map(|p| p.replace(' ', "").contains("q=0")).unwrap_or(false);
+        match name.as_str() {
+            "br" if !refused => br = true,
+            "gzip" if !refused => gz = true,
+            _ => {}
+        }
+    }
+    if br {
+        Some(Coding::Br)
+    } else if gz {
+        Some(Coding::Gzip)
+    } else {
+        None
+    }
+}
+
+fn gzip_compress(data: &[u8]) -> Vec<u8> {
+    use std::io::Write;
+    let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::new(5));
+    let _ = enc.write_all(data);
+    enc.finish().unwrap_or_default()
+}
+
+fn brotli_compress(data: &[u8]) -> Vec<u8> {
+    use std::io::Read;
+    let mut out = Vec::new();
+    let mut r = brotli::CompressorReader::new(data, 1 << 20, 4, 22);
+    let _ = r.read_to_end(&mut out);
+    out
 }

@@ -1,0 +1,1035 @@
+{
+  "host": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+  "python": "3.13.7",
+  "opencv_version": "4.14.0",
+  "onnxruntime_version": "1.31.0",
+  "hardware_verified": false,
+  "settings": {
+    "detector": "pose",
+    "model_sha256": "e93f4cabad1eee2f5ca9bffaeec10febc2453c22e70ee1c1f8e29be0a6302d0b",
+    "scene_sha256": null,
+    "cv_threads": null,
+    "ort_threads": null,
+    "source": "map5",
+    "fusion_python_profile": false,
+    "pause_fusion": false,
+    "delay_each_direction_ms": 50,
+    "aggregate_mbps": 2,
+    "encoder_fps": 10,
+    "encoder_bitrate": 500000,
+    "request_window": 2,
+    "permit_ms": 250,
+    "command_hz": 20,
+    "view_guard_ms": 500
+  },
+  "limitations": [
+    "Software capture receipt, not sensor/display latency",
+    "No Quest, GPU or physical motors",
+    "Assistant uses local observation summary; no VLM/STT/TTS model",
+    "Scan bursts use production synthetic geometry kernels; no control sweep/depth model"
+  ],
+  "trials": [
+    {
+      "repeat": 1,
+      "load": "combined",
+      "workload_valid": true,
+      "motion": {
+        "source": "map5",
+        "seconds": 20.0,
+        "request_window": 2,
+        "command_hz": 20,
+        "send_on_status": false,
+        "samples": 457,
+        "moving_samples": 454,
+        "stable_moving_fraction": 1.0,
+        "capture_receipt_p95_ms": 345.0083339859266,
+        "capture_receipt_max_ms": 447.99849898251705,
+        "held_view_age_max_ms": 488.8103340175003,
+        "held_stale_samples": 0,
+        "fragment_cadence_p95_ms": 134.0497919882182,
+        "fragment_media_duration_p95_ms": 100.00000000000142,
+        "fragment_sample_counts": [
+          1
+        ],
+        "fragment_payload_p95_bytes": 10598,
+        "fragment_payload_max_bytes": 11505,
+        "control_ack_p95_ms": 157.49829198466614,
+        "command_cadence_p95_ms": 51.966375001939014,
+        "command_cadence_max_ms": 56.01933298748918,
+        "status_arrival_cadence_p95_ms": 71.94320802227594,
+        "status_arrival_cadence_max_ms": 103.94220799207687,
+        "reasons": [
+          "active",
+          "deadman_released",
+          "release_required"
+        ],
+        "invalidations": [],
+        "video_errors": [],
+        "control_errors": [],
+        "fault": null,
+        "fault_to_observed_simulated_stop_ms": null,
+        "backend_stop_events": [
+          {
+            "reason": "release_required",
+            "at": 204560.643448291,
+            "seq": -1
+          },
+          {
+            "reason": "release_required",
+            "at": 204560.894033583,
+            "seq": -1
+          }
+        ],
+        "first_backend_failure": null,
+        "server_command_cadence_p95_ms": 64.6146250073798,
+        "server_status_cadence_p95_ms": 72.55162499495782,
+        "accepted_permit_age_p95_ms": 176.63583299145103,
+        "status_callback_duration_p95_ms": null,
+        "status_callback_start_delay_p95_ms": null,
+        "control_ws_send_duration_p95_ms": 0.057249999372288585,
+        "server_event_loop_lag_max_ms": 40.338834000285715,
+        "client_event_loop_lag_max_ms": 38.32000000169501
+      },
+      "profile": {
+        "timings": {
+          "ControlState.lock.wait_ms": {
+            "count": 1616,
+            "retained": 1616,
+            "p50": 0.0012499804142862558,
+            "p95": 0.003249995643272996,
+            "maximum": 0.32891699811443686
+          },
+          "ControlState.lock.hold_ms": {
+            "count": 1616,
+            "retained": 1616,
+            "p50": 0.017207989003509283,
+            "p95": 0.04712500958703458,
+            "maximum": 12.061499990522861
+          },
+          "PerceptionService._setup.queue_ms": {
+            "count": 1,
+            "retained": 1,
+            "p50": 0.07029200787656009,
+            "p95": 0.07029200787656009,
+            "maximum": 0.07029200787656009
+          },
+          "server.threads": {
+            "count": 190,
+            "retained": 190,
+            "p50": 18,
+            "p95": 18,
+            "maximum": 18
+          },
+          "simulated_frame.queue_ms": {
+            "count": 367,
+            "retained": 367,
+            "p50": 0.05570802022702992,
+            "p95": 0.2616669808048755,
+            "maximum": 12.944499991135672
+          },
+          "MapState.camera_snapshot.wall_ms": {
+            "count": 1,
+            "retained": 1,
+            "p50": 0.0016659905668348074,
+            "p95": 0.0016659905668348074,
+            "maximum": 0.0016659905668348074
+          },
+          "MapState.camera_snapshot.cpu_ms": {
+            "count": 1,
+            "retained": 1,
+            "p50": 0.006375000000002906,
+            "p95": 0.006375000000002906,
+            "maximum": 0.006375000000002906
+          },
+          "CameraService.snapshot.wall_ms": {
+            "count": 1779,
+            "retained": 1779,
+            "p50": 0.0014999823179095984,
+            "p95": 0.003207998815923929,
+            "maximum": 0.019458006136119366
+          },
+          "CameraService.snapshot.cpu_ms": {
+            "count": 1779,
+            "retained": 1779,
+            "p50": 0.0014579999998431958,
+            "p95": 0.004333000000134035,
+            "maximum": 0.020333000000150037
+          },
+          "simulated_frame.work_ms": {
+            "count": 366,
+            "retained": 366,
+            "p50": 7.453083002474159,
+            "p95": 27.366000023903325,
+            "maximum": 96.12887498224154
+          },
+          "MapState.process.queue_ms": {
+            "count": 105,
+            "retained": 105,
+            "p50": 0.03441699664108455,
+            "p95": 0.08475000504404306,
+            "maximum": 0.17583300359547138
+          },
+          "MapState.lock.wait_ms": {
+            "count": 214,
+            "retained": 214,
+            "p50": 0.0010829826351255178,
+            "p95": 0.002707995008677244,
+            "maximum": 0.005375011824071407
+          },
+          "MapState.lock.hold_ms": {
+            "count": 214,
+            "retained": 214,
+            "p50": 0.4755839763674885,
+            "p95": 25.621167005738243,
+            "maximum": 40.74970798683353
+          },
+          "MapState.process.wall_ms": {
+            "count": 105,
+            "retained": 105,
+            "p50": 16.618499998003244,
+            "p95": 31.535167014226317,
+            "maximum": 43.45020800246857
+          },
+          "MapState.process.cpu_ms": {
+            "count": 105,
+            "retained": 105,
+            "p50": 16.355708000000078,
+            "p95": 20.576750000000033,
+            "maximum": 24.566416000000313
+          },
+          "MapState.process.work_ms": {
+            "count": 105,
+            "retained": 105,
+            "p50": 16.62508398294449,
+            "p95": 31.540374999167398,
+            "maximum": 43.45774999819696
+          },
+          "PerceptionService._setup.work_ms": {
+            "count": 1,
+            "retained": 1,
+            "p50": 34.067792003042996,
+            "p95": 34.067792003042996,
+            "maximum": 34.067792003042996
+          },
+          "PerceptionService._detect.queue_ms": {
+            "count": 199,
+            "retained": 199,
+            "p50": 0.06299998494796455,
+            "p95": 0.47195798833854496,
+            "maximum": 38.52933301823214
+          },
+          "MapState.status.queue_ms": {
+            "count": 4,
+            "retained": 4,
+            "p50": 0.05329199484549463,
+            "p95": 0.08108399924822152,
+            "maximum": 0.08108399924822152
+          },
+          "MapState.status.work_ms": {
+            "count": 4,
+            "retained": 4,
+            "p50": 0.024125009076669812,
+            "p95": 0.030000024707987905,
+            "maximum": 0.030000024707987905
+          },
+          "PhraseSpeaker.status.queue_ms": {
+            "count": 3,
+            "retained": 3,
+            "p50": 0.057666009524837136,
+            "p95": 0.07641699630767107,
+            "maximum": 0.07641699630767107
+          },
+          "PhraseSpeaker.status.work_ms": {
+            "count": 3,
+            "retained": 3,
+            "p50": 0.010499992640689015,
+            "p95": 0.2490839979145676,
+            "maximum": 0.2490839979145676
+          },
+          "onnx.run_ms": {
+            "count": 199,
+            "retained": 199,
+            "p50": 17.15179198072292,
+            "p95": 28.585208987351507,
+            "maximum": 104.13466699537821
+          },
+          "PerceptionService._detect.work_ms": {
+            "count": 199,
+            "retained": 199,
+            "p50": 18.303415999980643,
+            "p95": 38.315166981192306,
+            "maximum": 118.53804197744466
+          },
+          "Mission.detect.queue_ms": {
+            "count": 198,
+            "retained": 198,
+            "p50": 0.03820800338871777,
+            "p95": 0.08754100417718291,
+            "maximum": 23.90779199777171
+          },
+          "Mission.detect.work_ms": {
+            "count": 198,
+            "retained": 198,
+            "p50": 0.0040000013541430235,
+            "p95": 0.007874972652643919,
+            "maximum": 0.03837500116787851
+          },
+          "server.cpu_percent": {
+            "count": 189,
+            "retained": 189,
+            "p50": 75.29474711424552,
+            "p95": 147.24760020143995,
+            "maximum": 165.07938160217068
+          },
+          "ffmpeg.threads": {
+            "count": 189,
+            "retained": 189,
+            "p50": 50,
+            "p95": 50,
+            "maximum": 50
+          },
+          "imdecode.queue_ms": {
+            "count": 198,
+            "retained": 198,
+            "p50": 0.0760830007493496,
+            "p95": 7.099000009475276,
+            "maximum": 19.566957984352484
+          },
+          "imdecode.work_ms": {
+            "count": 198,
+            "retained": 198,
+            "p50": 0.1609169994480908,
+            "p95": 0.8527919999323785,
+            "maximum": 17.88166700862348
+          },
+          "camera.age_at_encoder_ms": {
+            "count": 198,
+            "retained": 198,
+            "p50": 49.17704200488515,
+            "p95": 99.21741698053665,
+            "maximum": 167.61062500881962
+          },
+          "back_project.queue_ms": {
+            "count": 50,
+            "retained": 50,
+            "p50": 0.031625007977709174,
+            "p95": 0.3390829951968044,
+            "maximum": 11.843874992337078
+          },
+          "back_project.work_ms": {
+            "count": 50,
+            "retained": 50,
+            "p50": 0.581667001824826,
+            "p95": 0.7707090117037296,
+            "maximum": 0.966125022387132
+          },
+          "VoxelMap.integrate.queue_ms": {
+            "count": 50,
+            "retained": 50,
+            "p50": 0.02362497616559267,
+            "p95": 0.09012498776428401,
+            "maximum": 0.5260840116534382
+          },
+          "VoxelMap.integrate.work_ms": {
+            "count": 50,
+            "retained": 50,
+            "p50": 34.951417008414865,
+            "p95": 58.01700000301935,
+            "maximum": 62.424125004326925
+          },
+          "ffmpeg.cpu_percent": {
+            "count": 188,
+            "retained": 188,
+            "p50": 2.0426152215789735,
+            "p95": 3.3728794849095594,
+            "maximum": 4.730171435099757
+          },
+          "camera.capture_interval_ms": {
+            "count": 197,
+            "retained": 197,
+            "p50": 134.1270419943612,
+            "p95": 151.8565000151284,
+            "maximum": 207.41795899812132
+          },
+          "h264.input_to_fragment_ms": {
+            "count": 197,
+            "retained": 197,
+            "p50": 115.3418329777196,
+            "p95": 135.51870902301744,
+            "maximum": 171.22470799949951
+          }
+        },
+        "mapping": {
+          "type": "status",
+          "source": "SIMULATED",
+          "connected": true,
+          "fresh": true,
+          "device": "Ray-cast room",
+          "session_id": "simulated-room",
+          "map_epoch": 1,
+          "generation": 0,
+          "revision": 105,
+          "mesh_revision": 22,
+          "paused": false,
+          "tracking": "normal",
+          "points": 67577,
+          "triangles": 158200,
+          "keyframes": 18,
+          "frames": 105,
+          "rejected": 0,
+          "dropped": 0,
+          "processing_ms": 43.4,
+          "processing_fps": 23.0,
+          "age_ms": 167,
+          "position": [
+            0.32139293636036675,
+            0.0,
+            -1.8346028456037766
+          ],
+          "transform": [
+            0.9292909122155646,
+            0.0,
+            0.36934861645004685,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            -0.36934861645004685,
+            0.0,
+            0.9292909122155646,
+            0.0,
+            0.32139293636036675,
+            0.0,
+            -1.8346028456037766,
+            1.0
+          ],
+          "scan": null,
+          "voxel_m": 0.04,
+          "depth_range": [
+            1.1,
+            4.85
+          ],
+          "reason": null,
+          "camera": true,
+          "detector_fps": 0,
+          "rover": false,
+          "estop": true
+        },
+        "opencv_threads": 15,
+        "perception": {
+          "detector": "pose",
+          "detector_backend": "pose-onnx",
+          "detector_error": null,
+          "detector_fps": 10.4,
+          "detector_inference_ms": 60.3
+        }
+      },
+      "bursts": [
+        {
+          "path": "/ask",
+          "status": 200,
+          "elapsed_ms": 2.003834000788629
+        },
+        {
+          "path": "/__profile/scan-kernels",
+          "status": 200,
+          "elapsed_ms": 312.7016660000663
+        },
+        {
+          "path": "/ask",
+          "status": 200,
+          "elapsed_ms": 0.44254199019633234
+        },
+        {
+          "path": "/__profile/scan-kernels",
+          "status": 200,
+          "elapsed_ms": 253.6779590009246
+        },
+        {
+          "path": "/ask",
+          "status": 200,
+          "elapsed_ms": 14.372582983924076
+        },
+        {
+          "path": "/__profile/scan-kernels",
+          "status": 200,
+          "elapsed_ms": 247.76058297720738
+        },
+        {
+          "path": "/ask",
+          "status": 200,
+          "elapsed_ms": 0.6032079982105643
+        },
+        {
+          "path": "/__profile/scan-kernels",
+          "status": 200,
+          "elapsed_ms": 258.2751250010915
+        },
+        {
+          "path": "/ask",
+          "status": 200,
+          "elapsed_ms": 11.92645900300704
+        },
+        {
+          "path": "/__profile/scan-kernels",
+          "status": 200,
+          "elapsed_ms": 237.25316597847268
+        },
+        {
+          "path": "/ask",
+          "status": 200,
+          "elapsed_ms": 0.525166979059577
+        },
+        {
+          "path": "/__profile/scan-kernels",
+          "status": 200,
+          "elapsed_ms": 226.8235410156194
+        },
+        {
+          "path": "/ask",
+          "status": 200,
+          "elapsed_ms": 0.400332995923236
+        },
+        {
+          "path": "/__profile/scan-kernels",
+          "status": 200,
+          "elapsed_ms": 243.94600000232458
+        },
+        {
+          "path": "/ask",
+          "status": 200,
+          "elapsed_ms": 0.5084580043330789
+        },
+        {
+          "path": "/__profile/scan-kernels",
+          "status": 200,
+          "elapsed_ms": 259.00229200487956
+        },
+        {
+          "path": "/ask",
+          "status": 200,
+          "elapsed_ms": 10.931541997706518
+        },
+        {
+          "path": "/__profile/scan-kernels",
+          "status": 200,
+          "elapsed_ms": 335.09433397557586
+        },
+        {
+          "path": "/ask",
+          "status": 200,
+          "elapsed_ms": 13.026999979047105
+        },
+        {
+          "path": "/__profile/scan-kernels",
+          "status": 200,
+          "elapsed_ms": 340.14062499045394
+        }
+      ],
+      "burst_error": null
+    },
+    {
+      "repeat": 2,
+      "load": "combined",
+      "workload_valid": true,
+      "motion": {
+        "source": "map5",
+        "seconds": 20.0,
+        "request_window": 2,
+        "command_hz": 20,
+        "send_on_status": false,
+        "samples": 452,
+        "moving_samples": 449,
+        "stable_moving_fraction": 1.0,
+        "capture_receipt_p95_ms": 359.5717079746537,
+        "capture_receipt_max_ms": 391.30774996615946,
+        "held_view_age_max_ms": 486.68537501827814,
+        "held_stale_samples": 0,
+        "fragment_cadence_p95_ms": 138.9241669967305,
+        "fragment_media_duration_p95_ms": 100.00000000000142,
+        "fragment_sample_counts": [
+          1
+        ],
+        "fragment_payload_p95_bytes": 10587,
+        "fragment_payload_max_bytes": 11318,
+        "control_ack_p95_ms": 161.4654999866616,
+        "command_cadence_p95_ms": 52.04033400514163,
+        "command_cadence_max_ms": 52.35308298142627,
+        "status_arrival_cadence_p95_ms": 73.98233300773427,
+        "status_arrival_cadence_max_ms": 94.4177080236841,
+        "reasons": [
+          "active",
+          "deadman_released",
+          "release_required"
+        ],
+        "invalidations": [],
+        "video_errors": [],
+        "control_errors": [],
+        "fault": null,
+        "fault_to_observed_simulated_stop_ms": null,
+        "backend_stop_events": [
+          {
+            "reason": "release_required",
+            "at": 204583.42837575,
+            "seq": -1
+          },
+          {
+            "reason": "release_required",
+            "at": 204583.64749775,
+            "seq": -1
+          }
+        ],
+        "first_backend_failure": null,
+        "server_command_cadence_p95_ms": 66.22016700566746,
+        "server_status_cadence_p95_ms": 73.84191700839438,
+        "accepted_permit_age_p95_ms": 177.8906669933349,
+        "status_callback_duration_p95_ms": null,
+        "status_callback_start_delay_p95_ms": null,
+        "control_ws_send_duration_p95_ms": 0.052583025535568595,
+        "server_event_loop_lag_max_ms": 36.07095799292438,
+        "client_event_loop_lag_max_ms": 0
+      },
+      "profile": {
+        "timings": {
+          "ControlState.lock.wait_ms": {
+            "count": 1580,
+            "retained": 1580,
+            "p50": 0.0011250085663050413,
+            "p95": 0.0030410010367631912,
+            "maximum": 0.16158301150426269
+          },
+          "ControlState.lock.hold_ms": {
+            "count": 1580,
+            "retained": 1580,
+            "p50": 0.017375015886500478,
+            "p95": 0.04700000863522291,
+            "maximum": 20.12395899510011
+          },
+          "PerceptionService._setup.queue_ms": {
+            "count": 1,
+            "retained": 1,
+            "p50": 0.06554101128131151,
+            "p95": 0.06554101128131151,
+            "maximum": 0.06554101128131151
+          },
+          "server.threads": {
+            "count": 186,
+            "retained": 186,
+            "p50": 18,
+            "p95": 18,
+            "maximum": 18
+          },
+          "simulated_frame.queue_ms": {
+            "count": 364,
+            "retained": 364,
+            "p50": 0.05595802213065326,
+            "p95": 0.3358749963808805,
+            "maximum": 30.435542023042217
+          },
+          "MapState.camera_snapshot.wall_ms": {
+            "count": 1,
+            "retained": 1,
+            "p50": 0.0010840012691915035,
+            "p95": 0.0010840012691915035,
+            "maximum": 0.0010840012691915035
+          },
+          "MapState.camera_snapshot.cpu_ms": {
+            "count": 1,
+            "retained": 1,
+            "p50": 0.00579200000000446,
+            "p95": 0.00579200000000446,
+            "maximum": 0.00579200000000446
+          },
+          "CameraService.snapshot.wall_ms": {
+            "count": 1756,
+            "retained": 1756,
+            "p50": 0.0014170072972774506,
+            "p95": 0.003082997864112258,
+            "maximum": 0.01733400858938694
+          },
+          "CameraService.snapshot.cpu_ms": {
+            "count": 1756,
+            "retained": 1756,
+            "p50": 0.0015840000000544308,
+            "p95": 0.004125000000021473,
+            "maximum": 0.01754199999999973
+          },
+          "simulated_frame.work_ms": {
+            "count": 364,
+            "retained": 364,
+            "p50": 8.536082983482629,
+            "p95": 27.88279199739918,
+            "maximum": 86.0404999984894
+          },
+          "MapState.process.queue_ms": {
+            "count": 105,
+            "retained": 105,
+            "p50": 0.03445899346843362,
+            "p95": 0.06975000724196434,
+            "maximum": 0.13062500511296093
+          },
+          "MapState.lock.wait_ms": {
+            "count": 213,
+            "retained": 213,
+            "p50": 0.0011249794624745846,
+            "p95": 0.0021250161807984114,
+            "maximum": 0.00404199818149209
+          },
+          "MapState.lock.hold_ms": {
+            "count": 213,
+            "retained": 213,
+            "p50": 0.7544579857494682,
+            "p95": 22.787041001720354,
+            "maximum": 41.42858399427496
+          },
+          "MapState.process.wall_ms": {
+            "count": 105,
+            "retained": 105,
+            "p50": 18.992583005456254,
+            "p95": 35.83775000879541,
+            "maximum": 50.68166699493304
+          },
+          "MapState.process.cpu_ms": {
+            "count": 105,
+            "retained": 105,
+            "p50": 18.107415999999876,
+            "p95": 22.47204199999997,
+            "maximum": 26.618790999999973
+          },
+          "MapState.process.work_ms": {
+            "count": 105,
+            "retained": 105,
+            "p50": 18.99762501125224,
+            "p95": 35.843708988977596,
+            "maximum": 50.685875001363456
+          },
+          "PerceptionService._setup.work_ms": {
+            "count": 1,
+            "retained": 1,
+            "p50": 45.54070899030194,
+            "p95": 45.54070899030194,
+            "maximum": 45.54070899030194
+          },
+          "PerceptionService._detect.queue_ms": {
+            "count": 196,
+            "retained": 196,
+            "p50": 0.058582983911037445,
+            "p95": 12.845791992731392,
+            "maximum": 33.268500003032386
+          },
+          "onnx.run_ms": {
+            "count": 196,
+            "retained": 196,
+            "p50": 20.295958005590364,
+            "p95": 29.538875009166077,
+            "maximum": 68.30470901331864
+          },
+          "PerceptionService._detect.work_ms": {
+            "count": 196,
+            "retained": 196,
+            "p50": 21.420000004582107,
+            "p95": 34.19641699292697,
+            "maximum": 81.3078330247663
+          },
+          "Mission.detect.queue_ms": {
+            "count": 196,
+            "retained": 196,
+            "p50": 0.04037498729303479,
+            "p95": 0.10274999658577144,
+            "maximum": 0.4655410011764616
+          },
+          "Mission.detect.work_ms": {
+            "count": 196,
+            "retained": 196,
+            "p50": 0.004083005478605628,
+            "p95": 0.0076669966802001,
+            "maximum": 0.018915976397693157
+          },
+          "MapState.status.queue_ms": {
+            "count": 3,
+            "retained": 3,
+            "p50": 0.04762498429045081,
+            "p95": 0.049291993491351604,
+            "maximum": 0.049291993491351604
+          },
+          "MapState.status.work_ms": {
+            "count": 3,
+            "retained": 3,
+            "p50": 0.030208000680431724,
+            "p95": 0.03370799822732806,
+            "maximum": 0.03370799822732806
+          },
+          "PhraseSpeaker.status.queue_ms": {
+            "count": 2,
+            "retained": 2,
+            "p50": 0.023375003365799785,
+            "p95": 0.024625012883916497,
+            "maximum": 0.024625012883916497
+          },
+          "PhraseSpeaker.status.work_ms": {
+            "count": 2,
+            "retained": 2,
+            "p50": 0.005959009286016226,
+            "p95": 0.24770799791440368,
+            "maximum": 0.24770799791440368
+          },
+          "server.cpu_percent": {
+            "count": 185,
+            "retained": 185,
+            "p50": 79.15578792608076,
+            "p95": 151.99814427229128,
+            "maximum": 181.13095817480743
+          },
+          "ffmpeg.threads": {
+            "count": 185,
+            "retained": 185,
+            "p50": 50,
+            "p95": 50,
+            "maximum": 50
+          },
+          "imdecode.queue_ms": {
+            "count": 199,
+            "retained": 199,
+            "p50": 0.07387498044408858,
+            "p95": 13.591916998848319,
+            "maximum": 30.4849169915542
+          },
+          "imdecode.work_ms": {
+            "count": 199,
+            "retained": 199,
+            "p50": 0.18183302017860115,
+            "p95": 5.608207982731983,
+            "maximum": 22.109499986981973
+          },
+          "camera.age_at_encoder_ms": {
+            "count": 199,
+            "retained": 199,
+            "p50": 51.54208300518803,
+            "p95": 102.81708298134618,
+            "maximum": 135.26229100534692
+          },
+          "back_project.queue_ms": {
+            "count": 50,
+            "retained": 50,
+            "p50": 0.035250006476417184,
+            "p95": 0.0704580161254853,
+            "maximum": 0.5708750104531646
+          },
+          "back_project.work_ms": {
+            "count": 50,
+            "retained": 50,
+            "p50": 0.662000005831942,
+            "p95": 1.2942089815624058,
+            "maximum": 22.528542001964524
+          },
+          "VoxelMap.integrate.queue_ms": {
+            "count": 50,
+            "retained": 50,
+            "p50": 0.027667003450915217,
+            "p95": 0.07095900946296751,
+            "maximum": 0.10366700007580221
+          },
+          "VoxelMap.integrate.work_ms": {
+            "count": 50,
+            "retained": 50,
+            "p50": 40.46112499781884,
+            "p95": 76.53199997730553,
+            "maximum": 76.84937497833744
+          },
+          "ffmpeg.cpu_percent": {
+            "count": 184,
+            "retained": 184,
+            "p50": 2.08485348096755,
+            "p95": 3.8479074549361,
+            "maximum": 5.182137081890945
+          },
+          "camera.capture_interval_ms": {
+            "count": 198,
+            "retained": 198,
+            "p50": 134.0046249970328,
+            "p95": 152.6159170025494,
+            "maximum": 206.56249998137355
+          },
+          "h264.input_to_fragment_ms": {
+            "count": 198,
+            "retained": 198,
+            "p50": 115.58824998792261,
+            "p95": 134.1592090029735,
+            "maximum": 165.75745801674202
+          }
+        },
+        "mapping": {
+          "type": "status",
+          "source": "SIMULATED",
+          "connected": true,
+          "fresh": true,
+          "device": "Ray-cast room",
+          "session_id": "simulated-room",
+          "map_epoch": 1,
+          "generation": 0,
+          "revision": 105,
+          "mesh_revision": 22,
+          "paused": false,
+          "tracking": "normal",
+          "points": 67515,
+          "triangles": 158275,
+          "keyframes": 18,
+          "frames": 105,
+          "rejected": 0,
+          "dropped": 0,
+          "processing_ms": 16.1,
+          "processing_fps": 62.2,
+          "age_ms": 102,
+          "position": [
+            0.32336196180829624,
+            0.0,
+            -1.8337377399017554
+          ],
+          "transform": [
+            0.9263631931869997,
+            0.0,
+            0.3766314303246419,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            -0.3766314303246419,
+            0.0,
+            0.9263631931869997,
+            0.0,
+            0.32336196180829624,
+            0.0,
+            -1.8337377399017554,
+            1.0
+          ],
+          "scan": null,
+          "voxel_m": 0.04,
+          "depth_range": [
+            1.1,
+            4.86
+          ],
+          "reason": null,
+          "camera": true,
+          "detector_fps": 0,
+          "rover": false,
+          "estop": true
+        },
+        "opencv_threads": 15,
+        "perception": {
+          "detector": "pose",
+          "detector_backend": "pose-onnx",
+          "detector_error": null,
+          "detector_fps": 9.8,
+          "detector_inference_ms": 17.7
+        }
+      },
+      "bursts": [
+        {
+          "path": "/ask",
+          "status": 200,
+          "elapsed_ms": 1.911874976940453
+        },
+        {
+          "path": "/__profile/scan-kernels",
+          "status": 200,
+          "elapsed_ms": 411.43991699209437
+        },
+        {
+          "path": "/ask",
+          "status": 200,
+          "elapsed_ms": 2.793249994283542
+        },
+        {
+          "path": "/__profile/scan-kernels",
+          "status": 200,
+          "elapsed_ms": 365.75374999665655
+        },
+        {
+          "path": "/ask",
+          "status": 200,
+          "elapsed_ms": 0.5661250033881515
+        },
+        {
+          "path": "/__profile/scan-kernels",
+          "status": 200,
+          "elapsed_ms": 329.76000002236106
+        },
+        {
+          "path": "/ask",
+          "status": 200,
+          "elapsed_ms": 0.8187079802155495
+        },
+        {
+          "path": "/__profile/scan-kernels",
+          "status": 200,
+          "elapsed_ms": 308.8856670074165
+        },
+        {
+          "path": "/ask",
+          "status": 200,
+          "elapsed_ms": 0.49066697829402983
+        },
+        {
+          "path": "/__profile/scan-kernels",
+          "status": 200,
+          "elapsed_ms": 405.3317499929108
+        },
+        {
+          "path": "/ask",
+          "status": 200,
+          "elapsed_ms": 0.6365829904098064
+        },
+        {
+          "path": "/__profile/scan-kernels",
+          "status": 200,
+          "elapsed_ms": 296.09724998590536
+        },
+        {
+          "path": "/ask",
+          "status": 200,
+          "elapsed_ms": 18.130167009076104
+        },
+        {
+          "path": "/__profile/scan-kernels",
+          "status": 200,
+          "elapsed_ms": 248.3054590120446
+        },
+        {
+          "path": "/ask",
+          "status": 200,
+          "elapsed_ms": 0.7236670062411577
+        },
+        {
+          "path": "/__profile/scan-kernels",
+          "status": 200,
+          "elapsed_ms": 235.9241250087507
+        },
+        {
+          "path": "/ask",
+          "status": 200,
+          "elapsed_ms": 5.618042021524161
+        },
+        {
+          "path": "/__profile/scan-kernels",
+          "status": 200,
+          "elapsed_ms": 250.32641700818203
+        },
+        {
+          "path": "/ask",
+          "status": 200,
+          "elapsed_ms": 0.8091669878922403
+        },
+        {
+          "path": "/__profile/scan-kernels",
+          "status": 200,
+          "elapsed_ms": 265.99087502108887
+        }
+      ],
+      "burst_error": null
+    }
+  ],
+  "source_commit": "cd0e4dc",
+  "client_implementation": "Python asyncio Controller and MP4-arrival VideoClient from tools.tests.test_demo_qualification; no browser decode or display"
+}
