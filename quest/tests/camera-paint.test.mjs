@@ -6,6 +6,7 @@ import ts from "typescript";
 import * as cameraView from "../src/camera-view.js";
 import * as poseHud from "../src/pose-hud.js";
 import { ControlSafety } from "../src/control-safety.js";
+import * as detectionMatch from "../src/detection-match.js";
 
 // Exercise the production method without constructing DOM/WebGL resources.
 // Compile the complete class, replace constructor dependencies, and invoke its
@@ -20,7 +21,7 @@ class CanvasTexture { constructor(image) { this.image = image; this.needsUpdate 
 const three = { CanvasTexture, SRGBColorSpace: "srgb" };
 vm.runInNewContext(compiled.outputText, {
   exports: module.exports,
-  require: name => name === "./camera-view.js" ? cameraView : name === "./pose-hud.js" ? poseHud : name === "three" ? three : {},
+  require: name => name === "./camera-view.js" ? cameraView : name === "./pose-hud.js" ? poseHud : name === "./detection-match.js" ? detectionMatch : name === "three" ? three : {},
 });
 
 function fixture() {
@@ -31,7 +32,7 @@ function fixture() {
   gate.acceptFrame("PHONE RGB:7", 100, 0);
   Object.assign(view, {
     ctx: { drawImage: (...args) => paints.push(args), strokeRect: (...args) => strokes.push(args),
-      fillText() {} },
+      fillText() {}, save() {}, restore() {} },
     canvas: { width: 320, height: 240 },
     h264Enabled: true,
     h264: { video: { readyState: 2, videoWidth: 640, videoHeight: 480 }, displayedFrame: null },
@@ -39,8 +40,9 @@ function fixture() {
     frameId: "7", frameSource: "PHONE RGB", gate, dirty: true, lastCanvasDraw: 0,
     cameraTexture: new CanvasTexture(null), cameraMaterial: { map: null, needsUpdate: false }, cameraScreen: { scale: { y: 1 } },
     drawnBoxes: [box], autonomy: { targetId: null },
-    detectionFrames: new Map([["PHONE RGB:8", { packet: { boxes: [box] }, at: 0 }]]),
+    detectionFrames: new detectionMatch.DetectionCache(),
   });
+  view.detectionFrames.add({ frame: 8, source: "PHONE RGB", boxes: [box] }, 0);
   return { view, paints, strokes };
 }
 
