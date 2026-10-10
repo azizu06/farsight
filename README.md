@@ -1,6 +1,8 @@
 # Farsight
 
-Judging: [90 s demo](docs/judge-demo.md), [fallback playbook](docs/fallback-playbook.md), [architecture](docs/architecture.md), [Devpost evidence](docs/devpost-checklist.md).
+Judging: [90 s demo](docs/judge-demo.md), [fallback playbook](docs/fallback-playbook.md), [architecture](docs/architecture.md), [Devpost evidence](docs/devpost-checklist.md), [Devpost draft](docs/devpost-draft.md).
+
+[![Farsight architecture: operator kit and rover kit linked by cellular and Tailscale](docs/assets/architecture.svg)](docs/architecture.md)
 
 Optional camera-only room snapshot: [scan setup, model contract and local evidence](docs/scan.md).
 
@@ -110,6 +112,24 @@ Answers never execute motor actions. Missing audio models leave text available
 and return an explicit audio error. Rescue counts describe observed tracks,
 not verified distinct people. `--mission-dir` persists bounded detection snapshots;
 otherwise the report clearly identifies in-memory evidence.
+
+## Measured numbers
+
+Simulated column: `python -m tools.pitch_metrics` against `jetson.server --demo
+--simulate-rover --h264` on a laptop (2026-10-10, 20 s per phase, real FFmpeg,
+HOG fallback detector, simulated camera and rover). These show the tool and the
+software path work; they are not rig figures. The rig column is filled from
+[docs/pitch-metrics.md](docs/pitch-metrics.md) once the rover is assembled.
+
+| Metric | Simulated (laptop) | Rig | How measured |
+|---|---|---|---|
+| Detector fps | 3.0 fps (HOG fallback) | pending rig run | median of `/health.detector_fps` every 0.5 s, `tools.pitch_metrics` |
+| Stream fps, MJPEG | 14.7 fps | pending rig run | frames parsed from `/stream.mjpg`, 20 s |
+| Stream fps, H.264 | 9.8 fps | pending rig run | frames in `/ws/video` segments, 20 s |
+| Control round-trip p50 / p95 | 23.9 / 52.6 ms | pending rig run | stopped `/ws/control` probes at 10 Hz under video load |
+| Permit age at send p50 / p95 | 31.2 / 51.0 ms | pending rig run | age of newest received permit per probe; limit 250 ms |
+| Glass-to-glass latency | not applicable | pending rig run | stopwatch filmed through the system, median of 10 |
+| Stop distance after deadman release | not applicable | pending rig run | tape-marked floor, side video, 5 trials |
 
 ## Verification and limits
 
