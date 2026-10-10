@@ -101,7 +101,8 @@ root.add(denseSplats, graySplats);
 const target = new THREE.WebGLRenderTarget(width, height, {
   depthTexture: new THREE.DepthTexture(width, height, THREE.FloatType),
 });
-const shade = shadePass(target, camera, new THREE.Color(GRAPHITE).convertSRGBToLinear().convertLinearToSRGB());
+// The shade pass writes sRGB directly, so hand it the background's sRGB components unconverted.
+const shade = shadePass(target, camera, new THREE.Color().setHex(GRAPHITE, THREE.LinearSRGBColorSpace));
 let denseAvailable = true;
 function splatScale() {
   const scale = height / (2 * Math.tan((camera.fov * Math.PI) / 360));
@@ -264,7 +265,7 @@ renderer.setAnimationLoop(() => {
   denseSplats.visible = dense.count > 0;
   graySplats.visible = !dense.count && denseGray.count > 0;
   // Dense cells replace the coarse preview cloud/mesh; the grid stays as a floor cue.
-  cloud.visible = surfaces.visible = !solid;
+  cloud.visible = surfaces.visible = grid.visible = !solid;
   if (solid) {
     renderer.setRenderTarget(target);
     renderer.render(scene, camera);

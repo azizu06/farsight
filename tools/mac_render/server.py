@@ -403,13 +403,25 @@ class ViewerQueue:
 
 
 def _is_keyframe(data):
-    """A fragment that carries an IDR, so a late viewer can start on it."""
-    offset = data.find(b"tfhd")
-    if offset >= 0 and len(data) > offset + 16:
-        flags = struct.unpack_from(">I", data, offset + 8)[0]
-        if flags & 0x020000:
+    """A fragment whose mdat carries an IDR picture, so a viewer can start decoding on it.
+
+    ffmpeg writes MP4 samples as AVCC: 4-byte big-endian NAL lengths, not Annex B
+    start codes, and default-base-is-moof says nothing about sync samples.
+    """
+    at = data.find(b"mdat")
+    if at < 4:
+        return False
+    end = min(len(data), at - 4 + struct.unpack_from(">I", data, at - 4)[0])
+    pos = at + 4
+    while pos + 4 <= end:
+        length = struct.unpack_from(">I", data, pos)[0]
+        pos += 4
+        if length == 0 or pos + length > end:
+            return False
+        if data[pos] & 0x1F == 5:
             return True
-    return b"\x00\x00\x00\x01\x65" in data or b"\x00\x00\x01\x65" in data
+        pos += length
+    return False
 
 
 def dense_proxy(upstream):

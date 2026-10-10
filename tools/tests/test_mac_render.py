@@ -13,7 +13,7 @@ from tools.mac_render.protocol import (
     frame_age_ms, oldest_of, parse_pose, percentile, pose_is_stale,
     pose_to_frame_ms, segment_sidecar,
 )
-from tools.mac_render.server import ViewerQueue
+from tools.mac_render.server import ViewerQueue, _is_keyframe
 from tools.mac_render.stats import summarize
 
 
@@ -152,6 +152,15 @@ class QuestPoseContractTest(unittest.TestCase):
                     {"space": "world"}, {"fov_y_deg": 170}, {"aspect": 0}, {"eyes": [{}]}):
             with self.assertRaises(ValueError, msg=bad):
                 parse_pose(dict(self.produce(), **bad), 0)
+
+
+class KeyframeTest(unittest.TestCase):
+    def test_idr_is_found_in_avcc_mdat_not_by_tfhd_flags(self):
+        moof = box(b"moof", box(b"tfhd", struct.pack(">II", 0x020000, 1)))
+        nal = lambda kind: struct.pack(">I", 3) + bytes([kind, 0, 0])
+        self.assertTrue(_is_keyframe(moof + box(b"mdat", nal(0x06) + nal(0x65))), "SEI then IDR")
+        self.assertFalse(_is_keyframe(moof + box(b"mdat", nal(0x41))), "default-base-is-moof alone is not sync")
+        self.assertFalse(_is_keyframe(box(b"moof")))
 
 
 class ViewerQueueTest(unittest.TestCase):

@@ -182,28 +182,43 @@ export function shadePass(target, camera, background) {
       float logDepth(vec2 uv) { return log2(max(-viewPos(uv).z, 1e-4)); }
       vec3 toSrgb(vec3 c) { return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c)); }
       void main() {
-        float d = texture2D(depthTex, vUv).x;
-        if (d >= 1.0) { gl_FragColor = vec4(background, 1.0); return; }
-        vec3 base = texture2D(colorTex, vUv).rgb;
-        vec3 p = viewPos(vUv);
+        vec2 uv = vUv;
+        float d = texture2D(depthTex, uv).x;
+        if (d >= 1.0) {
+          // Close sampling gaps between measured splats: a background pixel mostly
+          // surrounded by surface takes its nearest neighbour; real silhouettes stay open.
+          float nearest = 1.0; vec2 pick = uv; int hits = 0;
+          for (int i = 0; i < 8; i++) {
+            float a = float(i) * 0.785398;
+            for (int r = 2; r <= 6; r += 2) {
+              vec2 o = uv + vec2(cos(a), sin(a)) * texel * float(r);
+              float there = texture2D(depthTex, o).x;
+              if (there < 1.0) { hits++; if (there < nearest) { nearest = there; pick = o; } break; }
+            }
+          }
+          if (hits < 6) { gl_FragColor = vec4(background, 1.0); return; }
+          uv = pick; d = nearest;
+        }
+        vec3 base = texture2D(colorTex, uv).rgb;
+        vec3 p = viewPos(uv);
         // Central differences several pixels wide, so the normal follows the surface
         // across neighbouring splats rather than one flat sprite.
         vec2 ox = vec2(texel.x * 6.0, 0.0), oy = vec2(0.0, texel.y * 6.0);
-        bool edge = texture2D(depthTex, vUv + ox).x >= 1.0 || texture2D(depthTex, vUv - ox).x >= 1.0
-          || texture2D(depthTex, vUv + oy).x >= 1.0 || texture2D(depthTex, vUv - oy).x >= 1.0;
-        vec3 n = edge ? normalize(-p) : normalize(cross(viewPos(vUv + ox) - viewPos(vUv - ox), viewPos(vUv + oy) - viewPos(vUv - oy)));
+        bool edge = texture2D(depthTex, uv + ox).x >= 1.0 || texture2D(depthTex, uv - ox).x >= 1.0
+          || texture2D(depthTex, uv + oy).x >= 1.0 || texture2D(depthTex, uv - oy).x >= 1.0;
+        vec3 n = edge ? normalize(-p) : normalize(cross(viewPos(uv + ox) - viewPos(uv - ox), viewPos(uv + oy) - viewPos(uv - oy)));
         if (dot(n, -p) < 0.0) n = -n;
         vec3 key = normalize(vec3(-0.35, 0.8, 0.45));
         float diffuse = max(dot(n, key), 0.0);
         float facing = max(dot(n, normalize(-p)), 0.0);
         float light = 0.42 + 0.38 * diffuse + 0.25 * facing;
         // Eye-dome lighting: darken where neighbours are nearer (edges, creases).
-        float here = logDepth(vUv), response = 0.0;
+        float here = logDepth(uv), response = 0.0;
         for (int i = 0; i < 8; i++) {
           float a = float(i) * 0.785398;
           vec2 o = vec2(cos(a), sin(a)) * texel * 1.5;
-          float there = texture2D(depthTex, vUv + o).x < 1.0 ? logDepth(vUv + o) : here - 1.0;
-          response += max(0.0, here - there);
+          // Gaps are not occluders: only nearer measured surface darkens an edge.
+          if (texture2D(depthTex, uv + o).x < 1.0) response += max(0.0, here - logDepth(uv + o));
         }
         float shade = exp(-(response / 8.0) * 300.0 * edl);
         gl_FragColor = vec4(toSrgb(clamp(base * light * shade, 0.0, 1.0)), 1.0);
