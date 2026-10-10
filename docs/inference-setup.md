@@ -19,9 +19,13 @@ the on-device smoke and camera checks before enabling the demo detector.
 - Both I/O tensors must be linear, device-resident FP32 or FP16. Only one input
   and one output are supported. Dynamic inputs must resolve to the same 640x640
   shape within optimization profile zero.
-- This runner is for YOLOv8/YOLO11 COCO detection. Segmentation, pose, custom class
-  counts, transposed outputs, YOLOv5 objectness, and end-to-end NMS outputs are
-  rejected explicitly.
+- Default contract is YOLOv8/YOLO11 COCO detection. An **explicit** pose contract
+  accepts `[1,56,8400]`: four box coordinates, one person probability, then
+  17 `(x,y,confidence)` keypoints. `TensorRTPoseDetector` selects that contract
+  and reuses the same pose letterbox/decoder as the ONNX backend. Pixel coordinates
+  are finite-checked, not mistaken for class probabilities. Segmentation, custom
+  class counts, transposed outputs, YOLOv5 objectness, and end-to-end NMS outputs
+  remain rejected explicitly.
 
 Startup performs two real warmup inferences, checks finite outputs and class
 probability bounds, and fails if execution or model validation fails. It does
@@ -102,6 +106,8 @@ from TensorRT 10's `--fp16` workflow.
 
 ```sh
 python -m jetson.tensorrt_detector models/yolo11n.engine --runs 50
+# For a separately built raw yolo11n-pose engine:
+python -m jetson.tensorrt_detector models/yolo11n-pose.engine --pose --runs 50
 ```
 
 This runs actual GPU inference on zero input and prints shape, dtype, median,

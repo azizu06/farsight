@@ -10,7 +10,7 @@ __all__ = ["Detection", "PoseDetector", "make_pose_detector"]
 
 
 def make_pose_detector(model: str, conf_thres: float = 0.35, iou_thres: float = 0.45) -> PoseDetector:
-    """.engine/.plan -> TensorRT (Jetson, not built yet); anything else -> ONNX on CPU."""
+    """.engine/.plan -> checked TensorRT pose; anything else -> ONNX on CPU."""
     if Path(model).suffix.lower() in (".engine", ".plan"):
         from .trt_backend import TensorRTPoseDetector
         return TensorRTPoseDetector(model, conf_thres, iou_thres)

@@ -1,7 +1,8 @@
 """TensorRT 10+ YOLOv8/11 COCO engine inference without PyTorch or PyCUDA.
 
 Input is a pre-letterboxed RGB NCHW float array [1,3,640,640] in [0,1].
-Output is raw YOLO detection data [1,84,8400], before NMS. Engine execution
+Default output is raw YOLO detection data [1,84,8400], before NMS. An explicit
+pose contract supports [1,56,8400] with one person score and 17 keypoints. Engine execution
 requires a real CUDA device; import alone works on development machines.
 """
 
@@ -19,6 +20,7 @@ import numpy as np
 
 INPUT_SHAPE = (1, 3, 640, 640)
 OUTPUT_SHAPE = (1, 84, 8400)
+POSE_OUTPUT_SHAPE = (1, 56, 8400)
 MAX_BUFFER_BYTES = 64 * 1024 * 1024
 MAX_ENGINE_BYTES = 512 * 1024 * 1024
 
@@ -136,7 +138,8 @@ class CudaRuntime:
 
 
 class TensorRTDetector:
-    def __init__(self, engine_path, *, device=0, warmup=2, cuda=None, trt_module=None):
+    def __init__(self, engine_path, *, device=0, warmup=2, cuda=None, trt_module=None,
+                 output_shape=OUTPUT_SHAPE, score_channels=80):
         self.lock = threading.RLock()
         self.device, self.cuda, self.stream = device, cuda, None
         self.device_buffers, self.host_buffers = [], []
@@ -144,6 +147,11 @@ class TensorRTDetector:
         self.closed = False
         if type(device) is not int or device < 0 or type(warmup) is not int or not 1 <= warmup <= 20:
             raise ValueError("Device must be nonnegative; warmup must be 1..20")
+        if (not isinstance(output_shape, tuple) or any(type(value) is not int for value in output_shape)
+                or type(score_channels) is not int
+                or (output_shape, score_channels) not in ((OUTPUT_SHAPE, 80), (POSE_OUTPUT_SHAPE, 1))):
+            raise ValueError("Output contract must be COCO detection (1,84,8400)/80 scores or pose (1,56,8400)/1 score")
+        self.output_shape, self.score_channels = output_shape, score_channels
         path = Path(engine_path)
         if not path.is_file() or not 0 < path.stat().st_size <= MAX_ENGINE_BYTES:
             raise TensorRTError("Engine missing, empty, or exceeds the 512 MiB size limit")
@@ -161,7 +169,7 @@ class TensorRTDetector:
             if self.engine is None:
                 raise TensorRTError("Engine deserialization failed; rebuild on this Jetson and TensorRT version")
             if self.engine.num_io_tensors != 2:
-                raise TensorRTError("YOLO engine must have exactly one input and one raw detection output")
+                raise TensorRTError("YOLO engine must have exactly one input and one raw output")
             names = [self.engine.get_tensor_name(index) for index in range(self.engine.num_io_tensors)]
             inputs = [name for name in names if self.engine.get_tensor_mode(name) == trt.TensorIOMode.INPUT]
             outputs = [name for name in names if self.engine.get_tensor_mode(name) == trt.TensorIOMode.OUTPUT]
@@ -194,17 +202,17 @@ class TensorRTDetector:
                 raise TensorRTError(f"Engine shapes could not be resolved: {missing}")
             if tuple(self.context.get_tensor_shape(self.input_name)) != INPUT_SHAPE:
                 raise TensorRTError("Engine input shape differs after shape inference")
-            if tuple(self.context.get_tensor_shape(self.output_name)) != OUTPUT_SHAPE:
-                raise TensorRTError(f"Expected raw COCO YOLO output {OUTPUT_SHAPE}; export without NMS/objectness")
+            if tuple(self.context.get_tensor_shape(self.output_name)) != self.output_shape:
+                raise TensorRTError(f"Expected raw YOLO output {self.output_shape}; export the selected model without NMS/objectness")
             for name, shape, dtype in ((self.input_name, INPUT_SHAPE, self.input_dtype),
-                                       (self.output_name, OUTPUT_SHAPE, self.output_dtype)):
+                                       (self.output_name, self.output_shape, self.output_dtype)):
                 pointer = self.cuda.malloc(allocation_size(shape, dtype))
                 self.device_buffers.append(pointer)
                 if not self.context.set_tensor_address(name, pointer):
                     raise TensorRTError(f"TensorRT rejected tensor address: {name}")
             self.host_input, pointer = self.cuda.host_array(INPUT_SHAPE, self.input_dtype)
             self.host_buffers.append(pointer)
-            self.host_output, pointer = self.cuda.host_array(OUTPUT_SHAPE, self.output_dtype)
+            self.host_output, pointer = self.cuda.host_array(self.output_shape, self.output_dtype)
             self.host_buffers.append(pointer)
             for _ in range(warmup):
                 self.predict(np.zeros(INPUT_SHAPE, dtype=np.float32))
@@ -239,7 +247,9 @@ class TensorRTDetector:
                 output = self.host_output.astype(np.float32, copy=True)
                 if not np.isfinite(output).all():
                     raise TensorRTError("TensorRT returned non-finite predictions")
-                scores = output[:, 4:, :]
+                # Pose channels after the person score contain x/y pixel
+                # coordinates. They are not COCO class probabilities.
+                scores = output[:, 4:4 + self.score_channels, :]
                 if scores.min() < -0.001 or scores.max() > 1.001:
                     raise TensorRTError("YOLO output class scores must be probabilities in [0,1]")
                 return output
@@ -296,11 +306,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("engine", type=Path)
     parser.add_argument("--runs", type=int, default=20)
+    parser.add_argument("--pose", action="store_true", help="Require raw 17-keypoint pose output [1,56,8400]")
     args = parser.parse_args()
     if not 1 <= args.runs <= 1000:
         parser.error("Runs must be 1..1000")
     try:
-        with TensorRTDetector(args.engine) as detector:
+        with TensorRTDetector(args.engine,
+                output_shape=POSE_OUTPUT_SHAPE if args.pose else OUTPUT_SHAPE,
+                score_channels=1 if args.pose else 80) as detector:
             blob = np.zeros(INPUT_SHAPE, dtype=np.float32)
             durations = []
             for _ in range(args.runs):

@@ -9,6 +9,7 @@ from jetson.perception import PerceptionService
 from jetson.pose import Detection, make_pose_detector
 from jetson.pose.boxes import detection_to_box
 from jetson.pose.trt_backend import TensorRTPoseDetector
+from jetson.tensorrt_detector import TensorRTError
 
 MODEL = Path(os.environ.get("FARSIGHT_POSE_MODEL", Path(__file__).parents[2] / "models" / "yolo11n-pose.onnx"))
 
@@ -65,11 +66,11 @@ class PosePerceptionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "pose"):
             service._setup()
 
-    def test_tensorrt_pose_stub_fails_clearly(self):
-        with self.assertRaisesRegex(NotImplementedError, "TensorRT"):
+    def test_tensorrt_pose_requires_an_actual_engine(self):
+        with self.assertRaisesRegex(TensorRTError, "Engine missing"):
             TensorRTPoseDetector("models/yolo11n-pose.engine")
         service = PerceptionService(None, model="models/yolo11n-pose.engine", mode="pose")
-        with self.assertRaisesRegex(NotImplementedError, "TensorRT"):
+        with self.assertRaisesRegex(TensorRTError, "Engine missing"):
             service._setup()
 
     def test_make_pose_detector_rejects_missing_model(self):

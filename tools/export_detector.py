@@ -24,8 +24,8 @@ def main():
     if not weights.exists() and weights.parent == Path("."):
         weights = output / weights.name
     model = YOLO(str(weights))
-    if model.task != "detect":
-        parser.error("Use a detection model, not pose/segmentation/classification weights")
+    if model.task not in ("detect", "pose"):
+        parser.error("Use detection or pose weights, not segmentation/classification weights")
     exported = Path(model.export(format="onnx", imgsz=640, opset=12, simplify=False,
                                  dynamic=False, nms=False, device="cpu"))
     target = output / exported.name
@@ -36,7 +36,9 @@ def main():
     target.with_suffix(".labels.json").write_text(json.dumps(labels, indent=2) + "\n")
     manifest = dict(model=target.name, sha256=hashlib.sha256(target.read_bytes()).hexdigest(),
                     bytes=target.stat().st_size, input_shape=[1, 3, 640, 640],
-                    output_contract="YOLO detection xywh plus COCO class scores; external NMS",
+                    task=model.task,
+                    output_contract=("YOLO person xywh + score + 17 xyz confidence keypoints; external NMS"
+                                     if model.task == "pose" else "YOLO detection xywh plus COCO class scores; external NMS"),
                     classes=len(labels), opset=12, dynamic=False, nms=False,
                     exporter=f"ultralytics {ultralytics.__version__}",
                     source="https://github.com/ultralytics/assets", license="AGPL-3.0 or applicable Ultralytics license")

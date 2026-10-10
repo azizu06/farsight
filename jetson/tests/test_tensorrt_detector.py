@@ -10,7 +10,7 @@ from unittest import mock
 import numpy as np
 
 from jetson.tensorrt_detector import (CudaRuntime, TensorRTDetector, TensorRTError,
-                                      INPUT_SHAPE, OUTPUT_SHAPE, MAX_BUFFER_BYTES, allocation_size)
+                                      INPUT_SHAPE, OUTPUT_SHAPE, POSE_OUTPUT_SHAPE, MAX_BUFFER_BYTES, allocation_size)
 
 
 class FakeCuda:
@@ -87,9 +87,13 @@ class FakeContext:
     def execute_async_v3(self, stream_handle):
         self.engine.cuda.events.append(("execute", stream_handle))
         if self.execution_ok:
-            prediction = np.zeros(OUTPUT_SHAPE, dtype=self.engine.dtype)
+            prediction = np.zeros(self.engine.output_shape, dtype=self.engine.dtype)
             prediction[:, :4, :] = 100
             prediction[:, 4, :] = self.engine.score
+            if self.engine.output_shape == POSE_OUTPUT_SHAPE:
+                prediction[:, 5::3, :] = 250  # keypoint x/y coordinates, not class scores
+                prediction[:, 6::3, :] = 300
+                prediction[:, 7::3, :] = .8
             if self.engine.nonfinite:
                 prediction[0, 0, 0] = np.nan
             self.engine.cuda.buffers[self.addresses["output0"]][:] = prediction.tobytes()
@@ -263,6 +267,34 @@ class DetectorTests(unittest.TestCase):
                     detector.predict(array)
             self.assertEqual(len(self.cuda.events), baseline)
             self.assertFalse(detector.closed)
+
+    def test_pose_is_explicit_and_keypoint_coordinates_are_not_class_probabilities(self):
+        self.engine.output_shape = POSE_OUTPUT_SHAPE
+        with self.assertRaisesRegex(TensorRTError, "84"):
+            self.create()  # default contract remains strict COCO detection
+        for dtype in (np.float32, np.float16):
+            with self.subTest(dtype=dtype):
+                self.engine.dtype = dtype
+                with TensorRTDetector(self.path, cuda=self.cuda, trt_module=self.trt, warmup=1,
+                                      output_shape=POSE_OUTPUT_SHAPE, score_channels=1) as detector:
+                    result = detector.predict(np.zeros(INPUT_SHAPE, dtype=np.float32))
+                    self.assertEqual(result.shape, POSE_OUTPUT_SHAPE)
+                    self.assertEqual(detector.host_output.dtype, dtype)
+                    self.assertEqual(result[0, 5, 0], 250)
+        self.assertEqual(self.cuda.buffers, {})
+        self.assertEqual(self.cuda.host, {})
+
+    def test_pose_person_score_is_still_checked_and_contract_mismatch_rejected(self):
+        self.engine.output_shape = POSE_OUTPUT_SHAPE
+        self.engine.score = 2
+        with self.assertRaisesRegex(TensorRTError, "probabilities"):
+            TensorRTDetector(self.path, cuda=self.cuda, trt_module=self.trt, warmup=1,
+                             output_shape=POSE_OUTPUT_SHAPE, score_channels=1)
+        self.assertEqual(self.cuda.buffers, {})
+        for shape, channels in ((POSE_OUTPUT_SHAPE, 80), (OUTPUT_SHAPE, 1),
+                                ((1, 57, 8400), 1), (POSE_OUTPUT_SHAPE, True)):
+            with self.subTest(shape=shape, channels=channels), self.assertRaises(ValueError):
+                TensorRTDetector(self.path, output_shape=shape, score_channels=channels)
 
     def test_enqueue_and_copy_failure_close_device_resources(self):
         for failure in ("execute", "copy"):
