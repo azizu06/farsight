@@ -683,10 +683,6 @@ fn service_capture_binding_replaced_and_frame_counter_reset() {
         capture_binding: Some(Arc::new(
             farsight_server::capture_permits::CapturePermits::new("s", 0, false),
         )),
-        tracking: None,
-        mirrored: false,
-        socket_received: None,
-        published: None,
     }));
     assert_eq!(s.snapshot()["faces"], json!([]));
 }
