@@ -114,7 +114,7 @@ class FixtureRunTests(unittest.TestCase):
                 report = json.loads((Path(d) / "rehearsal" / "report.json").read_text())
                 self.assertEqual(report["summary"]["verdict"], "NO-GO")
                 states = {c["id"]: c["state"] for c in report["checks"]}
-                for cid in ("seek_arrival", "range_stop_25cm", "tailscale_direct", "wifi_off_run"):
+                for cid in ("seek_arrival", "range_stop_25cm", "tailscale_direct", "quest_mic_playback", "wifi_off_run"):
                     self.assertEqual(states[cid], "unknown")
                 self.assertEqual(states["real_rig"], "fail")
         finally:

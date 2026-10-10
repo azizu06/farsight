@@ -82,7 +82,8 @@ Rover wheels raised until motor direction is confirmed. Start `record` first, th
 10. **Seek arrival**: Seek/Explore drives to the target and stops at the standoff. `mark seek_arrival`.
 11. **Range stop**: drive at an obstacle; stops at 25 cm by tape measure. `mark range_stop_25cm`.
 12. **Tailscale direct**: `tailscale status`/`tailscale ping` shows a direct path, not DERP. `mark tailscale_direct`.
-13. **Wi-Fi off run**: venue Wi-Fi off (cellular/tether only), video, control and stop still work. `mark wifi_off_run`.
+13. **Quest mic and playback**: push-to-talk reaches the assistant; reply or phrase is audible. `mark quest_mic_playback`.
+14. **Wi-Fi off run**: venue Wi-Fi off (cellular/tether only), video, control and stop still work. `mark wifi_off_run`.
 
 Measured software checks come from the logger; the marked rows are human
 observations and say who marked them and when. Physical gates in #11, #12 and

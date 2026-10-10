@@ -266,11 +266,8 @@ class CommandTests(unittest.TestCase):
             self.assertIn(title, text)
         self.assertIn("Not fully qualified", text)
 
-    def test_voice_is_out_of_the_rehearsal_marks(self):
-        self.assertNotIn("quest_mic_playback", {cid for cid, _ in rh.PHYSICAL})
-
     def test_rig_day_marks_are_physical_and_unknown_until_marked(self):
-        new = {"seek_arrival", "range_stop_25cm", "tailscale_direct", "wifi_off_run"}
+        new = {"seek_arrival", "range_stop_25cm", "tailscale_direct", "quest_mic_playback", "wifi_off_run"}
         self.assertLessEqual(new, {cid for cid, _ in rh.PHYSICAL})
         checks, _ = rh.evaluate(make_samples(), {}, {}, now=1e9)
         by_id = {c["id"]: c for c in checks}
