@@ -1,12 +1,14 @@
 import * as THREE from "three";
 import { FrameStats, budgetTone, diagnosticsLines } from "./diagnostics.js";
+import { pageStorage, readSaved, resolveSettings, saveSettings } from "./viewer-settings.js";
 
 type RoverReadout = Parameters<typeof diagnosticsLines>[1];
 const TONES = { ok: "#a6edc4", warn: "#ffe08a", bad: "#ffb3a8" };
 
 /**
  * Off-by-default diagnostics: a desktop corner readout and a head-locked headset
- * panel. Toggle with the settings checkbox, the I key, or `?diag=1`. While off it
+ * panel. Toggle with the settings checkbox, the I key, or `?diag=1`; the choice is
+ * saved for the next load (see viewer-settings.js). While off it
  * only records frame times; nothing is drawn or uploaded.
  */
 export class DiagnosticsOverlay {
@@ -32,18 +34,19 @@ export class DiagnosticsOverlay {
     option.innerHTML = '<input type="checkbox"/> Diagnostics overlay (I)';
     document.querySelector("#settings")!.append(option);
     this.toggle = option.querySelector("input")!;
-    this.toggle.onchange = () => this.setEnabled(this.toggle.checked);
+    this.toggle.onchange = () => this.setEnabled(this.toggle.checked, true);
     window.addEventListener("keydown", this.key);
-    if (new URLSearchParams(location.search).get("diag") === "1") this.setEnabled(true);
+    if (resolveSettings(location.search, readSaved(pageStorage())).values.diag) this.setEnabled(true);
   }
 
   private key = (event: KeyboardEvent) => {
     if (event.code !== "KeyI" || event.repeat || event.metaKey || event.ctrlKey || event.altKey ||
         /INPUT|TEXTAREA|SELECT/.test((event.target as HTMLElement)?.tagName ?? "")) return;
-    this.setEnabled(!this.enabled);
+    this.setEnabled(!this.enabled, true);
   };
 
-  setEnabled(enabled: boolean) {
+  setEnabled(enabled: boolean, save = false) {
+    if (save) saveSettings(pageStorage(), { diag: enabled });
     this.enabled = enabled; this.toggle.checked = enabled;
     this.element.hidden = !enabled; this.panel.visible = false; this.drawnAt = -Infinity;
   }

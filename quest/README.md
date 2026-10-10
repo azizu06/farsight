@@ -62,9 +62,14 @@ Do not confuse an old server already on that port with a freshly launched demo.
   can replace Space. STOP, Escape, opening settings, losing focus, or a connection
   failure stop driving.
 - In settings, select the camera mounting. Servo mode shows the full frame and
-  sends head yaw as physical pan. Fixed-camera mode keeps physical pan at zero
+  sends head yaw as physical pan; the server and Uno block forward driving while
+  pan is more than 10° off center. Fixed-camera mode keeps physical pan at zero
   and moves a 70% crop inside the measured image. It cannot see beyond that image.
-  The HUD explicitly labels digital pan. A mode change requires a new deadman press.
+  The HUD names the mount and video format. A mode change requires a new deadman press.
+- Mount, H.264, in-VR voice and diagnostics are saved in `localStorage` and can be
+  deep-linked: `?mount=fixed|servo&h264=0|1&voice=0|1&diag=0|1`. A query value
+  beats the saved choice and is saved; a saved choice beats the default. With no
+  mount chosen, `/health.camera_pan: false` selects fixed (`src/viewer-settings.js`).
 
 ## Freshness and bandwidth
 
@@ -119,7 +124,7 @@ headset banner on a later frame (at most 100 ms after the HUD). HUD and banner
 canvases skip repaint and upload when their text is unchanged. Freshness and
 liveness timing are unchanged. The diagnostics overlay (`src/diagnostics.js`,
 `src/diagnostics-overlay.ts`) is off by default: Settings, the I key or
-`?diag=1`. It is display only and never feeds the control gate.
+`?diag=1` (saved like the other viewer settings). It is display only and never feeds the control gate.
 
 ## First headset rehearsal
 
