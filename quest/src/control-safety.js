@@ -1,4 +1,9 @@
 /** Safety decisions use local monotonic time. The rover independently expires its permits. */
+function inputFresh(now, sampledAt) {
+  return sampledAt === undefined || (Number.isFinite(sampledAt) && sampledAt >= 0 &&
+    now >= sampledAt && now - sampledAt < 150);
+}
+
 export class ControlSafety {
   constructor() {
     this.needsRelease = true;
@@ -41,22 +46,26 @@ export class ControlSafety {
     return true;
   }
   videoAge(now) { return this.frameAge + Math.max(0, now - this.frameAt); }
-  readiness(now, connected = true) {
+  /** @param {number} [sampledAt] Most recent verified XR input sample. */
+  readiness(now, connected = true, sampledAt = undefined) {
     if (!connected) return "Control disconnected";
+    if (!inputFresh(now, sampledAt)) return "XR input stale: release trigger";
     if (now - this.receivedAt >= 300) return "Control status stale";
     if (!this.status?.rover) return "Rover unavailable";
     if (this.videoAge(now) >= 500) return "Camera stale: motion stopped";
     if (now - this.receivedAt >= Math.min(this.status.permit_ms, 200)) return "Waiting for fresh control permit";
     return null;
   }
-  decide(held, now, connected = true, inputAvailable = true) {
+  /** @param {number} [sampledAt] Most recent verified XR input sample. */
+  decide(held, now, connected = true, inputAvailable = true, sampledAt = undefined) {
     if (!inputAvailable) {
       this.invalidate("Input or display inactive: release deadman");
       return false;
     }
-    const unsafe = this.readiness(now, connected);
+    const unsafe = this.readiness(now, connected, sampledAt);
     if (unsafe) this.invalidate(unsafe);
-    if (!held) this.needsRelease = false;
+    // Missing tracking cannot prove a physical trigger release.
+    if (!held && inputFresh(now, sampledAt)) this.needsRelease = false;
     const moving = held && !unsafe && !this.needsRelease;
     if (!unsafe) this.reason = this.needsRelease ? "Release deadman to continue" : moving ? "Driving" : "Ready: hold deadman to drive";
     return moving;
