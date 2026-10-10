@@ -70,6 +70,10 @@ forward translation and the Uno never gets `P`. Motion defaults
 to maximum PWM 100 for a small demo area. This does not replace hardware tests
 or a person ready to power off the rover.
 
+An optional `autonomy_max_pwm` (server `--autonomy-max-pwm`, `FARSIGHT_AUTONOMY_MAX_PWM`)
+caps explore, seek, go-to, Nav2 and scan motion below `max_pwm`, so a fast teleop
+ceiling does not also speed up autonomy; it defaults to `max_pwm`.
+
 An optional `min_pwm` motor floor defaults to zero. After mixing and normalizing
 the left/right wheel commands, each nonzero wheel maps to
 `sign * (min_pwm + (max_pwm - min_pwm) * abs(value))`; an exact zero stays zero.
