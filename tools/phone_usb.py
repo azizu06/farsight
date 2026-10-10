@@ -41,7 +41,7 @@ def tool_output(argv):
     return result.stdout + (result.stderr if "--help" in argv else "")
 
 
-def require_modern_iproxy(help_text):
+def require_modern_iproxy(help_text, dual_route=False):
     lines = help_text.splitlines()
     if ("LOCAL_PORT:DEVICE_PORT" not in help_text
             or not any("--local" in line and "USB" in line for line in lines)
@@ -49,6 +49,8 @@ def require_modern_iproxy(help_text):
             or not any("--udid" in line for line in lines)):
         raise BridgeError("Unsupported legacy iproxy: install a modern libusbmuxd with USB-only --local, "
                           "loopback --source, --udid, and LOCAL_PORT:DEVICE_PORT support; no network fallback is allowed")
+    if dual_route and "LOCAL_PORT2:DEVICE_PORT2" not in help_text:
+        raise BridgeError("iproxy does not document multiple port pairs; install a modern multiport libusbmuxd before --dual-route")
 
 
 def select_usb_device(text, requested=None):
@@ -100,11 +102,14 @@ def health_summary(packet):
 
 class PhoneUSB:
     PHONE_PORT = 8081
+    SECONDARY_PHONE_PORT = 8082
 
-    def __init__(self, local_port=18443, device=None, timeout=5, iproxy=None, idevice_id=None):
+    def __init__(self, local_port=18443, device=None, timeout=5, iproxy=None, idevice_id=None,
+                 secondary_local_port=None):
         if type(timeout) not in (int, float) or not math.isfinite(timeout) or not .1 <= timeout <= 30:
             raise BridgeError("Timeout must be finite seconds in 0.1..30")
         self.local_port, self.device, self.timeout = local_port, device, float(timeout)
+        self.secondary_local_port = secondary_local_port
         self.iproxy, self.idevice_id = iproxy, idevice_id
         self.process = None
 
@@ -115,34 +120,45 @@ class PhoneUSB:
         # --local cannot accidentally refer to USB devices on another host.
         if "USBMUXD_SOCKET_ADDRESS" in os.environ:
             raise BridgeError("Unset USBMUXD_SOCKET_ADDRESS to require this Mac's local USB daemon")
-        preflight_port(self.local_port)
+        if self.secondary_local_port is not None and self.secondary_local_port == self.local_port:
+            raise BridgeError("Primary and secondary loopback ports must be distinct")
+        mappings = [(self.local_port, self.PHONE_PORT)]
+        if self.secondary_local_port is not None:
+            mappings.append((self.secondary_local_port, self.SECONDARY_PHONE_PORT))
+        for local, _ in mappings:
+            preflight_port(local)
         iproxy = self.iproxy or shutil.which("iproxy")
         listing = self.idevice_id or shutil.which("idevice_id")
         if not iproxy or not listing:
             raise BridgeError("Install modern libusbmuxd (iproxy) and libimobiledevice (idevice_id) before running this helper; no automatic installs")
-        require_modern_iproxy(tool_output([iproxy, "--help"]))
+        require_modern_iproxy(tool_output([iproxy, "--help"]), self.secondary_local_port is not None)
         listing_help = tool_output([listing, "--help"])
         if not any("--list" in line and "USB" in line for line in listing_help.splitlines()):
             raise BridgeError("idevice_id must document USB-only --list; unsupported enumeration is refused")
         selected = select_usb_device(tool_output([listing, "--list"]), self.device)
-        argv = [iproxy, "--local", "--source", "127.0.0.1", "--udid", selected,
-                f"{self.local_port}:{self.PHONE_PORT}"]
+        argv = [iproxy, "--local", "--source", "127.0.0.1", "--udid", selected]
+        argv.extend(f"{local}:{phone}" for local, phone in mappings)
         try:
             # iproxy prints device identifiers for individual connections even
             # without debug mode. Suppress its output rather than forwarding it.
             self.process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                             stderr=subprocess.DEVNULL, start_new_session=True)
             deadline = time.monotonic() + self.timeout
+            pending = {local for local, _ in mappings}
             while time.monotonic() < deadline:
                 self.ensure_running()
-                try:
-                    with socket.create_connection(("127.0.0.1", self.local_port), timeout=.1):
+                for local in tuple(pending):
+                    try:
+                        with socket.create_connection(("127.0.0.1", local), timeout=.1):
+                            pass
+                        pending.remove(local)
+                    except OSError:
                         pass
+                if not pending:
                     self.ensure_running()
                     return self
-                except OSError:
-                    time.sleep(.025)
-            raise BridgeError("iproxy did not open its loopback listener before the timeout")
+                time.sleep(.025)
+            raise BridgeError("iproxy did not open all configured loopback listeners before the timeout")
         except BaseException:
             self.close()
             raise
@@ -151,14 +167,17 @@ class PhoneUSB:
         if self.process is None or self.process.poll() is not None:
             raise BridgeError("iproxy exited; check the cable, modern tool support, and operator bridge app (raw device output suppressed)")
 
-    def check_health(self):
+    def check_health(self, local_port=None):
+        local_port = self.local_port if local_port is None else local_port
+        if type(local_port) is not int or local_port not in (self.local_port, self.secondary_local_port):
+            raise BridgeError("Health probe port must match a configured loopback mapping")
         self.ensure_running()
         deadline = time.monotonic() + self.timeout
         sock = None
         response = None
         timer = None
         try:
-            sock = socket.create_connection(("127.0.0.1", self.local_port), timeout=self.timeout)
+            sock = socket.create_connection(("127.0.0.1", local_port), timeout=self.timeout)
             def expire():
                 # Bound the complete probe, including trickled HTTP headers.
                 # Retain the original socket through response parsing so a
@@ -170,7 +189,7 @@ class PhoneUSB:
             timer = threading.Timer(max(0, deadline - time.monotonic()), expire)
             timer.daemon = True
             timer.start()
-            sock.sendall(f"GET /health HTTP/1.1\r\nHost: 127.0.0.1:{self.local_port}\r\nConnection: close\r\n\r\n".encode("ascii"))
+            sock.sendall(f"GET /health HTTP/1.1\r\nHost: 127.0.0.1:{local_port}\r\nConnection: close\r\n\r\n".encode("ascii"))
             response = http.client.HTTPResponse(sock)
             response.begin()
             # Reject redirects instead of following an arbitrary remote URL.
@@ -218,9 +237,14 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", help="Explicit operator phone USB identifier; never printed")
     parser.add_argument("--local-port", type=int, default=18443)
+    parser.add_argument("--dual-route", action="store_true", help="Opt in to a second USB mapping to operator phone port8082")
+    parser.add_argument("--secondary-local-port", type=int, help="Secondary loopback port with --dual-route (default18444)")
     parser.add_argument("--timeout", type=float, default=5, help="Bound startup and optional health probe separately, max30s")
     parser.add_argument("--check", action="store_true", help="Probe only local forwarded /health then stop iproxy; sends no controls")
     args = parser.parse_args(argv)
+    if args.secondary_local_port is not None and not args.dual_route:
+        parser.error("--secondary-local-port requires --dual-route")
+    secondary = (args.secondary_local_port if args.secondary_local_port is not None else 18444) if args.dual_route else None
     proxy = None
     previous = None
     def interrupted(signum, frame): raise KeyboardInterrupt
@@ -228,19 +252,34 @@ def main(argv=None):
         if platform.system() != "Darwin":
             raise BridgeError("This operator helper supports macOS only")
         previous = signal.signal(signal.SIGTERM, interrupted)
-        proxy = PhoneUSB(args.local_port, args.device, args.timeout).start()
-        health = proxy.check_health() if args.check else None
+        proxy = PhoneUSB(args.local_port, args.device, args.timeout, secondary_local_port=secondary).start()
+        routes = [dict(local_port=args.local_port, phone_port=proxy.PHONE_PORT, health=None)]
+        if secondary is not None:
+            routes.append(dict(local_port=secondary, phone_port=proxy.SECONDARY_PHONE_PORT, health=None))
+        if args.check:
+            for route in routes:
+                try:
+                    route["health"] = proxy.check_health(route["local_port"])
+                except BridgeError as error:
+                    route["error"] = str(error)
+        health = routes[0]["health"]
+        checked = args.check and all(route["health"] is not None for route in routes)
+        next_step = f"python -m tools.demo --upstream http://127.0.0.1:{args.local_port}"
+        if secondary is not None:
+            next_step += f" --bonded-upstream http://127.0.0.1:{secondary}"
+        next_step += " --quest"
         report = dict(usb_only_requested=True, loopback="127.0.0.1", local_port=args.local_port,
                       phone_port=proxy.PHONE_PORT, device_selection="explicit" if args.device else "sole_usb_device",
-                      health=health, health_forwarding_observed=health is not None,
+                      health=health, health_forwarding_observed=checked, dual_route=args.dual_route,
+                      secondary_local_port=secondary, routes=routes,
                       native_bridge_hops_independently_verified=False, check_stops_proxy=args.check,
                       instruction=("Restart without --check using the same device selection and keep this helper running before the next step"
                                    if args.check else "Keep this helper running while the operator relay is used"),
                       limitations="Does not qualify cellular/carrier path, iOS listener accessibility beyond this probe, throughput, headset latency, or physical driving",
-                      next_step=f"python -m tools.demo --upstream http://127.0.0.1:{args.local_port} --quest")
+                      next_step=next_step)
         print(json.dumps(report, indent=2), flush=True)
         if args.check:
-            return 0
+            return 0 if checked else 1
         while True:
             proxy.ensure_running()
             time.sleep(.2)
