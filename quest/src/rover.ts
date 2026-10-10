@@ -85,6 +85,7 @@ export class RoverExperience {
   private cancelDown = false;
   private navStatus: HTMLElement;
   private lastSendAt = 0;
+  private lastDeadman = false;
   private input = { held: false, v: 0, w: 0, pan: 0 };
   private keys = new Set<string>();
   private pointerHeld = false;
@@ -347,6 +348,7 @@ export class RoverExperience {
     socket.onmessage = event => {
       try {
         const next = JSON.parse(event.data) as ControlStatus;
+        const newPermit = next.permit !== this.status?.permit;
         if (this.gate.acceptStatus(next, performance.now())) {
           this.status = next;
           this.nav = parseNav(next.nav);
@@ -354,6 +356,9 @@ export class RoverExperience {
           if (this.scanning && next.requires_release && (next.reason === "scan_finished" || next.reason === "release_required")) this.scanCompleting = true;
           if (typeof next.seq === "number" && this.sent.has(next.seq)) this.ackMs = performance.now() - this.sent.get(next.seq)!;
           if (next.requires_release) this.gate.invalidate(next.reason ?? "Release deadman to continue");
+          // Spend a new permit at once while driving: waiting for the next 50 ms
+          // tick costs up to a fifth of its 250 ms lease (docs/link-lab.md).
+          if (newPermit && this.lastDeadman) this.pump();
         }
       } catch { this.stop("Invalid control status"); socket.close(); }
     };
@@ -689,6 +694,7 @@ export class RoverExperience {
       video_age_ms: Number.isFinite(age) ? Math.ceil(age) : 999999,
     }));
     this.lastSendAt = performance.now();
+    this.lastDeadman = deadman;
   }
   private async startScan() {
     if (this.scanPending || this.scanning) return;

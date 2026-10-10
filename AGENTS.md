@@ -44,7 +44,7 @@ must follow the final implementation, not an earlier plan.
 | Area | Start here |
 |---|---|
 | Python rover | `python -m jetson.server`; implementation in `jetson/mapping/server.py` |
-| Operator and Quest USB | `tools/demo.py`, `tools/operator_relay.py`, `docs/transport-setup.md` |
+| Operator and Quest USB | `tools/demo.py`, `tools/operator_relay.py`, `docs/transport-setup.md`; cellular emulation and stutter threshold: `docs/link-lab.md` |
 | Quest | `quest/src/main.ts`, `quest/src/rover.ts`, `quest/README.md`; headset bring-up and frame budget in `docs/quest-first-run.md` |
 | iPhone capture | `ios/README.md`; RGB on ordinary phones, measured RGB-D only with scene-depth support |
 | Motor firmware and control | `rover/README.md`, `jetson/control/README.md`; drive calibration (PWM to m/s, rad/s): `docs/drive-calibration.md` |
