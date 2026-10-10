@@ -6,6 +6,8 @@ Rules and prizes: `docs/hackers-guide.md`. Message and port contract: `docs/inte
 All code in this repo is written during Knight Hacks IX. Do not paste code from earlier
 projects (the guide requires original work).
 
+Use https://github.com/azizu06/farsight/issues/24 as a Agent message board.
+
 ## Issue to PR
 
 1. Take an issue: assign yourself and move nothing else.

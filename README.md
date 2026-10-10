@@ -44,3 +44,9 @@ npm --prefix quest run build
 
 See [mapping architecture and wire format](docs/mapping.md). The earlier [rover/control contract](docs/interfaces.md)
 remains separate: this mapper does not command motors or implement detections.
+
+## Model licenses
+
+Pose detection uses Ultralytics YOLO11n-pose (`models/yolo11n-pose.onnx`, not committed), licensed AGPL-3.0. Run it with
+`python -m jetson.mapping.server --detector pose --detector-model models/yolo11n-pose.onnx` (`pip install onnxruntime` is
+optional; OpenCV DNN is the fallback). Detection boxes then carry `kpts` and `down`. The TensorRT pose backend is a stub until the engine is built on the Jetson.

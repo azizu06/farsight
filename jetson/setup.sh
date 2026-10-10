@@ -55,4 +55,5 @@ v4l2-ctl --list-devices || true
 ls /dev/ttyACM* /dev/ttyUSB* 2>/dev/null || echo "Uno not found (unplug the ESP camera module, check the USB cable)"
 
 echo
+echo "Next: bash $REPO/jetson/install_service.sh  (start the server on every boot)"
 echo "Done. Log out and back in once for serial access. Power: use the 15 W mode on the 30 W bank."

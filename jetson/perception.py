@@ -1,4 +1,4 @@
-"""Local person detection with a bundled CPU fallback and optional YOLO ONNX."""
+"""Local person detection: bundled CPU fallback, optional YOLO ONNX/TensorRT, or YOLO11-pose (adds kpts/down)."""
 
 import asyncio
 from contextlib import suppress
@@ -74,6 +74,7 @@ class PerceptionService:
         self.net = None
         self.engine = None
         self.hog = None
+        self.pose = None
         self.error = None
         self.packet = dict(ts=0, frame=-1, fps=0, boxes=[], detector="disabled", source="WAITING")
         self.tracks = {}
@@ -82,6 +83,13 @@ class PerceptionService:
         self.labels = None
 
     def _setup(self):
+        if self.mode == "pose":
+            if not self.model:
+                raise ValueError("pose mode needs --detector-model (YOLO11-pose .onnx, or .engine on the Jetson)")
+            from .pose import make_pose_detector
+            self.pose = make_pose_detector(self.model)
+            self.fps = max(self.fps, 10)  # CPU pose is ~25 ms/frame; the 3 fps HOG default would waste it
+            return
         if self.model:
             label_path = Path(self.model).with_suffix(".labels.json")
             if label_path.exists():
@@ -105,6 +113,10 @@ class PerceptionService:
         image = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
         if image is None:
             raise ValueError("Invalid detector camera image")
+        if self.pose is not None:
+            from .pose.boxes import detection_to_box
+            h, w = image.shape[:2]
+            return [detection_to_box(d, w, h) for d in self.pose.detect(image)]
         if self.net is not None or self.engine is not None:
             h, w = image.shape[:2]
             scale = min(640 / w, 640 / h)

@@ -14,13 +14,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+onnx = ["onnxruntime>=1.17"]
 dev = ["pytest>=8", "httpx>=0.27"]
 
-[project.scripts]
-farsight = "farsight.app:main"
-
-[tool.setuptools.packages.find]
-include = ["farsight*"]
+[tool.setuptools]
+packages = []  # dependency-only project: run from the repo root with `python -m jetson.mapping.server`
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
