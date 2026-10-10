@@ -19,7 +19,7 @@ DIST = Path(__file__).resolve().parents[1] / "quest" / "dist"
 HOP_HEADERS = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
                "te", "trailer", "transfer-encoding", "upgrade", "host", "content-length"}
 PROXY_PREFIXES = ("/ws/", "/map/", "/tts/", "/video/", "/mission/", "/phone/")
-PROXY_PATHS = {"/health", "/control/status", "/camera.jpg", "/depth.jpg", "/stream.mjpg", "/ask", "/phone"}
+PROXY_PATHS = {"/health", "/control/status", "/camera.jpg", "/depth.jpg", "/stream.mjpg", "/ask", "/phone", "/scan"}
 
 
 def upstream_origin(value):

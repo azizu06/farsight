@@ -56,6 +56,11 @@ export class RoverExperience {
   private toggleDown = false;
   private recenterDown = false;
   private xrLive = true;
+  private scanPending = false;
+  private scanning = false;
+  private scanDown = false;
+  private scanMessage = "Hold trigger + X to scan; keep sticks centered";
+  private scanPollAt = 0;
   private canvas = document.createElement("canvas");
   private ctx: CanvasRenderingContext2D;
   private hudCanvas = document.createElement("canvas");
@@ -92,7 +97,7 @@ export class RoverExperience {
     const panel = document.createElement("section");
     panel.className = "rover-controls";
     panel.setAttribute("aria-label", "Rover driving controls");
-    panel.innerHTML = `<div class="rover-tabs"><button id="live-rover">Live rover</button><button id="rover-map">3D map</button><button id="rover-stop">STOP</button></div>
+    panel.innerHTML = `<div class="rover-tabs"><button id="live-rover">Live rover</button><button id="rover-map">3D map</button><button id="rover-scan">Scan</button><button id="rover-stop">STOP</button></div>
       <p id="rover-message" role="status">Waiting for live camera and rover</p>
       <p id="rover-details">Motion disabled until camera and control are fresh.</p>
       <button id="rover-hold" class="hold-button">Hold to enable · WASD to drive</button>
@@ -106,6 +111,7 @@ export class RoverExperience {
     panel.querySelector<HTMLButtonElement>("#rover-map")!.onclick = () => { this.stop("Map view: release deadman"); this.setView("3d"); };
     panel.querySelector<HTMLButtonElement>("#rover-stop")!.onclick = () => this.stop("Stopped: release deadman");
     panel.querySelector<HTMLButtonElement>("#rover-explore")!.onclick = () => this.toggleExplore();
+    panel.querySelector<HTMLButtonElement>("#rover-scan")!.onclick = () => void this.startScan();
     this.holdButton.onpointerdown = event => {
       this.holdButton.setPointerCapture(event.pointerId);
       this.pointerHeld = true;
@@ -197,6 +203,7 @@ export class RoverExperience {
 
   stop(reason: string) {
     this.autonomy.clear();
+    this.scanning = false;
     this.input = this.gate.stop(this.input, reason);
     this.send(false);
   }
@@ -293,6 +300,7 @@ export class RoverExperience {
       const gamepad = (left ?? right)?.gamepad;
       const axes = gamepad?.axes ?? [];
       const held = !!right?.gamepad?.buttons[0]?.pressed;
+      const scan = !!left?.gamepad?.buttons[4]?.pressed;
       const toggle = !!right?.gamepad?.buttons[4]?.pressed;
       const explore = !!right?.gamepad?.buttons[5]?.pressed;
       const center = !!left?.gamepad?.buttons[4]?.pressed;
@@ -323,6 +331,8 @@ export class RoverExperience {
         v: -stick(axes.length >= 4 ? axes[3] : axes[1]) * 0.45,
         w: stick(axes.length >= 4 ? axes[2] : axes[0]) * 0.55,
         pan: THREE.MathUtils.clamp(-THREE.MathUtils.radToDeg(yaw), -80, 80) };
+      if (scan && !this.scanDown) void this.startScan();
+      this.scanDown = scan;
       this.cockpit.position.copy(this.position); this.cockpit.quaternion.copy(this.quat);
     } else {
       this.inputValid = true;
@@ -378,7 +388,21 @@ export class RoverExperience {
       this.gate.invalidate("Control queue stalled: release deadman"); this.socket!.close(); return;
     }
     if (now - this.lastSendAt > 200) this.gate.invalidate("Browser paused: release deadman");
+    if (this.scanPending) return; // POST reservation must precede scan-mode heartbeats
+    if (this.scanning && this.status?.requires_release && this.status.reason === "scan_finished") {
+      this.send(false);
+      if (now - this.scanPollAt > 250) { this.scanPollAt = now; void this.pollScan(); }
+      return;
+    }
+    if (this.scanning && (!moving || this.input.v || this.input.w)) {
+      this.scanMessage = "Scan cancelled: release, stale view, or stick override";
+      this.stop(this.scanMessage);
+    }
     this.send(moving && !this.gate.needsRelease);
+    if (this.scanning && now - this.scanPollAt > 250) {
+      this.scanPollAt = now;
+      void this.pollScan();
+    }
   }
   private send(deadman: boolean) {
     if (this.socket?.readyState !== WebSocket.OPEN || this.socket.bufferedAmount > 0) return;
@@ -390,10 +414,44 @@ export class RoverExperience {
       seq, session_id: this.status?.session_id ?? null, permit: this.status?.permit ?? null,
       deadman, v: deadman ? this.input.v : 0, w: deadman ? this.input.w : 0,
       pan: this.digitalPan ? 0 : this.input.pan, video_fresh: age < 500,
-      ...this.autonomy.fields(deadman),
+      ...(this.scanning ? { mode: "scan" } : this.autonomy.fields(deadman)),
       video_age_ms: Number.isFinite(age) ? Math.ceil(age) : 999999,
     }));
     this.lastSendAt = performance.now();
+  }
+  private async startScan() {
+    if (this.scanPending || this.scanning) return;
+    if (!this.input.held || this.input.v || this.input.w || this.gate.needsRelease ||
+        this.gate.readiness(performance.now(), this.socket?.readyState === WebSocket.OPEN)) {
+      this.scanMessage = "Scan: hold deadman in live view with sticks centered";
+      return;
+    }
+    this.send(true);
+    this.scanPending = true;
+    const abort = new AbortController(), timer = window.setTimeout(() => abort.abort(), 1000);
+    try {
+      const response = await fetch("/scan", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: this.status?.session_id, permit: this.status?.permit }), signal: abort.signal });
+      if (!response.ok) throw new Error(String((await response.json()).detail ?? response.status));
+      const result = await response.json();
+      this.scanning = true;
+      this.scanMessage = `${result.simulated ? "SIMULATED · " : ""}Scanning${result.approximate ? " · approximate rover turn" : " · physical pan"}; keep holding deadman`;
+    } catch (error) { this.scanMessage = `Scan unavailable: ${String(error)}`; this.stop(this.scanMessage); }
+    finally { this.scanPending = false; window.clearTimeout(timer); }
+  }
+  private async pollScan() {
+    const abort = new AbortController(), timer = window.setTimeout(() => abort.abort(), 1000);
+    try {
+      const response = await fetch("/scan", { cache: "no-store", signal: abort.signal });
+      if (!response.ok) throw new Error(`Scan status ${response.status}`);
+      const result = await response.json();
+      if (!this.scanning || result.running) return;
+      this.scanMessage = result.state === "complete" ?
+        `${result.points.toLocaleString()} points · ${(result.scan_ms / 1000).toFixed(1)} s${result.approximate ? " · approximate" : ""}` : `Scan aborted: ${result.error}`;
+      this.stop(this.scanMessage);
+      if (result.state === "complete") { this.xrLive = false; this.setView("3d"); }
+    } catch (error) { this.scanMessage = String(error); this.stop("Scan status unavailable"); }
+    finally { window.clearTimeout(timer); }
   }
   private drawCamera(now: number) {
     const context = this.ctx;
@@ -477,7 +535,7 @@ export class RoverExperience {
     const intent = this.autonomy.mode === "seek" ? `Seek #${this.autonomy.targetId} armed` : this.autonomy.mode === "explore" ? "Explore armed" : "";
     const autonomy = [intent, autonomyLabel(this.status)].filter(Boolean).join(" → ");
     const panMode = `${this.digitalPan ? "Digital pan (fixed camera)" : "Servo pan"} ${Math.round(this.input.pan)}°`;
-    const detail = `${this.frameSource} · ${panMode} · ${this.h264Enabled ? "H.264" : "JPEG"} video ${age} · ${ack} · ${range} · ${detection}${drill ? " · " + drill : ""}${this.h264Enabled && !this.h264.displayedFrame ? " · " + this.h264.state : ""}`;
+    const detail = `${this.frameSource} · ${panMode} · ${this.h264Enabled ? "H.264" : "JPEG"} video ${age} · ${ack} · ${range} · ${detection}${drill ? " · " + drill : ""}${this.h264Enabled && !this.h264.displayedFrame ? " · " + this.h264.state : ""} · ${this.scanMessage}`;
     this.message.textContent = headline;
     this.message.dataset.state = moving ? "moving" : ready ? "unsafe" : "ready";
     this.details.textContent = `${autonomy ? autonomy + " · " : ""}${detail}${this.status?.estop ? " · FORWARD BLOCKED" : ""}`;
@@ -493,8 +551,8 @@ export class RoverExperience {
     c.fillText(`${ack} · ${detection}${this.status?.estop ? " · FORWARD BLOCKED" : ""}`, 28, 126);
     if (drill || autonomy) { c.font = "18px system-ui"; c.fillText([autonomy, drill].filter(Boolean).join(" · "), 28, 150); }
     c.font = "22px system-ui";
-    c.fillText("Trigger: deadman · Stick: drive · A: seek pointed person/map · B: explore · X: center", 28, 170);
-    c.fillText("Release trigger after a stop or reconnect", 28, 202);
+    c.fillText("Trigger: deadman · Stick: drive · A: seek/map · B: explore · X: center · Y: scan", 28, 170);
+    c.fillText(this.scanMessage.slice(0, 84), 28, 202);
     this.hudTexture.needsUpdate = true;
   }
 
