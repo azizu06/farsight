@@ -153,7 +153,8 @@ fn goal_refused_without_bridge() {
             "servo",
             None,
             Some(service.clone()),
-        )
+        
+            false,)
         .unwrap(),
     );
     service.attach(&control);
@@ -243,7 +244,8 @@ fn goal_stages_while_stopped_and_drives_only_on_a_new_press() {
         ControlState::new(
             false, 0, 100, None, None, Some(clock), None, false, true, "servo", None,
             Some(service.clone()),
-        )
+        
+            false,)
         .unwrap(),
     );
     service.attach(&control);
@@ -308,7 +310,8 @@ fn goal_refused_for_foreign_session_even_while_stopped() {
         ControlState::new(
             false, 0, 100, None, None, Some(clock), None, false, true, "servo", None,
             Some(service.clone()),
-        )
+        
+            false,)
         .unwrap(),
     );
     service.attach(&control);

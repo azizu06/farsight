@@ -16,7 +16,7 @@ fn fixture() -> Fixture {
     let now = Arc::new(Mutex::new(10.0f64));
     let n = now.clone();
     let clock: Clock = Arc::new(move || *n.lock().unwrap());
-    let state = ControlState::new(false, 0, 100, None, None, Some(clock), None, false, true, "servo", None, None).unwrap();
+    let state = ControlState::new(false, 0, 100, None, None, Some(clock), None, false, true, "servo", None, None, false).unwrap();
     state.set_connected(true, None);
     let session = state.begin().unwrap();
     state.update_range(100.0);
@@ -148,9 +148,9 @@ fn pwm_scaling() {
 #[test]
 fn pwm_validation_and_floor() {
     for (floor, ceiling) in [(-1, 100), (100, 100), (101, 100), (0, 256), (0, 0)] {
-        assert!(ControlState::new(false, floor, ceiling, None, None, None, None, false, true, "servo", None, None).is_err());
+        assert!(ControlState::new(false, floor, ceiling, None, None, None, None, false, true, "servo", None, None, false).is_err());
     }
-    let state = ControlState::new(false, 70, 110, None, None, None, None, false, true, "servo", None, None).unwrap();
+    let state = ControlState::new(false, 70, 110, None, None, None, None, false, true, "servo", None, None, false).unwrap();
     let status = state.status(false);
     assert_eq!(status["min_pwm"], 70);
     assert_eq!(status["max_pwm"], 110);
@@ -175,7 +175,8 @@ fn camera_guard() {
         Some(Arc::new(move || *n.lock().unwrap())),
         None,
         false, true, "servo", None, None,
-    ).unwrap();
+    
+            false,).unwrap();
     state.set_connected(true, None);
     let session = state.begin().unwrap();
     state.update_range(100.0);
@@ -272,7 +273,8 @@ fn mode_fixture(
     let clock: Clock = Arc::new(move || *n.lock().unwrap());
     let state = ControlState::new(
         false, min_pwm, 100, None, None, Some(clock), drive_profile, allow_calibration, true, "servo", None, None,
-    ).unwrap();
+    
+            false,).unwrap();
     state.set_connected(true, None);
     let session = state.begin().unwrap();
     state.update_range(150.0);
@@ -350,7 +352,7 @@ fn proximity_stop_off_lets_forward_run_without_range() {
     let now = Arc::new(Mutex::new(10.0f64));
     let n = now.clone();
     let clock: Clock = Arc::new(move || *n.lock().unwrap());
-    let state = ControlState::new(false, 0, 100, None, None, Some(clock), None, false, false, "servo", None, None).unwrap();
+    let state = ControlState::new(false, 0, 100, None, None, Some(clock), None, false, false, "servo", None, None, false).unwrap();
     state.set_connected(true, None);
     let session = state.begin().unwrap();
     let f = Fixture { state, session, seq: std::cell::Cell::new(0), now };
@@ -384,7 +386,7 @@ fn no_pan_fixture() -> Fixture {
     let n = now.clone();
     let clock: Clock = Arc::new(move || *n.lock().unwrap());
     let state =
-        ControlState::new(false, 0, 100, None, None, Some(clock), None, false, false, "none", None, None)
+        ControlState::new(false, 0, 100, None, None, Some(clock), None, false, false, "none", None, None, false)
             .unwrap();
     state.set_connected(true, None);
     let session = state.begin().unwrap();
@@ -427,7 +429,7 @@ fn no_pan_is_still_validated_and_every_stop_remains() {
 
 #[test]
 fn no_pan_unknown_mount_is_rejected() {
-    assert!(ControlState::new(false, 0, 100, None, None, None, None, false, false, "gimbal", None, None).is_err());
+    assert!(ControlState::new(false, 0, 100, None, None, None, None, false, false, "gimbal", None, None, false).is_err());
 }
 
 // Port of test_autonomy.py::test_autonomy_ceiling_keeps_autonomous_speed_while_teleop_uses_full_range (#99).
@@ -441,7 +443,8 @@ fn autonomy_ceiling_keeps_autonomous_speed_while_teleop_uses_full_range() {
         false, 70, 255, None,
         Some(Arc::new(move || snapshot.clone())),
         Some(clock), None, false, true, "servo", Some(100), None,
-    ).unwrap();
+    
+            false,).unwrap();
     state.set_connected(true, None);
     let session = state.begin().unwrap();
     let f = Fixture { state, session, seq: std::cell::Cell::new(0), now };
@@ -458,10 +461,137 @@ fn autonomy_ceiling_keeps_autonomous_speed_while_teleop_uses_full_range() {
 fn autonomy_ceiling_validates_bounds_and_defaults_to_max() {
     for bad in [256, 70, 60] {
         assert!(
-            ControlState::new(false, 70, 255, None, None, None, None, false, true, "servo", Some(bad), None).is_err(),
+            ControlState::new(false, 70, 255, None, None, None, None, false, true, "servo", Some(bad), None, false).is_err(),
             "autonomy_max_pwm={bad} must be rejected"
         );
     }
-    let s = ControlState::new(false, 0, 200, None, None, None, None, false, true, "servo", None, None).unwrap();
+    let s = ControlState::new(false, 0, 200, None, None, None, None, false, true, "servo", None, None, false).unwrap();
     assert_eq!(s.autonomy_max_pwm, 200); // default: unchanged behaviour
+}
+
+// ---- #134 --demo-mode: transient stops resume on the next held heartbeat ----
+
+struct DemoFixture {
+    state: ControlState,
+    session: String,
+    seq: std::cell::Cell<i64>,
+    now: Arc<Mutex<f64>>,
+    camera: Arc<Mutex<bool>>,
+}
+
+fn demo_fixture() -> DemoFixture {
+    let now = Arc::new(Mutex::new(10.0f64));
+    let n = now.clone();
+    let clock: Clock = Arc::new(move || *n.lock().unwrap());
+    let camera = Arc::new(Mutex::new(true));
+    let c = camera.clone();
+    let state = ControlState::new(
+        false, 0, 100,
+        Some(Arc::new(move || *c.lock().unwrap())),
+        None, Some(clock), None, false, false, "servo", None, None, true,
+    )
+    .unwrap();
+    state.set_connected(true, None);
+    let session = state.begin().unwrap();
+    state.update_range(100.0);
+    let f = DemoFixture { state, session, seq: std::cell::Cell::new(0), now, camera };
+    f.send(json!({"deadman": false})); // first press after start still needs one release
+    f
+}
+
+impl DemoFixture {
+    fn send(&self, values: Value) -> bool {
+        self.seq.set(self.seq.get() + 1);
+        let status = self.state.status(true);
+        let mut m = json!({
+            "session_id": self.session,
+            "permit": status["permit"],
+            "seq": self.seq.get(),
+            "deadman": true,
+            "v": 0.5, "w": 0.0, "pan": 0,
+            "mode": "teleop",
+            "video_fresh": true,
+            "video_age_ms": 0,
+        });
+        for (k, v) in values.as_object().unwrap() {
+            m[k] = v.clone();
+        }
+        self.state.accept(&m, &self.session)
+    }
+
+    fn output(&self) -> (i64, i64) {
+        let (l, r, _) = self.state.output();
+        (l, r)
+    }
+
+    fn assert_resumes(&self) {
+        assert!(!self.state.status(false)["requires_release"].as_bool().unwrap());
+        assert!(self.send(json!({})));
+        assert_eq!(self.output(), (50, 50));
+    }
+}
+
+#[test]
+fn demo_serial_blip_stops_then_resumes_without_a_new_press() {
+    let f = demo_fixture();
+    assert!(f.send(json!({})));
+    f.state.set_connected(false, Some("serial_disconnected"));
+    assert_eq!(f.output(), (0, 0));
+    f.state.set_connected(true, None);
+    f.assert_resumes();
+}
+
+#[test]
+fn demo_controller_reconnect_resumes_without_a_release() {
+    let mut f = demo_fixture();
+    assert!(f.send(json!({})));
+    f.state.end(&f.session);
+    assert_eq!(f.output(), (0, 0));
+    f.session = f.state.begin().unwrap();
+    f.seq.set(0);
+    f.assert_resumes();
+}
+
+#[test]
+fn demo_lease_expiry_still_stops_then_a_fresh_heartbeat_resumes() {
+    let f = demo_fixture();
+    assert!(f.send(json!({})));
+    *f.now.lock().unwrap() += farsight_server::control::LEASE + 0.01;
+    assert_eq!(f.output(), (0, 0));
+    assert_eq!(f.state.status(false)["reason"], "lease_expired");
+    f.assert_resumes();
+}
+
+#[test]
+fn demo_teleop_ignores_camera_freshness_but_gated_modes_do_not() {
+    let f = demo_fixture();
+    *f.camera.lock().unwrap() = false;
+    assert!(f.send(json!({"video_fresh": false, "video_age_ms": 2000})));
+    assert_eq!(f.output(), (50, 50));
+    // A non-teleop command is still camera-gated; the transient stop does not latch.
+    assert!(!f.send(json!({"mode": "seek", "target_id": 1})));
+    assert_eq!(f.state.status(false)["reason"], "camera_stale");
+    assert!(!f.state.status(false)["requires_release"].as_bool().unwrap());
+}
+
+#[test]
+fn demo_protocol_faults_and_releases_still_latch() {
+    let f = demo_fixture();
+    assert!(f.send(json!({})));
+    assert!(!f.send(json!({"v": 5})));
+    assert_eq!(f.state.status(false)["reason"], "invalid_command");
+    assert!(f.state.status(false)["requires_release"].as_bool().unwrap());
+    assert!(!f.send(json!({})));
+    f.send(json!({"deadman": false}));
+    assert!(f.send(json!({})));
+}
+
+#[test]
+fn demo_off_by_default_keeps_latching() {
+    let f = fixture();
+    assert!(f.send(json!({})));
+    f.state.set_connected(false, Some("serial_disconnected"));
+    f.state.set_connected(true, None);
+    assert!(f.state.status(false)["requires_release"].as_bool().unwrap());
+    assert!(!f.send(json!({})));
 }

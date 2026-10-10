@@ -96,7 +96,20 @@ pub struct ControlState {
     /// Opt-in Nav2 seam (jetson/control/state.py `self.navigator`); the
     /// server stays motor authority — the nav backend supplies commands.
     pub navigator: Option<Arc<crate::nav::NavService>>,
+    /// #134 --demo-mode: transient stops still stop the motors but do not
+    /// latch requires_release, and teleop is not gated on camera freshness.
+    pub demo_mode: bool,
 }
+
+/// Stops that demo mode does not latch: the next fresh deadman=true
+/// heartbeat resumes. Lease expiry still stops (link loss) and the Nav2
+/// sensor gate still holds motion at zero; they just need no new press.
+const DEMO_TRANSIENT: &[&str] = &[
+    "serial_disconnected", "release_required", "controller_disconnected",
+    "camera_stale", "video_stale", "lease_expired", "expired_permit",
+    "stale_sequence", "nav_pose_lost", "nav_tracking_limited",
+    "nav_depth_lost", "nav_sensor_reset",
+];
 
 fn round1(v: f64) -> f64 {
     (v * 10.0).round_ties_even() / 10.0
@@ -122,6 +135,7 @@ impl ControlState {
         pan_mount: &str,
         autonomy_max_pwm: Option<i64>,
         navigator: Option<Arc<crate::nav::NavService>>,
+        demo_mode: bool,
     ) -> Result<Self, String> {
         if !(0 <= min_pwm && min_pwm < max_pwm && max_pwm <= 255) {
             return Err("PWM bounds must satisfy 0 <= min_pwm < max_pwm <= 255".into());
@@ -173,6 +187,7 @@ impl ControlState {
             }),
             on_output: Mutex::new(None),
             navigator,
+            demo_mode,
         })
     }
 
@@ -181,10 +196,10 @@ impl ControlState {
     }
 
     pub fn stop(&self, reason: &str, require_release: bool) {
-        Self::stop_locked(&mut self.inner.lock().unwrap(), reason, require_release);
+        self.stop_locked(&mut self.inner.lock().unwrap(), reason, require_release);
     }
 
-    fn stop_locked(s: &mut ControlInner, reason: &str, require_release: bool) {
+    fn stop_locked(&self, s: &mut ControlInner, reason: &str, require_release: bool) {
         s.v = 0.0;
         s.w = 0.0;
         s.deadline = 0.0;
@@ -197,7 +212,7 @@ impl ControlState {
             a.reset();
         }
         s.stick_override = false;
-        if require_release {
+        if require_release && !(self.demo_mode && DEMO_TRANSIENT.contains(&reason)) {
             s.requires_release = true;
         }
     }
@@ -206,7 +221,7 @@ impl ControlState {
         let mut s = self.inner.lock().unwrap();
         if value != s.connected {
             let reason = if value { "release_required" } else { reason.unwrap_or("serial_disconnected") };
-            Self::stop_locked(&mut s, reason, true);
+            self.stop_locked(&mut s, reason, true);
             if let Some(nav) = &self.navigator {
                 nav.disarm(); // a serial fault needs a fresh goal, not a silent resume
             }
@@ -229,7 +244,7 @@ impl ControlState {
         s.session_id = Some(id.clone());
         s.seq = -1;
         s.permits.clear();
-        Self::stop_locked(&mut s, "release_required", true);
+        self.stop_locked(&mut s, "release_required", true);
         if let Some(nav) = &self.navigator {
             nav.disarm();
         }
@@ -239,7 +254,7 @@ impl ControlState {
     pub fn end(&self, session_id: &str) {
         let mut s = self.inner.lock().unwrap();
         if s.session_id.as_deref() == Some(session_id) {
-            Self::stop_locked(&mut s, "controller_disconnected", true);
+            self.stop_locked(&mut s, "controller_disconnected", true);
             s.session_id = None;
             s.permits.clear();
             if let Some(nav) = &self.navigator {
@@ -301,7 +316,7 @@ impl ControlState {
     pub fn end_scan(&self, token: u64) {
         let mut s = self.inner.lock().unwrap();
         if s.scan_token == Some(token) {
-            Self::stop_locked(&mut s, "scan_finished", true);
+            self.stop_locked(&mut s, "scan_finished", true);
         }
     }
 
@@ -356,21 +371,21 @@ impl ControlState {
             return false;
         }
         if message.get("session_id").and_then(Value::as_str) != Some(session_id) {
-            Self::stop_locked(s, "wrong_session", true);
+            self.stop_locked(s, "wrong_session", true);
             return false;
         }
         // JSON integer in 0..2^53-1; booleans and floats rejected.
         let seq = match message.get("seq").and_then(Self::json_int) {
             Some(seq) if (0..=(1i64 << 53) - 1).contains(&seq) => seq,
             _ => {
-                Self::stop_locked(s, "invalid_sequence", true);
+                self.stop_locked(s, "invalid_sequence", true);
                 return false;
             }
         };
         // Any release stops, including stale releases, but only an ordered
         // release can unlock the next press.
         if message.get("deadman") == Some(&Value::Bool(false)) {
-            Self::stop_locked(s, "deadman_released", true);
+            self.stop_locked(s, "deadman_released", true);
             if seq > s.seq {
                 s.seq = seq;
                 s.requires_release = false;
@@ -378,7 +393,7 @@ impl ControlState {
             return true;
         }
         if seq <= s.seq || message.get("deadman") != Some(&Value::Bool(true)) {
-            Self::stop_locked(s, "stale_sequence", true);
+            self.stop_locked(s, "stale_sequence", true);
             return false;
         }
         let token = message.get("permit").and_then(Value::as_str);
@@ -387,43 +402,45 @@ impl ControlState {
             .unwrap_or(0.0);
         let now = self.now();
         if expires <= now {
-            Self::stop_locked(s, "expired_permit", true);
+            self.stop_locked(s, "expired_permit", true);
             return false;
         }
         if !s.connected || s.requires_release {
             let reason = if s.connected { "release_required" } else { "serial_disconnected" };
-            Self::stop_locked(s, reason, true);
-            return false;
-        }
-        if !self.camera_is_ready() {
-            Self::stop_locked(s, "camera_stale", true);
+            self.stop_locked(s, reason, true);
             return false;
         }
         let mut mode = message.get("mode").and_then(Value::as_str).unwrap_or("teleop");
+        // #134: in demo mode teleop drives by hand with no camera gate.
+        let teleop_ungated = self.demo_mode && mode == "teleop";
+        if !teleop_ungated && !self.camera_is_ready() {
+            self.stop_locked(s, "camera_stale", true);
+            return false;
+        }
         if mode == "scan" {
             if s.scan_token.is_none() {
-                Self::stop_locked(s, "scan_not_active", true);
+                self.stop_locked(s, "scan_not_active", true);
                 return false;
             }
         } else if mode == "calibrate" && !self.allow_calibration {
-            Self::stop_locked(s, "unsupported_mode", true);
+            self.stop_locked(s, "unsupported_mode", true);
             return false;
         } else if mode == "velocity" && self.drive_profile.is_none() {
-            Self::stop_locked(s, "unsupported_mode", true);
+            self.stop_locked(s, "unsupported_mode", true);
             return false;
         } else if !(mode == "teleop" || mode == "calibrate" || mode == "velocity")
             && (s.autonomy.is_none()
                 || !(mode == "explore" || mode == "seek" || mode == "goto")
                 || (mode == "goto" && self.navigator.is_none()))
         {
-            Self::stop_locked(s, "unsupported_mode", true);
+            self.stop_locked(s, "unsupported_mode", true);
             return false;
         }
         let target_id = if mode == "seek" {
             match message.get("target_id").and_then(Self::json_int) {
                 Some(t) if (0..=(1i64 << 53) - 1).contains(&t) => Some(t),
                 _ => {
-                    Self::stop_locked(s, "invalid_target", true);
+                    self.stop_locked(s, "invalid_target", true);
                     return false;
                 }
             }
@@ -431,10 +448,11 @@ impl ControlState {
             None
         };
         let video_age = message.get("video_age_ms").and_then(Self::json_num);
-        if message.get("video_fresh") != Some(&Value::Bool(true))
-            || !video_age.map(|a| (0.0..=500.0).contains(&a)).unwrap_or(false)
+        if !teleop_ungated
+            && (message.get("video_fresh") != Some(&Value::Bool(true))
+                || !video_age.map(|a| (0.0..=500.0).contains(&a)).unwrap_or(false))
         {
-            Self::stop_locked(s, "video_stale", true);
+            self.stop_locked(s, "video_stale", true);
             return false;
         }
         if mode == "calibrate" || mode == "velocity" {
@@ -444,11 +462,11 @@ impl ControlState {
         let w = message.get("w").and_then(Self::json_num);
         let pan = message.get("pan").map(Self::json_num).unwrap_or(Some(0.0));
         let (Some(v), Some(w), Some(pan)) = (v, w, pan) else {
-            Self::stop_locked(s, "invalid_command", true);
+            self.stop_locked(s, "invalid_command", true);
             return false;
         };
         if !(-1.0..=1.0).contains(&v) || !(-1.0..=1.0).contains(&w) || !(-80.0..=80.0).contains(&pan) {
-            Self::stop_locked(s, "invalid_command", true);
+            self.stop_locked(s, "invalid_command", true);
             return false;
         }
         let mut pan = pan;
@@ -467,7 +485,7 @@ impl ControlState {
         }
         if s.scan_token.is_some() {
             if mode != "scan" || v != 0.0 || w != 0.0 {
-                Self::stop_locked(s, "scan_override", false);
+                self.stop_locked(s, "scan_override", false);
                 mode = "teleop";
             } else {
                 pan = s.pan as f64;
@@ -535,7 +553,7 @@ impl ControlState {
                     DriveCmd::Calibrate(l, r)
                 }
                 _ => {
-                    Self::stop_locked(s, "invalid_command", true);
+                    self.stop_locked(s, "invalid_command", true);
                     return false;
                 }
             }
@@ -547,13 +565,13 @@ impl ControlState {
                     DriveCmd::Velocity(v, w)
                 }
                 _ => {
-                    Self::stop_locked(s, "invalid_command", true);
+                    self.stop_locked(s, "invalid_command", true);
                     return false;
                 }
             }
         };
         if s.scan_token.is_some() {
-            Self::stop_locked(s, "scan_override", false);
+            self.stop_locked(s, "scan_override", false);
             return false;
         }
         if let Some(a) = s.autonomy.as_mut() {
@@ -626,13 +644,16 @@ impl ControlState {
 
     pub(crate) fn output_locked(&self, s: &mut ControlInner) -> (i64, i64, i64) {
         if s.deadline != 0.0 && self.now() >= s.deadline {
-            Self::stop_locked(s, "lease_expired", true);
+            self.stop_locked(s, "lease_expired", true);
         }
         let autonomous = s.autonomy.as_ref().map(|a| a.mode != "teleop").unwrap_or(false);
-        if (s.v != 0.0 || s.w != 0.0 || autonomous || s.drive.is_some() || s.scan_token.is_some())
-            && !self.camera_is_ready()
-        {
-            Self::stop_locked(s, "camera_stale", true);
+        // #134: autonomous/drive/scan stay camera-gated; held teleop does not.
+        let gated = autonomous
+            || s.drive.is_some()
+            || s.scan_token.is_some()
+            || ((s.v != 0.0 || s.w != 0.0) && !self.demo_mode);
+        if gated && !self.camera_is_ready() {
+            self.stop_locked(s, "camera_stale", true);
         }
         if s.drive.is_some() && s.deadline != 0.0 {
             return self.drive_output(s);
@@ -642,7 +663,7 @@ impl ControlState {
             v = 0.0;
             w = s.scan_w;
             if w != 0.0 && self.range_unsafe(&s) {
-                Self::stop_locked(s, "scan_range_stop", true);
+                self.stop_locked(s, "scan_range_stop", true);
                 v = 0.0;
                 w = 0.0;
             }
@@ -679,7 +700,7 @@ impl ControlState {
             // No fresh normal-tracking pose or measured depth of the current
             // sensor session: stop now, even with a live lease and fresh
             // cmd_vel, and require a new press.
-            Self::stop_locked(s, fault, true);
+            self.stop_locked(s, fault, true);
             v = 0.0;
             w = 0.0;
         } else if backed {
@@ -718,7 +739,7 @@ impl ControlState {
                     (f64::NAN, f64::NAN)
                 });
                 if av.is_nan() {
-                    Self::stop_locked(s, "autonomy_unavailable", true);
+                    self.stop_locked(s, "autonomy_unavailable", true);
                     v = 0.0;
                     w = 0.0;
                 } else {
@@ -931,15 +952,31 @@ impl SerialPump {
             .timeout(Duration::from_millis(0))
             .open()
             .map_err(|e| e.to_string())?;
+        // #116: non-blocking writes like pyserial write_timeout=0 — a stalled
+        // or partial write is a serial fault, not a silent queue. The Uno
+        // watchdog and reply timeout prove liveness instead.
+        fn send(device: &mut Box<dyn serialport::SerialPort>, data: &[u8]) -> Result<(), String> {
+            if device.bytes_to_write().unwrap_or(0) > 256 {
+                return Err("Uno serial output stalled".into());
+            }
+            match device.write(data) {
+                Ok(n) if n == data.len() => Ok(()),
+                Ok(_) => Err("Uno serial write incomplete".into()),
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
+                {
+                    Err("Uno serial write incomplete".into())
+                }
+                Err(e) => Err(e.to_string()),
+            }
+        }
         // Uno's USB open can reset its bootloader; wait without blocking the server.
         if self.wait(2.0) {
             return Ok(());
         }
         let _ = device.clear(serialport::ClearBuffer::All);
         let servo = self.state.pan_mount == "servo";
-        device
-            .write_all(if servo { b"M 0 0\nP 90\nR\n" as &[u8] } else { b"M 0 0\nR\n" })
-            .map_err(|e| e.to_string())?;
+        send(&mut device, if servo { b"M 0 0\nP 90\nR\n" as &[u8] } else { b"M 0 0\nR\n" })?;
         let mut pending: Vec<u8> = Vec::new();
         let started = self.state.now();
         let mut last_response = started;
@@ -995,7 +1032,7 @@ impl SerialPump {
                     data.push_str("R\n");
                     next_range = now + 0.1;
                 }
-                device.write_all(data.as_bytes()).map_err(|e| e.to_string())?;
+                send(&mut device, data.as_bytes())?;
                 next_tick = now + 0.05;
             }
             self.wait(0.005);

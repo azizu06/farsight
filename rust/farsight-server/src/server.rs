@@ -117,6 +117,7 @@ pub fn build_state(
     lidar_drive: bool,
     visual_caps: (usize, usize),
     fusion_bypass: bool,
+    demo_mode: bool,
 ) -> Arc<AppState> {
     // create_app validation order: sim-world, replay, simulated+serial,
     // nav2+replay, then pan mount.
@@ -224,6 +225,7 @@ pub fn build_state(
             pan_mount,
             autonomy_max_pwm,
             nav.clone(),
+            demo_mode,
         )
         .expect("control config"),
     );
@@ -2007,6 +2009,7 @@ mod phone_lifecycle_tests {
             false,      // lidar_drive
             (0, 0),     // visual_caps: uncapped in tests
             false,      // fusion_bypass
+            false,      // demo_mode
         )
     }
 
@@ -2157,7 +2160,7 @@ mod bonded_ws_tests {
 
     fn bonded_setup() -> (Arc<ControlState>, Arc<BondedControlHub>) {
         let control = Arc::new(
-            ControlState::new(false, 0, 100, None, None, None, None, false, false, "servo", None, None)
+            ControlState::new(false, 0, 100, None, None, None, None, false, false, "servo", None, None, false)
                 .unwrap(),
         );
         control.set_connected(true, None);
