@@ -129,7 +129,9 @@ The controls layer drives it:
   to the gaze heading, and radians where positive turns left about the head.
 - `mapWalk.reset()`: return to the rover start pose.
 
-`?walk=1` starts in walk mode for testing. A new map generation resets the
+`?walk=1` starts in walk mode for testing. Until AUTO drives it, a temporary test
+input in `main.ts` lets the left stick click toggle walk mode in VR (resetting to the
+start pose) and the left stick move the viewer at up to 1.5 m/s. A new map generation resets the
 viewer. Display only: this module sends no commands and gates no motion.
 
 When the server reports `capped: true` for a Jetson mesh, the 3D view pulls

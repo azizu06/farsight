@@ -280,6 +280,21 @@ let vrMapSpan = 4;
 const headPosition = new THREE.Vector3(), headDirection = new THREE.Vector3(), yAxis = new THREE.Vector3(0, 1, 0);
 let wasWalking = false;
 function walkingNow() { return mapWalk.walking && renderer.xr.isPresenting; }
+// TEMPORARY test input until the controls layer drives mapWalk: left stick click
+// toggles walk mode, left stick moves the viewer (unused by rover driving).
+let walkClickDown = false, lastWalkInputAt = 0;
+function walkTestInput(now: number) {
+  const dt = Math.min(0.1, Math.max(0, (now - lastWalkInputAt) / 1000)); lastWalkInputAt = now;
+  const left = [...(renderer.xr.getSession()?.inputSources ?? [])].find(source => source.handedness === "left")?.gamepad;
+  if (!left) { walkClickDown = false; return; }
+  const click = !!left.buttons[3]?.pressed;
+  if (click && !walkClickDown) { mapWalk.setMode(mapWalk.walking ? "overview" : "walk"); mapWalk.reset(); }
+  walkClickDown = click;
+  if (!mapWalk.walking) return;
+  const axis = (value: number | undefined) => Math.abs(value ?? 0) < 0.2 ? 0 : value ?? 0;
+  const [x, y] = left.axes.length >= 4 ? [left.axes[2], left.axes[3]] : [left.axes[0], left.axes[1]];
+  mapWalk.moveViewer(-axis(y) * 1.5 * dt, axis(x) * 1.5 * dt);
+}
 function placeWalk() {
   const head = renderer.xr.getCamera();
   head.getWorldPosition(headPosition); head.getWorldDirection(headDirection);
@@ -298,6 +313,7 @@ renderer.setAnimationLoop((_time, frame) => {
     if (driving) feedRequest?.abort();
     syncMapConnection();
   }
+  if (renderer.xr.isPresenting) walkTestInput(start);
   const walking = walkingNow();
   if (walking !== wasWalking) { wasWalking = walking; visibility(); syncMapConnection(); }
   root.visible = walking || !rover?.vrCameraView;
