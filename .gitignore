@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+node_modules/
+dist/
+*.engine
+*.onnx
+*.pt
+.env
+*.pem
+.DS_Store
