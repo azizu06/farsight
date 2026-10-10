@@ -184,6 +184,7 @@ class Gallery:
         self.max_people, self.max_samples = max_people, max_samples
         self.threshold, self.margin = float(threshold), float(margin)
         self._lock = threading.RLock()
+        self._mutation_lock = threading.Lock()
         self._people = {}
         self._generation = 0
         if self.path is not None and self.path.exists():
@@ -204,39 +205,45 @@ class Gallery:
 
     def enroll(self, name, embedding, person_id=None) -> dict:
         name, embedding = _name(name), _embedding(embedding)
-        with self._lock:
-            updated = dict(self._people)
-            if person_id is None:
-                if len(updated) >= self.max_people:
-                    raise IdentityError("Enrollment gallery is full")
-                person_id = str(uuid.uuid4())
-                person = dict(id=person_id, name=name, embeddings=[])
-            else:
-                if person_id not in updated:
-                    raise IdentityError("Person does not exist")
-                person = dict(updated[person_id])
-                person["embeddings"] = list(person["embeddings"])
-                if max(float(np.dot(embedding, sample)) for sample in person["embeddings"]) < self.threshold:
-                    raise IdentityError("New sample does not match this person's enrolled face")
-                person["name"] = name
-            if len(person["embeddings"]) >= self.max_samples:
-                raise IdentityError("This person already has the maximum number of samples")
-            person["embeddings"].append(embedding.copy())
-            updated[person_id] = person
+        # Serialize writers through persistence, but keep committed state readable
+        # while a slow disk flush is pending in the inference worker.
+        with self._mutation_lock:
+            with self._lock:
+                updated = dict(self._people)
+                if person_id is None:
+                    if len(updated) >= self.max_people:
+                        raise IdentityError("Enrollment gallery is full")
+                    person_id = str(uuid.uuid4())
+                    person = dict(id=person_id, name=name, embeddings=[])
+                else:
+                    if person_id not in updated:
+                        raise IdentityError("Person does not exist")
+                    person = dict(updated[person_id])
+                    person["embeddings"] = list(person["embeddings"])
+                    if max(float(np.dot(embedding, sample)) for sample in person["embeddings"]) < self.threshold:
+                        raise IdentityError("New sample does not match this person's enrolled face")
+                    person["name"] = name
+                if len(person["embeddings"]) >= self.max_samples:
+                    raise IdentityError("This person already has the maximum number of samples")
+                person["embeddings"].append(embedding.copy())
+                updated[person_id] = person
             self._persist(updated)
-            self._people = updated
-            self._generation += 1
+            with self._lock:
+                self._people = updated
+                self._generation += 1
             return self._public(person)
 
     def remove(self, person_id) -> bool:
-        with self._lock:
-            if person_id not in self._people:
-                return False
-            updated = dict(self._people)
-            del updated[person_id]
+        with self._mutation_lock:
+            with self._lock:
+                if person_id not in self._people:
+                    return False
+                updated = dict(self._people)
+                del updated[person_id]
             self._persist(updated)
-            self._people = updated
-            self._generation += 1
+            with self._lock:
+                self._people = updated
+                self._generation += 1
             return True
 
     def match(self, embedding) -> dict | None:

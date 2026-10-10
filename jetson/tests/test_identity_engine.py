@@ -3,6 +3,8 @@ import json
 import math
 import struct
 import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -121,6 +123,73 @@ class GalleryTests(unittest.TestCase):
                     gallery.enroll("One", vector())
             self.assertEqual(gallery.people(), [])
             self.assertEqual(gallery.generation, 0)
+
+
+    def test_readers_return_committed_state_while_persistence_is_blocked(self):
+        for deleting in (False, True):
+            with self.subTest(deleting=deleting), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "gallery.json"
+                gallery = Gallery(path)
+                old_person = gallery.enroll("One", vector()) if deleting else None
+                entered, release = threading.Event(), threading.Event()
+                persist = gallery._persist
+
+                def blocked(candidate):
+                    entered.set()
+                    if not release.wait(2):
+                        raise AssertionError("persistence test did not release writer")
+                    persist(candidate)
+
+                with ThreadPoolExecutor(max_workers=2) as pool, patch.object(gallery, "_persist", blocked):
+                    change = pool.submit(gallery.remove, old_person["id"]) if deleting else pool.submit(
+                        gallery.enroll, "One", vector())
+                    try:
+                        self.assertTrue(entered.wait(1))
+                        read = pool.submit(lambda: (gallery.people(), gallery.generation, gallery.match(vector())))
+                        try:
+                            people, generation, match = read.result(timeout=.2)
+                        except TimeoutError:
+                            self.fail("gallery reads blocked behind pending persistence")
+                        self.assertEqual(len(people), 1 if deleting else 0)
+                        self.assertEqual(generation, 1 if deleting else 0)
+                        self.assertEqual(match["name"] if match else None, "One" if deleting else None)
+                    finally:
+                        release.set()
+                    change.result(timeout=1)
+                self.assertEqual(len(gallery.people()), 0 if deleting else 1)
+                self.assertEqual(len(Gallery(path).people()), 0 if deleting else 1)
+
+    def test_two_concurrent_enrollments_keep_both_committed_people(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "gallery.json"
+            gallery = Gallery(path)
+            entered, release, second_started = threading.Event(), threading.Event(), threading.Event()
+            persist = gallery._persist
+
+            def blocked(candidate):
+                if any(person["name"] == "One" for person in candidate.values()) and not entered.is_set():
+                    entered.set()
+                    if not release.wait(2):
+                        raise AssertionError("persistence test did not release writer")
+                persist(candidate)
+
+            def second_enrollment():
+                second_started.set()
+                return gallery.enroll("Two", vector(1))
+
+            with ThreadPoolExecutor(max_workers=2) as pool, patch.object(gallery, "_persist", blocked):
+                first = pool.submit(gallery.enroll, "One", vector())
+                try:
+                    self.assertTrue(entered.wait(1))
+                    second = pool.submit(second_enrollment)
+                    self.assertTrue(second_started.wait(1))
+                finally:
+                    release.set()
+                first.result(timeout=1)
+                second.result(timeout=1)
+            self.assertEqual({person["name"] for person in gallery.people()}, {"One", "Two"})
+            self.assertEqual(gallery.generation, 2)
+            self.assertEqual({person["name"] for person in Gallery(path).people()}, {"One", "Two"})
 
 
 class FakeDetector:

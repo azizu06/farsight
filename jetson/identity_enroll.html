@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <title>Farsight · Face enrollment</title>
+  <style>
+    :root { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #edf5f8; background: #0b121b; color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-width: 280px; background: radial-gradient(ellipse at top right, #163039 0, transparent 55%); }
+    main { width: min(100% - 32px, 560px); margin: 0 auto; padding: max(28px, env(safe-area-inset-top)) 0 max(40px, env(safe-area-inset-bottom)); }
+    header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 32px; }
+    .brand { color: #8de3d1; letter-spacing: .2em; font-size: 13px; font-weight: 750; }
+    .tag { color: #9aaeb9; border: 1px solid #2a3c48; border-radius: 6px; padding: 5px 8px; font-size: 10px; letter-spacing: .12em; }
+    h1 { margin: 0 0 12px; font-size: clamp(27px, 7vw, 36px); line-height: 1.12; letter-spacing: -.035em; }
+    .intro { color: #a6bac6; font-size: 15px; line-height: 1.55; margin: 0 0 22px; }
+    .connection { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 16px; margin-bottom: 22px; background: #101e28; border: 1px solid #273e4b; border-radius: 12px; }
+    #connection { font-weight: 650; font-size: 13px; color: #d8c194; }
+    #connection.ready { color: #8de3d1; }
+    #connection-detail { margin: 5px 0 0; color: #9aafbd; line-height: 1.4; font-size: 12px; overflow-wrap: anywhere; }
+    button, input, select { font: inherit; }
+    button { cursor: pointer; border-radius: 8px; border: 1px solid #344957; background: #162732; color: #dce8ee; padding: 10px 13px; font-weight: 600; font-size: 13px; }
+    button:disabled { cursor: default; opacity: .4; }
+    button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid #8de3d1; outline-offset: 3px; }
+    .card { border: 1px solid #243643; background: #111c27; border-radius: 16px; padding: 20px; margin-bottom: 20px; }
+    .field { margin-bottom: 20px; }
+    .field-label { display: block; font-size: 13px; font-weight: 650; margin-bottom: 9px; }
+    input[type=text], select { width: 100%; background: #0c1520; color: #eaf3f7; border: 1px solid #304452; border-radius: 8px; padding: 12px; font-size: 16px; }
+    input[readonly] { color: #a6bac6; }
+    select { text-overflow: ellipsis; }
+    .hint { color: #90a8b6; font-size: 12px; line-height: 1.5; margin: 8px 0 0; }
+    .photo-area { display: flex; position: relative; justify-content: center; align-items: center; width: 100%; min-height: 190px; overflow: hidden; background: #0b1721; border: 1px dashed #3d5b68; border-radius: 12px; }
+    .photo-area:focus-within { outline: 2px solid #8de3d1; outline-offset: 3px; }
+    #photo { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+    #photo:disabled { cursor: default; }
+    #photo-empty { text-align: center; padding: 28px 16px; }
+    .camera { display: block; margin: 0 auto 12px; width: 36px; height: 36px; color: #8de3d1; }
+    .photo-title { font-size: 14px; font-weight: 650; }
+    .photo-subtitle { margin-top: 7px; font-size: 12px; color: #91a9b7; }
+    #preview { display: block; width: 100%; max-height: 310px; object-fit: contain; }
+    [hidden] { display: none !important; }
+    .consent { display: flex; align-items: flex-start; gap: 10px; font-size: 13px; line-height: 1.55; margin-bottom: 20px; }
+    .consent input { flex: 0 0 18px; width: 18px; height: 18px; accent-color: #8de3d1; margin: 2px 0 0; }
+    #enroll { width: 100%; padding: 14px; color: #072620; background: #8de3d1; border-color: #8de3d1; font-size: 15px; }
+    #enroll:disabled { background: #45685f; color: #afc4bd; border-color: #45685f; opacity: 1; }
+    #message { margin: 14px 0 0; font-size: 13px; line-height: 1.5; color: #8de3d1; overflow-wrap: anywhere; }
+    #message.error { color: #f3b1a4; }
+    .privacy { color: #90a8b6; font-size: 12px; line-height: 1.5; margin: 16px 0 0; }
+    .list-heading { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 15px; }
+    h2 { font-size: 15px; margin: 0; }
+    #count { color: #88a4b5; font-size: 13px; }
+    .person { display: flex; gap: 12px; align-items: center; justify-content: space-between; padding: 14px 0; border-top: 1px solid #243643; }
+    .person-copy { min-width: 0; }
+    .person-name { font-size: 14px; font-weight: 650; overflow-wrap: anywhere; }
+    .person-detail { color: #90a8b6; font-size: 12px; margin-top: 4px; }
+    .remove { flex: 0 0 auto; font-size: 12px; padding: 8px 10px; background: transparent; }
+    #empty { color: #90a8b6; margin: 0; font-size: 13px; line-height: 1.5; }
+    footer { color: #647e8e; text-align: center; font-size: 11px; }
+  </style>
+</head>
+<body>
+<main>
+  <header><span class="brand">FARSIGHT</span><span class="tag">PHONE SETUP</span></header>
+  <h1>Put a name to a face.</h1>
+  <p class="intro">Take a clear photo. When the rover sees you, your name can appear in its live view.</p>
+  <section class="connection" aria-label="Recognition status">
+    <div><div id="connection" role="status">Connecting to the Jetson…</div><p id="connection-detail">Checking face recognition.</p></div>
+    <button id="refresh" type="button">Refresh</button>
+  </section>
+  <form id="form" class="card">
+    <div class="field">
+      <label class="field-label" for="person">Who is this photo for?</label>
+      <select id="person" disabled><option value="">Enroll a new person</option></select>
+    </div>
+    <div class="field">
+      <label class="field-label" for="name">Your name</label>
+      <input id="name" type="text" maxlength="48" placeholder="e.g. Mehdi" autocomplete="given-name" required disabled>
+    </div>
+    <div class="field">
+      <span class="field-label">A photo of your face</span>
+      <label class="photo-area" for="photo">
+        <span id="photo-empty">
+          <svg class="camera" viewBox="0 0 32 32" fill="none" aria-hidden="true"><path d="M11 7l2-3h6l2 3h5a3 3 0 013 3v15a3 3 0 01-3 3H6a3 3 0 01-3-3V10a3 3 0 013-3h5z" stroke="currentColor" stroke-width="1.5"/><circle cx="16" cy="17" r="6" stroke="currentColor" stroke-width="1.5"/></svg>
+          <span class="photo-title">Take or choose a photo</span>
+          <span class="photo-subtitle" style="display:block">Front camera · one face · good light</span>
+        </span>
+        <img id="preview" alt="Your selected enrollment photo" hidden>
+        <input id="photo" type="file" accept="image/*" capture="user" aria-label="Take or choose a photo" disabled>
+      </label>
+      <p class="hint">Look into the camera. Add two or three photos from slightly different angles for a better match.</p>
+    </div>
+    <label class="consent" for="consent"><input id="consent" type="checkbox" disabled><span>This is my face, and I agree to recognition during this demo.</span></label>
+    <button id="enroll" type="submit" disabled>Enroll my face</button>
+    <p id="message" role="status" aria-live="polite" hidden></p>
+    <p class="privacy">Your photo is used once and discarded. A face template stays on the Jetson until you remove it.</p>
+  </form>
+  <section class="card" aria-labelledby="people-heading">
+    <div class="list-heading"><h2 id="people-heading">Enrolled people</h2><span id="count">0</span></div>
+    <div id="people"></div><p id="empty">No one is enrolled yet. Faces the rover does not recognize remain “Unknown.”</p>
+  </section>
+  <footer>Local face recognition · Farsight</footer>
+</main>
+<script>
+  'use strict';
+  const API = '/phone/identity/people';
+  const MAX_JPEG_BYTES = 4 * 1024 * 1024;
+  const ui = Object.fromEntries(['form','person','name','photo','preview','photo-empty','consent','enroll','message','connection','connection-detail','refresh','people','count','empty'].map(id => [id, document.getElementById(id)]));
+  let people = [];
+  let ready = false;
+  let busy = false;
+  let imageBase64 = '';
+  let photoVersion = 0;
+
+  function controls() {
+    for (const element of [ui.person, ui.name, ui.photo, ui.consent]) element.disabled = busy || !ready;
+    ui.name.readOnly = Boolean(ui.person.value);
+    ui.refresh.disabled = busy;
+    ui.enroll.disabled = busy || !ready || !imageBase64 || !ui.name.value.trim() || !ui.consent.checked;
+    ui.enroll.textContent = busy ? 'Working…' : ui.person.value ? 'Add this photo' : 'Enroll my face';
+    for (const button of ui.people.querySelectorAll('button')) button.disabled = busy;
+  }
+
+  function message(text, error = false) {
+    ui.message.textContent = text;
+    ui.message.hidden = !text;
+    ui.message.classList.toggle('error', error);
+  }
+
+  async function request(path, options = {}) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 20000);
+    try {
+      const response = await fetch(path, {...options, signal: controller.signal, cache: 'no-store'});
+      const text = await response.text();
+      let data;
+      try { data = JSON.parse(text); } catch { throw new Error('The demo returned an unexpected response. Try Refresh.'); }
+      if (!response.ok) {
+        const detail = data.detail || data.error;
+        throw new Error(typeof detail === 'string' ? detail : `Request failed (${response.status}). Try again.`);
+      }
+      return data;
+    } catch (error) {
+      if (error.name === 'AbortError') throw new Error('Connection timed out. Reopen the demo, then try Refresh.');
+      throw error;
+    } finally { clearTimeout(timer); }
+  }
+
+  function showPeople(selected = ui.person.value) {
+    ui.people.replaceChildren();
+    const first = document.createElement('option');
+    first.value = ''; first.textContent = 'Enroll a new person';
+    ui.person.replaceChildren(first);
+    for (const person of people) {
+      const option = document.createElement('option');
+      option.value = person.id; option.textContent = person.name + ' · add photo';
+      ui.person.append(option);
+      const row = document.createElement('div'); row.className = 'person';
+      const copy = document.createElement('div'); copy.className = 'person-copy';
+      const name = document.createElement('div'); name.className = 'person-name'; name.textContent = person.name;
+      const detail = document.createElement('div'); detail.className = 'person-detail';
+      detail.textContent = person.samples + (person.samples === 1 ? ' photo' : ' photos');
+      copy.append(name, detail);
+      const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'remove'; remove.textContent = 'Remove';
+      remove.addEventListener('click', () => removePerson(person));
+      row.append(copy, remove); ui.people.append(row);
+    }
+    ui.person.value = people.some(person => person.id === selected) ? selected : '';
+    if (ui.person.value) ui.name.value = people.find(person => person.id === selected).name;
+    ui.count.textContent = String(people.length);
+    ui.empty.hidden = people.length > 0;
+    controls();
+  }
+
+  async function refresh() {
+    busy = true; controls();
+    try {
+      const status = await request(API);
+      ready = Boolean(status.enabled && status.ready);
+      people = Array.isArray(status.people) ? status.people : [];
+      ui.connection.textContent = ready ? 'Ready to enroll' : status.enabled ? 'Recognition is starting' : 'Recognition is off';
+      ui.connection.classList.toggle('ready', ready);
+      ui['connection-detail'].textContent = ready ? 'Local recognition is ready on the Jetson.' : status.error || 'Enable face recognition on the Jetson, then tap Refresh.';
+      showPeople();
+    } catch (error) {
+      ready = false;
+      ui.connection.textContent = 'Cannot reach the Jetson';
+      ui.connection.classList.remove('ready');
+      ui['connection-detail'].textContent = error.message;
+    } finally { busy = false; controls(); }
+  }
+
+  function clearPhoto() {
+    photoVersion++;
+    imageBase64 = ''; ui.photo.value = ''; ui.preview.removeAttribute('src');
+    ui.preview.hidden = true; ui['photo-empty'].hidden = false; ui.consent.checked = false;
+    controls();
+  }
+
+  ui.photo.addEventListener('change', async () => {
+    const version = ++photoVersion;
+    const file = ui.photo.files[0];
+    imageBase64 = ''; ui.preview.hidden = true; ui['photo-empty'].hidden = false;
+    ui.consent.checked = false; message(''); controls();
+    if (!file) return;
+    if (file.size > 25 * 1024 * 1024) { message('Choose a photo smaller than 25 MB.', true); return; }
+    const url = URL.createObjectURL(file);
+    try {
+      const image = new Image();
+      await new Promise((resolve, reject) => {
+        image.onload = resolve;
+        image.onerror = () => reject(new Error('This photo could not be opened. Take a new photo or choose a JPEG or PNG.'));
+        image.src = url;
+      });
+      if (version !== photoVersion) return;
+      const scale = Math.min(1, 1280 / Math.max(image.naturalWidth, image.naturalHeight));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+      canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+      canvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height);
+      const dataUrl = canvas.toDataURL('image/jpeg', .85);
+      const encoded = dataUrl.split(',')[1];
+      const bytes = Math.floor(encoded.length * 3 / 4) - (encoded.endsWith('==') ? 2 : encoded.endsWith('=') ? 1 : 0);
+      if (bytes > MAX_JPEG_BYTES) throw new Error('This photo is too large. Take a new photo closer to your face.');
+      imageBase64 = encoded; ui.preview.src = dataUrl; ui.preview.hidden = false; ui['photo-empty'].hidden = true;
+    } catch (error) { if (version === photoVersion) message(error.message, true); }
+    finally { URL.revokeObjectURL(url); controls(); }
+  });
+
+  ui.form.addEventListener('submit', async event => {
+    event.preventDefault();
+    if (ui.enroll.disabled) return;
+    const payload = {name: ui.name.value.trim(), image: imageBase64, consent: true};
+    if (ui.person.value) payload.person_id = ui.person.value;
+    busy = true; message(''); controls();
+    try {
+      const person = await request(API, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)});
+      people = [...people.filter(existing => existing.id !== person.id), person];
+      clearPhoto(); showPeople(person.id);
+      message(person.name + ' is enrolled. Add another angle, or return to the live view.');
+    } catch (error) { message(error.message, true); }
+    finally { busy = false; controls(); }
+  });
+
+  async function removePerson(person) {
+    if (busy || !confirm('Remove ' + person.name + ' and their saved face template?')) return;
+    busy = true; message(''); controls();
+    try {
+      await request(API + '/' + encodeURIComponent(person.id), {method: 'DELETE'});
+      const selected = ui.person.value;
+      people = people.filter(existing => existing.id !== person.id);
+      if (selected === person.id) { ui.name.value = ''; clearPhoto(); }
+      showPeople(selected); message(person.name + ' was removed.');
+    } catch (error) { message(error.message, true); }
+    finally { busy = false; controls(); }
+  }
+
+  ui.person.addEventListener('change', () => {
+    const person = people.find(person => person.id === ui.person.value);
+    ui.name.value = person ? person.name : ''; clearPhoto(); message('');
+  });
+  ui.name.addEventListener('input', controls);
+  ui.consent.addEventListener('change', controls);
+  ui.refresh.addEventListener('click', refresh);
+  refresh();
+</script>
+</body>
+</html>
