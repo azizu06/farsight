@@ -95,18 +95,20 @@ python -m tools.pitch_metrics --url http://127.0.0.1:8443 \
 
 The board serves plain HTTP (TLS omitted, [jetson-runtime-results.md](jetson-runtime-results.md)), so `http://` is the default here.
 
-On the operator laptop, through the relay the Quest uses (control RTT and stream
-fps as the demo sees them over the real link):
+On the operator Mac, first keep `python -m tools.phone_usb` running as described
+in [phone-relay.md](phone-relay.md). Then use the same phone-owned route as the
+Quest (control RTT and stream fps as the demo sees them over the real link):
 
 ```sh
-python -m tools.demo --upstream http://<jetson>:8443   # separate terminal (HTTPS profile: https://<jetson>:8443 --ca-file ~/farsight-ca.pem)
+python -m tools.demo --upstream http://127.0.0.1:18443 --quest   # separate terminal
 python -m tools.pitch_metrics --url http://127.0.0.1:8080 --seconds 30 \
   --output pitch-relay.json --markdown pitch-relay.md
 ```
 
 Start the Jetson with `--h264` or the H.264 phase is skipped. Put a person in
-view of the camera during the run, or the detector reports no samples. Repeat
-once under cellular and once on USB/LAN; name the link in your notes.
+view of the camera during the run, or the detector reports no samples. Name the
+phone path and direct/DERP result in your notes. Do not use a direct Jetson or
+venue-LAN run as evidence for the phone-owned production path.
 
 | Reported | Source | Notes |
 |---|---|---|

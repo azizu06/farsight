@@ -10,16 +10,18 @@ const code = ts.transpileModule(source, { compilerOptions: {
 } }).outputText;
 const module = { exports: {} };
 let decode;
+let fetchRequests = 0;
+const documentFixture = { hidden: false };
 class ImageFixture {
   decode() { return new Promise(resolve => { decode = resolve; }); }
 }
 vm.runInNewContext(code, { exports: module.exports, require: () => ({}),
-  document: { hidden: false }, performance: { now: () => 100 },
+  document: documentFixture, performance: { now: () => 100 },
   AbortController, Image: ImageFixture, WebSocket: { OPEN: 1 }, window: { setTimeout, clearTimeout },
   URL: { createObjectURL: () => 'blob:fixture', revokeObjectURL: () => {} },
-  fetch: async () => ({ ok: true, headers: { get: key => ({
+  fetch: async () => { fetchRequests++; return ({ ok: true, headers: { get: key => ({
     'X-Frame-Id': '7', 'X-Frame-Age-Ms': '10', 'X-Frame-Source': 'SIMULATED',
-  })[key] }, blob: async () => ({ size: 15, type: 'image/jpeg' }) }),
+  })[key] }, blob: async () => ({ size: 15, type: 'image/jpeg' }) }); },
 });
 const prototype = module.exports.RoverExperience.prototype;
 
@@ -51,7 +53,40 @@ test('H264 enable cannot bypass the explicit bonded profile or write preferences
   assert.equal(view.videoToggle.checked, false);
 });
 
+test('immersive camera fetch continues when the browser hides the page surface', async () => {
+  documentFixture.hidden = true;
+  decode = undefined;
+  fetchRequests = 0;
+  const view = Object.create(prototype);
+  Object.assign(view, { h264Enabled: false, frameBusy: false, stopped: false,
+    renderer: { xr: { isPresenting: true, getSession: () => ({ visibilityState: 'visible' }) } }, getView: () => 'camera',
+    gate: { session: 'immersive-session' }, frame: null, frameId: 'old-frame' });
+  try {
+    const request = view.fetchFrame();
+    assert.equal(fetchRequests, 1, 'XR-visible camera polling must not use document.hidden as a stop signal');
+    while (!decode) await new Promise(resolve => setImmediate(resolve));
+    decode();
+    await request;
+    assert.equal(view.frameId, '7');
+    assert.equal(view.frameSource, 'SIMULATED');
+    assert.equal(view.frameBusy, false);
+  } finally {
+    documentFixture.hidden = false;
+  }
+});
+
+test('camera polling cadence uses the active render-loop clock', () => {
+  const view = Object.create(prototype);
+  let requests = 0;
+  Object.assign(view, { lastFramePoll: -Infinity, fetchFrame: () => { requests++; } });
+  view.pollCamera(100);
+  view.pollCamera(259);
+  view.pollCamera(260);
+  assert.equal(requests, 2, 'poll at most every 160 ms, independently of throttled window timers');
+});
+
 test('JPEG decode begun in an old control session cannot become the new session image', async () => {
+  decode = undefined;
   const view = Object.create(prototype);
   let cleared = 0;
   Object.assign(view, { h264Enabled: false, frameBusy: false, stopped: false,

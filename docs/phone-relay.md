@@ -7,6 +7,13 @@ Mac-to-Jetson commissioning USB unplugged. Physical driving, Quest playback and
 fault recovery still need the complete rig rehearsal. The optional direct
 Jetson tailnet path is a fallback; it is not required for the phone-owned path.
 
+This is the primary network contract for the production demo. Keep the Quest
+USB-C connected to the MacBook for the entire run; disable Quest, MacBook and
+Jetson Wi-Fi during qualification. The phones use cellular data for their
+Tailscale path. The rover phone's Personal Hotspot setting may be required for
+its cabled local USB network to the Jetson, but Quest and Jetson must not use
+that hotspot as a wireless app route. Venue Wi-Fi is never a demo dependency.
+
 ```text
 Quest Browser
   ↕ USB ADB reverse
@@ -279,3 +286,47 @@ proves cellular, Quest or physical motor behavior. Run the independent fault
 harness and the four wheels-up checks above before activation. Current unverified
 ARKit LiDAR also remains ineligible for physical driving; transport redundancy
 cannot remove that separate camera prerequisite.
+
+## Optional USB geometry lane
+
+The geometry lane is separate from camera and control traffic. With the updated
+operator bridge app, opt in to Mac `18445 → operator phone 8083`:
+
+```sh
+python -m tools.phone_usb --geometry --check
+python -m tools.phone_usb --geometry
+```
+
+The check requests GET `/geometry/status` on the geometry mapping and GET
+`/health` on the control mapping. An open TCP socket alone does not pass the
+geometry check. The phone must report geometry protocol 1, a boolean `ready`,
+and nonnegative integer anchor, vertex, triangle and dropped counts. If
+`ready` is false, start LiDAR mesh capture and keep both bridge apps foreground,
+then repeat the check. The report keeps successful control evidence even when
+the geometry check fails. It reports geometry readiness/counts separately and
+omits capture session identifiers and raw endpoint responses.
+
+`ready` describes the phone listener and its current captured mesh session. It
+does not qualify mesh rendering, cellular performance, physical camera timing,
+Quest latency or motor control. The geometry helper sends no control commands
+and does not change the 250 ms control lease or 500 ms view guard.
+
+To retain the optional pinned control fallback as well:
+
+```sh
+python -m tools.phone_usb --dual-route --geometry --check
+python -m tools.phone_usb --dual-route --geometry
+```
+
+This uses one USB-selected phone and one owned `iproxy` process for
+`18443 → 8081`, `18444 → 8082`, and `18445 → 8083`. Every local port is
+preflighted before startup; a partial listener or bind failure closes all owned
+mappings. All local ports must be distinct. `--geometry-local-port` overrides
+18445 only when `--geometry` is enabled. `--check` stops every mapping afterward;
+restart without it and keep the helper running for the geometry consumer.
+The printed next-step command still configures the camera/control relay;
+geometry consumer configuration is a separate step.
+
+The helper's automated evidence uses fake USB tools and real loopback HTTP/TCP
+forwarding. Connected-phone USB accessibility and actual ARKit mesh delivery
+remain device qualification steps.
