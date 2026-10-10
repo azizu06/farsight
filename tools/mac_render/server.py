@@ -14,6 +14,7 @@ import struct
 import subprocess
 import time
 from contextlib import suppress, asynccontextmanager
+from collections import deque
 from pathlib import Path
 
 from aiohttp import ClientSession, ClientTimeout, TCPConnector, WSMsgType, web
@@ -66,6 +67,8 @@ class RenderEncoder:
         self._pose_pump = None
         self.dropped_captures = 0
         self.last_snapshot = {}
+        self.capture_times = deque(maxlen=120)
+        self.fragment_times = deque(maxlen=120)
 
     async def start(self):
         if not shutil.which("ffmpeg"):
@@ -131,12 +134,13 @@ class RenderEncoder:
             "capture_mono_ms": captured if captured is not None else started * 1000,
             "capture_wall_ms": wall if wall is not None else time.time() * 1000,
             "render_ms": meta.get("renderMs") or 0,
-            "capture_ms": round((time.monotonic() - started) * 1000, 3),
+            "capture_ms": round(time.monotonic() * 1000 - (captured if captured is not None else started * 1000), 3),
             "source": meta.get("source") or "WAITING",
             "pose": meta.get("poseEcho", meta.get("pose")), "map": meta.get("mapStatus", meta.get("map")),
             "fov_y_deg": meta.get("fovY", 50), "aspect": meta.get("aspect", self.width / self.height),
         })
         del self.samples[:-600]
+        self.capture_times.append(time.monotonic())
         if self.process and self.process.stdin and self.process.returncode is None:
             self.process.stdin.write(jpeg)
             await self.process.stdin.drain()
@@ -184,6 +188,8 @@ class RenderEncoder:
                 sidecar["aspect"] = newest.get("aspect")
                 sidecar["timing_scope"] = "Mac atomic render request through encoded fragment; not camera or headset age"
                 sidecar["bytes"] = len(data)
+                sidecar["encode_pipeline_ms"] = max(0, time.monotonic() * 1000 - newest["capture_mono_ms"])
+                self.fragment_times.append((time.monotonic(), count))
                 sidecar["pose_to_frame_ms"] = pose_to_frame_ms(newest.get("pose"), newest["capture_mono_ms"])
                 self._publish({"sidecar": sidecar, "payload": data,
                                "keyframe": _is_keyframe(data)})
@@ -283,6 +289,12 @@ class App:
             "drawn_points": encoder.last_snapshot.get("drawnPoints", 0) if encoder else 0,
             "drawn_triangles": encoder.last_snapshot.get("drawnTriangles", 0) if encoder else 0,
             "map": encoder.last_snapshot.get("mapStatus") if encoder else None,
+            "capture_fps": ((len(encoder.capture_times) - 1) / (encoder.capture_times[-1] - encoder.capture_times[0]))
+                if encoder and len(encoder.capture_times) > 1 else None,
+            "encoded_frame_fps": (sum(row[1] for row in list(encoder.fragment_times)[1:]) /
+                (encoder.fragment_times[-1][0] - encoder.fragment_times[0][0]))
+                if encoder and len(encoder.fragment_times) > 1 else None,
+            "queued_fragments": sum(len(viewer.items) for viewer in encoder.viewers) if encoder else 0,
         })
 
     async def videotoolbox(self):
