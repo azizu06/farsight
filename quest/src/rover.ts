@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { ControlSafety, stick } from "./control-safety.js";
 import { H264Viewer } from "./h264";
+import { cameraCrop, croppedBox } from "./camera-view.js";
 
 type Box = { id?: number; cls: string; conf: number; x: number; y: number; w: number; h: number };
 type Detections = { frame: number | string; boxes: Box[]; fps?: number; source?: string; simulated?: boolean };
@@ -57,6 +58,8 @@ export class RoverExperience {
   private holdButton: HTMLButtonElement;
   private h264: H264Viewer;
   private h264Enabled = false;
+  private digitalPan = false;
+  private drawnPan = 0;
   private cameraScreen: THREE.Mesh;
   private lastVideoAt = 0;
   private dirty = true;
@@ -144,6 +147,13 @@ export class RoverExperience {
     });
     this.renderer.domElement.addEventListener("webglcontextlost", () => { this.contextLost = true; this.stop("Display lost: release deadman"); });
     this.renderer.domElement.addEventListener("webglcontextrestored", () => { this.contextLost = false; this.stop("Display restored: release deadman"); });
+    const cameraOption = document.createElement("label"); cameraOption.className = "camera-mount-option";
+    cameraOption.innerHTML = '<span>Camera mounting</span><select aria-label="Camera mounting mode"><option value="servo">Camera mounted on servo</option><option value="fixed">Fixed camera · digital look-around</option></select><small>Fixed mode crops measured pixels and keeps the physical pan command centered.</small>';
+    document.querySelector("#settings")!.append(cameraOption);
+    cameraOption.querySelector("select")!.onchange = event => {
+      this.digitalPan = (event.target as HTMLSelectElement).value === "fixed";
+      this.stop("Camera mount changed: release deadman"); this.dirty = true;
+    };
     this.connectControl(); this.connectDetections();
     this.timers.push(window.setInterval(() => this.pump(), 50));
     this.timers.push(window.setInterval(() => void this.fetchFrame(), 160));
@@ -287,6 +297,7 @@ export class RoverExperience {
     if (this.h264Enabled) {
       this.h264.update();
     }
+    if (this.digitalPan && Math.abs(this.input.pan - this.drawnPan) > 0.1) this.dirty = true;
     if (this.dirty || now - this.lastCanvasDraw > 100) this.drawCamera(now);
     if (now - this.lastHudAt > 100) { this.drawHUD(now); this.lastHudAt = now; }
   }
@@ -314,7 +325,7 @@ export class RoverExperience {
     this.socket.send(JSON.stringify({
       seq, session_id: this.status?.session_id ?? null, permit: this.status?.permit ?? null,
       deadman, v: deadman ? this.input.v : 0, w: deadman ? this.input.w : 0,
-      pan: this.input.pan, mode: "teleop", video_fresh: age < 500,
+      pan: this.digitalPan ? 0 : this.input.pan, mode: "teleop", video_fresh: age < 500,
       video_age_ms: Number.isFinite(age) ? Math.ceil(age) : 999999,
     }));
     this.lastSendAt = performance.now();
@@ -326,7 +337,8 @@ export class RoverExperience {
       if (this.canvas.width !== video.videoWidth || this.canvas.height !== video.videoHeight) {
         this.canvas.width = video.videoWidth; this.canvas.height = video.videoHeight;
       }
-      context.drawImage(video, 0, 0, this.canvas.width, this.canvas.height);
+      const crop = cameraCrop(video.videoWidth, video.videoHeight, this.input.pan, this.digitalPan);
+      context.drawImage(video, crop.x, crop.y, crop.width, crop.height, 0, 0, this.canvas.width, this.canvas.height);
       const decoded = this.h264.displayedFrame;
       if (decoded) {
         this.gate.acceptFrame(decoded.id, decoded.age, now);
@@ -337,7 +349,8 @@ export class RoverExperience {
       if (this.canvas.width !== this.frame.naturalWidth || this.canvas.height !== this.frame.naturalHeight) {
         this.canvas.width = this.frame.naturalWidth; this.canvas.height = this.frame.naturalHeight;
       }
-      context.drawImage(this.frame, 0, 0, this.canvas.width, this.canvas.height);
+      const crop = cameraCrop(this.frame.naturalWidth, this.frame.naturalHeight, this.input.pan, this.digitalPan);
+      context.drawImage(this.frame, crop.x, crop.y, crop.width, crop.height, 0, 0, this.canvas.width, this.canvas.height);
       if (this.pendingFrame) {
         const pending = this.pendingFrame;
         if (this.gate.acceptFrame(pending.id, pending.age + now - pending.at, now)) this.lastCanvasDraw = now;
@@ -352,8 +365,10 @@ export class RoverExperience {
         context.lineWidth = Math.max(2, this.canvas.width / 320);
         context.font = `${Math.max(14, this.canvas.width / 40)}px system-ui`;
         for (const box of this.detections!.boxes) {
-          const x = Math.max(0, box.x) * this.canvas.width, y = Math.max(0, box.y) * this.canvas.height;
-          context.strokeRect(x, y, Math.min(box.w, 1) * this.canvas.width, Math.min(box.h, 1) * this.canvas.height);
+          const visibleBox = croppedBox(box, crop, this.frame.naturalWidth, this.frame.naturalHeight);
+          if (!visibleBox) continue;
+          const x = visibleBox.x * this.canvas.width, y = visibleBox.y * this.canvas.height;
+          context.strokeRect(x, y, visibleBox.w * this.canvas.width, visibleBox.h * this.canvas.height);
           context.fillText(`${box.cls.slice(0, 30)} ${Math.round(box.conf * 100)}%`, x + 4, Math.max(18, y - 5));
         }
       }
@@ -363,6 +378,8 @@ export class RoverExperience {
       context.fillText("Waiting for rover camera", this.canvas.width / 2, this.canvas.height / 2);
       context.textAlign = "left";
     }
+    this.drawnPan = this.input.pan;
+    this.cameraScreen.scale.y = (this.canvas.height / this.canvas.width) / 0.75;
     this.cameraTexture.needsUpdate = true; this.dirty = false;
   }
   private drawHUD(now: number) {
@@ -376,7 +393,8 @@ export class RoverExperience {
     const range = this.status?.range_cm == null ? "range unknown" : `${Math.round(this.status.range_cm)} cm`;
     const detection = !this.detections ? "detector unavailable" : now - this.detectionsAt > 500 ? "detections stale" : String(this.detections.frame) !== this.frameId ? "detections awaiting matching frame" : `${this.detections.boxes.length} detections`;
     const drill = this.drillLine(now);
-    const detail = `${this.frameSource} · ${this.h264Enabled ? "H.264" : "JPEG"} video ${age} · ${ack} · ${range} · ${detection}${drill ? " · " + drill : ""}${this.h264Enabled && !this.h264.displayedFrame ? " · " + this.h264.state : ""}`;
+    const panMode = `${this.digitalPan ? "Digital pan (fixed camera)" : "Servo pan"} ${Math.round(this.input.pan)}°`;
+    const detail = `${this.frameSource} · ${panMode} · ${this.h264Enabled ? "H.264" : "JPEG"} video ${age} · ${ack} · ${range} · ${detection}${drill ? " · " + drill : ""}${this.h264Enabled && !this.h264.displayedFrame ? " · " + this.h264.state : ""}`;
     this.message.textContent = headline;
     this.message.dataset.state = moving ? "moving" : ready ? "unsafe" : "ready";
     this.details.textContent = `${detail}${this.status?.estop ? " · FORWARD BLOCKED" : ""}`;
@@ -386,7 +404,7 @@ export class RoverExperience {
     c.fillStyle = simulation ? "#ffc779" : ready ? "#ffb3a8" : "#a6edc4";
     c.font = "bold 32px system-ui"; c.fillText(headline.slice(0, 58), 28, 46);
     c.font = "24px system-ui"; c.fillStyle = "#dce5ee";
-    c.fillText(`${this.frameSource} · ${this.h264Enabled ? "H.264" : "JPEG"} video ${age} · ${range}`, 28, 90);
+    c.fillText(`${this.h264Enabled ? "H.264" : "JPEG"} video ${age} · ${range} · ${panMode}`, 28, 90);
     c.fillText(`${ack} · ${detection}${this.status?.estop ? " · FORWARD BLOCKED" : ""}`, 28, 126);
     if (drill) { c.font = "18px system-ui"; c.fillText(drill, 28, 150); }
     c.font = "22px system-ui";
