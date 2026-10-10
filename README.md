@@ -44,3 +44,7 @@ npm --prefix quest run build
 
 See [mapping architecture and wire format](docs/mapping.md). The earlier [rover/control contract](docs/interfaces.md)
 remains separate: this mapper does not command motors or implement detections.
+
+## Model licenses
+
+Person/pose detection uses Ultralytics YOLO11n-pose (`models/yolo11n-pose.onnx`, not committed), licensed AGPL-3.0. Run it with `FARSIGHT_DETECTOR=onnx` (needs `pip install -e 'jetson[onnx]'`); on the Jetson the TensorRT backend replaces it.

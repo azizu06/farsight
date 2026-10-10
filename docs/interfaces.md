@@ -25,7 +25,7 @@ All servers run on the Jetson, port `8443` (HTTPS). The mock server
 |---|---|
 | `GET /` | Quest WebXR app (built `quest/dist`) |
 | `GET /stream.mjpg` | Camera, MJPEG, 640x480, target 30 fps |
-| `GET /health` | `{"camera": bool, "detector_fps": float, "rover": bool, "estop": bool}` |
+| `GET /health` | `{"camera": bool, "detector_fps": float, "rover": bool, "estop": bool}` (the Jetson server also adds `detector`, `detector_ms`, `camera_fps`) |
 
 ## WebSocket `/ws/detections` (Jetson -> Quest), JSON, every inference
 
@@ -35,6 +35,18 @@ All servers run on the Jetson, port `8443` (HTTPS). The mock server
 ```
 
 Box coordinates are normalized 0..1, top-left origin, relative to the MJPEG frame.
+
+Optional pose fields (YOLO11-pose), present when the detector is a pose model:
+
+```json
+{"id": 3, "cls": "person", "conf": 0.91, "x": 0.41, "y": 0.22, "w": 0.18, "h": 0.55,
+ "kpts": [[0.50, 0.25, 0.97], "... 17 COCO keypoints, [x, y, conf], same normalization ..."],
+ "down": false}
+```
+
+- `kpts`: 17 COCO keypoints (nose, eyes, ears, shoulders, elbows, wrists, hips, knees, ankles), each `[x, y, conf]`. Omitted if the detector has no pose.
+- `down`: true when the person looks fallen (body axis more than 60 degrees from vertical, or a wide box when keypoints are unreliable). Omitted fields mean false/absent; clients must ignore unknown fields.
+- `id` is the index within the frame for now, not stable across frames.
 
 ## WebSocket `/ws/control` (Quest -> Jetson), JSON, 20 Hz while the deadman is held
 

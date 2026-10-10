@@ -21,6 +21,10 @@ class Config:
     port: int = 8443
     certfile: str = ""  # HTTPS for WebXR; empty = plain HTTP (fine on a laptop)
     keyfile: str = ""
+    detector: str = "onnx"  # none | onnx | tensorrt
+    model: str = "models/yolo11n-pose.onnx"  # .engine for tensorrt
+    conf_thres: float = 0.35
+    iou_thres: float = 0.45
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -34,4 +38,8 @@ class Config:
             port=int(_env("PORT", str(cls.port))),
             certfile=_env("CERTFILE", cls.certfile),
             keyfile=_env("KEYFILE", cls.keyfile),
+            detector=_env("DETECTOR", cls.detector),
+            model=_env("MODEL", cls.model),
+            conf_thres=float(_env("CONF", str(cls.conf_thres))),
+            iou_thres=float(_env("IOU", str(cls.iou_thres))),
         )
