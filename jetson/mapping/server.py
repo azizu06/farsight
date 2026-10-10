@@ -27,6 +27,8 @@ DIST = Path(__file__).resolve().parents[2] / "quest" / "dist"
 
 def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=False,
                detector="hog", detector_model=None, h264=False, mission_dir=None, max_pwm=100):
+    if (demo or simulate_rover) and serial_port:
+        raise ValueError("Simulated sources cannot be combined with a physical motor serial port")
     state = MapState(demo)
     camera_service = CameraService(state, device=camera_device)
     video_service = VideoService(camera_service, enabled=h264)
@@ -194,6 +196,15 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
     @app.get("/mission/report")
     async def report():
         return mission.report()
+
+    @app.get("/mission/snapshots/{name}")
+    async def mission_snapshot(name: str):
+        if not mission.directory or "/" in name or "\\" in name or not name.startswith("detection-") or not name.endswith(".jpg"):
+            raise HTTPException(404, "Mission snapshot unavailable")
+        path = mission.directory / name
+        if not path.is_file():
+            raise HTTPException(404, "Mission snapshot unavailable")
+        return Response(await asyncio.to_thread(path.read_bytes), media_type="image/jpeg")
 
     class DrillRequest(BaseModel):
         duration_s: int = 90
@@ -382,6 +393,8 @@ def main():
     args = parser.parse_args()
     if args.simulate_rover and args.serial_port:
         parser.error("--simulate-rover cannot be combined with --serial-port")
+    if args.demo and args.serial_port:
+        parser.error("A simulated camera cannot be used to drive physical motors")
     if args.demo and args.camera:
         parser.error("Choose --demo or a real --camera, not both")
     uvicorn.run(create_app(args.demo, camera_device=args.camera, serial_port=args.serial_port,

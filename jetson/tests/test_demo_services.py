@@ -16,6 +16,11 @@ from jetson.perception import PerceptionService, yolo_boxes
 
 
 class ServicesTests(unittest.TestCase):
+    def test_simulated_video_cannot_drive_physical_motors(self):
+        with self.assertRaises(ValueError):
+            create_app(demo=True, serial_port="/dev/ttyACM0")
+        with self.assertRaises(ValueError):
+            create_app(simulate_rover=True, serial_port="/dev/ttyACM0")
     def test_yolo_letterbox_person_coordinates_and_class_nms(self):
         prediction = np.zeros((1, 84, 8400), np.float32)
         prediction[0, :4, 0] = [320, 320, 320, 160]

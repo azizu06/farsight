@@ -37,7 +37,8 @@ class Mission:
                 image_name = f'detection-{self.saved_snapshots}-{frame.frame_id}.jpg'
                 save = self.directory is not None and self.saved_snapshots < 1000
                 event = dict(kind="detection", ts=time.time(), frame=frame.frame_id, source=frame.source,
-                             box=box, snapshot=image_name if save else None)
+                             box=box, snapshot=image_name if save else None,
+                             snapshot_url=f"/mission/snapshots/{image_name}" if save else None)
                 self.events.append(event)
                 if save:
                     (self.directory / image_name).write_bytes(frame.jpeg)

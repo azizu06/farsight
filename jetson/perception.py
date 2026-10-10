@@ -74,6 +74,7 @@ class PerceptionService:
         self.packet = dict(ts=0, frame=-1, fps=0, boxes=[], detector="disabled", source="WAITING")
         self.tracks = {}
         self.next_id = 1
+        self.last_inference = None
 
     def _setup(self):
         if self.model:
@@ -140,8 +141,11 @@ class PerceptionService:
                 try:
                     boxes = await asyncio.to_thread(self._detect, frame.jpeg)
                     duration = time.monotonic() - started
+                    completed = time.monotonic()
+                    rate = 1 / (completed - self.last_inference) if self.last_inference else 0
+                    self.last_inference = completed
                     # Inference results retain the input timestamp, not completion freshness.
-                    self.packet = dict(ts=time.time(), frame=frame.frame_id, fps=round(1 / max(duration, .001), 1),
+                    self.packet = dict(ts=time.time(), frame=frame.frame_id, fps=round(rate, 1), inference_ms=round(duration * 1000, 1),
                            boxes=self.track(boxes, time.monotonic()), detector=self.mode,
                            source=frame.source, received=frame.received, age_ms=frame.age_ms)
                     self.error = None
