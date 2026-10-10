@@ -69,7 +69,7 @@ reactive/no-range policy for that profile. [Firmware change](https://github.com/
 1. On the Jetson, check the installed profile without starting another server:
 
    ```sh
-   .venv/bin/python -m jetson.launch --check --env-file /etc/farsight.env
+   jetson/.venv/bin/python -m jetson.launch --check --env-file /etc/farsight.env
    ```
 
    The no-ultrasonic/no-servo rig needs its corresponding proximity/pan settings,
