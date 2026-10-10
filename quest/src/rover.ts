@@ -52,6 +52,7 @@ export class RoverExperience {
   private timers: number[] = [];
   private stopped = false;
   private frameBusy = false;
+  private lastFramePoll = -Infinity;
   private request: AbortController | null = null;
   private frameId = "";
   private pendingFrame: { id: string | null; age: number; at: number } | null = null;
@@ -269,7 +270,6 @@ export class RoverExperience {
     refreshHealth();
     this.timers.push(window.setInterval(refreshHealth, 2000));
     this.timers.push(window.setInterval(() => this.pump(), 50));
-    this.timers.push(window.setInterval(() => void this.fetchFrame(), 160));
     void this.fetchFrame();
     this.addAssistant();
   }
@@ -431,8 +431,17 @@ export class RoverExperience {
     this.dirty = true;
   }
 
+  /** Poll from the active display loop so immersive browsers cannot throttle the camera timer. */
+  private pollCamera(now: number) {
+    if (now - this.lastFramePoll < 160) return;
+    this.lastFramePoll = now;
+    void this.fetchFrame();
+  }
+
   private async fetchFrame() {
-    if (this.h264Enabled || this.frameBusy || document.hidden || this.stopped ||
+    const session = this.renderer.xr.isPresenting ? this.renderer.xr.getSession() : null;
+    const xrVisible = !!session && session.visibilityState !== "hidden";
+    if (this.h264Enabled || this.frameBusy || (document.hidden && !xrVisible) || this.stopped ||
         (!this.renderer.xr.isPresenting && this.getView() !== "camera")) return;
     this.frameBusy = true;
     const start = performance.now();
@@ -471,6 +480,7 @@ export class RoverExperience {
 
   update(now: number, frame?: XRFrame) {
     const xr = this.renderer.xr.isPresenting;
+    this.pollCamera(now);
     const session = this.renderer.xr.getSession();
     if (xr && session) {
       const sources = [...session.inputSources];
