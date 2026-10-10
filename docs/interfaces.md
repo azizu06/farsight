@@ -582,9 +582,13 @@ revokes the credential. Camera, displayed view, serial, proximity, lease and
 release guards remain authoritative throughout. Evidence recording remains
 once per logical stream at 20 Hz and contains no attachment credential.
 
-The associated relay and phone dual-listener mode are under integration. Initial
-redundant view delivery uses complete bounded JPEG responses, with original age
-headers and Quest decode/display checks. H.264 streams cannot be spliced across
+The relay flag `--bonded-upstream` and operator phone pinned dual-listener mode
+are opt-in. Mac USB forwarding uses `tools.phone_usb --dual-route` (18443/18444
+to phone8081/8082). Redundant view delivery uses complete bounded JPEG responses,
+with original age headers and Quest decode/display checks. Health adds
+`relay_transport.profile: "bonded-jpeg"`; Quest restricts that profile to JPEG
+without overwriting its saved video preference. The initial relay does not
+automatically reattach a lost path; the surviving attached path remains active. H.264 streams cannot be spliced across
 routes and are not included in this continuity claim. The full two-path software
 fault harness and actual phone/Quest/wheels-up rehearsal remain required.
 

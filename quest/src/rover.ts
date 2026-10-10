@@ -122,6 +122,7 @@ export class RoverExperience {
   private holdButton: HTMLButtonElement;
   private h264: H264Viewer;
   private h264Enabled = false;
+  private bondedJPEG = false;
   private digitalPan = false;
   private settings = loadSettings();
   private mountSelect!: HTMLSelectElement;
@@ -250,7 +251,7 @@ export class RoverExperience {
     this.setMount(this.settings.values.mount === "fixed", false);
     this.connectControl(); this.connectDetections();
     if (this.settings.values.h264) this.setVideo(true, false);
-    const refreshHealth = () => void this.sourceTruth.refresh().then(() => { this.applyRoverMount(); this.applyVoiceAvailability(); });
+    const refreshHealth = () => void this.sourceTruth.refresh().then(() => { this.applyRoverMount(); this.applyVoiceAvailability(); this.applyTransportProfile(); });
     refreshHealth();
     this.timers.push(window.setInterval(refreshHealth, 2000));
     this.timers.push(window.setInterval(() => this.pump(), 50));
@@ -317,7 +318,16 @@ export class RoverExperience {
     if (whisper && this.settings.values.voice) this.voice.restoreVR();
     this.dirty = true;
   }
+  private applyTransportProfile() {
+    if (this.stopped || !this.sourceTruth.health) return;
+    const health = this.sourceTruth.health as { relay_transport?: { profile?: string } };
+    this.bondedJPEG = health.relay_transport?.profile === "bonded-jpeg";
+    this.videoToggle.disabled = this.bondedJPEG;
+    this.videoToggle.title = this.bondedJPEG ? "Dual-route prototype uses redundant JPEG frames" : "";
+    if (this.bondedJPEG) this.setVideo(false, false);
+  }
   private setVideo(enabled: boolean, save: boolean) {
+    if (enabled && this.bondedJPEG) { this.videoToggle.checked = false; return; }
     if (save) saveSettings(pageStorage(), { h264: enabled });
     this.videoToggle.checked = enabled;
     if (enabled === this.h264Enabled) return;
@@ -351,8 +361,10 @@ export class RoverExperience {
       try {
         const next = JSON.parse(event.data) as ControlStatus;
         const newPermit = next.permit !== this.status?.permit;
+        const newSession = next.session_id !== this.gate.session;
         if (this.gate.acceptStatus(next, performance.now())) {
           this.status = next;
+          if (newSession) this.resetSessionView();
           this.nav = parseNav(next.nav);
           // The next held heartbeat after end_scan reports release_required before most status ticks; pollScan decides complete vs aborted.
           if ((this.scanning || (this.scanPending && !this.scanPendingCancelled)) && next.requires_release && (next.reason === "scan_finished" || next.reason === "release_required")) this.scanCompleting = true;
@@ -395,11 +407,21 @@ export class RoverExperience {
     };
   }
 
+  private resetSessionView() {
+    this.request?.abort(); this.pendingFrame = null;
+    this.frame = null; this.frameId = ""; this.lastCanvasDraw = -Infinity;
+    this.detections = null; this.detectionFrames.clear();
+    this.sent.clear(); this.lastDeadman = false; this.lastSendAt = performance.now();
+    if (this.h264Enabled) { this.h264.stop(); this.h264.start(); }
+    this.dirty = true;
+  }
+
   private async fetchFrame() {
     if (this.h264Enabled || this.frameBusy || document.hidden || this.stopped ||
         (!this.renderer.xr.isPresenting && this.getView() !== "camera")) return;
     this.frameBusy = true;
     const start = performance.now();
+    const controlSession = this.gate.session;
     const controller = new AbortController(); this.request = controller;
     const timeout = window.setTimeout(() => controller.abort(), 750);
     let url = "";
@@ -418,7 +440,7 @@ export class RoverExperience {
       await image.decode();
       const now = performance.now();
       this.decodeMs = now - decodeStart;
-      if (this.stopped || controller.signal.aborted || this.h264Enabled) return;
+      if (this.stopped || controller.signal.aborted || this.h264Enabled || this.gate.session !== controlSession) return;
       this.frame = image; this.frameSource = source;
       this.frameId = id ?? "";
       // Server capture age + full request/decode time bounds transit age without synchronized clocks.
@@ -699,6 +721,7 @@ export class RoverExperience {
   }
   private send(deadman: boolean) {
     if (this.socket?.readyState !== WebSocket.OPEN || this.socket.bufferedAmount > 0) return;
+    if (!this.status || typeof this.status.session_id !== "string" || this.status.session_id !== this.gate.session) return;
     const age = this.gate.videoAge(performance.now());
     const seq = this.seq++;
     this.sent.set(seq, performance.now());

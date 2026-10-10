@@ -64,8 +64,11 @@ def forward_headers(headers):
             if key.lower() not in HOP_HEADERS | extra}
 
 
-def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5):
+def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5, bonded_upstream=None):
     origin = upstream_origin(upstream)
+    second = upstream_origin(bonded_upstream) if bonded_upstream is not None else None
+    if second == origin:
+        raise ValueError("Bonded upstreams must be distinct routes to the same Jetson")
     dist = Path(dist).resolve()
     tls = ssl.create_default_context(cafile=ca_file)
 
@@ -94,15 +97,25 @@ def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5):
             connector=aiohttp.TCPConnector(limit=16, ssl=tls))
         app["control"] = aiohttp.ClientSession(timeout=timeout,
             connector=aiohttp.TCPConnector(limit=4, ssl=tls))
-        yield
-        await app["http"].close()
-        await app["control"].close()
+        if second is not None:
+            from .bonded_relay import BondedRelay
+            app["bonded"] = BondedRelay((origin, second), app["control"], app["http"])
+        try:
+            yield
+        finally:
+            if second is not None:
+                await app["bonded"].close()
+            await app["http"].close()
+            await app["control"].close()
 
     app.cleanup_ctx.append(sessions)
 
     async def relay_health(request):
-        return web.json_response({"relay": True, "upstream": str(origin),
-                                  "quest_built": (dist / "index.html").is_file()},
+        packet = {"relay": True, "upstream": str(origin),
+                  "quest_built": (dist / "index.html").is_file()}
+        if second is not None:
+            packet["transport"] = app["bonded"].status()
+        return web.json_response(packet,
                                  headers={"Cache-Control": "no-store"})
 
     async def websocket(request, target):
@@ -147,7 +160,7 @@ def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5):
                         if not client_to_rover:
                             # Assistant/telemetry messages may contain absolute audio URLs.
                             with suppress(ValueError, TypeError):
-                                data = json.dumps(rewrite_json(json.loads(data), origin))
+                                data = json.dumps(rewrite_json(json.loads(data), target.origin()))
                         await asyncio.wait_for(destination.send_str(data), deadline)
                     elif message.type == aiohttp.WSMsgType.BINARY:
                         if control:
@@ -181,7 +194,25 @@ def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5):
 
     async def proxy(request):
         # origin and path are constructed separately; //host cannot change destination.
-        target = origin.with_path(request.rel_url.raw_path, encoded=True).with_query(request.query)
+        route = origin
+        if second is not None:
+            bond = app["bonded"]
+            if request.path == "/ws/control" and request.headers.get("Upgrade", "").lower() == "websocket":
+                return await bond.control(request)
+            if request.path in ("/ws/video", "/stream.mjpg") or request.path.startswith("/video/"):
+                raise web.HTTPNotImplemented(text="Bonded prototype supports complete JPEG frames only")
+            if request.method == "GET" and request.path in ("/camera.jpg", "/health"):
+                reply = await bond.race_get(request.path)
+                headers = forward_headers(reply.headers)
+                headers["Cache-Control"] = "no-store"
+                if request.path == "/health":
+                    packet = rewrite_json(json.loads(reply.body), reply.origin)
+                    packet["relay_transport"] = bond.status()
+                    headers.pop("Content-Encoding", None)
+                    return web.Response(body=json.dumps(packet).encode(), headers=headers)
+                return web.Response(body=reply.body, headers=headers)
+            route = bond.preferred_origin()
+        target = route.with_path(request.rel_url.raw_path, encoded=True).with_query(request.query)
         if request.headers.get("Upgrade", "").lower() == "websocket":
             return await websocket(request, target)
         response = None
@@ -196,8 +227,8 @@ def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5):
                 headers = forward_headers(remote.headers)
                 headers["Cache-Control"] = "no-store"
                 if "Location" in headers:
-                    redirect = origin.join(URL(headers["Location"]))
-                    if redirect.origin() != origin:
+                    redirect = route.join(URL(headers["Location"]))
+                    if redirect.origin() != route:
                         raise web.HTTPBadGateway(text="Upstream redirect would bypass USB")
                     headers["Location"] = str(redirect.relative())
                 if remote.content_type == "application/json":
@@ -209,7 +240,7 @@ def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5):
                         chunks.append(chunk)
                     data = b"".join(chunks)
                     # JSON must be decoded before URL replacement, never string-replaced.
-                    data = json.dumps(rewrite_json(json.loads(data), origin)).encode()
+                    data = json.dumps(rewrite_json(json.loads(data), route)).encode()
                     headers.pop("Content-Encoding", None)
                     return web.Response(body=data, status=remote.status, headers=headers)
                 response = web.StreamResponse(status=remote.status, headers=headers)
@@ -226,6 +257,8 @@ def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5):
             raise web.HTTPBadGateway(text=f"Rover unavailable: {type(exc).__name__}")
 
     async def dispatch(request):
+        if request.path == "/ws/control/bonded":
+            raise web.HTTPForbidden(text="Private upstream attachment endpoint")
         if is_proxied(request.path):
             return await proxy(request)
         if request.method not in ("GET", "HEAD"):
@@ -247,12 +280,13 @@ def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--upstream", required=True, help="Jetson http(s) origin on Tailscale")
+    parser.add_argument("--bonded-upstream", help="Opt-in second route to the same --bonded-control Jetson; JPEG only")
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--dist", type=Path, default=DIST)
     parser.add_argument("--ca-file", help="Trusted CA PEM for a private upstream certificate")
     args = parser.parse_args()
     try:
-        app = create_app(args.upstream, args.dist, args.ca_file)
+        app = create_app(args.upstream, args.dist, args.ca_file, bonded_upstream=args.bonded_upstream)
     except (ValueError, OSError) as exc:
         parser.error(str(exc))
     web.run_app(app, host="127.0.0.1", port=args.port, access_log=None,

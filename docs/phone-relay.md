@@ -196,3 +196,86 @@ loss, both-path loss and required-release checks with the actual two phones,
 Jetson, Quest and wheels lifted. Record recovery time, chosen paths, video age
 and zero-output evidence. Do not replace the primary or declare fault recovery
 qualified based only on compilation or portable fixtures.
+
+## Experimental bonded controller and pinned routes
+
+This mode is explicit and **off by default**. It keeps one Quest-to-Mac control
+socket while the Mac fans each fresh command over two attached paths to one
+logical Jetson owner. A single attached-path loss can preserve control only
+while the survivor delivers valid permits and displayed video inside the
+unchanged guards. Losing both paths stops immediately and requires release.
+The routes share equipment and possibly cellular infrastructure; they do not
+cover every outage. See the exact [bonded v1 contract](interfaces.md#opt-in-bonded-upstream-control-experimental-v1).
+
+Prepare the optional direct Jetson forwarder described above. On the operator
+phone, stop the bridge and enable **Pinned dual routes for host broker**. This
+is mutually exclusive with automatic connection-time fallback. Enter the rover
+phone primary address and direct Jetson fallback address, then Start. Wait for
+both per-route rows to report ready:
+
+- Phone loopback `8081` forwards only to rover-phone `8081`.
+- Phone loopback `8082` forwards only to direct Jetson `8081`.
+
+Neither listener races upstreams or replays bytes. Both addresses are validated
+before startup, and either listener bind failure tears down both. An individual
+upstream pair failing leaves the other listener available. Operator background
+recovery re-arms both; manual Stop clears both and its restart intent.
+
+Use the same USB-selected phone for both Mac mappings:
+
+```sh
+python -m tools.phone_usb --dual-route --check
+```
+
+The check separately probes GET `/health` on both mappings, reports sanitized
+results, and stops its one owned `iproxy` process. It neither opens control nor
+proves both origins reach the same backend. Then run:
+
+```sh
+python -m tools.phone_usb --dual-route
+```
+
+This keeps Mac `18443 → phone 8081` and `18444 → phone 8082` alive, with USB-only
+selection and loopback binding. A startup failure cleans up both mappings.
+Configure the Jetson server with `--bonded-control` through its normal owner and
+service process; do not launch a second process that competes for its camera or
+serial port. Finally, on the Mac:
+
+```sh
+python -m tools.demo --upstream http://127.0.0.1:18443 \
+  --bonded-upstream http://127.0.0.1:18444 --quest
+```
+
+The relay privately attaches both paths to the same owner and filters attachment
+credentials out of Quest/status/reports. A wrong-backend second route cannot
+join the owner or supply its driving image. Each fresh command is sent once to
+live routes by independent bounded writers. A blocked writer is retired rather
+than delaying the healthy route or creating a command replay queue. Status
+ordinals suppress late duplicate statuses. Private `/ws/control/bonded` is not
+exposed through the browser proxy. Other newly initiated requests choose one
+validated surviving route; mutations such as POST `/scan` are never retried.
+
+The prototype uses redundant **complete JPEG** responses, preserving age/source
+headers and normal Quest image decode/display checks. It permits four concurrent
+HTTP races with at most eight candidate jobs and 2 MiB per response; excess
+requests fail rather than queue. Health reports the actual backend encoder state
+plus `relay_transport.profile: "bonded-jpeg"`. Quest disables H.264 while this
+profile is active, without overwriting the saved video preference. H.264 and
+MJPEG streams are rejected in this mode because stream continuity is not yet
+implemented. Redundant JPEG increases cellular traffic; record that overhead
+and surviving-path performance before using it on the real link.
+
+A lost path is not automatically reattached in this initial prototype. The
+survivor stays active; a new stopped controller session attempts both routes
+again. There is no silent new owner after the last-path fault. This limitation
+and actual RTT/view margins must appear in the qualification report.
+
+Software evidence includes a canonical simulated backend through two independent
+fault proxies, shared-owner continuity through one loss, last-loss zero output,
+wrong-backend exclusion, no private welcome exposure, old status/release copies,
+blocked writer isolation at 40 Hz, complete-body selection and bounded cleanup.
+Phone fixtures separately cover pinned listeners and background recovery. None
+proves cellular, Quest or physical motor behavior. Run the independent fault
+harness and the four wheels-up checks above before activation. Current unverified
+ARKit LiDAR also remains ineligible for physical driving; transport redundancy
+cannot remove that separate camera prerequisite.

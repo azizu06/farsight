@@ -173,7 +173,10 @@ export class H264Viewer {
   stop(clearState = true) {
     this.stopped = true; this.connecting = false; window.clearTimeout(this.retry);
     if (this.callbackSupported) this.video.cancelVideoFrameCallback(this.frameCallback);
-    if (this.socket) { this.socket.onclose = null; this.socket.close(); }
+    if (this.socket) {
+      this.socket.onclose = null; this.socket.onmessage = null;
+      this.socket.onopen = null; this.socket.onerror = null; this.socket.close();
+    }
     this.socket = null; this.cleanMedia();
     if (clearState) this.state = "H.264 preview stopped";
   }

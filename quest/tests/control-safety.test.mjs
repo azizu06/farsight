@@ -35,6 +35,23 @@ test("duplicate decoded images and malformed freshness cannot renew video", () =
   assert.equal(gate.acceptFrame(null, 0, 1000), false);
   assert.equal(gate.videoAge(1000), 910);
 });
+test("a new logical controller cannot use the preceding session's fresh image", () => {
+  const gate = ready();
+  gate.acceptStatus({ ...status, session_id: "two" }, 110);
+  assert.equal(gate.frameId, null);
+  assert.equal(gate.videoAge(110), Infinity);
+  gate.decide(false, 111);
+  assert.equal(gate.decide(true, 112), false, "release alone does not replace fresh pixels");
+  gate.acceptFrame("1", 10, 120);
+  gate.decide(false, 121);
+  assert.equal(gate.decide(true, 122), true, "a new image may reuse a restarted frame number");
+});
+test("same logical session status keeps its fresh image during an upstream path change", () => {
+  const gate = ready();
+  gate.acceptStatus({ ...status, permit: "new-permit" }, 110);
+  assert.equal(gate.frameId, "1");
+  assert.equal(gate.decide(true, 111), true);
+});
 test("disconnect, server session changes, rover loss, and permit silence require release", () => {
   for (const fault of [
     gate => gate.decide(true, 110, false),
