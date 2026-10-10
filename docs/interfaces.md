@@ -239,10 +239,10 @@ Each `encounters[]` entry also gains `key` and `sbar` (the same object or `null`
 ## `/health.camera_pan` (Jetson -> Quest), default camera mount
 
 Optional `camera_pan: bool` is `true` only when the server runs with `--scan-pan` (a physical
-pan servo is installed). The Quest viewer uses it only when the operator has chosen no mount
+pan servo is installed). Python and Rust servers both report it. The Quest viewer uses it only when the operator has chosen no mount
 (`?mount=` or a saved choice): `false` selects the fixed mount, which sends `pan: 0`, so head
 yaw never trips the server's and Uno's off-center forward block. A missing field (older
-servers, the Rust port) keeps the servo default. It never changes any safety rule.
+servers) keeps the servo default. It never changes any safety rule.
 
 ## `POST /speak` (Quest -> Jetson), survivor phrases
 
