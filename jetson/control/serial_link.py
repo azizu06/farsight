@@ -53,7 +53,16 @@ class SerialPump:
                 if factory is None:
                     import serial
                     factory = serial.Serial
-                device = factory(self.port, 115200, timeout=0, write_timeout=0.04)
+                # Non-blocking writes: pyserial's write_timeout fires on GIL stalls even
+                # after bytes queue; Uno watchdog and reply timeout prove liveness.
+                device = factory(self.port, 115200, timeout=0, write_timeout=0)
+
+                def send(data):
+                    if getattr(device, "out_waiting", 0) > 256:
+                        raise OSError("Uno serial output stalled")
+                    count = device.write(data)
+                    if count is not None and count != len(data):
+                        raise OSError("Uno serial write incomplete")
                 # Uno's USB open can reset its bootloader; no motion survives
                 # opening or reconnect. Wait without blocking the web server.
                 if self.quit.wait(2):
@@ -61,7 +70,7 @@ class SerialPump:
                 device.reset_input_buffer()
                 device.reset_output_buffer()
                 servo = self.state.pan_mount == "servo"
-                device.write(b"M 0 0\nP 90\nR\n" if servo else b"M 0 0\nR\n")
+                send(b"M 0 0\nP 90\nR\n" if servo else b"M 0 0\nR\n")
                 pending, started = bytearray(), time.monotonic()
                 last_response = started
                 next_tick, next_range, last_pan, settle_at = started, started, 90, started
@@ -100,7 +109,7 @@ class SerialPump:
                         if now >= next_range:
                             data += "R\n"
                             next_range = now + 0.1
-                        device.write(data.encode("ascii"))
+                        send(data.encode("ascii"))
                         next_tick = now + 0.05
                     self.quit.wait(0.005)
             except Exception as exc:
