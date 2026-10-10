@@ -33,7 +33,7 @@ explicit ray-cast camera/map and virtual rover sources. See
 |---|---|
 | `GET /` | Quest WebXR app (built `quest/dist`) |
 | `GET /stream.mjpg` | Camera, MJPEG, 640x480, 15 fps by default (camera capture loop, `jetson/camera.py`) |
-| `GET /health` | `{"camera": bool, "detector_fps": float, "rover": bool, "estop": bool}` |
+| `GET /health` | `{"camera": bool, "detector_fps": float, "rover": bool, "estop": bool}`; optional `camera_pan: bool` (see below) |
 | `GET /camera.jpg` | Latest JPEG; `X-Frame-Id`, `X-Frame-Age-Ms`, `X-Frame-Source`; no-store |
 | `GET /control/status` | Read-only control status; no usable permit |
 | `GET /mission/report` | Evidence, persistence/source labels, drill results |
@@ -235,6 +235,14 @@ template stays with a `warning`. `report.triage` maps encounter key (`"<source>:
 Each `encounters[]` entry also gains `key` and `sbar` (the same object or `null`). With
 `--mission-dir`, notes append to `triage.jsonl` and `report.json` is rewritten on every note.
 `/health` gains `triage: {"enabled", "pending", "generated", "last_ms", "min_interval_s"}`.
+
+## `/health.camera_pan` (Jetson -> Quest), default camera mount
+
+Optional `camera_pan: bool` is `true` only when the server runs with `--scan-pan` (a physical
+pan servo is installed). Python and Rust servers both report it. The Quest viewer uses it only when the operator has chosen no mount
+(`?mount=` or a saved choice): `false` selects the fixed mount, which sends `pan: 0`, so head
+yaw never trips the server's and Uno's off-center forward block. A missing field (older
+servers) keeps the servo default. It never changes any safety rule.
 
 ## `POST /speak` (Quest -> Jetson), survivor phrases
 

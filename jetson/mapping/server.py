@@ -154,6 +154,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
         rover = control.status()
         status.update(perception.health())
         status.update(replay=replay is not None, recording=record, rover=rover["rover"], estop=rover["estop"], control=rover,
+                      camera_pan=scan_pan,
                       detector=perception.mode, detector_error=perception.error,
                       detector_fps=perception.snapshot()["fps"] if perception.snapshot()["fresh"] else 0,
                       video=dict(enabled=h264, ready=video_service.ready, error=video_service.error,

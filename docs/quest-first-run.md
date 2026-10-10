@@ -72,20 +72,34 @@ top: **SIMULATED** in rehearsal, **LIVE** only with real rover and camera proof.
 ## 5. Settings before entering VR
 
 Settings close when VR starts and are not reachable from inside VR, so choose
-them first (Escape on a keyboard, or the Settings button):
+them first (Escape on a keyboard, or the Settings button). The browser saves
+each choice for the next load of the same address. The URL can also set
+them, which beats a saved choice and is saved in turn, so one deep link sets up
+the headset:
 
-- **H.264 video**: tick for the cellular demo. If the HUD then reads
+```
+http://localhost:8080/?mount=fixed&h264=1&voice=1&diag=1
+```
+
+- **H.264 video** (`h264=0|1`): tick for the cellular demo. If the HUD then reads
   *H.264 codec unsupported* or never shows *decoded frame verified*, untick it
   and stay on JPEG; Quest 2 H.264 playback is not yet verified.
-- **Camera mounting**: servo, or fixed with digital look-around.
-- **Enable in-VR voice**: press once and accept the microphone prompt. The
-  browser asks only on this secure origin; if the prompt never appears, voice
-  stays unavailable and text questions in settings still work. Revoke or reset
-  it under Quest Browser site settings.
-- **Diagnostics overlay**: optional (also `?diag=1` in the URL, or **I** on a
-  desktop keyboard). Shows fps, frame time p95, JS time p95, video age, decode
-  time, control RTT, server link time and the source, on the desktop page and
-  on a panel to the lower right of the camera in VR.
+- **Camera mounting** (`mount=fixed|servo`): use **fixed** for the phone camera.
+  Servo mode sends head yaw as pan, and both the Jetson and the Uno block
+  forward driving when pan is more than 10° off center. With nothing chosen,
+  the viewer follows the rover: `/health.camera_pan` false (no `--scan-pan`)
+  selects fixed. The HUD's second line names the mount and video format, for
+  example `JPEG video 80 ms · 120 cm · Fixed mount · digital pan 0°`.
+- **Enable in-VR voice** (`voice=1`): press once and accept the microphone
+  prompt. Once enabled, later loads ask for the microphone again on their own
+  (silently when the permission is remembered). The browser asks only on this
+  secure origin; if the prompt never appears, voice stays unavailable and text
+  questions in settings still work. Revoke or reset it under Quest Browser site
+  settings.
+- **Diagnostics overlay** (`diag=1`, or **I** on a desktop keyboard): optional.
+  Shows fps, frame time p95, JS time p95, video age, decode time, control RTT,
+  server link time and the source, on the desktop page and on a panel to the
+  lower right of the camera in VR.
 
 ## 6. Enter VR and check the controllers
 

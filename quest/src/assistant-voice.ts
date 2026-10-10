@@ -35,8 +35,11 @@ export class AssistantVoice {
   private removeCloseListener: () => void;
   private ptt = false;
   private enableButton: HTMLButtonElement;
-  /** Opt-in from a settings click, so the headset never prompts for the microphone unasked. */
+  /** Opt-in from a settings click, or `voice=1` saved/deep-linked by the operator (viewer-settings.js),
+   * so the headset never prompts for the microphone unasked. */
   vrEnabled = false;
+  /** Called once the microphone permission for in-VR voice is granted. */
+  onVREnabled: () => void = () => {};
   phase: VoicePhase = "idle";
 
   constructor(
@@ -93,6 +96,8 @@ export class AssistantVoice {
     return Boolean(fresh);
   }
   dismissAction() { this.clearAction("Proposal dismissed."); }
+  /** Re-enable in-VR voice saved from an earlier visit; no-op where recording is unavailable. */
+  restoreVR() { if (!this.enableButton.disabled) void this.enableVR(); }
   private async enableVR() {
     if (this.disposed || this.vrEnabled) return;
     this.enableButton.disabled = true;
@@ -103,6 +108,7 @@ export class AssistantVoice {
       if (this.disposed) return;
       this.vrEnabled = true; this.enableButton.textContent = "In-VR voice enabled (hold left trigger)";
       this.say("In-VR voice enabled: in the headset, hold the left trigger to ask and release to send.", "idle");
+      this.onVREnabled();
     } catch (error) {
       this.enableButton.disabled = false;
       this.say(`Microphone permission not granted: ${String(error)}. In-VR voice stays off.`, "error");

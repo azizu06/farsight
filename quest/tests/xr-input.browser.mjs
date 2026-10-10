@@ -552,6 +552,128 @@ try {
   await page.waitForTimeout(600);
   assert.ok(mapUrls.length >= 2, "released deadman resumes authoritative map subscription");
   result.cellularTransfers = { pointPulls, meshPulls, jpegSuppressed: true, deadmanPause: true, resumed: true };
+
+  // Camera mount: ?mount=fixed persists, wins over a rover that reports a pan servo,
+  // and keeps head yaw out of the pan command so the server never blocks forward.
+  const mountContext = await browser.newContext();
+  const controlMessages = [];
+  await mountContext.routeWebSocket("**/ws/**", (socket) => {
+    if (!socket.url().endsWith("/ws/control")) return socket.close();
+    let session = `mount-${controlMessages.length}-${Math.random()}`;
+    socket.onMessage((data) => {
+      const message = JSON.parse(String(data));
+      controlMessages.push(message);
+      // Mirrors jetson/control/state.py forward_blocked(): pan off-center blocks forward.
+      const blocked = Math.abs(message.pan) > 10;
+      socket.send(JSON.stringify({
+        type: "status", session_id: session, permit: `permit-${message.seq}`, permit_ms: 250, seq: message.seq,
+        rover: true, simulated: true, range_cm: 120, estop: blocked,
+        reason: message.deadman && message.v > 0 && blocked ? "forward_blocked" : null,
+      }));
+    });
+  });
+  await mountContext.route("**/camera.jpg", (route) => route.fulfill({ status: 503, body: "" }));
+  let reportsPan = true;
+  await mountContext.route("**/health", (route) => route.fulfill({
+    contentType: "application/json",
+    body: JSON.stringify({ replay: false, rover: true, camera: true, camera_source: "SIMULATED", control: { simulated: true },
+      ...(reportsPan === null ? {} : { camera_pan: reportsPan }) }),
+  }));
+  const mountPage = await mountContext.newPage();
+  const mountValue = () => mountPage.locator('select[aria-label="Camera mounting mode"]').first().inputValue();
+  await mountPage.goto(`${origin}/?mount=fixed`);
+  await mountPage.waitForTimeout(500);
+  assert.equal(await mountValue(), "fixed", "?mount=fixed beats camera_pan:true");
+  await mountPage.goto(origin);
+  await mountPage.waitForTimeout(500);
+  assert.equal(await mountValue(), "fixed", "reload without the query keeps the saved mount");
+  await mountPage.evaluate(async () => {
+    const { RoverExperience } = await import("/src/rover.ts");
+    const THREE = await import("/node_modules/three/build/three.module.js");
+    const renderer = new THREE.WebGLRenderer();
+    const camera = new THREE.PerspectiveCamera(75, 4 / 3, 0.01, 100);
+    const subject = new RoverExperience(renderer, new THREE.Scene(), camera, () => "camera", () => {});
+    const right = { handedness: "right", gripSpace: {}, gamepad: { connected: true, axes: [0, 0, 0, 0], buttons: [{ pressed: false }] } };
+    const left = { handedness: "left", gripSpace: {}, gamepad: { connected: true, axes: [0, 0, 0, -1], buttons: [{ pressed: false }] } };
+    const session = { visibilityState: "visible", inputSources: [right, left] };
+    renderer.xr.isPresenting = true;
+    renderer.xr.getSession = () => session;
+    renderer.xr.getReferenceSpace = () => ({});
+    renderer.xr.getCamera = () => camera;
+    const head = { orientation: { x: 0, y: 0, z: 0, w: 1 }, position: { x: 0, y: 0, z: 0 } };
+    const frame = { getViewerPose: () => ({ transform: head }), getPose: () => ({}) };
+    let frameId = 0;
+    // Deadman and head pose are injected; camera freshness is faked. Software evidence only.
+    const drive = async (ms, held) => {
+      const stops = new Set(), end = performance.now() + ms;
+      while (performance.now() < end) {
+        right.gamepad.buttons[0].pressed = held;
+        subject.gate.acceptFrame(String(++frameId), 0, performance.now());
+        subject.lastCanvasDraw = performance.now();
+        subject.update(performance.now(), frame);
+        stops.add(subject.stopKey);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      return [...stops];
+    };
+    window.mountTest = { subject, drive, head };
+    await drive(100, false); // recenter on the forward-facing head
+    const yaw = (40 * Math.PI) / 180;
+    Object.assign(head.orientation, { y: Math.sin(yaw / 2), w: Math.cos(yaw / 2) });
+    await drive(400, false);
+  });
+  const driveMount = async () => {
+    controlMessages.length = 0;
+    const stops = await mountPage.evaluate(() => window.mountTest.drive(900, true));
+    const drove = controlMessages.filter((message) => message.deadman && message.v > 0);
+    return { stops, drove, pans: [...new Set(controlMessages.map((message) => Math.round(message.pan)))] };
+  };
+  const fixedDrive = await driveMount();
+  assert.equal(await mountPage.evaluate(() => window.mountTest.subject.mountSelect.value), "fixed");
+  assert.ok(fixedDrive.drove.length >= 5, `held deadman drove forward: ${fixedDrive.drove.length} commands`);
+  assert.deepEqual(fixedDrive.pans, [0], "fixed mount sends pan 0 despite 40° head yaw");
+  assert.ok(!fixedDrive.stops.some((key) => key.includes("Forward blocked")), `no forward_blocked stop: ${fixedDrive.stops}`);
+  // Negative control: the same 40° yaw in servo mode is sent as pan and blocks forward.
+  await mountPage.evaluate(async () => {
+    const { subject, drive } = window.mountTest;
+    subject.mountSelect.value = "servo";
+    subject.mountSelect.dispatchEvent(new Event("change"));
+    await drive(400, false);
+  });
+  const servoDrive = await driveMount();
+  assert.ok(servoDrive.drove.length >= 5 && servoDrive.drove.every((message) => Math.round(message.pan) === -40),
+    `servo mount sends head yaw as pan: ${servoDrive.pans}`);
+  assert.ok(servoDrive.stops.some((key) => key.includes("Forward blocked")), "servo yaw shows forward_blocked");
+  await mountPage.close();
+  // No query and nothing saved: the rover's camera_pan picks the default mount.
+  const freshMount = async (cameraPan) => {
+    const context = await browser.newContext();
+    await context.routeWebSocket("**/ws/**", (socket) => socket.close());
+    await context.route("**/camera.jpg", (route) => route.fulfill({ status: 503, body: "" }));
+    await context.route("**/health", (route) => route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ rover: true, camera: true, camera_source: "SIMULATED", control: { simulated: true },
+        ...(cameraPan === undefined ? {} : { camera_pan: cameraPan }) }),
+    }));
+    const fresh = await context.newPage();
+    await fresh.goto(origin);
+    await fresh.waitForTimeout(500);
+    const value = await fresh.locator('select[aria-label="Camera mounting mode"]').inputValue();
+    const hud = await fresh.locator("#rover-details").textContent();
+    await context.close();
+    return { value, hud };
+  };
+  const noPan = await freshMount(false);
+  assert.equal(noPan.value, "fixed", "camera_pan:false defaults to fixed");
+  assert.match(noPan.hud, /Fixed mount · digital pan 0° · JPEG video/);
+  assert.equal((await freshMount(true)).value, "servo");
+  assert.equal((await freshMount(undefined)).value, "servo", "older servers keep the servo default");
+  await mountContext.close();
+  result.cameraMount = {
+    queryBeatsRover: true, reloadKeepsChoice: true, roverDefault: "fixed when camera_pan is false",
+    fixedYaw40: { commands: fixedDrive.drove.length, pans: fixedDrive.pans, forwardBlocked: false },
+    servoYaw40: { commands: servoDrive.drove.length, pans: servoDrive.pans, forwardBlocked: true },
+  };
   const report = {
     passed: true,
     environment:
