@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { ReplayBadge } from "./replay-badge.js";
 import { ControlSafety, stick } from "./control-safety.js";
 import { H264Viewer } from "./h264";
 import { cameraCrop, croppedBox } from "./camera-view.js";
@@ -17,6 +18,7 @@ type ControlStatus = {
 
 /** Same-origin only: Quest talks through USB/ADB to the operator relay. */
 export class RoverExperience {
+  private replayBadge = new ReplayBadge();
   private gate = new ControlSafety();
   private socket: WebSocket | null = null;
   private detectionsSocket: WebSocket | null = null;
@@ -176,6 +178,8 @@ export class RoverExperience {
       this.stop("Camera mount changed: release deadman"); this.dirty = true;
     };
     this.connectControl(); this.connectDetections();
+    void this.replayBadge.refresh();
+    this.timers.push(window.setInterval(() => void this.replayBadge.refresh(), 2000));
     this.timers.push(window.setInterval(() => this.pump(), 50));
     this.timers.push(window.setInterval(() => void this.fetchFrame(), 160));
     void this.fetchFrame();
@@ -541,7 +545,7 @@ export class RoverExperience {
     const age = Number.isFinite(videoAge) ? `${Math.ceil(videoAge)} ms` : "unavailable";
     const simulation = this.status?.simulated || this.frameSource === "SIMULATED";
     const moving = this.input.held && !this.gate.needsRelease && !ready;
-    const headline = `${simulation ? "SIMULATED · " : ""}${ready ?? this.gate.reason}`;
+    const headline = `${this.replayBadge.label(this.frameSource)}${simulation ? "SIMULATED · " : ""}${ready ?? this.gate.reason}`;
     const ack = this.ackMs === null ? "ack pending" : `control ack ${Math.round(this.ackMs)} ms`;
     const range = this.status?.range_cm == null ? "range unknown" : `${Math.round(this.status.range_cm)} cm`;
     const matching = this.matchingDetections(now);
