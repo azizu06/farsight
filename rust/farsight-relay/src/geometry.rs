@@ -197,3 +197,39 @@ mod tests {
         assert_eq!(g.triangles(), 0);
     }
 }
+
+#[cfg(test)]
+mod bench {
+    use super::*;
+
+    #[test]
+    fn combine_cost_and_wire_budget_100_anchors() {
+        // ~Realistic assembled scene: 100 anchors x 100 tris = 10k tris/30k verts.
+        let mut g = AnchorGeometry::new(200_000);
+        for a in 0..100u64 {
+            g.upsert(a, {
+                let mut positions = Vec::new();
+                let mut colors = Vec::new();
+                let mut indices = Vec::new();
+                for t in 0..100u32 {
+                    let base = positions.len() as u32;
+                    for v in 0..3u32 {
+                        positions.push([a as f32 + t as f32 * 0.01, v as f32, (a % 7) as f32]);
+                        colors.push([a as u8, 128, 200]);
+                    }
+                    indices.push([base, base + 1, base + 2]);
+                }
+                ChunkMesh { positions, colors, indices }
+            });
+        }
+        let t0 = std::time::Instant::now();
+        let buf = g.encode();
+        let encode_ms = t0.elapsed().as_secs_f64() * 1000.0;
+        eprintln!("anchors=100 tris=10000 verts=30000 wire={}B encode={encode_ms:.2}ms", buf.len());
+        // Delta-style: re-upsert one anchor only bumps revision; encode stays O(map).
+        let t1 = std::time::Instant::now();
+        g.upsert(42, ChunkMesh { positions: vec![[0.0; 3]; 3], colors: vec![[0; 3]; 3], indices: vec![[0, 1, 2]] });
+        eprintln!("single-anchor upsert={:.3}ms -> revision {}", t1.elapsed().as_secs_f64() * 1000.0, g.revision());
+        assert!(buf.len() > 500_000);
+    }
+}
