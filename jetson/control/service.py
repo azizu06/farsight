@@ -11,6 +11,13 @@ from .state import ControlState
 
 
 class ControlService:
+    # Permit/status publication period. The 250 ms lease is fixed; a shorter
+    # period only offers a fresh permit sooner. At 40 Hz a renewal needs a
+    # permit round trip under ~225 ms instead of ~200 ms (docs/link-lab.md).
+    STATUS_INTERVAL = 0.025
+    # Mission replay keeps its 20 Hz control sampling.
+    RECORD_INTERVAL = 0.05
+
     def __init__(self, serial_port=None, simulate=False, max_pwm=100, camera_ready=None, min_pwm=0,
                  detections=None, drive_profile=None, allow_calibration=False):
         self.on_status = None
@@ -44,18 +51,18 @@ class ControlService:
             return
 
         async def send_status():
+            recorded = -float("inf")
             while True:
                 started = asyncio.get_running_loop().time()
                 # A congested downstream status path makes continued control
                 # unsafe; closing causes a stop instead of queued status tokens.
                 status = self.state.status(issue_permit=True)
                 await asyncio.wait_for(ws.send_json(status), 0.1)
-                if self.on_status:
+                if self.on_status and started - recorded >= self.RECORD_INTERVAL - 0.005:
+                    recorded = started
                     await asyncio.to_thread(self.on_status, status)
-                # Match the 20 Hz command cadence. Old 10 Hz permits could
-                # leave just one command period before their 250 ms expiry.
                 # Account for send/record time without queuing catch-up ticks.
-                await asyncio.sleep(max(0, 0.05 - (asyncio.get_running_loop().time() - started)))
+                await asyncio.sleep(max(0, self.STATUS_INTERVAL - (asyncio.get_running_loop().time() - started)))
 
         async def receive_commands():
             while True:

@@ -1,0 +1,4432 @@
+{
+ "software_evidence_only": true,
+ "hardware_verified": false,
+ "tool": "tools/link_lab.py",
+ "doc": "docs/link-lab.md",
+ "runs": {
+  "calibration_20hz_permits": {
+   "software_evidence_only": true,
+   "hardware_verified": false,
+   "host": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+   "python": "3.13.7",
+   "started": "2026-10-10T11:47:54-0400",
+   "upstream": "local fixture",
+   "lease_ms": 250,
+   "permit_cadence_hz": 20,
+   "command_cadence_hz": 20,
+   "video_request_window": 2,
+   "results": [
+    {
+     "profile": "derp_typical",
+     "emulation": {
+      "name": "derp_typical",
+      "one_way_ms": 26,
+      "jitter_ms": 20,
+      "stall_hz": 0.5,
+      "stall_ms": [
+       80,
+       200
+      ],
+      "loss": 0,
+      "rto_ms": 250,
+      "down_mbps": 6,
+      "up_mbps": 3,
+      "queue_ms": 400,
+      "note": "Field 2026-10-10 over DERP Miami: probe p50 118 / p95 217 ms"
+     },
+     "trials": [],
+     "probe_rtt_p50_ms": 116.86,
+     "probe_rtt_p95_ms": 211.6,
+     "probe_rtt_max_ms": 342.77,
+     "probe_samples": 230,
+     "video_mode": "h264",
+     "video_mbps": 0.399,
+     "errors": [],
+     "emulator": {
+      "profile": "derp_typical",
+      "connections": 2,
+      "down": {
+       "packets": 1921,
+       "bytes": 1881646,
+       "lost": 0,
+       "stalls": 14,
+       "backlog_peak_ms": 18.589541548863053
+      },
+      "up": {
+       "packets": 537,
+       "bytes": 37243,
+       "lost": 0,
+       "stalls": 16,
+       "backlog_peak_ms": 1.2794169888366014
+      }
+     }
+    },
+    {
+     "profile": "derp_bad",
+     "emulation": {
+      "name": "derp_bad",
+      "one_way_ms": 32,
+      "jitter_ms": 26,
+      "stall_hz": 0.4,
+      "stall_ms": [
+       200,
+       380
+      ],
+      "loss": 0.02,
+      "rto_ms": 250,
+      "down_mbps": 4,
+      "up_mbps": 2,
+      "queue_ms": 400,
+      "note": "DERP with 350-500 ms spikes and 2% loss"
+     },
+     "trials": [],
+     "probe_rtt_p50_ms": 149.98,
+     "probe_rtt_p95_ms": 398.54,
+     "probe_rtt_max_ms": 562.07,
+     "probe_samples": 165,
+     "video_mode": "h264",
+     "video_mbps": 0.265,
+     "errors": [
+      "video: WSMessageTypeError"
+     ],
+     "emulator": {
+      "profile": "derp_bad",
+      "connections": 2,
+      "down": {
+       "packets": 1486,
+       "bytes": 1347823,
+       "lost": 17,
+       "stalls": 11,
+       "backlog_peak_ms": 35.19345886888914
+      },
+      "up": {
+       "packets": 375,
+       "bytes": 26335,
+       "lost": 6,
+       "stalls": 14,
+       "backlog_peak_ms": 1.87629196443595
+      }
+     }
+    },
+    {
+     "profile": "booth",
+     "emulation": {
+      "name": "booth",
+      "one_way_ms": 40,
+      "jitter_ms": 30,
+      "stall_hz": 0.2,
+      "stall_ms": [
+       150,
+       300
+      ],
+      "loss": 0.01,
+      "rto_ms": 300,
+      "down_mbps": 0.9,
+      "up_mbps": 0.5,
+      "queue_ms": 600,
+      "note": "Crowded booth cell: <1 Mbps rover uplink, bufferbloat, 1% loss"
+     },
+     "trials": [],
+     "probe_rtt_p50_ms": 177.92,
+     "probe_rtt_p95_ms": 353.28,
+     "probe_rtt_max_ms": 556.79,
+     "probe_samples": 150,
+     "video_mode": "h264",
+     "video_mbps": 0.024,
+     "errors": [
+      "video: WSMessageTypeError"
+     ],
+     "emulator": {
+      "profile": "booth",
+      "connections": 2,
+      "down": {
+       "packets": 680,
+       "bytes": 376870,
+       "lost": 2,
+       "stalls": 9,
+       "backlog_peak_ms": 146.26206940738484
+      },
+      "up": {
+       "packets": 174,
+       "bytes": 17271,
+       "lost": 1,
+       "stalls": 6,
+       "backlog_peak_ms": 7.92183299199678
+      }
+     }
+    }
+   ]
+  },
+  "matrix_before_and_on_permit_20hz": {
+   "software_evidence_only": true,
+   "hardware_verified": false,
+   "host": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+   "python": "3.13.7",
+   "started": "2026-10-10T11:59:23-0400",
+   "upstream": "local fixture",
+   "lease_ms": 250,
+   "permit_cadence_hz": 20,
+   "command_cadence_hz": 20,
+   "video_request_window": 2,
+   "results": [
+    {
+     "profile": "direct",
+     "emulation": {
+      "name": "direct",
+      "one_way_ms": 22,
+      "jitter_ms": 3,
+      "stall_hz": 0,
+      "stall_ms": [
+       0,
+       0
+      ],
+      "loss": 0,
+      "rto_ms": 250,
+      "down_mbps": 8,
+      "up_mbps": 4,
+      "queue_ms": 400,
+      "note": "Tailscale direct UDP, cellular both ends: ~50 ms +/-10 RTT"
+     },
+     "trials": [
+      {
+       "policy": "periodic20",
+       "seconds": 60.0,
+       "interruptions": 0,
+       "interruptions_per_min": 0.0,
+       "interruption_causes": {},
+       "represses": 1,
+       "moving_fraction": 1.0,
+       "motion_gap_ms": {
+        "n": 1,
+        "p50": 358.0,
+        "p95": 358.0,
+        "max": 358.0
+       },
+       "control_ack_ms": {
+        "n": 993,
+        "p50": 98.4,
+        "p95": 105.5,
+        "max": 122.4
+       },
+       "accepted_permit_age_ms": {
+        "n": 1186,
+        "p50": 98.7,
+        "p95": 107.0,
+        "max": 118.3
+       },
+       "rejected_commands": 0,
+       "lease_headroom_ms": {
+        "min": 81.8,
+        "p5": 92.9,
+        "p50": 101.0
+       },
+       "status_gap_ms": {
+        "n": 1192,
+        "p50": 50.3,
+        "p95": 57.3,
+        "max": 74.5
+       },
+       "video_fps": 9.97,
+       "video_age_bound_ms": {
+        "n": 598,
+        "p50": 199.0,
+        "p95": 229.0,
+        "max": 241.0
+       },
+       "video_resets": 0,
+       "video_errors": [],
+       "control_errors": [],
+       "client_loop_lag_max_ms": 0
+      },
+      {
+       "policy": "on_permit",
+       "seconds": 60.0,
+       "interruptions": 0,
+       "interruptions_per_min": 0.0,
+       "interruption_causes": {},
+       "represses": 1,
+       "moving_fraction": 1.0,
+       "motion_gap_ms": {
+        "n": 1,
+        "p50": 357.0,
+        "p95": 357.0,
+        "max": 357.0
+       },
+       "control_ack_ms": {
+        "n": 1156,
+        "p50": 66.5,
+        "p95": 101.5,
+        "max": 115.6
+       },
+       "accepted_permit_age_ms": {
+        "n": 2369,
+        "p50": 56.6,
+        "p95": 101.9,
+        "max": 114.7
+       },
+       "rejected_commands": 0,
+       "lease_headroom_ms": {
+        "min": 125.4,
+        "p5": 140.0,
+        "p50": 150.3
+       },
+       "status_gap_ms": {
+        "n": 1193,
+        "p50": 50.3,
+        "p95": 57.9,
+        "max": 70.7
+       },
+       "video_fps": 9.97,
+       "video_age_bound_ms": {
+        "n": 598,
+        "p50": 199.0,
+        "p95": 231.0,
+        "max": 245.0
+       },
+       "video_resets": 0,
+       "video_errors": [],
+       "control_errors": [],
+       "client_loop_lag_max_ms": 0
+      }
+     ],
+     "probe_rtt_p50_ms": 91.2,
+     "probe_rtt_p95_ms": 102.01,
+     "probe_rtt_max_ms": 108.54,
+     "probe_samples": 199,
+     "video_mode": "h264",
+     "video_mbps": 0.401,
+     "errors": [],
+     "emulator": {
+      "profile": "direct",
+      "connections": 6,
+      "down": {
+       "packets": 9035,
+       "bytes": 8857939,
+       "lost": 0,
+       "stalls": 0,
+       "backlog_peak_ms": 13.053000089712441
+      },
+      "up": {
+       "packets": 5240,
+       "bytes": 863252,
+       "lost": 0,
+       "stalls": 0,
+       "backlog_peak_ms": 0.8722090278752148
+      }
+     }
+    },
+    {
+     "profile": "derp_typical",
+     "emulation": {
+      "name": "derp_typical",
+      "one_way_ms": 26,
+      "jitter_ms": 20,
+      "stall_hz": 0.5,
+      "stall_ms": [
+       80,
+       200
+      ],
+      "loss": 0,
+      "rto_ms": 250,
+      "down_mbps": 6,
+      "up_mbps": 3,
+      "queue_ms": 400,
+      "note": "Field 2026-10-10 over DERP Miami: probe p50 118 / p95 217 ms"
+     },
+     "trials": [
+      {
+       "policy": "periodic20",
+       "seconds": 60.0,
+       "interruptions": 43,
+       "interruptions_per_min": 43.0,
+       "interruption_causes": {
+        "lease_expired": 33,
+        "release_required": 2,
+        "view_stale": 4,
+        "permit_wait": 4
+       },
+       "represses": 44,
+       "moving_fraction": 0.678,
+       "motion_gap_ms": {
+        "n": 42,
+        "p50": 442.0,
+        "p95": 515.0,
+        "max": 1396.0
+       },
+       "control_ack_ms": {
+        "n": 886,
+        "p50": 114.1,
+        "p95": 185.3,
+        "max": 289.9
+       },
+       "accepted_permit_age_ms": {
+        "n": 784,
+        "p50": 121.1,
+        "p95": 187.0,
+        "max": 247.6
+       },
+       "rejected_commands": 123,
+       "lease_headroom_ms": {
+        "min": -1.0,
+        "p5": 24.3,
+        "p50": 79.3
+       },
+       "status_gap_ms": {
+        "n": 1192,
+        "p50": 48.7,
+        "p95": 104.9,
+        "max": 242.3
+       },
+       "video_fps": 9.95,
+       "video_age_bound_ms": {
+        "n": 597,
+        "p50": 271.0,
+        "p95": 407.0,
+        "max": 633.0
+       },
+       "video_resets": 0,
+       "video_errors": [],
+       "control_errors": [],
+       "client_loop_lag_max_ms": 44.5
+      },
+      {
+       "policy": "on_permit",
+       "seconds": 60.0,
+       "interruptions": 37,
+       "interruptions_per_min": 37.0,
+       "interruption_causes": {
+        "lease_expired": 25,
+        "view_stale": 7,
+        "permit_wait": 4,
+        "expired_permit": 1
+       },
+       "represses": 38,
+       "moving_fraction": 0.734,
+       "motion_gap_ms": {
+        "n": 37,
+        "p50": 420.0,
+        "p95": 669.0,
+        "max": 823.0
+       },
+       "control_ack_ms": {
+        "n": 939,
+        "p50": 107.9,
+        "p95": 205.7,
+        "max": 396.9
+       },
+       "accepted_permit_age_ms": {
+        "n": 1629,
+        "p50": 111.0,
+        "p95": 182.2,
+        "max": 248.8
+       },
+       "rejected_commands": 224,
+       "lease_headroom_ms": {
+        "min": 1.2,
+        "p5": 43.1,
+        "p50": 114.3
+       },
+       "status_gap_ms": {
+        "n": 1192,
+        "p50": 48.9,
+        "p95": 102.8,
+        "max": 256.3
+       },
+       "video_fps": 9.97,
+       "video_age_bound_ms": {
+        "n": 598,
+        "p50": 271.0,
+        "p95": 400.0,
+        "max": 703.0
+       },
+       "video_resets": 0,
+       "video_errors": [],
+       "control_errors": [],
+       "client_loop_lag_max_ms": 0
+      }
+     ],
+     "probe_rtt_p50_ms": 118.47,
+     "probe_rtt_p95_ms": 267.85,
+     "probe_rtt_max_ms": 362.86,
+     "probe_samples": 148,
+     "video_mode": "h264",
+     "video_mbps": 0.4,
+     "errors": [],
+     "emulator": {
+      "profile": "derp_typical",
+      "connections": 6,
+      "down": {
+       "packets": 9125,
+       "bytes": 8851947,
+       "lost": 0,
+       "stalls": 72,
+       "backlog_peak_ms": 23.764375247992575
+      },
+      "up": {
+       "packets": 4907,
+       "bytes": 796935,
+       "lost": 0,
+       "stalls": 85,
+       "backlog_peak_ms": 1.6890419647097588
+      }
+     }
+    },
+    {
+     "profile": "derp_bad",
+     "emulation": {
+      "name": "derp_bad",
+      "one_way_ms": 32,
+      "jitter_ms": 26,
+      "stall_hz": 0.4,
+      "stall_ms": [
+       200,
+       380
+      ],
+      "loss": 0.02,
+      "rto_ms": 250,
+      "down_mbps": 4,
+      "up_mbps": 2,
+      "queue_ms": 400,
+      "note": "DERP with 350-500 ms spikes and 2% loss"
+     },
+     "trials": [
+      {
+       "policy": "periodic20",
+       "seconds": 60.0,
+       "interruptions": 48,
+       "interruptions_per_min": 48.0,
+       "interruption_causes": {
+        "view_stale": 32,
+        "lease_expired": 8,
+        "permit_wait": 7,
+        "release_required": 1
+       },
+       "represses": 48,
+       "moving_fraction": 0.068,
+       "motion_gap_ms": {
+        "n": 28,
+        "p50": 755.0,
+        "p95": 8136.0,
+        "max": 8295.0
+       },
+       "control_ack_ms": {
+        "n": 792,
+        "p50": 146.2,
+        "p95": 388.6,
+        "max": 709.1
+       },
+       "accepted_permit_age_ms": {
+        "n": 83,
+        "p50": 148.9,
+        "p95": 234.0,
+        "max": 246.9
+       },
+       "rejected_commands": 43,
+       "lease_headroom_ms": {
+        "min": -2.2,
+        "p5": 3.1,
+        "p50": 60.0
+       },
+       "status_gap_ms": {
+        "n": 1188,
+        "p50": 42.2,
+        "p95": 140.2,
+        "max": 666.2
+       },
+       "video_fps": 7.55,
+       "video_age_bound_ms": {
+        "n": 453,
+        "p50": 554.0,
+        "p95": 1020.0,
+        "max": 1363.0
+       },
+       "video_resets": 7,
+       "video_errors": [
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError"
+       ],
+       "control_errors": [],
+       "client_loop_lag_max_ms": 144.0
+      },
+      {
+       "policy": "on_permit",
+       "seconds": 60.0,
+       "interruptions": 44,
+       "interruptions_per_min": 44.0,
+       "interruption_causes": {
+        "view_stale": 34,
+        "permit_wait": 7,
+        "lease_expired": 3
+       },
+       "represses": 44,
+       "moving_fraction": 0.052,
+       "motion_gap_ms": {
+        "n": 23,
+        "p50": 829.0,
+        "p95": 8174.0,
+        "max": 8591.0
+       },
+       "control_ack_ms": {
+        "n": 737,
+        "p50": 148.0,
+        "p95": 392.5,
+        "max": 682.7
+       },
+       "accepted_permit_age_ms": {
+        "n": 99,
+        "p50": 148.9,
+        "p95": 224.7,
+        "max": 249.9
+       },
+       "rejected_commands": 79,
+       "lease_headroom_ms": {
+        "min": 0.1,
+        "p5": 11.0,
+        "p50": 79.7
+       },
+       "status_gap_ms": {
+        "n": 1189,
+        "p50": 41.3,
+        "p95": 137.8,
+        "max": 578.0
+       },
+       "video_fps": 7.02,
+       "video_age_bound_ms": {
+        "n": 421,
+        "p50": 578.0,
+        "p95": 1044.0,
+        "max": 1292.0
+       },
+       "video_resets": 8,
+       "video_errors": [
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError"
+       ],
+       "control_errors": [],
+       "client_loop_lag_max_ms": 34.8
+      }
+     ],
+     "probe_rtt_p50_ms": 155.24,
+     "probe_rtt_p95_ms": 462.5,
+     "probe_rtt_max_ms": 700.98,
+     "probe_samples": 98,
+     "video_mode": "h264",
+     "video_mbps": 0.119,
+     "errors": [
+      "video: WSMessageTypeError"
+     ],
+     "emulator": {
+      "profile": "derp_bad",
+      "connections": 21,
+      "down": {
+       "packets": 7242,
+       "bytes": 6421454,
+       "lost": 135,
+       "stalls": 62,
+       "backlog_peak_ms": 36.227916833013296
+      },
+      "up": {
+       "packets": 3614,
+       "bytes": 602686,
+       "lost": 69,
+       "stalls": 51,
+       "backlog_peak_ms": 4.057333018863574
+      }
+     }
+    },
+    {
+     "profile": "booth",
+     "emulation": {
+      "name": "booth",
+      "one_way_ms": 40,
+      "jitter_ms": 30,
+      "stall_hz": 0.2,
+      "stall_ms": [
+       150,
+       300
+      ],
+      "loss": 0.01,
+      "rto_ms": 300,
+      "down_mbps": 0.9,
+      "up_mbps": 0.5,
+      "queue_ms": 600,
+      "note": "Crowded booth cell: <1 Mbps rover uplink, bufferbloat, 1% loss"
+     },
+     "trials": [
+      {
+       "policy": "periodic20",
+       "seconds": 60.0,
+       "interruptions": 17,
+       "interruptions_per_min": 17.0,
+       "interruption_causes": {
+        "view_stale": 14,
+        "permit_wait": 1,
+        "expired_permit": 1,
+        "lease_expired": 1
+       },
+       "represses": 17,
+       "moving_fraction": 0.01,
+       "motion_gap_ms": {
+        "n": 8,
+        "p50": 5283.0,
+        "p95": 13603.0,
+        "max": 13603.0
+       },
+       "control_ack_ms": {
+        "n": 794,
+        "p50": 177.6,
+        "p95": 347.3,
+        "max": 548.0
+       },
+       "accepted_permit_age_ms": {
+        "n": 14,
+        "p50": 187.3,
+        "p95": 239.8,
+        "max": 239.8
+       },
+       "rejected_commands": 19,
+       "lease_headroom_ms": {
+        "min": 11.6,
+        "p5": 11.6,
+        "p50": 12.2
+       },
+       "status_gap_ms": {
+        "n": 1185,
+        "p50": 42.5,
+        "p95": 146.1,
+        "max": 413.7
+       },
+       "video_fps": 5.95,
+       "video_age_bound_ms": {
+        "n": 357,
+        "p50": 827.0,
+        "p95": 1166.0,
+        "max": 1556.0
+       },
+       "video_resets": 11,
+       "video_errors": [
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError"
+       ],
+       "control_errors": [],
+       "client_loop_lag_max_ms": 134.7
+      },
+      {
+       "policy": "on_permit",
+       "seconds": 60.0,
+       "interruptions": 19,
+       "interruptions_per_min": 19.0,
+       "interruption_causes": {
+        "view_stale": 16,
+        "permit_wait": 3
+       },
+       "represses": 19,
+       "moving_fraction": 0.017,
+       "motion_gap_ms": {
+        "n": 14,
+        "p50": 3469.0,
+        "p95": 10647.0,
+        "max": 10647.0
+       },
+       "control_ack_ms": {
+        "n": 821,
+        "p50": 178.7,
+        "p95": 341.3,
+        "max": 582.9
+       },
+       "accepted_permit_age_ms": {
+        "n": 39,
+        "p50": 180.4,
+        "p95": 239.2,
+        "max": 240.2
+       },
+       "rejected_commands": 47,
+       "lease_headroom_ms": {
+        "min": -0.4,
+        "p5": 10.8,
+        "p50": 51.9
+       },
+       "status_gap_ms": {
+        "n": 1191,
+        "p50": 40.9,
+        "p95": 141.5,
+        "max": 457.9
+       },
+       "video_fps": 5.62,
+       "video_age_bound_ms": {
+        "n": 337,
+        "p50": 763.0,
+        "p95": 1153.0,
+        "max": 1335.0
+       },
+       "video_resets": 12,
+       "video_errors": [
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError"
+       ],
+       "control_errors": [],
+       "client_loop_lag_max_ms": 6.1
+      }
+     ],
+     "probe_rtt_p50_ms": 173.54,
+     "probe_rtt_p95_ms": 324.77,
+     "probe_rtt_max_ms": 557.52,
+     "probe_samples": 100,
+     "video_mode": "h264",
+     "video_mbps": 0.055,
+     "errors": [
+      "video: WSMessageTypeError"
+     ],
+     "emulator": {
+      "profile": "booth",
+      "connections": 31,
+      "down": {
+       "packets": 6639,
+       "bytes": 5625347,
+       "lost": 59,
+       "stalls": 27,
+       "backlog_peak_ms": 161.35604123701341
+      },
+      "up": {
+       "packets": 3610,
+       "bytes": 628882,
+       "lost": 26,
+       "stalls": 27,
+       "backlog_peak_ms": 9.413708030479029
+      }
+     }
+    }
+   ]
+  },
+  "after_on_permit_40hz": {
+   "software_evidence_only": true,
+   "hardware_verified": false,
+   "host": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+   "python": "3.13.7",
+   "started": "2026-10-10T12:09:09-0400",
+   "upstream": "local fixture",
+   "lease_ms": 250,
+   "permit_cadence_hz": 40.0,
+   "command_cadence_hz": 20,
+   "video_request_window": 2,
+   "results": [
+    {
+     "profile": "derp_typical",
+     "emulation": {
+      "name": "derp_typical",
+      "one_way_ms": 26,
+      "jitter_ms": 20,
+      "stall_hz": 0.5,
+      "stall_ms": [
+       80,
+       200
+      ],
+      "loss": 0,
+      "rto_ms": 250,
+      "down_mbps": 6,
+      "up_mbps": 3,
+      "queue_ms": 400,
+      "note": "Field 2026-10-10 over DERP Miami: probe p50 118 / p95 217 ms"
+     },
+     "trials": [
+      {
+       "policy": "on_permit",
+       "seconds": 60.0,
+       "interruptions": 31,
+       "interruptions_per_min": 31.0,
+       "interruption_causes": {
+        "view_stale": 7,
+        "lease_expired": 19,
+        "release_required": 3,
+        "permit_wait": 2
+       },
+       "represses": 32,
+       "moving_fraction": 0.785,
+       "motion_gap_ms": {
+        "n": 30,
+        "p50": 400.0,
+        "p95": 907.0,
+        "max": 1051.0
+       },
+       "control_ack_ms": {
+        "n": 1322,
+        "p50": 106.2,
+        "p95": 189.5,
+        "max": 351.2
+       },
+       "accepted_permit_age_ms": {
+        "n": 2610,
+        "p50": 109.7,
+        "p95": 184.1,
+        "max": 244.5
+       },
+       "rejected_commands": 317,
+       "lease_headroom_ms": {
+        "min": -3.4,
+        "p5": 50.6,
+        "p50": 124.5
+       },
+       "status_gap_ms": {
+        "n": 2363,
+        "p50": 20.7,
+        "p95": 72.7,
+        "max": 238.0
+       },
+       "video_fps": 9.97,
+       "video_age_bound_ms": {
+        "n": 598,
+        "p50": 269.0,
+        "p95": 407.0,
+        "max": 747.0
+       },
+       "video_resets": 0,
+       "video_errors": [],
+       "control_errors": [],
+       "client_loop_lag_max_ms": 0
+      }
+     ],
+     "probe_rtt_p50_ms": 110.14,
+     "probe_rtt_p95_ms": 214.34,
+     "probe_rtt_max_ms": 329.74,
+     "probe_samples": 154,
+     "video_mode": "h264",
+     "video_mbps": 0.4,
+     "errors": [],
+     "emulator": {
+      "profile": "derp_typical",
+      "connections": 4,
+      "down": {
+       "packets": 6793,
+       "bytes": 5787939,
+       "lost": 0,
+       "stalls": 47,
+       "backlog_peak_ms": 23.55695827282034
+      },
+      "up": {
+       "packets": 4106,
+       "bytes": 735586,
+       "lost": 0,
+       "stalls": 43,
+       "backlog_peak_ms": 4.105874599190429
+      }
+     }
+    },
+    {
+     "profile": "derp_bad",
+     "emulation": {
+      "name": "derp_bad",
+      "one_way_ms": 32,
+      "jitter_ms": 26,
+      "stall_hz": 0.4,
+      "stall_ms": [
+       200,
+       380
+      ],
+      "loss": 0.02,
+      "rto_ms": 250,
+      "down_mbps": 4,
+      "up_mbps": 2,
+      "queue_ms": 400,
+      "note": "DERP with 350-500 ms spikes and 2% loss"
+     },
+     "trials": [
+      {
+       "policy": "on_permit",
+       "seconds": 60.0,
+       "interruptions": 33,
+       "interruptions_per_min": 33.0,
+       "interruption_causes": {
+        "view_stale": 27,
+        "permit_wait": 3,
+        "lease_expired": 3
+       },
+       "represses": 34,
+       "moving_fraction": 0.079,
+       "motion_gap_ms": {
+        "n": 22,
+        "p50": 505.0,
+        "p95": 8930.0,
+        "max": 10818.0
+       },
+       "control_ack_ms": {
+        "n": 937,
+        "p50": 144.9,
+        "p95": 384.7,
+        "max": 596.6
+       },
+       "accepted_permit_age_ms": {
+        "n": 244,
+        "p50": 137.1,
+        "p95": 205.6,
+        "max": 247.7
+       },
+       "rejected_commands": 64,
+       "lease_headroom_ms": {
+        "min": 10.2,
+        "p5": 41.5,
+        "p50": 95.1
+       },
+       "status_gap_ms": {
+        "n": 2366,
+        "p50": 7.8,
+        "p95": 88.5,
+        "max": 367.6
+       },
+       "video_fps": 7.25,
+       "video_age_bound_ms": {
+        "n": 435,
+        "p50": 631.0,
+        "p95": 1065.0,
+        "max": 1363.0
+       },
+       "video_resets": 8,
+       "video_errors": [
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError"
+       ],
+       "control_errors": [],
+       "client_loop_lag_max_ms": 8.3
+      }
+     ],
+     "probe_rtt_p50_ms": 144.55,
+     "probe_rtt_p95_ms": 468.66,
+     "probe_rtt_max_ms": 711.26,
+     "probe_samples": 107,
+     "video_mode": "h264",
+     "video_mbps": 0.154,
+     "errors": [
+      "video: WSMessageTypeError"
+     ],
+     "emulator": {
+      "profile": "derp_bad",
+      "connections": 12,
+      "down": {
+       "packets": 5590,
+       "bytes": 4287683,
+       "lost": 95,
+       "stalls": 33,
+       "backlog_peak_ms": 36.528874858049676
+      },
+      "up": {
+       "packets": 2081,
+       "bytes": 346151,
+       "lost": 34,
+       "stalls": 27,
+       "backlog_peak_ms": 5.770500021753833
+      }
+     }
+    },
+    {
+     "profile": "booth",
+     "emulation": {
+      "name": "booth",
+      "one_way_ms": 40,
+      "jitter_ms": 30,
+      "stall_hz": 0.2,
+      "stall_ms": [
+       150,
+       300
+      ],
+      "loss": 0.01,
+      "rto_ms": 300,
+      "down_mbps": 0.9,
+      "up_mbps": 0.5,
+      "queue_ms": 600,
+      "note": "Crowded booth cell: <1 Mbps rover uplink, bufferbloat, 1% loss"
+     },
+     "trials": [
+      {
+       "policy": "on_permit",
+       "seconds": 60.0,
+       "interruptions": 21,
+       "interruptions_per_min": 21.0,
+       "interruption_causes": {
+        "view_stale": 18,
+        "permit_wait": 2,
+        "lease_expired": 1
+       },
+       "represses": 21,
+       "moving_fraction": 0.014,
+       "motion_gap_ms": {
+        "n": 10,
+        "p50": 5637.0,
+        "p95": 10502.0,
+        "max": 10502.0
+       },
+       "control_ack_ms": {
+        "n": 923,
+        "p50": 184.2,
+        "p95": 355.9,
+        "max": 618.7
+       },
+       "accepted_permit_age_ms": {
+        "n": 40,
+        "p50": 188.1,
+        "p95": 241.5,
+        "max": 245.8
+       },
+       "rejected_commands": 84,
+       "lease_headroom_ms": {
+        "min": 8.3,
+        "p5": 8.3,
+        "p50": 42.7
+       },
+       "status_gap_ms": {
+        "n": 2365,
+        "p50": 4.6,
+        "p95": 102.5,
+        "max": 390.4
+       },
+       "video_fps": 5.73,
+       "video_age_bound_ms": {
+        "n": 344,
+        "p50": 698.0,
+        "p95": 1176.0,
+        "max": 1449.0
+       },
+       "video_resets": 12,
+       "video_errors": [
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError"
+       ],
+       "control_errors": [],
+       "client_loop_lag_max_ms": 0
+      }
+     ],
+     "probe_rtt_p50_ms": 177.98,
+     "probe_rtt_p95_ms": 395.91,
+     "probe_rtt_max_ms": 540.85,
+     "probe_samples": 97,
+     "video_mode": "h264",
+     "video_mbps": 0.096,
+     "errors": [
+      "video: WSMessageTypeError"
+     ],
+     "emulator": {
+      "profile": "booth",
+      "connections": 16,
+      "down": {
+       "packets": 5032,
+       "bytes": 3652870,
+       "lost": 38,
+       "stalls": 21,
+       "backlog_peak_ms": 154.78826343314722
+      },
+      "up": {
+       "packets": 1839,
+       "bytes": 316042,
+       "lost": 13,
+       "stalls": 18,
+       "backlog_peak_ms": 41.99512503691949
+      }
+     }
+    }
+   ]
+  },
+  "after_40hz_video_250kbps": {
+   "software_evidence_only": true,
+   "hardware_verified": false,
+   "host": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+   "python": "3.13.7",
+   "started": "2026-10-10T12:13:37-0400",
+   "upstream": "local fixture",
+   "lease_ms": 250,
+   "permit_cadence_hz": 40.0,
+   "command_cadence_hz": 20,
+   "video_request_window": 2,
+   "results": [
+    {
+     "profile": "derp_bad",
+     "emulation": {
+      "name": "derp_bad",
+      "one_way_ms": 32,
+      "jitter_ms": 26,
+      "stall_hz": 0.4,
+      "stall_ms": [
+       200,
+       380
+      ],
+      "loss": 0.02,
+      "rto_ms": 250,
+      "down_mbps": 4,
+      "up_mbps": 2,
+      "queue_ms": 400,
+      "note": "DERP with 350-500 ms spikes and 2% loss"
+     },
+     "trials": [
+      {
+       "policy": "on_permit",
+       "seconds": 60.0,
+       "interruptions": 75,
+       "interruptions_per_min": 75.0,
+       "interruption_causes": {
+        "release_required": 5,
+        "permit_wait": 13,
+        "view_stale": 37,
+        "lease_expired": 17,
+        "expired_permit": 3
+       },
+       "represses": 75,
+       "moving_fraction": 0.188,
+       "motion_gap_ms": {
+        "n": 47,
+        "p50": 511.0,
+        "p95": 2981.0,
+        "max": 3418.0
+       },
+       "control_ack_ms": {
+        "n": 860,
+        "p50": 144.5,
+        "p95": 386.2,
+        "max": 932.6
+       },
+       "accepted_permit_age_ms": {
+        "n": 518,
+        "p50": 137.7,
+        "p95": 215.8,
+        "max": 244.4
+       },
+       "rejected_commands": 450,
+       "lease_headroom_ms": {
+        "min": -4.1,
+        "p5": 21.9,
+        "p50": 97.4
+       },
+       "status_gap_ms": {
+        "n": 2362,
+        "p50": 9.1,
+        "p95": 87.8,
+        "max": 377.6
+       },
+       "video_fps": 9.53,
+       "video_age_bound_ms": {
+        "n": 572,
+        "p50": 403.0,
+        "p95": 777.0,
+        "max": 1186.0
+       },
+       "video_resets": 1,
+       "video_errors": [
+        "WSMessageTypeError"
+       ],
+       "control_errors": [],
+       "client_loop_lag_max_ms": 0
+      }
+     ],
+     "probe_rtt_p50_ms": 142.73,
+     "probe_rtt_p95_ms": 455.21,
+     "probe_rtt_max_ms": 564.71,
+     "probe_samples": 78,
+     "video_mode": "h264",
+     "video_mbps": 0.015,
+     "errors": [
+      "video: WSMessageTypeError"
+     ],
+     "emulator": {
+      "profile": "derp_bad",
+      "connections": 5,
+      "down": {
+       "packets": 4669,
+       "bytes": 3227697,
+       "lost": 74,
+       "stalls": 27,
+       "backlog_peak_ms": 21.895666926866397
+      },
+      "up": {
+       "packets": 2507,
+       "bytes": 435942,
+       "lost": 41,
+       "stalls": 27,
+       "backlog_peak_ms": 8.920959051465616
+      }
+     }
+    },
+    {
+     "profile": "booth",
+     "emulation": {
+      "name": "booth",
+      "one_way_ms": 40,
+      "jitter_ms": 30,
+      "stall_hz": 0.2,
+      "stall_ms": [
+       150,
+       300
+      ],
+      "loss": 0.01,
+      "rto_ms": 300,
+      "down_mbps": 0.9,
+      "up_mbps": 0.5,
+      "queue_ms": 600,
+      "note": "Crowded booth cell: <1 Mbps rover uplink, bufferbloat, 1% loss"
+     },
+     "trials": [
+      {
+       "policy": "on_permit",
+       "seconds": 60.0,
+       "interruptions": 37,
+       "interruptions_per_min": 37.0,
+       "interruption_causes": {
+        "view_stale": 28,
+        "permit_wait": 5,
+        "expired_permit": 2,
+        "lease_expired": 2
+       },
+       "represses": 37,
+       "moving_fraction": 0.036,
+       "motion_gap_ms": {
+        "n": 23,
+        "p50": 945.0,
+        "p95": 6221.0,
+        "max": 8093.0
+       },
+       "control_ack_ms": {
+        "n": 951,
+        "p50": 174.7,
+        "p95": 342.5,
+        "max": 674.2
+       },
+       "accepted_permit_age_ms": {
+        "n": 112,
+        "p50": 166.1,
+        "p95": 224.2,
+        "max": 249.5
+       },
+       "rejected_commands": 74,
+       "lease_headroom_ms": {
+        "min": -0.6,
+        "p5": 9.2,
+        "p50": 70.5
+       },
+       "status_gap_ms": {
+        "n": 2364,
+        "p50": 8.1,
+        "p95": 92.9,
+        "max": 411.6
+       },
+       "video_fps": 7.58,
+       "video_age_bound_ms": {
+        "n": 455,
+        "p50": 659.0,
+        "p95": 1096.0,
+        "max": 1521.0
+       },
+       "video_resets": 7,
+       "video_errors": [
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError"
+       ],
+       "control_errors": [],
+       "client_loop_lag_max_ms": 95.7
+      }
+     ],
+     "probe_rtt_p50_ms": 175.92,
+     "probe_rtt_p95_ms": 367.18,
+     "probe_rtt_max_ms": 477.25,
+     "probe_samples": 79,
+     "video_mode": "h264",
+     "video_mbps": 0.09,
+     "errors": [
+      "video: WSMessageTypeError"
+     ],
+     "emulator": {
+      "profile": "booth",
+      "connections": 13,
+      "down": {
+       "packets": 5203,
+       "bytes": 3397652,
+       "lost": 41,
+       "stalls": 15,
+       "backlog_peak_ms": 98.3118329604622
+      },
+      "up": {
+       "packets": 2237,
+       "bytes": 374029,
+       "lost": 14,
+       "stalls": 12,
+       "backlog_peak_ms": 37.742167100077495
+      }
+     }
+    }
+   ]
+  },
+  "sweep_20hz_permits": {
+   "software_evidence_only": true,
+   "hardware_verified": false,
+   "host": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+   "python": "3.13.7",
+   "started": "2026-10-10T12:16:23-0400",
+   "upstream": "local fixture",
+   "lease_ms": 250,
+   "permit_cadence_hz": 20,
+   "command_cadence_hz": 20,
+   "video_request_window": 2,
+   "results": [
+    {
+     "profile": "jitter10",
+     "emulation": {
+      "name": "direct",
+      "one_way_ms": 25,
+      "jitter_ms": 10,
+      "stall_hz": 0,
+      "stall_ms": [
+       0,
+       0
+      ],
+      "loss": 0,
+      "rto_ms": 250,
+      "down_mbps": 8,
+      "up_mbps": 4,
+      "queue_ms": 400,
+      "note": "Tailscale direct UDP, cellular both ends: ~50 ms +/-10 RTT"
+     },
+     "trials": [
+      {
+       "policy": "periodic20",
+       "seconds": 30.0,
+       "interruptions": 0,
+       "interruptions_per_min": 0.0,
+       "interruption_causes": {},
+       "represses": 1,
+       "moving_fraction": 1.0,
+       "motion_gap_ms": {
+        "n": 1,
+        "p50": 360.0,
+        "p95": 360.0,
+        "max": 360.0
+       },
+       "control_ack_ms": {
+        "n": 545,
+        "p50": 93.3,
+        "p95": 123.5,
+        "max": 168.4
+       },
+       "accepted_permit_age_ms": {
+        "n": 588,
+        "p50": 95.2,
+        "p95": 130.4,
+        "max": 172.1
+       },
+       "rejected_commands": 0,
+       "lease_headroom_ms": {
+        "min": 19.8,
+        "p5": 67.8,
+        "p50": 104.5
+       },
+       "status_gap_ms": {
+        "n": 596,
+        "p50": 50.3,
+        "p95": 71.6,
+        "max": 118.0
+       },
+       "video_fps": 9.97,
+       "video_age_bound_ms": {
+        "n": 299,
+        "p50": 229.0,
+        "p95": 272.0,
+        "max": 375.0
+       },
+       "video_resets": 0,
+       "video_errors": [],
+       "control_errors": [],
+       "client_loop_lag_max_ms": 10.2
+      },
+      {
+       "policy": "on_permit",
+       "seconds": 30.0,
+       "interruptions": 0,
+       "interruptions_per_min": 0.0,
+       "interruption_causes": {},
+       "represses": 1,
+       "moving_fraction": 1.0,
+       "motion_gap_ms": {
+        "n": 1,
+        "p50": 355.0,
+        "p95": 355.0,
+        "max": 355.0
+       },
+       "control_ack_ms": {
+        "n": 585,
+        "p50": 93.2,
+        "p95": 122.3,
+        "max": 167.8
+       },
+       "accepted_permit_age_ms": {
+        "n": 1178,
+        "p50": 81.1,
+        "p95": 127.2,
+        "max": 170.1
+       },
+       "rejected_commands": 0,
+       "lease_headroom_ms": {
+        "min": 59.3,
+        "p5": 103.1,
+        "p50": 136.3
+       },
+       "status_gap_ms": {
+        "n": 596,
+        "p50": 50.1,
+        "p95": 72.8,
+        "max": 123.1
+       },
+       "video_fps": 10.0,
+       "video_age_bound_ms": {
+        "n": 300,
+        "p50": 231.0,
+        "p95": 271.0,
+        "max": 314.0
+       },
+       "video_resets": 0,
+       "video_errors": [],
+       "control_errors": [],
+       "client_loop_lag_max_ms": 0
+      }
+     ],
+     "probe_rtt_p50_ms": 93.28,
+     "probe_rtt_p95_ms": 137.48,
+     "probe_rtt_max_ms": 219.04,
+     "probe_samples": 94,
+     "video_mode": "h264",
+     "video_mbps": 0.396,
+     "errors": [],
+     "emulator": {
+      "profile": "direct",
+      "connections": 6,
+      "down": {
+       "packets": 4626,
+       "bytes": 4477344,
+       "lost": 0,
+       "stalls": 0,
+       "backlog_peak_ms": 12.806000071577728
+      },
+      "up": {
+       "packets": 2641,
+       "bytes": 434240,
+       "lost": 0,
+       "stalls": 0,
+       "backlog_peak_ms": 1.0693339572753757
+      }
+     }
+    },
+    {
+     "profile": "jitter20",
+     "emulation": {
+      "name": "direct",
+      "one_way_ms": 25,
+      "jitter_ms": 20,
+      "stall_hz": 0,
+      "stall_ms": [
+       0,
+       0
+      ],
+      "loss": 0,
+      "rto_ms": 250,
+      "down_mbps": 8,
+      "up_mbps": 4,
+      "queue_ms": 400,
+      "note": "Tailscale direct UDP, cellular both ends: ~50 ms +/-10 RTT"
+     },
+     "trials": [
+      {
+       "policy": "periodic20",
+       "seconds": 30.0,
+       "interruptions": 8,
+       "interruptions_per_min": 16.0,
+       "interruption_causes": {
+        "lease_expired": 7,
+        "release_required": 1
+       },
+       "represses": 9,
+       "moving_fraction": 0.889,
+       "motion_gap_ms": {
+        "n": 8,
+        "p50": 418.0,
+        "p95": 594.0,
+        "max": 594.0
+       },
+       "control_ack_ms": {
+        "n": 451,
+        "p50": 100.5,
+        "p95": 161.8,
+        "max": 375.7
+       },
+       "accepted_permit_age_ms": {
+        "n": 514,
+        "p50": 108.9,
+        "p95": 173.7,
+        "max": 233.4
+       },
+       "rejected_commands": 24,
+       "lease_headroom_ms": {
+        "min": 0.1,
+        "p5": 28.8,
+        "p50": 90.1
+       },
+       "status_gap_ms": {
+        "n": 593,
+        "p50": 50.6,
+        "p95": 95.2,
+        "max": 180.9
+       },
+       "video_fps": 10.0,
+       "video_age_bound_ms": {
+        "n": 300,
+        "p50": 256.0,
+        "p95": 326.0,
+        "max": 530.0
+       },
+       "video_resets": 0,
+       "video_errors": [],
+       "control_errors": [],
+       "client_loop_lag_max_ms": 80.7
+      },
+      {
+       "policy": "on_permit",
+       "seconds": 30.0,
+       "interruptions": 5,
+       "interruptions_per_min": 10.0,
+       "interruption_causes": {
+        "release_required": 1,
+        "lease_expired": 3,
+        "view_stale": 1
+       },
+       "represses": 6,
+       "moving_fraction": 0.929,
+       "motion_gap_ms": {
+        "n": 6,
+        "p50": 408.0,
+        "p95": 506.0,
+        "max": 506.0
+       },
+       "control_ack_ms": {
+        "n": 532,
+        "p50": 107.1,
+        "p95": 170.2,
+        "max": 238.8
+       },
+       "accepted_permit_age_ms": {
+        "n": 1081,
+        "p50": 108.0,
+        "p95": 171.5,
+        "max": 249.2
+       },
+       "rejected_commands": 28,
+       "lease_headroom_ms": {
+        "min": 0.8,
+        "p5": 58.9,
+        "p50": 116.3
+       },
+       "status_gap_ms": {
+        "n": 595,
+        "p50": 49.2,
+        "p95": 99.0,
+        "max": 200.0
+       },
+       "video_fps": 9.93,
+       "video_age_bound_ms": {
+        "n": 298,
+        "p50": 262.0,
+        "p95": 335.0,
+        "max": 397.0
+       },
+       "video_resets": 0,
+       "video_errors": [],
+       "control_errors": [],
+       "client_loop_lag_max_ms": 78.0
+      }
+     ],
+     "probe_rtt_p50_ms": 113.35,
+     "probe_rtt_p95_ms": 170.01,
+     "probe_rtt_max_ms": 197.76,
+     "probe_samples": 83,
+     "video_mode": "h264",
+     "video_mbps": 0.397,
+     "errors": [],
+     "emulator": {
+      "profile": "direct",
+      "connections": 6,
+      "down": {
+       "packets": 4659,
+       "bytes": 4476608,
+       "lost": 0,
+       "stalls": 0,
+       "backlog_peak_ms": 13.078875083010644
+      },
+      "up": {
+       "packets": 2589,
+       "bytes": 424471,
+       "lost": 0,
+       "stalls": 0,
+       "backlog_peak_ms": 1.1918749660253525
+      }
+     }
+    },
+    {
+     "profile": "jitter30",
+     "emulation": {
+      "name": "direct",
+      "one_way_ms": 25,
+      "jitter_ms": 30,
+      "stall_hz": 0,
+      "stall_ms": [
+       0,
+       0
+      ],
+      "loss": 0,
+      "rto_ms": 250,
+      "down_mbps": 8,
+      "up_mbps": 4,
+      "queue_ms": 400,
+      "note": "Tailscale direct UDP, cellular both ends: ~50 ms +/-10 RTT"
+     },
+     "trials": [
+      {
+       "policy": "periodic20",
+       "seconds": 30.0,
+       "interruptions": 29,
+       "interruptions_per_min": 58.0,
+       "interruption_causes": {
+        "view_stale": 6,
+        "lease_expired": 22,
+        "release_required": 1
+       },
+       "represses": 30,
+       "moving_fraction": 0.584,
+       "motion_gap_ms": {
+        "n": 29,
+        "p50": 441.0,
+        "p95": 525.0,
+        "max": 549.0
+       },
+       "control_ack_ms": {
+        "n": 401,
+        "p50": 120.7,
+        "p95": 188.0,
+        "max": 327.2
+       },
+       "accepted_permit_age_ms": {
+        "n": 328,
+        "p50": 128.9,
+        "p95": 202.9,
+        "max": 249.0
+       },
+       "rejected_commands": 75,
+       "lease_headroom_ms": {
+        "min": -2.0,
+        "p5": 10.7,
+        "p50": 70.0
+       },
+       "status_gap_ms": {
+        "n": 596,
+        "p50": 49.1,
+        "p95": 113.7,
+        "max": 213.7
+       },
+       "video_fps": 9.97,
+       "video_age_bound_ms": {
+        "n": 299,
+        "p50": 295.0,
+        "p95": 434.0,
+        "max": 584.0
+       },
+       "video_resets": 0,
+       "video_errors": [],
+       "control_errors": [],
+       "client_loop_lag_max_ms": 81.4
+      },
+      {
+       "policy": "on_permit",
+       "seconds": 30.0,
+       "interruptions": 23,
+       "interruptions_per_min": 46.0,
+       "interruption_causes": {
+        "lease_expired": 11,
+        "view_stale": 11,
+        "permit_wait": 1
+       },
+       "represses": 24,
+       "moving_fraction": 0.689,
+       "motion_gap_ms": {
+        "n": 23,
+        "p50": 400.0,
+        "p95": 554.0,
+        "max": 813.0
+       },
+       "control_ack_ms": {
+        "n": 454,
+        "p50": 119.9,
+        "p95": 199.2,
+        "max": 323.0
+       },
+       "accepted_permit_age_ms": {
+        "n": 775,
+        "p50": 125.8,
+        "p95": 198.2,
+        "max": 245.8
+       },
+       "rejected_commands": 97,
+       "lease_headroom_ms": {
+        "min": 0.6,
+        "p5": 31.7,
+        "p50": 99.4
+       },
+       "status_gap_ms": {
+        "n": 596,
+        "p50": 49.4,
+        "p95": 110.5,
+        "max": 249.9
+       },
+       "video_fps": 9.97,
+       "video_age_bound_ms": {
+        "n": 299,
+        "p50": 304.0,
+        "p95": 448.0,
+        "max": 592.0
+       },
+       "video_resets": 0,
+       "video_errors": [],
+       "control_errors": [],
+       "client_loop_lag_max_ms": 12.9
+      }
+     ],
+     "probe_rtt_p50_ms": 130.62,
+     "probe_rtt_p95_ms": 224.0,
+     "probe_rtt_max_ms": 256.89,
+     "probe_samples": 70,
+     "video_mode": "h264",
+     "video_mbps": 0.391,
+     "errors": [],
+     "emulator": {
+      "profile": "direct",
+      "connections": 6,
+      "down": {
+       "packets": 4699,
+       "bytes": 4494678,
+       "lost": 0,
+       "stalls": 0,
+       "backlog_peak_ms": 17.24529208149761
+      },
+      "up": {
+       "packets": 2455,
+       "bytes": 396626,
+       "lost": 0,
+       "stalls": 0,
+       "backlog_peak_ms": 1.2325419811531901
+      }
+     }
+    },
+    {
+     "profile": "jitter40",
+     "emulation": {
+      "name": "direct",
+      "one_way_ms": 25,
+      "jitter_ms": 40,
+      "stall_hz": 0,
+      "stall_ms": [
+       0,
+       0
+      ],
+      "loss": 0,
+      "rto_ms": 250,
+      "down_mbps": 8,
+      "up_mbps": 4,
+      "queue_ms": 400,
+      "note": "Tailscale direct UDP, cellular both ends: ~50 ms +/-10 RTT"
+     },
+     "trials": [
+      {
+       "policy": "periodic20",
+       "seconds": 30.0,
+       "interruptions": 23,
+       "interruptions_per_min": 46.0,
+       "interruption_causes": {
+        "view_stale": 9,
+        "lease_expired": 12,
+        "release_required": 2
+       },
+       "represses": 23,
+       "moving_fraction": 0.157,
+       "motion_gap_ms": {
+        "n": 19,
+        "p50": 545.0,
+        "p95": 2384.0,
+        "max": 2384.0
+       },
+       "control_ack_ms": {
+        "n": 371,
+        "p50": 141.6,
+        "p95": 242.3,
+        "max": 354.9
+       },
+       "accepted_permit_age_ms": {
+        "n": 88,
+        "p50": 142.1,
+        "p95": 223.2,
+        "max": 245.4
+       },
+       "rejected_commands": 64,
+       "lease_headroom_ms": {
+        "min": -0.7,
+        "p5": 9.6,
+        "p50": 58.5
+       },
+       "status_gap_ms": {
+        "n": 596,
+        "p50": 43.1,
+        "p95": 138.3,
+        "max": 256.0
+       },
+       "video_fps": 9.9,
+       "video_age_bound_ms": {
+        "n": 297,
+        "p50": 518.0,
+        "p95": 927.0,
+        "max": 1074.0
+       },
+       "video_resets": 0,
+       "video_errors": [],
+       "control_errors": [],
+       "client_loop_lag_max_ms": 65.6
+      },
+      {
+       "policy": "on_permit",
+       "seconds": 30.0,
+       "interruptions": 32,
+       "interruptions_per_min": 64.0,
+       "interruption_causes": {
+        "view_stale": 18,
+        "lease_expired": 10,
+        "permit_wait": 3,
+        "release_required": 1
+       },
+       "represses": 33,
+       "moving_fraction": 0.159,
+       "motion_gap_ms": {
+        "n": 26,
+        "p50": 483.0,
+        "p95": 4951.0,
+        "max": 6870.0
+       },
+       "control_ack_ms": {
+        "n": 384,
+        "p50": 140.6,
+        "p95": 285.9,
+        "max": 417.1
+       },
+       "accepted_permit_age_ms": {
+        "n": 157,
+        "p50": 141.5,
+        "p95": 213.1,
+        "max": 247.0
+       },
+       "rejected_commands": 131,
+       "lease_headroom_ms": {
+        "min": 0.2,
+        "p5": 19.4,
+        "p50": 83.8
+       },
+       "status_gap_ms": {
+        "n": 599,
+        "p50": 45.3,
+        "p95": 132.6,
+        "max": 348.2
+       },
+       "video_fps": 10.0,
+       "video_age_bound_ms": {
+        "n": 300,
+        "p50": 443.0,
+        "p95": 765.0,
+        "max": 844.0
+       },
+       "video_resets": 0,
+       "video_errors": [],
+       "control_errors": [],
+       "client_loop_lag_max_ms": 0
+      }
+     ],
+     "probe_rtt_p50_ms": 148.53,
+     "probe_rtt_p95_ms": 235.69,
+     "probe_rtt_max_ms": 286.15,
+     "probe_samples": 62,
+     "video_mode": "h264",
+     "video_mbps": 0.386,
+     "errors": [],
+     "emulator": {
+      "profile": "direct",
+      "connections": 6,
+      "down": {
+       "packets": 4753,
+       "bytes": 4475194,
+       "lost": 0,
+       "stalls": 0,
+       "backlog_peak_ms": 17.776583059458062
+      },
+      "up": {
+       "packets": 2156,
+       "bytes": 335381,
+       "lost": 0,
+       "stalls": 0,
+       "backlog_peak_ms": 1.583832927281037
+      }
+     }
+    },
+    {
+     "profile": "jitter50",
+     "emulation": {
+      "name": "direct",
+      "one_way_ms": 25,
+      "jitter_ms": 50,
+      "stall_hz": 0,
+      "stall_ms": [
+       0,
+       0
+      ],
+      "loss": 0,
+      "rto_ms": 250,
+      "down_mbps": 8,
+      "up_mbps": 4,
+      "queue_ms": 400,
+      "note": "Tailscale direct UDP, cellular both ends: ~50 ms +/-10 RTT"
+     },
+     "trials": [
+      {
+       "policy": "periodic20",
+       "seconds": 30.0,
+       "interruptions": 12,
+       "interruptions_per_min": 24.0,
+       "interruption_causes": {
+        "permit_wait": 1,
+        "view_stale": 11
+       },
+       "represses": 12,
+       "moving_fraction": 0.012,
+       "motion_gap_ms": {
+        "n": 5,
+        "p50": 508.0,
+        "p95": 12621.0,
+        "max": 12621.0
+       },
+       "control_ack_ms": {
+        "n": 347,
+        "p50": 173.4,
+        "p95": 299.4,
+        "max": 366.2
+       },
+       "accepted_permit_age_ms": {
+        "n": 8,
+        "p50": 157.6,
+        "p95": 245.8,
+        "max": 245.8
+       },
+       "rejected_commands": 3,
+       "lease_headroom_ms": {
+        "min": 13.5,
+        "p5": 13.5,
+        "p50": 13.5
+       },
+       "status_gap_ms": {
+        "n": 598,
+        "p50": 35.8,
+        "p95": 162.4,
+        "max": 290.2
+       },
+       "video_fps": 7.47,
+       "video_age_bound_ms": {
+        "n": 224,
+        "p50": 763.0,
+        "p95": 1111.0,
+        "max": 1262.0
+       },
+       "video_resets": 4,
+       "video_errors": [
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError"
+       ],
+       "control_errors": [],
+       "client_loop_lag_max_ms": 5.0
+      },
+      {
+       "policy": "on_permit",
+       "seconds": 30.0,
+       "interruptions": 10,
+       "interruptions_per_min": 20.0,
+       "interruption_causes": {
+        "lease_expired": 1,
+        "view_stale": 8,
+        "permit_wait": 1
+       },
+       "represses": 10,
+       "moving_fraction": 0.009,
+       "motion_gap_ms": {
+        "n": 6,
+        "p50": 466.0,
+        "p95": 16247.0,
+        "max": 16247.0
+       },
+       "control_ack_ms": {
+        "n": 375,
+        "p50": 162.2,
+        "p95": 314.6,
+        "max": 438.6
+       },
+       "accepted_permit_age_ms": {
+        "n": 18,
+        "p50": 162.9,
+        "p95": 244.3,
+        "max": 244.3
+       },
+       "rejected_commands": 7,
+       "lease_headroom_ms": {
+        "min": 0.5,
+        "p5": 0.5,
+        "p50": 69.0
+       },
+       "status_gap_ms": {
+        "n": 594,
+        "p50": 37.6,
+        "p95": 167.2,
+        "max": 363.3
+       },
+       "video_fps": 7.03,
+       "video_age_bound_ms": {
+        "n": 211,
+        "p50": 794.0,
+        "p95": 1111.0,
+        "max": 1316.0
+       },
+       "video_resets": 4,
+       "video_errors": [
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError"
+       ],
+       "control_errors": [],
+       "client_loop_lag_max_ms": 64.2
+      }
+     ],
+     "probe_rtt_p50_ms": 193.81,
+     "probe_rtt_p95_ms": 358.35,
+     "probe_rtt_max_ms": 411.92,
+     "probe_samples": 49,
+     "video_mode": "h264",
+     "video_mbps": 0.241,
+     "errors": [
+      "video: WSMessageTypeError"
+     ],
+     "emulator": {
+      "profile": "direct",
+      "connections": 13,
+      "down": {
+       "packets": 3844,
+       "bytes": 3428386,
+       "lost": 0,
+       "stalls": 0,
+       "backlog_peak_ms": 18.04270810680464
+      },
+      "up": {
+       "packets": 1858,
+       "bytes": 304138,
+       "lost": 0,
+       "stalls": 0,
+       "backlog_peak_ms": 1.1558749829418957
+      }
+     }
+    },
+    {
+     "profile": "jitter60",
+     "emulation": {
+      "name": "direct",
+      "one_way_ms": 25,
+      "jitter_ms": 60,
+      "stall_hz": 0,
+      "stall_ms": [
+       0,
+       0
+      ],
+      "loss": 0,
+      "rto_ms": 250,
+      "down_mbps": 8,
+      "up_mbps": 4,
+      "queue_ms": 400,
+      "note": "Tailscale direct UDP, cellular both ends: ~50 ms +/-10 RTT"
+     },
+     "trials": [
+      {
+       "policy": "periodic20",
+       "seconds": 30.0,
+       "interruptions": 8,
+       "interruptions_per_min": 16.0,
+       "interruption_causes": {
+        "view_stale": 8
+       },
+       "represses": 8,
+       "moving_fraction": 0.004,
+       "motion_gap_ms": {
+        "n": 2,
+        "p50": 4829.0,
+        "p95": 5264.0,
+        "max": 5264.0
+       },
+       "control_ack_ms": {
+        "n": 319,
+        "p50": 176.7,
+        "p95": 332.3,
+        "max": 452.4
+       },
+       "accepted_permit_age_ms": {
+        "n": 3,
+        "p50": 142.1,
+        "p95": 192.8,
+        "max": 192.8
+       },
+       "rejected_commands": 3,
+       "lease_headroom_ms": {
+        "min": 57.1,
+        "p5": 57.1,
+        "p50": 57.1
+       },
+       "status_gap_ms": {
+        "n": 596,
+        "p50": 35.4,
+        "p95": 173.1,
+        "max": 334.2
+       },
+       "video_fps": 5.63,
+       "video_age_bound_ms": {
+        "n": 169,
+        "p50": 773.0,
+        "p95": 1065.0,
+        "max": 1240.0
+       },
+       "video_resets": 6,
+       "video_errors": [
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError"
+       ],
+       "control_errors": [],
+       "client_loop_lag_max_ms": 86.6
+      },
+      {
+       "policy": "on_permit",
+       "seconds": 30.0,
+       "interruptions": 7,
+       "interruptions_per_min": 14.0,
+       "interruption_causes": {
+        "view_stale": 4,
+        "permit_wait": 2,
+        "release_required": 1
+       },
+       "represses": 7,
+       "moving_fraction": 0.018,
+       "motion_gap_ms": {
+        "n": 3,
+        "p50": 5723.0,
+        "p95": 11086.0,
+        "max": 11086.0
+       },
+       "control_ack_ms": {
+        "n": 347,
+        "p50": 197.9,
+        "p95": 372.4,
+        "max": 581.0
+       },
+       "accepted_permit_age_ms": {
+        "n": 12,
+        "p50": 183.6,
+        "p95": 239.0,
+        "max": 239.0
+       },
+       "rejected_commands": 19,
+       "lease_headroom_ms": {
+        "min": 7.9,
+        "p5": 7.9,
+        "p50": 27.2
+       },
+       "status_gap_ms": {
+        "n": 597,
+        "p50": 33.2,
+        "p95": 174.0,
+        "max": 446.1
+       },
+       "video_fps": 5.2,
+       "video_age_bound_ms": {
+        "n": 156,
+        "p50": 769.0,
+        "p95": 1170.0,
+        "max": 1436.0
+       },
+       "video_resets": 7,
+       "video_errors": [
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError"
+       ],
+       "control_errors": [],
+       "client_loop_lag_max_ms": 68.6
+      }
+     ],
+     "probe_rtt_p50_ms": 180.82,
+     "probe_rtt_p95_ms": 358.38,
+     "probe_rtt_max_ms": 455.97,
+     "probe_samples": 50,
+     "video_mode": "h264",
+     "video_mbps": 0.048,
+     "errors": [
+      "video: WSMessageTypeError"
+     ],
+     "emulator": {
+      "profile": "direct",
+      "connections": 22,
+      "down": {
+       "packets": 3678,
+       "bytes": 3013470,
+       "lost": 0,
+       "stalls": 0,
+       "backlog_peak_ms": 17.94604110182263
+      },
+      "up": {
+       "packets": 2051,
+       "bytes": 361712,
+       "lost": 0,
+       "stalls": 0,
+       "backlog_peak_ms": 1.1462079419288784
+      }
+     }
+    }
+   ]
+  },
+  "sweep_on_permit_40hz": {
+   "software_evidence_only": true,
+   "hardware_verified": false,
+   "host": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+   "python": "3.13.7",
+   "started": "2026-10-10T12:24:03-0400",
+   "upstream": "local fixture",
+   "lease_ms": 250,
+   "permit_cadence_hz": 40.0,
+   "command_cadence_hz": 20,
+   "video_request_window": 2,
+   "results": [
+    {
+     "profile": "jitter10",
+     "emulation": {
+      "name": "direct",
+      "one_way_ms": 25,
+      "jitter_ms": 10,
+      "stall_hz": 0,
+      "stall_ms": [
+       0,
+       0
+      ],
+      "loss": 0,
+      "rto_ms": 250,
+      "down_mbps": 8,
+      "up_mbps": 4,
+      "queue_ms": 400,
+      "note": "Tailscale direct UDP, cellular both ends: ~50 ms +/-10 RTT"
+     },
+     "trials": [
+      {
+       "policy": "on_permit",
+       "seconds": 30.0,
+       "interruptions": 0,
+       "interruptions_per_min": 0.0,
+       "interruption_causes": {},
+       "represses": 1,
+       "moving_fraction": 1.0,
+       "motion_gap_ms": {
+        "n": 1,
+        "p50": 358.0,
+        "p95": 358.0,
+        "max": 358.0
+       },
+       "control_ack_ms": {
+        "n": 963,
+        "p50": 79.0,
+        "p95": 106.7,
+        "max": 164.8
+       },
+       "accepted_permit_age_ms": {
+        "n": 1755,
+        "p50": 76.1,
+        "p95": 109.0,
+        "max": 187.6
+       },
+       "rejected_commands": 0,
+       "lease_headroom_ms": {
+        "min": 49.2,
+        "p5": 123.6,
+        "p50": 155.5
+       },
+       "status_gap_ms": {
+        "n": 1183,
+        "p50": 25.1,
+        "p95": 48.1,
+        "max": 120.7
+       },
+       "video_fps": 10.0,
+       "video_age_bound_ms": {
+        "n": 300,
+        "p50": 232.0,
+        "p95": 269.0,
+        "max": 336.0
+       },
+       "video_resets": 0,
+       "video_errors": [],
+       "control_errors": [],
+       "client_loop_lag_max_ms": 100.0
+      }
+     ],
+     "probe_rtt_p50_ms": 83.86,
+     "probe_rtt_p95_ms": 118.65,
+     "probe_rtt_max_ms": 131.28,
+     "probe_samples": 98,
+     "video_mode": "h264",
+     "video_mbps": 0.397,
+     "errors": [],
+     "emulator": {
+      "profile": "direct",
+      "connections": 4,
+      "down": {
+       "packets": 3480,
+       "bytes": 2936560,
+       "lost": 0,
+       "stalls": 0,
+       "backlog_peak_ms": 12.940750078996643
+      },
+      "up": {
+       "packets": 2299,
+       "bytes": 415136,
+       "lost": 0,
+       "stalls": 0,
+       "backlog_peak_ms": 1.1963330034632236
+      }
+     }
+    },
+    {
+     "profile": "jitter20",
+     "emulation": {
+      "name": "direct",
+      "one_way_ms": 25,
+      "jitter_ms": 20,
+      "stall_hz": 0,
+      "stall_ms": [
+       0,
+       0
+      ],
+      "loss": 0,
+      "rto_ms": 250,
+      "down_mbps": 8,
+      "up_mbps": 4,
+      "queue_ms": 400,
+      "note": "Tailscale direct UDP, cellular both ends: ~50 ms +/-10 RTT"
+     },
+     "trials": [
+      {
+       "policy": "on_permit",
+       "seconds": 30.0,
+       "interruptions": 6,
+       "interruptions_per_min": 12.0,
+       "interruption_causes": {
+        "view_stale": 5,
+        "lease_expired": 1
+       },
+       "represses": 7,
+       "moving_fraction": 0.945,
+       "motion_gap_ms": {
+        "n": 6,
+        "p50": 349.0,
+        "p95": 682.0,
+        "max": 682.0
+       },
+       "control_ack_ms": {
+        "n": 777,
+        "p50": 100.8,
+        "p95": 154.0,
+        "max": 269.8
+       },
+       "accepted_permit_age_ms": {
+        "n": 1629,
+        "p50": 102.4,
+        "p95": 161.0,
+        "max": 228.1
+       },
+       "rejected_commands": 12,
+       "lease_headroom_ms": {
+        "min": 8.3,
+        "p5": 73.6,
+        "p50": 131.0
+       },
+       "status_gap_ms": {
+        "n": 1167,
+        "p50": 22.9,
+        "p95": 67.3,
+        "max": 138.1
+       },
+       "video_fps": 9.9,
+       "video_age_bound_ms": {
+        "n": 297,
+        "p50": 257.0,
+        "p95": 355.0,
+        "max": 566.0
+       },
+       "video_resets": 0,
+       "video_errors": [],
+       "control_errors": [],
+       "client_loop_lag_max_ms": 53.9
+      }
+     ],
+     "probe_rtt_p50_ms": 101.95,
+     "probe_rtt_p95_ms": 165.37,
+     "probe_rtt_max_ms": 213.59,
+     "probe_samples": 88,
+     "video_mode": "h264",
+     "video_mbps": 0.395,
+     "errors": [],
+     "emulator": {
+      "profile": "direct",
+      "connections": 4,
+      "down": {
+       "packets": 3420,
+       "bytes": 2903155,
+       "lost": 0,
+       "stalls": 0,
+       "backlog_peak_ms": 12.804125057300553
+      },
+      "up": {
+       "packets": 2189,
+       "bytes": 398236,
+       "lost": 0,
+       "stalls": 0,
+       "backlog_peak_ms": 1.906834018882364
+      }
+     }
+    },
+    {
+     "profile": "jitter30",
+     "emulation": {
+      "name": "direct",
+      "one_way_ms": 25,
+      "jitter_ms": 30,
+      "stall_hz": 0,
+      "stall_ms": [
+       0,
+       0
+      ],
+      "loss": 0,
+      "rto_ms": 250,
+      "down_mbps": 8,
+      "up_mbps": 4,
+      "queue_ms": 400,
+      "note": "Tailscale direct UDP, cellular both ends: ~50 ms +/-10 RTT"
+     },
+     "trials": [
+      {
+       "policy": "on_permit",
+       "seconds": 30.0,
+       "interruptions": 26,
+       "interruptions_per_min": 52.0,
+       "interruption_causes": {
+        "lease_expired": 21,
+        "view_stale": 5
+       },
+       "represses": 27,
+       "moving_fraction": 0.618,
+       "motion_gap_ms": {
+        "n": 26,
+        "p50": 441.0,
+        "p95": 566.0,
+        "max": 765.0
+       },
+       "control_ack_ms": {
+        "n": 557,
+        "p50": 127.4,
+        "p95": 202.9,
+        "max": 277.3
+       },
+       "accepted_permit_age_ms": {
+        "n": 993,
+        "p50": 133.1,
+        "p95": 199.8,
+        "max": 245.0
+       },
+       "rejected_commands": 267,
+       "lease_headroom_ms": {
+        "min": -3.1,
+        "p5": 33.2,
+        "p50": 101.4
+       },
+       "status_gap_ms": {
+        "n": 1185,
+        "p50": 16.8,
+        "p95": 88.6,
+        "max": 223.9
+       },
+       "video_fps": 10.0,
+       "video_age_bound_ms": {
+        "n": 300,
+        "p50": 284.0,
+        "p95": 398.0,
+        "max": 531.0
+       },
+       "video_resets": 0,
+       "video_errors": [],
+       "control_errors": [],
+       "client_loop_lag_max_ms": 0
+      }
+     ],
+     "probe_rtt_p50_ms": 121.7,
+     "probe_rtt_p95_ms": 202.99,
+     "probe_rtt_max_ms": 267.71,
+     "probe_samples": 74,
+     "video_mode": "h264",
+     "video_mbps": 0.39,
+     "errors": [],
+     "emulator": {
+      "profile": "direct",
+      "connections": 4,
+      "down": {
+       "packets": 3443,
+       "bytes": 2924402,
+       "lost": 0,
+       "stalls": 0,
+       "backlog_peak_ms": 17.222208116436377
+      },
+      "up": {
+       "packets": 1912,
+       "bytes": 340533,
+       "lost": 0,
+       "stalls": 0,
+       "backlog_peak_ms": 2.8172500315122306
+      }
+     }
+    },
+    {
+     "profile": "jitter40",
+     "emulation": {
+      "name": "direct",
+      "one_way_ms": 25,
+      "jitter_ms": 40,
+      "stall_hz": 0,
+      "stall_ms": [
+       0,
+       0
+      ],
+      "loss": 0,
+      "rto_ms": 250,
+      "down_mbps": 8,
+      "up_mbps": 4,
+      "queue_ms": 400,
+      "note": "Tailscale direct UDP, cellular both ends: ~50 ms +/-10 RTT"
+     },
+     "trials": [
+      {
+       "policy": "on_permit",
+       "seconds": 30.0,
+       "interruptions": 48,
+       "interruptions_per_min": 96.0,
+       "interruption_causes": {
+        "view_stale": 35,
+        "expired_permit": 1,
+        "lease_expired": 9,
+        "permit_wait": 2,
+        "release_required": 1
+       },
+       "represses": 48,
+       "moving_fraction": 0.188,
+       "motion_gap_ms": {
+        "n": 37,
+        "p50": 447.0,
+        "p95": 1757.0,
+        "max": 3375.0
+       },
+       "control_ack_ms": {
+        "n": 442,
+        "p50": 144.1,
+        "p95": 261.3,
+        "max": 366.0
+       },
+       "accepted_permit_age_ms": {
+        "n": 256,
+        "p50": 154.2,
+        "p95": 218.6,
+        "max": 248.2
+       },
+       "rejected_commands": 186,
+       "lease_headroom_ms": {
+        "min": 0.9,
+        "p5": 20.7,
+        "p50": 78.7
+       },
+       "status_gap_ms": {
+        "n": 1186,
+        "p50": 8.0,
+        "p95": 103.1,
+        "max": 303.9
+       },
+       "video_fps": 10.0,
+       "video_age_bound_ms": {
+        "n": 300,
+        "p50": 443.0,
+        "p95": 676.0,
+        "max": 821.0
+       },
+       "video_resets": 0,
+       "video_errors": [],
+       "control_errors": [],
+       "client_loop_lag_max_ms": 14.6
+      }
+     ],
+     "probe_rtt_p50_ms": 158.11,
+     "probe_rtt_p95_ms": 291.81,
+     "probe_rtt_max_ms": 364.28,
+     "probe_samples": 58,
+     "video_mode": "h264",
+     "video_mbps": 0.393,
+     "errors": [],
+     "emulator": {
+      "profile": "direct",
+      "connections": 4,
+      "down": {
+       "packets": 3568,
+       "bytes": 2979884,
+       "lost": 0,
+       "stalls": 0,
+       "backlog_peak_ms": 18.008416082011536
+      },
+      "up": {
+       "packets": 1408,
+       "bytes": 228457,
+       "lost": 0,
+       "stalls": 0,
+       "backlog_peak_ms": 3.072916966630146
+      }
+     }
+    },
+    {
+     "profile": "jitter50",
+     "emulation": {
+      "name": "direct",
+      "one_way_ms": 25,
+      "jitter_ms": 50,
+      "stall_hz": 0,
+      "stall_ms": [
+       0,
+       0
+      ],
+      "loss": 0,
+      "rto_ms": 250,
+      "down_mbps": 8,
+      "up_mbps": 4,
+      "queue_ms": 400,
+      "note": "Tailscale direct UDP, cellular both ends: ~50 ms +/-10 RTT"
+     },
+     "trials": [
+      {
+       "policy": "on_permit",
+       "seconds": 30.0,
+       "interruptions": 12,
+       "interruptions_per_min": 24.0,
+       "interruption_causes": {
+        "view_stale": 10,
+        "lease_expired": 1,
+        "expired_permit": 1
+       },
+       "represses": 12,
+       "moving_fraction": 0.012,
+       "motion_gap_ms": {
+        "n": 4,
+        "p50": 7238.0,
+        "p95": 10819.0,
+        "max": 10819.0
+       },
+       "control_ack_ms": {
+        "n": 408,
+        "p50": 170.5,
+        "p95": 282.2,
+        "max": 416.0
+       },
+       "accepted_permit_age_ms": {
+        "n": 14,
+        "p50": 158.9,
+        "p95": 224.1,
+        "max": 224.1
+       },
+       "rejected_commands": 16,
+       "lease_headroom_ms": {
+        "min": 24.9,
+        "p5": 24.9,
+        "p50": 41.8
+       },
+       "status_gap_ms": {
+        "n": 1179,
+        "p50": 0.3,
+        "p95": 115.4,
+        "max": 356.0
+       },
+       "video_fps": 6.7,
+       "video_age_bound_ms": {
+        "n": 201,
+        "p50": 865.0,
+        "p95": 1187.0,
+        "max": 1356.0
+       },
+       "video_resets": 5,
+       "video_errors": [
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError"
+       ],
+       "control_errors": [],
+       "client_loop_lag_max_ms": 7.0
+      }
+     ],
+     "probe_rtt_p50_ms": 196.0,
+     "probe_rtt_p95_ms": 296.88,
+     "probe_rtt_max_ms": 514.58,
+     "probe_samples": 52,
+     "video_mode": "h264",
+     "video_mbps": 0.169,
+     "errors": [
+      "video: WSMessageTypeError"
+     ],
+     "emulator": {
+      "profile": "direct",
+      "connections": 8,
+      "down": {
+       "packets": 2809,
+       "bytes": 2106046,
+       "lost": 0,
+       "stalls": 0,
+       "backlog_peak_ms": 18.197208089986816
+      },
+      "up": {
+       "packets": 969,
+       "bytes": 158230,
+       "lost": 0,
+       "stalls": 0,
+       "backlog_peak_ms": 2.1172079141251743
+      }
+     }
+    },
+    {
+     "profile": "jitter60",
+     "emulation": {
+      "name": "direct",
+      "one_way_ms": 25,
+      "jitter_ms": 60,
+      "stall_hz": 0,
+      "stall_ms": [
+       0,
+       0
+      ],
+      "loss": 0,
+      "rto_ms": 250,
+      "down_mbps": 8,
+      "up_mbps": 4,
+      "queue_ms": 400,
+      "note": "Tailscale direct UDP, cellular both ends: ~50 ms +/-10 RTT"
+     },
+     "trials": [
+      {
+       "policy": "on_permit",
+       "seconds": 30.0,
+       "interruptions": 5,
+       "interruptions_per_min": 10.0,
+       "interruption_causes": {
+        "view_stale": 5
+       },
+       "represses": 5,
+       "moving_fraction": 0.004,
+       "motion_gap_ms": {
+        "n": 2,
+        "p50": 5999.0,
+        "p95": 9075.0,
+        "max": 9075.0
+       },
+       "control_ack_ms": {
+        "n": 372,
+        "p50": 195.4,
+        "p95": 344.1,
+        "max": 485.4
+       },
+       "accepted_permit_age_ms": {
+        "n": 5,
+        "p50": 180.6,
+        "p95": 248.9,
+        "max": 248.9
+       },
+       "rejected_commands": 17,
+       "lease_headroom_ms": {
+        "min": 62.2,
+        "p5": 62.2,
+        "p50": 62.2
+       },
+       "status_gap_ms": {
+        "n": 1177,
+        "p50": 0.1,
+        "p95": 130.8,
+        "max": 310.1
+       },
+       "video_fps": 4.9,
+       "video_age_bound_ms": {
+        "n": 147,
+        "p50": 871.0,
+        "p95": 1151.0,
+        "max": 1265.0
+       },
+       "video_resets": 7,
+       "video_errors": [
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError",
+        "WSMessageTypeError"
+       ],
+       "control_errors": [],
+       "client_loop_lag_max_ms": 96.8
+      }
+     ],
+     "probe_rtt_p50_ms": 220.33,
+     "probe_rtt_p95_ms": 422.4,
+     "probe_rtt_max_ms": 502.78,
+     "probe_samples": 43,
+     "video_mode": "h264",
+     "video_mbps": 0.166,
+     "errors": [
+      "video: WSMessageTypeError"
+     ],
+     "emulator": {
+      "profile": "direct",
+      "connections": 13,
+      "down": {
+       "packets": 2914,
+       "bytes": 2075374,
+       "lost": 0,
+       "stalls": 0,
+       "backlog_peak_ms": 17.418250121409073
+      },
+      "up": {
+       "packets": 1062,
+       "bytes": 183454,
+       "lost": 0,
+       "stalls": 0,
+       "backlog_peak_ms": 1.5233339508995414
+      }
+     }
+    }
+   ]
+  },
+  "fine_sweep_before": {
+   "software_evidence_only": true,
+   "hardware_verified": false,
+   "host": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+   "python": "3.13.7",
+   "started": "2026-10-10T12:28:42-0400",
+   "upstream": "local fixture",
+   "lease_ms": 250,
+   "permit_cadence_hz": 20.0,
+   "command_cadence_hz": 20,
+   "video_request_window": 2,
+   "results": [
+    {
+     "profile": "jitter12",
+     "emulation": {
+      "name": "direct",
+      "one_way_ms": 25,
+      "jitter_ms": 12.0,
+      "stall_hz": 0,
+      "stall_ms": [
+       0,
+       0
+      ],
+      "loss": 0,
+      "rto_ms": 250,
+      "down_mbps": 8,
+      "up_mbps": 4,
+      "queue_ms": 400,
+      "note": "Tailscale direct UDP, cellular both ends: ~50 ms +/-10 RTT"
+     },
+     "trials": [
+      {
+       "policy": "periodic20",
+       "seconds": 45.0,
+       "interruptions": 1,
+       "interruptions_per_min": 1.33,
+       "interruption_causes": {
+        "lease_expired": 1
+       },
+       "represses": 2,
+       "moving_fraction": 0.99,
+       "motion_gap_ms": {
+        "n": 2,
+        "p50": 381.0,
+        "p95": 446.0,
+        "max": 446.0
+       },
+       "control_ack_ms": {
+        "n": 800,
+        "p50": 96.2,
+        "p95": 131.5,
+        "max": 218.3
+       },
+       "accepted_permit_age_ms": {
+        "n": 875,
+        "p50": 100.3,
+        "p95": 142.3,
+        "max": 184.6
+       },
+       "rejected_commands": 2,
+       "lease_headroom_ms": {
+        "min": 15.5,
+        "p5": 57.9,
+        "p50": 99.0
+       },
+       "status_gap_ms": {
+        "n": 893,
+        "p50": 50.3,
+        "p95": 78.8,
+        "max": 158.9
+       },
+       "video_fps": 9.98,
+       "video_age_bound_ms": {
+        "n": 449,
+        "p50": 230.0,
+        "p95": 282.0,
+        "max": 400.0
+       },
+       "video_resets": 0,
+       "video_errors": [],
+       "control_errors": [],
+       "client_loop_lag_max_ms": 81.6
+      }
+     ],
+     "probe_rtt_p50_ms": 91.66,
+     "probe_rtt_p95_ms": 138.81,
+     "probe_rtt_max_ms": 192.47,
+     "probe_samples": 92,
+     "video_mode": "h264",
+     "video_mbps": 0.396,
+     "errors": [],
+     "emulator": {
+      "profile": "direct",
+      "connections": 4,
+      "down": {
+       "packets": 3614,
+       "bytes": 3486104,
+       "lost": 0,
+       "stalls": 0,
+       "backlog_peak_ms": 12.984292057808489
+      },
+      "up": {
+       "packets": 1569,
+       "bytes": 230109,
+       "lost": 0,
+       "stalls": 0,
+       "backlog_peak_ms": 0.9069160150829703
+      }
+     }
+    },
+    {
+     "profile": "jitter14",
+     "emulation": {
+      "name": "direct",
+      "one_way_ms": 25,
+      "jitter_ms": 14.0,
+      "stall_hz": 0,
+      "stall_ms": [
+       0,
+       0
+      ],
+      "loss": 0,
+      "rto_ms": 250,
+      "down_mbps": 8,
+      "up_mbps": 4,
+      "queue_ms": 400,
+      "note": "Tailscale direct UDP, cellular both ends: ~50 ms +/-10 RTT"
+     },
+     "trials": [
+      {
+       "policy": "periodic20",
+       "seconds": 45.0,
+       "interruptions": 1,
+       "interruptions_per_min": 1.33,
+       "interruption_causes": {
+        "release_required": 1
+       },
+       "represses": 2,
+       "moving_fraction": 0.992,
+       "motion_gap_ms": {
+        "n": 2,
+        "p50": 380.0,
+        "p95": 423.0,
+        "max": 423.0
+       },
+       "control_ack_ms": {
+        "n": 774,
+        "p50": 94.2,
+        "p95": 133.3,
+        "max": 181.7
+       },
+       "accepted_permit_age_ms": {
+        "n": 876,
+        "p50": 98.4,
+        "p95": 151.0,
+        "max": 218.2
+       },
+       "rejected_commands": 2,
+       "lease_headroom_ms": {
+        "min": -2.0,
+        "p5": 48.8,
+        "p50": 101.2
+       },
+       "status_gap_ms": {
+        "n": 893,
+        "p50": 50.5,
+        "p95": 80.2,
+        "max": 146.9
+       },
+       "video_fps": 9.98,
+       "video_age_bound_ms": {
+        "n": 449,
+        "p50": 238.0,
+        "p95": 291.0,
+        "max": 373.0
+       },
+       "video_resets": 0,
+       "video_errors": [],
+       "control_errors": [],
+       "client_loop_lag_max_ms": 101.1
+      }
+     ],
+     "probe_rtt_p50_ms": 95.76,
+     "probe_rtt_p95_ms": 164.95,
+     "probe_rtt_max_ms": 219.25,
+     "probe_samples": 89,
+     "video_mode": "h264",
+     "video_mbps": 0.398,
+     "errors": [],
+     "emulator": {
+      "profile": "direct",
+      "connections": 4,
+      "down": {
+       "packets": 3632,
+       "bytes": 3502357,
+       "lost": 0,
+       "stalls": 0,
+       "backlog_peak_ms": 13.035250070970505
+      },
+      "up": {
+       "packets": 1565,
+       "bytes": 229392,
+       "lost": 0,
+       "stalls": 0,
+       "backlog_peak_ms": 0.9847910259850323
+      }
+     }
+    },
+    {
+     "profile": "jitter16",
+     "emulation": {
+      "name": "direct",
+      "one_way_ms": 25,
+      "jitter_ms": 16.0,
+      "stall_hz": 0,
+      "stall_ms": [
+       0,
+       0
+      ],
+      "loss": 0,
+      "rto_ms": 250,
+      "down_mbps": 8,
+      "up_mbps": 4,
+      "queue_ms": 400,
+      "note": "Tailscale direct UDP, cellular both ends: ~50 ms +/-10 RTT"
+     },
+     "trials": [
+      {
+       "policy": "periodic20",
+       "seconds": 45.0,
+       "interruptions": 4,
+       "interruptions_per_min": 5.33,
+       "interruption_causes": {
+        "lease_expired": 4
+       },
+       "represses": 5,
+       "moving_fraction": 0.96,
+       "motion_gap_ms": {
+        "n": 5,
+        "p50": 425.0,
+        "p95": 484.0,
+        "max": 484.0
+       },
+       "control_ack_ms": {
+        "n": 742,
+        "p50": 95.4,
+        "p95": 139.4,
+        "max": 201.7
+       },
+       "accepted_permit_age_ms": {
+        "n": 847,
+        "p50": 99.8,
+        "p95": 153.5,
+        "max": 203.1
+       },
+       "rejected_commands": 13,
+       "lease_headroom_ms": {
+        "min": 1.2,
+        "p5": 45.7,
+        "p50": 100.6
+       },
+       "status_gap_ms": {
+        "n": 894,
+        "p50": 50.4,
+        "p95": 85.3,
+        "max": 143.0
+       },
+       "video_fps": 9.98,
+       "video_age_bound_ms": {
+        "n": 449,
+        "p50": 244.0,
+        "p95": 302.0,
+        "max": 365.0
+       },
+       "video_resets": 0,
+       "video_errors": [],
+       "control_errors": [],
+       "client_loop_lag_max_ms": 19.0
+      }
+     ],
+     "probe_rtt_p50_ms": 103.25,
+     "probe_rtt_p95_ms": 159.43,
+     "probe_rtt_max_ms": 202.24,
+     "probe_samples": 88,
+     "video_mode": "h264",
+     "video_mbps": 0.4,
+     "errors": [],
+     "emulator": {
+      "profile": "direct",
+      "connections": 4,
+      "down": {
+       "packets": 3622,
+       "bytes": 3501496,
+       "lost": 0,
+       "stalls": 0,
+       "backlog_peak_ms": 12.941084045451134
+      },
+      "up": {
+       "packets": 1568,
+       "bytes": 229970,
+       "lost": 0,
+       "stalls": 0,
+       "backlog_peak_ms": 0.8648750081192702
+      }
+     }
+    },
+    {
+     "profile": "jitter18",
+     "emulation": {
+      "name": "direct",
+      "one_way_ms": 25,
+      "jitter_ms": 18.0,
+      "stall_hz": 0,
+      "stall_ms": [
+       0,
+       0
+      ],
+      "loss": 0,
+      "rto_ms": 250,
+      "down_mbps": 8,
+      "up_mbps": 4,
+      "queue_ms": 400,
+      "note": "Tailscale direct UDP, cellular both ends: ~50 ms +/-10 RTT"
+     },
+     "trials": [
+      {
+       "policy": "periodic20",
+       "seconds": 45.0,
+       "interruptions": 8,
+       "interruptions_per_min": 10.67,
+       "interruption_causes": {
+        "lease_expired": 8
+       },
+       "represses": 9,
+       "moving_fraction": 0.918,
+       "motion_gap_ms": {
+        "n": 9,
+        "p50": 453.0,
+        "p95": 534.0,
+        "max": 534.0
+       },
+       "control_ack_ms": {
+        "n": 761,
+        "p50": 114.0,
+        "p95": 156.7,
+        "max": 231.2
+       },
+       "accepted_permit_age_ms": {
+        "n": 811,
+        "p50": 114.1,
+        "p95": 166.8,
+        "max": 247.1
+       },
+       "rejected_commands": 22,
+       "lease_headroom_ms": {
+        "min": 2.0,
+        "p5": 33.7,
+        "p50": 86.1
+       },
+       "status_gap_ms": {
+        "n": 892,
+        "p50": 50.0,
+        "p95": 90.1,
+        "max": 173.5
+       },
+       "video_fps": 9.96,
+       "video_age_bound_ms": {
+        "n": 448,
+        "p50": 250.0,
+        "p95": 318.0,
+        "max": 381.0
+       },
+       "video_resets": 0,
+       "video_errors": [],
+       "control_errors": [],
+       "client_loop_lag_max_ms": 96.8
+      }
+     ],
+     "probe_rtt_p50_ms": 105.22,
+     "probe_rtt_p95_ms": 169.31,
+     "probe_rtt_max_ms": 192.77,
+     "probe_samples": 86,
+     "video_mode": "h264",
+     "video_mbps": 0.395,
+     "errors": [],
+     "emulator": {
+      "profile": "direct",
+      "connections": 4,
+      "down": {
+       "packets": 3625,
+       "bytes": 3504369,
+       "lost": 0,
+       "stalls": 0,
+       "backlog_peak_ms": 18.10262509388849
+      },
+      "up": {
+       "packets": 1564,
+       "bytes": 229306,
+       "lost": 0,
+       "stalls": 0,
+       "backlog_peak_ms": 0.8603330061305314
+      }
+     }
+    }
+   ]
+  },
+  "fine_sweep_after": {
+   "software_evidence_only": true,
+   "hardware_verified": false,
+   "host": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+   "python": "3.13.7",
+   "started": "2026-10-10T12:32:32-0400",
+   "upstream": "local fixture",
+   "lease_ms": 250,
+   "permit_cadence_hz": 40.0,
+   "command_cadence_hz": 20,
+   "video_request_window": 2,
+   "results": [
+    {
+     "profile": "jitter12",
+     "emulation": {
+      "name": "direct",
+      "one_way_ms": 25,
+      "jitter_ms": 12.0,
+      "stall_hz": 0,
+      "stall_ms": [
+       0,
+       0
+      ],
+      "loss": 0,
+      "rto_ms": 250,
+      "down_mbps": 8,
+      "up_mbps": 4,
+      "queue_ms": 400,
+      "note": "Tailscale direct UDP, cellular both ends: ~50 ms +/-10 RTT"
+     },
+     "trials": [
+      {
+       "policy": "on_permit",
+       "seconds": 45.0,
+       "interruptions": 0,
+       "interruptions_per_min": 0.0,
+       "interruption_causes": {},
+       "represses": 1,
+       "moving_fraction": 1.0,
+       "motion_gap_ms": {
+        "n": 1,
+        "p50": 335.0,
+        "p95": 335.0,
+        "max": 335.0
+       },
+       "control_ack_ms": {
+        "n": 1419,
+        "p50": 82.8,
+        "p95": 116.8,
+        "max": 218.2
+       },
+       "accepted_permit_age_ms": {
+        "n": 2648,
+        "p50": 81.1,
+        "p95": 118.6,
+        "max": 225.5
+       },
+       "rejected_commands": 0,
+       "lease_headroom_ms": {
+        "min": 24.5,
+        "p5": 113.7,
+        "p50": 151.4
+       },
+       "status_gap_ms": {
+        "n": 1776,
+        "p50": 24.6,
+        "p95": 52.9,
+        "max": 166.3
+       },
+       "video_fps": 9.96,
+       "video_age_bound_ms": {
+        "n": 448,
+        "p50": 230.0,
+        "p95": 282.0,
+        "max": 335.0
+       },
+       "video_resets": 0,
+       "video_errors": [],
+       "control_errors": [],
+       "client_loop_lag_max_ms": 39.8
+      }
+     ],
+     "probe_rtt_p50_ms": 85.99,
+     "probe_rtt_p95_ms": 136.57,
+     "probe_rtt_max_ms": 154.55,
+     "probe_samples": 95,
+     "video_mode": "h264",
+     "video_mbps": 0.398,
+     "errors": [],
+     "emulator": {
+      "profile": "direct",
+      "connections": 4,
+      "down": {
+       "packets": 4721,
+       "bytes": 3999552,
+       "lost": 0,
+       "stalls": 0,
+       "backlog_peak_ms": 13.082000048598275
+      },
+      "up": {
+       "packets": 3334,
+       "bytes": 615144,
+       "lost": 0,
+       "stalls": 0,
+       "backlog_peak_ms": 2.264083013869822
+      }
+     }
+    },
+    {
+     "profile": "jitter14",
+     "emulation": {
+      "name": "direct",
+      "one_way_ms": 25,
+      "jitter_ms": 14.0,
+      "stall_hz": 0,
+      "stall_ms": [
+       0,
+       0
+      ],
+      "loss": 0,
+      "rto_ms": 250,
+      "down_mbps": 8,
+      "up_mbps": 4,
+      "queue_ms": 400,
+      "note": "Tailscale direct UDP, cellular both ends: ~50 ms +/-10 RTT"
+     },
+     "trials": [
+      {
+       "policy": "on_permit",
+       "seconds": 45.0,
+       "interruptions": 1,
+       "interruptions_per_min": 1.33,
+       "interruption_causes": {
+        "view_stale": 1
+       },
+       "represses": 2,
+       "moving_fraction": 0.993,
+       "motion_gap_ms": {
+        "n": 2,
+        "p50": 318.0,
+        "p95": 361.0,
+        "max": 361.0
+       },
+       "control_ack_ms": {
+        "n": 1338,
+        "p50": 87.4,
+        "p95": 125.1,
+        "max": 188.3
+       },
+       "accepted_permit_age_ms": {
+        "n": 2627,
+        "p50": 86.3,
+        "p95": 127.8,
+        "max": 213.7
+       },
+       "rejected_commands": 0,
+       "lease_headroom_ms": {
+        "min": 30.6,
+        "p5": 104.0,
+        "p50": 147.6
+       },
+       "status_gap_ms": {
+        "n": 1775,
+        "p50": 24.5,
+        "p95": 56.2,
+        "max": 130.0
+       },
+       "video_fps": 9.96,
+       "video_age_bound_ms": {
+        "n": 448,
+        "p50": 237.0,
+        "p95": 296.0,
+        "max": 434.0
+       },
+       "video_resets": 0,
+       "video_errors": [],
+       "control_errors": [],
+       "client_loop_lag_max_ms": 74.7
+      }
+     ],
+     "probe_rtt_p50_ms": 85.9,
+     "probe_rtt_p95_ms": 132.83,
+     "probe_rtt_max_ms": 175.08,
+     "probe_samples": 96,
+     "video_mode": "h264",
+     "video_mbps": 0.398,
+     "errors": [],
+     "emulator": {
+      "profile": "direct",
+      "connections": 4,
+      "down": {
+       "packets": 4731,
+       "bytes": 4010675,
+       "lost": 0,
+       "stalls": 0,
+       "backlog_peak_ms": 12.781375058693811
+      },
+      "up": {
+       "packets": 3326,
+       "bytes": 612671,
+       "lost": 0,
+       "stalls": 0,
+       "backlog_peak_ms": 2.0274580165278167
+      }
+     }
+    },
+    {
+     "profile": "jitter16",
+     "emulation": {
+      "name": "direct",
+      "one_way_ms": 25,
+      "jitter_ms": 16.0,
+      "stall_hz": 0,
+      "stall_ms": [
+       0,
+       0
+      ],
+      "loss": 0,
+      "rto_ms": 250,
+      "down_mbps": 8,
+      "up_mbps": 4,
+      "queue_ms": 400,
+      "note": "Tailscale direct UDP, cellular both ends: ~50 ms +/-10 RTT"
+     },
+     "trials": [
+      {
+       "policy": "on_permit",
+       "seconds": 45.0,
+       "interruptions": 0,
+       "interruptions_per_min": 0.0,
+       "interruption_causes": {},
+       "represses": 1,
+       "moving_fraction": 1.0,
+       "motion_gap_ms": {
+        "n": 1,
+        "p50": 358.0,
+        "p95": 358.0,
+        "max": 358.0
+       },
+       "control_ack_ms": {
+        "n": 1285,
+        "p50": 91.9,
+        "p95": 131.4,
+        "max": 187.7
+       },
+       "accepted_permit_age_ms": {
+        "n": 2646,
+        "p50": 91.8,
+        "p95": 137.2,
+        "max": 226.8
+       },
+       "rejected_commands": 0,
+       "lease_headroom_ms": {
+        "min": 23.2,
+        "p5": 95.0,
+        "p50": 141.4
+       },
+       "status_gap_ms": {
+        "n": 1775,
+        "p50": 24.2,
+        "p95": 60.4,
+        "max": 131.2
+       },
+       "video_fps": 9.98,
+       "video_age_bound_ms": {
+        "n": 449,
+        "p50": 246.0,
+        "p95": 299.0,
+        "max": 380.0
+       },
+       "video_resets": 0,
+       "video_errors": [],
+       "control_errors": [],
+       "client_loop_lag_max_ms": 16.9
+      }
+     ],
+     "probe_rtt_p50_ms": 97.59,
+     "probe_rtt_p95_ms": 148.45,
+     "probe_rtt_max_ms": 178.83,
+     "probe_samples": 90,
+     "video_mode": "h264",
+     "video_mbps": 0.397,
+     "errors": [],
+     "emulator": {
+      "profile": "direct",
+      "connections": 4,
+      "down": {
+       "packets": 4728,
+       "bytes": 4012404,
+       "lost": 0,
+       "stalls": 0,
+       "backlog_peak_ms": 12.812000088160858
+      },
+      "up": {
+       "packets": 3326,
+       "bytes": 614619,
+       "lost": 0,
+       "stalls": 0,
+       "backlog_peak_ms": 1.613333006389439
+      }
+     }
+    },
+    {
+     "profile": "jitter18",
+     "emulation": {
+      "name": "direct",
+      "one_way_ms": 25,
+      "jitter_ms": 18.0,
+      "stall_hz": 0,
+      "stall_ms": [
+       0,
+       0
+      ],
+      "loss": 0,
+      "rto_ms": 250,
+      "down_mbps": 8,
+      "up_mbps": 4,
+      "queue_ms": 400,
+      "note": "Tailscale direct UDP, cellular both ends: ~50 ms +/-10 RTT"
+     },
+     "trials": [
+      {
+       "policy": "on_permit",
+       "seconds": 45.0,
+       "interruptions": 2,
+       "interruptions_per_min": 2.67,
+       "interruption_causes": {
+        "lease_expired": 2
+       },
+       "represses": 3,
+       "moving_fraction": 0.981,
+       "motion_gap_ms": {
+        "n": 3,
+        "p50": 423.0,
+        "p95": 429.0,
+        "max": 429.0
+       },
+       "control_ack_ms": {
+        "n": 1230,
+        "p50": 95.8,
+        "p95": 142.4,
+        "max": 222.1
+       },
+       "accepted_permit_age_ms": {
+        "n": 2579,
+        "p50": 97.2,
+        "p95": 150.2,
+        "max": 213.8
+       },
+       "rejected_commands": 23,
+       "lease_headroom_ms": {
+        "min": 22.2,
+        "p5": 83.9,
+        "p50": 135.6
+       },
+       "status_gap_ms": {
+        "n": 1768,
+        "p50": 22.8,
+        "p95": 64.8,
+        "max": 156.5
+       },
+       "video_fps": 9.96,
+       "video_age_bound_ms": {
+        "n": 448,
+        "p50": 256.0,
+        "p95": 319.0,
+        "max": 361.0
+       },
+       "video_resets": 0,
+       "video_errors": [],
+       "control_errors": [],
+       "client_loop_lag_max_ms": 83.5
+      }
+     ],
+     "probe_rtt_p50_ms": 104.36,
+     "probe_rtt_p95_ms": 148.81,
+     "probe_rtt_max_ms": 189.7,
+     "probe_samples": 89,
+     "video_mode": "h264",
+     "video_mbps": 0.406,
+     "errors": [],
+     "emulator": {
+      "profile": "direct",
+      "connections": 4,
+      "down": {
+       "packets": 4748,
+       "bytes": 4012777,
+       "lost": 0,
+       "stalls": 0,
+       "backlog_peak_ms": 12.804500060155988
+      },
+      "up": {
+       "packets": 3287,
+       "bytes": 607574,
+       "lost": 0,
+       "stalls": 0,
+       "backlog_peak_ms": 2.039917017100379
+      }
+     }
+    },
+    {
+     "profile": "jitter22",
+     "emulation": {
+      "name": "direct",
+      "one_way_ms": 25,
+      "jitter_ms": 22.0,
+      "stall_hz": 0,
+      "stall_ms": [
+       0,
+       0
+      ],
+      "loss": 0,
+      "rto_ms": 250,
+      "down_mbps": 8,
+      "up_mbps": 4,
+      "queue_ms": 400,
+      "note": "Tailscale direct UDP, cellular both ends: ~50 ms +/-10 RTT"
+     },
+     "trials": [
+      {
+       "policy": "on_permit",
+       "seconds": 45.0,
+       "interruptions": 5,
+       "interruptions_per_min": 6.67,
+       "interruption_causes": {
+        "lease_expired": 5
+       },
+       "represses": 6,
+       "moving_fraction": 0.949,
+       "motion_gap_ms": {
+        "n": 6,
+        "p50": 442.0,
+        "p95": 463.0,
+        "max": 463.0
+       },
+       "control_ack_ms": {
+        "n": 1124,
+        "p50": 103.5,
+        "p95": 162.0,
+        "max": 263.4
+       },
+       "accepted_permit_age_ms": {
+        "n": 2497,
+        "p50": 108.8,
+        "p95": 171.2,
+        "max": 230.3
+       },
+       "rejected_commands": 58,
+       "lease_headroom_ms": {
+        "min": -2.8,
+        "p5": 61.9,
+        "p50": 124.8
+       },
+       "status_gap_ms": {
+        "n": 1775,
+        "p50": 21.5,
+        "p95": 70.4,
+        "max": 176.0
+       },
+       "video_fps": 9.96,
+       "video_age_bound_ms": {
+        "n": 448,
+        "p50": 262.0,
+        "p95": 341.0,
+        "max": 416.0
+       },
+       "video_resets": 0,
+       "video_errors": [],
+       "control_errors": [],
+       "client_loop_lag_max_ms": 24.6
+      }
+     ],
+     "probe_rtt_p50_ms": 104.55,
+     "probe_rtt_p95_ms": 183.17,
+     "probe_rtt_max_ms": 216.23,
+     "probe_samples": 85,
+     "video_mode": "h264",
+     "video_mbps": 0.388,
+     "errors": [],
+     "emulator": {
+      "profile": "direct",
+      "connections": 4,
+      "down": {
+       "packets": 4744,
+       "bytes": 4002392,
+       "lost": 0,
+       "stalls": 0,
+       "backlog_peak_ms": 13.039625104283914
+      },
+      "up": {
+       "packets": 3255,
+       "bytes": 600942,
+       "lost": 0,
+       "stalls": 0,
+       "backlog_peak_ms": 2.7700420178007334
+      }
+     }
+    },
+    {
+     "profile": "jitter25",
+     "emulation": {
+      "name": "direct",
+      "one_way_ms": 25,
+      "jitter_ms": 25.0,
+      "stall_hz": 0,
+      "stall_ms": [
+       0,
+       0
+      ],
+      "loss": 0,
+      "rto_ms": 250,
+      "down_mbps": 8,
+      "up_mbps": 4,
+      "queue_ms": 400,
+      "note": "Tailscale direct UDP, cellular both ends: ~50 ms +/-10 RTT"
+     },
+     "trials": [
+      {
+       "policy": "on_permit",
+       "seconds": 45.0,
+       "interruptions": 15,
+       "interruptions_per_min": 20.0,
+       "interruption_causes": {
+        "lease_expired": 10,
+        "release_required": 1,
+        "view_stale": 4
+       },
+       "represses": 16,
+       "moving_fraction": 0.873,
+       "motion_gap_ms": {
+        "n": 15,
+        "p50": 406.0,
+        "p95": 868.0,
+        "max": 868.0
+       },
+       "control_ack_ms": {
+        "n": 1012,
+        "p50": 110.6,
+        "p95": 175.2,
+        "max": 281.6
+       },
+       "accepted_permit_age_ms": {
+        "n": 2229,
+        "p50": 118.7,
+        "p95": 182.5,
+        "max": 235.8
+       },
+       "rejected_commands": 131,
+       "lease_headroom_ms": {
+        "min": 0.5,
+        "p5": 51.4,
+        "p50": 115.0
+       },
+       "status_gap_ms": {
+        "n": 1774,
+        "p50": 19.1,
+        "p95": 81.0,
+        "max": 180.2
+       },
+       "video_fps": 9.98,
+       "video_age_bound_ms": {
+        "n": 449,
+        "p50": 272.0,
+        "p95": 375.0,
+        "max": 479.0
+       },
+       "video_resets": 0,
+       "video_errors": [],
+       "control_errors": [],
+       "client_loop_lag_max_ms": 6.2
+      }
+     ],
+     "probe_rtt_p50_ms": 113.53,
+     "probe_rtt_p95_ms": 177.67,
+     "probe_rtt_max_ms": 269.34,
+     "probe_samples": 80,
+     "video_mode": "h264",
+     "video_mbps": 0.386,
+     "errors": [],
+     "emulator": {
+      "profile": "direct",
+      "connections": 4,
+      "down": {
+       "packets": 4705,
+       "bytes": 3996741,
+       "lost": 0,
+       "stalls": 0,
+       "backlog_peak_ms": 17.344958090689033
+      },
+      "up": {
+       "packets": 3123,
+       "bytes": 573583,
+       "lost": 0,
+       "stalls": 0,
+       "backlog_peak_ms": 2.8530830168165267
+      }
+     }
+    }
+   ]
+  },
+  "repeat_after_seed2020": {
+   "software_evidence_only": true,
+   "hardware_verified": false,
+   "host": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+   "python": "3.13.7",
+   "started": "2026-10-10T12:38:19-0400",
+   "upstream": "local fixture",
+   "lease_ms": 250,
+   "permit_cadence_hz": 40.0,
+   "command_cadence_hz": 20,
+   "video_request_window": 2,
+   "results": [
+    {
+     "profile": "direct",
+     "emulation": {
+      "name": "direct",
+      "one_way_ms": 22,
+      "jitter_ms": 3,
+      "stall_hz": 0,
+      "stall_ms": [
+       0,
+       0
+      ],
+      "loss": 0,
+      "rto_ms": 250,
+      "down_mbps": 8,
+      "up_mbps": 4,
+      "queue_ms": 400,
+      "note": "Tailscale direct UDP, cellular both ends: ~50 ms +/-10 RTT"
+     },
+     "trials": [
+      {
+       "policy": "on_permit",
+       "seconds": 60.0,
+       "interruptions": 0,
+       "interruptions_per_min": 0.0,
+       "interruption_causes": {},
+       "represses": 1,
+       "moving_fraction": 1.0,
+       "motion_gap_ms": {
+        "n": 1,
+        "p50": 336.0,
+        "p95": 336.0,
+        "max": 336.0
+       },
+       "control_ack_ms": {
+        "n": 2081,
+        "p50": 60.2,
+        "p95": 79.0,
+        "max": 159.7
+       },
+       "accepted_permit_age_ms": {
+        "n": 3536,
+        "p50": 54.3,
+        "p95": 75.2,
+        "max": 168.1
+       },
+       "rejected_commands": 0,
+       "lease_headroom_ms": {
+        "min": 79.2,
+        "p5": 164.5,
+        "p50": 174.4
+       },
+       "status_gap_ms": {
+        "n": 2367,
+        "p50": 25.3,
+        "p95": 32.1,
+        "max": 118.3
+       },
+       "video_fps": 9.95,
+       "video_age_bound_ms": {
+        "n": 597,
+        "p50": 201.0,
+        "p95": 234.0,
+        "max": 288.0
+       },
+       "video_resets": 0,
+       "video_errors": [],
+       "control_errors": [],
+       "client_loop_lag_max_ms": 90.9
+      }
+     ],
+     "probe_rtt_p50_ms": 64.49,
+     "probe_rtt_p95_ms": 79.13,
+     "probe_rtt_max_ms": 85.71,
+     "probe_samples": 199,
+     "video_mode": "h264",
+     "video_mbps": 0.4,
+     "errors": [],
+     "emulator": {
+      "profile": "direct",
+      "connections": 4,
+      "down": {
+       "packets": 6742,
+       "bytes": 5773008,
+       "lost": 0,
+       "stalls": 0,
+       "backlog_peak_ms": 13.064291037153453
+      },
+      "up": {
+       "packets": 4576,
+       "bytes": 829737,
+       "lost": 0,
+       "stalls": 0,
+       "backlog_peak_ms": 0.9820000268518925
+      }
+     }
+    },
+    {
+     "profile": "derp_typical",
+     "emulation": {
+      "name": "derp_typical",
+      "one_way_ms": 26,
+      "jitter_ms": 20,
+      "stall_hz": 0.5,
+      "stall_ms": [
+       80,
+       200
+      ],
+      "loss": 0,
+      "rto_ms": 250,
+      "down_mbps": 6,
+      "up_mbps": 3,
+      "queue_ms": 400,
+      "note": "Field 2026-10-10 over DERP Miami: probe p50 118 / p95 217 ms"
+     },
+     "trials": [
+      {
+       "policy": "on_permit",
+       "seconds": 60.0,
+       "interruptions": 35,
+       "interruptions_per_min": 35.0,
+       "interruption_causes": {
+        "view_stale": 10,
+        "expired_permit": 1,
+        "lease_expired": 22,
+        "permit_wait": 2
+       },
+       "represses": 36,
+       "moving_fraction": 0.753,
+       "motion_gap_ms": {
+        "n": 34,
+        "p50": 423.0,
+        "p95": 675.0,
+        "max": 762.0
+       },
+       "control_ack_ms": {
+        "n": 1303,
+        "p50": 106.7,
+        "p95": 189.9,
+        "max": 346.3
+       },
+       "accepted_permit_age_ms": {
+        "n": 2489,
+        "p50": 108.8,
+        "p95": 177.2,
+        "max": 242.6
+       },
+       "rejected_commands": 309,
+       "lease_headroom_ms": {
+        "min": -3.9,
+        "p5": 54.9,
+        "p50": 124.3
+       },
+       "status_gap_ms": {
+        "n": 2363,
+        "p50": 21.3,
+        "p95": 69.6,
+        "max": 226.5
+       },
+       "video_fps": 9.95,
+       "video_age_bound_ms": {
+        "n": 597,
+        "p50": 269.0,
+        "p95": 405.0,
+        "max": 554.0
+       },
+       "video_resets": 0,
+       "video_errors": [],
+       "control_errors": [],
+       "client_loop_lag_max_ms": 104.6
+      }
+     ],
+     "probe_rtt_p50_ms": 110.82,
+     "probe_rtt_p95_ms": 203.01,
+     "probe_rtt_max_ms": 280.95,
+     "probe_samples": 162,
+     "video_mode": "h264",
+     "video_mbps": 0.4,
+     "errors": [],
+     "emulator": {
+      "profile": "derp_typical",
+      "connections": 4,
+      "down": {
+       "packets": 6872,
+       "bytes": 5813256,
+       "lost": 0,
+       "stalls": 37,
+       "backlog_peak_ms": 23.727665917249396
+      },
+      "up": {
+       "packets": 4013,
+       "bytes": 716913,
+       "lost": 0,
+       "stalls": 43,
+       "backlog_peak_ms": 4.960207937983796
+      }
+     }
+    }
+   ]
+  },
+  "repeat_before_seed2020": {
+   "software_evidence_only": true,
+   "hardware_verified": false,
+   "host": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+   "python": "3.13.7",
+   "started": "2026-10-10T12:41:04-0400",
+   "upstream": "local fixture",
+   "lease_ms": 250,
+   "permit_cadence_hz": 20.0,
+   "command_cadence_hz": 20,
+   "video_request_window": 2,
+   "results": [
+    {
+     "profile": "derp_typical",
+     "emulation": {
+      "name": "derp_typical",
+      "one_way_ms": 26,
+      "jitter_ms": 20,
+      "stall_hz": 0.5,
+      "stall_ms": [
+       80,
+       200
+      ],
+      "loss": 0,
+      "rto_ms": 250,
+      "down_mbps": 6,
+      "up_mbps": 3,
+      "queue_ms": 400,
+      "note": "Field 2026-10-10 over DERP Miami: probe p50 118 / p95 217 ms"
+     },
+     "trials": [
+      {
+       "policy": "periodic20",
+       "seconds": 60.0,
+       "interruptions": 41,
+       "interruptions_per_min": 41.0,
+       "interruption_causes": {
+        "lease_expired": 33,
+        "view_stale": 5,
+        "permit_wait": 2,
+        "expired_permit": 1
+       },
+       "represses": 42,
+       "moving_fraction": 0.701,
+       "motion_gap_ms": {
+        "n": 38,
+        "p50": 426.0,
+        "p95": 1000.0,
+        "max": 1060.0
+       },
+       "control_ack_ms": {
+        "n": 883,
+        "p50": 116.7,
+        "p95": 189.3,
+        "max": 305.6
+       },
+       "accepted_permit_age_ms": {
+        "n": 808,
+        "p50": 119.9,
+        "p95": 195.4,
+        "max": 247.3
+       },
+       "rejected_commands": 110,
+       "lease_headroom_ms": {
+        "min": -3.0,
+        "p5": 21.8,
+        "p50": 79.9
+       },
+       "status_gap_ms": {
+        "n": 1188,
+        "p50": 48.8,
+        "p95": 106.0,
+        "max": 235.2
+       },
+       "video_fps": 9.95,
+       "video_age_bound_ms": {
+        "n": 597,
+        "p50": 271.0,
+        "p95": 425.0,
+        "max": 772.0
+       },
+       "video_resets": 0,
+       "video_errors": [],
+       "control_errors": [],
+       "client_loop_lag_max_ms": 55.7
+      }
+     ],
+     "probe_rtt_p50_ms": 118.48,
+     "probe_rtt_p95_ms": 204.43,
+     "probe_rtt_max_ms": 302.01,
+     "probe_samples": 153,
+     "video_mode": "h264",
+     "video_mbps": 0.399,
+     "errors": [],
+     "emulator": {
+      "profile": "derp_typical",
+      "connections": 4,
+      "down": {
+       "packets": 5249,
+       "bytes": 5059264,
+       "lost": 0,
+       "stalls": 41,
+       "backlog_peak_ms": 23.854750237660483
+      },
+      "up": {
+       "packets": 2179,
+       "bytes": 311144,
+       "lost": 0,
+       "stalls": 34,
+       "backlog_peak_ms": 1.1804169625975192
+      }
+     }
+    }
+   ]
+  },
+  "real_jetson_usb_stop_only": {
+   "software_evidence_only": true,
+   "hardware_verified": false,
+   "host": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+   "python": "3.13.7",
+   "started": "2026-10-10T12:42:58-0400",
+   "upstream": "http://192.168.55.1:8443",
+   "lease_ms": 250,
+   "permit_cadence_hz": 40.0,
+   "command_cadence_hz": 20,
+   "video_request_window": 2,
+   "results": [
+    {
+     "profile": "none",
+     "emulation": {
+      "name": "none",
+      "one_way_ms": 0,
+      "jitter_ms": 0,
+      "stall_hz": 0,
+      "stall_ms": [
+       0,
+       0
+      ],
+      "loss": 0,
+      "rto_ms": 250,
+      "down_mbps": 0,
+      "up_mbps": 0,
+      "queue_ms": 400,
+      "note": "Pass-through: measure a real path (--upstream) without emulation"
+     },
+     "trials": [],
+     "probe_rtt_p50_ms": 45.85,
+     "probe_rtt_p95_ms": 81.14,
+     "probe_rtt_max_ms": 128.72,
+     "probe_samples": 149,
+     "video_mode": "h264",
+     "video_mbps": 0.364,
+     "errors": [],
+     "emulator": {
+      "profile": "none",
+      "connections": 2,
+      "down": {
+       "packets": 846,
+       "bytes": 830587,
+       "lost": 0,
+       "stalls": 0,
+       "backlog_peak_ms": 0.0
+      },
+      "up": {
+       "packets": 290,
+       "bytes": 21946,
+       "lost": 0,
+       "stalls": 0,
+       "backlog_peak_ms": 0.0
+      }
+     }
+    },
+    {
+     "profile": "derp_typical",
+     "emulation": {
+      "name": "derp_typical",
+      "one_way_ms": 26,
+      "jitter_ms": 20,
+      "stall_hz": 0.5,
+      "stall_ms": [
+       80,
+       200
+      ],
+      "loss": 0,
+      "rto_ms": 250,
+      "down_mbps": 6,
+      "up_mbps": 3,
+      "queue_ms": 400,
+      "note": "Field 2026-10-10 over DERP Miami: probe p50 118 / p95 217 ms"
+     },
+     "trials": [],
+     "probe_rtt_p50_ms": 146.57,
+     "probe_rtt_p95_ms": 254.36,
+     "probe_rtt_max_ms": 317.28,
+     "probe_samples": 99,
+     "video_mode": "h264",
+     "video_mbps": 0.365,
+     "errors": [],
+     "emulator": {
+      "profile": "derp_typical",
+      "connections": 2,
+      "down": {
+       "packets": 855,
+       "bytes": 846350,
+       "lost": 0,
+       "stalls": 8,
+       "backlog_peak_ms": 15.016291610663757
+      },
+      "up": {
+       "packets": 242,
+       "bytes": 16696,
+       "lost": 0,
+       "stalls": 11,
+       "backlog_peak_ms": 0.674666662234813
+      }
+     }
+    }
+   ]
+  }
+ }
+}

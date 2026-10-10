@@ -129,7 +129,7 @@ Optional pose fields (YOLO11-pose), present when the detector is a pose model:
 - `down`: true when the person looks fallen (body axis more than 60 degrees from vertical, or a wide box when keypoints are unreliable). Omitted fields mean false/absent; clients must ignore unknown fields.
 - `id` is stable across frames: the server runs a small IoU + velocity tracker (`jetson/tracker.py`) over every detector mode, keeping an id through brief dropouts (about 5 frames or 2 s) and never reusing one. Clients may rely on it for `target_id`.
 
-## WebSocket `/ws/control` (Quest -> Jetson), JSON, 20 Hz while the deadman is held
+## WebSocket `/ws/control` (Quest -> Jetson), JSON, 20 Hz timer plus one per new permit while the deadman is held
 
 ```json
 {"session_id":"from latest control status","permit":"from latest control status",
@@ -143,10 +143,15 @@ Optional pose fields (YOLO11-pose), present when the detector is a pose model:
 - One socket owns control. A new connection starts stopped. First send an
   ordered release `{"session_id":"...","seq":0,"deadman":false}`; then a new
   physical press can send motion. Repeat release/press after a fault.
-- `permit` is an opaque token issued every 50 ms and expires 250 ms after its
-  **server issue**, checked against the Jetson monotonic clock. Arrival never
-  grants a new 250 ms lease. Expired/out-of-order/invalid messages stop motion;
-  sequence numbers must be increasing JavaScript-safe integers.
+- `permit` is an opaque token issued every 25 ms (40 Hz; servers before
+  2026-10-10 issued every 50 ms) and expires 250 ms after its **server issue**,
+  checked against the Jetson monotonic clock. Arrival never grants a new 250 ms
+  lease. Expired/out-of-order/invalid messages stop motion; sequence numbers
+  must be increasing JavaScript-safe integers.
+- Clients should send the next heartbeat as soon as a new permit arrives while
+  driving, in addition to their 20 Hz timer: waiting for the timer spends up to
+  50 ms of the permit's 250 ms. A 20 Hz timer-only client remains valid; it just
+  has less margin on a jittery link (`docs/link-lab.md`).
 - `video_age_ms` must be finite and at most 500 ms; `video_fresh` must be true.
   The server independently requires a fresh camera. Source loss stops all
   motion. Client decoded/drawn freshness also stops when the display stalls.
@@ -212,7 +217,8 @@ are `idle`, `forward`, `turning`, `tracking`, `target_missing`, `target_lost`,
 `arrived`, `estop`, and `stick_override`. `estop` and `requires_release` retain
 their existing safety meanings. Public status never grants a usable permit.
 
-Jetson replies on the same socket, 20 Hz:
+Jetson replies on the same socket, 40 Hz (20 Hz before 2026-10-10; mission
+replay still samples control at 20 Hz):
 
 ```json
 {"type":"control_status","session_id":"...","permit":"opaque token","permit_ms":250,
