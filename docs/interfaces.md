@@ -429,8 +429,8 @@ drive immediately, without waiting for fusion. ARKit capture remains unverified;
 this does not introduce a sensor clock qualification or relax the 500 ms view
 guard, 250 ms control permit, disconnect stop, or explicit demo-mode behavior.
 
-Jetson fragments contain one encoded frame, no B-frames, with IDRs at most
-250 ms apart. Late joins wait for an IDR; a newer queued IDR supersedes older
+Jetson fragments contain one encoded frame, no B-frames, with short IDR
+intervals (200 ms at the default 10 fps; at least one frame per GOP). Late joins wait for an IDR; a newer queued IDR supersedes older
 queued fragments. Each subscriber retains at most two fragments; overflow of
 dependent fragments and stale (500 ms) output close the stream for recovery.
 The relay reserves a separate four-connection camera pool, and camera sends
