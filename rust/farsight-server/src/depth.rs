@@ -20,7 +20,7 @@ const STD: [f32; 3] = [0.229, 0.224, 0.225];
 /// Local HF metric-indoor-small export; no downloads or relative-depth scaling.
 pub struct MetricDepth {
     #[cfg(feature = "detector")]
-    session: ort::session::Session,
+    session: std::sync::Mutex<ort::session::Session>,
     #[cfg(feature = "detector")]
     input_name: String,
     pub backend: String,
@@ -41,13 +41,13 @@ impl MetricDepth {
                 .map_err(|e| e.to_string())?;
             let inputs = session.inputs();
             let shape_ok = inputs.len() == 1
-                && inputs[0].input_type.tensor_shape().map(|s| s.iter().copied().collect::<Vec<i64>>())
+                && inputs[0].dtype().tensor_shape().map(|s| s.iter().copied().collect::<Vec<i64>>())
                     == Some(DEPTH_INPUT.to_vec());
             if !shape_ok {
                 return Err(format!("Depth model must accept {:?}", DEPTH_INPUT));
             }
             let input_name = inputs[0].name().to_string();
-            return Ok(Self { session, input_name, backend: "depth-onnx-cpu".into() });
+            return Ok(Self { session: std::sync::Mutex::new(session), input_name, backend: "depth-onnx-cpu".into() });
         }
         #[cfg(not(feature = "detector"))]
         {
@@ -79,12 +79,12 @@ impl MetricDepth {
                 }
             }
             let shape = [1usize, 3, MODEL_H as usize, MODEL_W as usize];
-            let outputs = self
-                .session
+            let mut session = self.session.lock().unwrap();
+            let out_name = session.outputs()[0].name().to_string();
+            let outputs = session
                 .run(ort::inputs![self.input_name.as_str() =>
                     ort::value::Tensor::from_array((shape, blob)).map_err(|e| e.to_string())?])
                 .map_err(|e| e.to_string())?;
-            let out_name = self.session.outputs()[0].name().to_string();
             let output = outputs.get(&out_name).ok_or("Depth model must return finite metric [1,308,406] output")?;
             let (oshape, data) = output.try_extract_tensor::<f32>().map_err(|e| e.to_string())?;
             let dims: Vec<i64> = oshape.iter().copied().collect();

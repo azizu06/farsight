@@ -22,7 +22,11 @@ pub struct OnnxDetector {
 
 impl OnnxDetector {
     pub fn new(model: &str, pose: bool) -> Result<Self, String> {
+        // Match jetson's measured CPU budget: leave headroom for capture,
+        // the H.264 encoder and the control loop (docs/qualification-results.md).
         let session = ort::session::Session::builder()
+            .map_err(|e| e.to_string())?
+            .with_intra_threads(2)
             .map_err(|e| e.to_string())?
             .commit_from_file(model)
             .map_err(|e| e.to_string())?;
@@ -298,7 +302,11 @@ impl FaceDetector {
         if !std::path::Path::new(model).is_file() {
             return Err(format!("Face model not found: {model}"));
         }
+        // Match jetson's measured CPU budget: leave headroom for capture,
+        // the H.264 encoder and the control loop (docs/qualification-results.md).
         let session = ort::session::Session::builder()
+            .map_err(|e| e.to_string())?
+            .with_intra_threads(2)
             .map_err(|e| e.to_string())?
             .commit_from_file(model)
             .map_err(|e| e.to_string())?;
