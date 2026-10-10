@@ -81,6 +81,11 @@ dependencies are setup failures; `--no-browser` is not a working visual stream.
 
 ## 3. Verify the proxy without sending pose or motion
 
+Run these stream checks sequentially before the headset viewer connects. The
+current renderer supports one stream consumer and one visual pose writer; even
+a receive-only fragment checker takes the stream slot. Density GET checks do
+not take that slot and can run during a session.
+
 ```sh
 python -m tools.qualify_macview --origin http://127.0.0.1:8090 \
   --segments 30 --timeout 20 --output "$run_dir/direct-stream.json"
