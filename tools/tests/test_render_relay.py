@@ -171,7 +171,8 @@ class RenderSocketTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(failure.exception.status, 503)
         async with self.client.get(base + "/relay/health") as response:
             report = (await response.json())["render"]
-        self.assertEqual(report, dict(configured=False, endpoints=["/ws/macview", "/ws/macview-pose"], transport_only=True))
+        self.assertEqual(report, dict(configured=False, upstream=None,
+                                     endpoints=["/ws/macview", "/ws/macview-pose"], transport_only=True))
         self.assertEqual(self.jetson_paths, [])
         self.assertEqual(self.render_paths, [])
 
@@ -197,7 +198,8 @@ class RenderSocketTests(unittest.IsolatedAsyncioTestCase):
     async def test_health_reports_configuration_without_renderer_ready_claims(self):
         async with self.client.get(self.base + "/relay/health") as response:
             report = (await response.json())["render"]
-        self.assertEqual(report, dict(configured=True, endpoints=["/ws/macview", "/ws/macview-pose"], transport_only=True))
+        self.assertEqual(report, dict(configured=True, upstream=self.render_origin,
+                                     endpoints=["/ws/macview", "/ws/macview-pose"], transport_only=True))
         self.assertFalse(any(key in report for key in ("ready", "live", "stereo", "render_ready")))
 
     async def test_render_traffic_does_not_bypass_stale_view_control_guard(self):
