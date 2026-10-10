@@ -149,10 +149,27 @@ struct Args {
     /// Phone optical centre above the floor (m)
     #[arg(long, default_value_t = 0.15)]
     nav_camera_height: f64,
+    /// Visual wire cap on exported map points (env FARSIGHT_MAP_POINTS_CAP,
+    /// default 30000). Bounds only the served payload; the internal map
+    /// keeps full resolution. 0 disables.
+    #[arg(long)]
+    map_points_cap: Option<usize>,
+    /// Visual wire cap on exported mesh triangles (env
+    /// FARSIGHT_MAP_TRIANGLES_CAP, default 40000). 0 disables.
+    #[arg(long)]
+    map_triangles_cap: Option<usize>,
 }
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+fn env_usize(name: &str, default: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .filter(|v| !v.is_empty())
+        .map(|v| v.parse().unwrap_or_else(|_| panic!("{name} must be a non-negative integer")))
+        .unwrap_or(default)
+}
 
 #[tokio::main]
 async fn main() {
@@ -248,6 +265,10 @@ async fn main() {
         args.nav_camera_height,
         args.sim_world,
         args.lidar_drive,
+        (
+            args.map_points_cap.unwrap_or_else(|| env_usize("FARSIGHT_MAP_POINTS_CAP", 30_000)),
+            args.map_triangles_cap.unwrap_or_else(|| env_usize("FARSIGHT_MAP_TRIANGLES_CAP", 40_000)),
+        ),
     );
     server::start_services(&state);
     let dist = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../quest/dist");

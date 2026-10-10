@@ -115,6 +115,7 @@ pub fn build_state(
     nav_camera_height: f64,
     sim_world: Option<String>,
     lidar_drive: bool,
+    visual_caps: (usize, usize),
 ) -> Arc<AppState> {
     // create_app validation order: sim-world, replay, simulated+serial,
     // nav2+replay, then pan mount.
@@ -141,7 +142,10 @@ pub fn build_state(
     if scan_pan && pan_mount == "none" {
         panic!("--scan-pan needs a physical pan servo (--pan-mount servo)");
     }
-    let mapping = Arc::new(MapState::new(demo));
+    let mut mapping_state = MapState::new(demo);
+    mapping_state.points_cap = visual_caps.0;
+    mapping_state.triangles_cap = visual_caps.1;
+    let mapping = Arc::new(mapping_state);
     let sim = sim_world.as_ref().map(|name| {
         let world = crate::sim::load(name).unwrap_or_else(|e| panic!("{e}"));
         Arc::new(crate::sim::SimFeed::new(crate::sim::RoverSim::new(
@@ -1965,6 +1969,7 @@ mod phone_lifecycle_tests {
             0.15,       // nav_camera_height
             None,       // sim_world
             false,      // lidar_drive
+            (0, 0),     // visual_caps: uncapped in tests
         )
     }
 
