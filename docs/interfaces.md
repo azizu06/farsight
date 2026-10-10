@@ -655,11 +655,11 @@ not mark the frame `camera_capture_verified`, and no wire field changes. The
 lease, deadman, release, camera-stale and disconnect stops are unchanged.
 
 
-## Phone-built mesh lane (v1, implementation in progress)
+## Phone-built mesh lane (v1)
 
 The rover iPhone constructs ARKit mesh anchors. The Mac assembles their latest
 replacements and serves Quest map snapshots locally. Jetson retains camera,
-fresh measured depth and pose for inference/control/Nav2; `--map-fusion off`
+fresh measured depth and pose for inference/control/Nav2; `--fusion-bypass`
 skips its visual map reconstruction. ARKit mesh updates are reconstruction,
 not a replacement for live navigation depth.
 
@@ -669,7 +669,7 @@ The dedicated phone geometry port is **8083**, separate from control/video
 consumers may pull the rover phone endpoint. The stream path is
 `/geometry/stream`; one WebSocket binary message is one complete record.
 The standalone Mac assembler binds loopback **8484** by default. These port
-reservations describe the pipeline being implemented; they do not prove an
+reservations describe the implemented software pipeline; they do not prove an
 installed phone is serving it yet. Existing demo routes remain available.
 
 The fixed **124-byte** header matches `rust/farsight-geometry` and

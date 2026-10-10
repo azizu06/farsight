@@ -250,3 +250,19 @@ phone VPN/cellular accessibility or ARKit capture on the rig. The installed
 phone-to-Mac-to-Quest check remains required. Scene resets create a fresh
 capture UUID/world; old geometry is discarded. Geometry-only reconnect sends a
 complete bounded retained-anchor snapshot with increasing wire sequence.
+
+Check the assembled phone mesh through the running Mac operator relay with:
+
+```sh
+python -m tools.qualify_geometry --relay http://127.0.0.1:8080 \
+  --timeout 5 --output /tmp/farsight-geometry-check.json
+```
+
+This read-only helper requests map status, mesh bytes, then status again. It
+requires a complete, connected, matched phone mesh with matching session/epoch
+headers and a stable published revision. Retained, incomplete or unknown
+snapshot evidence fails with a nonzero exit status; changing snapshots retry
+at most three times inside the overall deadline. JSON evidence includes any
+failure. This checks the HTTP source path only. It does not qualify Quest
+rendering, cellular routing/latency, camera freshness guards or physical motion;
+map `fresh` is pose association evidence, not the 500 ms displayed-video guard.

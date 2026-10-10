@@ -1,5 +1,6 @@
 import { mapResponseRevision } from "./map-response.js";
 import { chooseMapTransfer, MAP_TRANSFER_INTERVAL_MS } from "./map-transfer.js";
+import { floorHeight, mapWalk } from "./map-walk.js";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { VRButton } from "three/addons/webxr/VRButton.js";
@@ -12,6 +13,7 @@ type Status = {
   type: string;
   source: string;
   geometry_source?: string;
+  capped?: boolean;
   geometry?: { retained?: boolean; connected?: boolean; snapshot_complete?: boolean | null; partial?: boolean; reason?: string };
   device: string;
   connected: boolean;
@@ -100,6 +102,7 @@ let generation = -1,
   pendingMesh = false;
 let connectionVersion = 0;
 let mapDriving = false, appliedPoints = -1, lastMapAt = -Infinity;
+let lastMapKind: "mesh" | "points" | null = null;
 let mapSourceIdentity = "";
 let pointsRequest: AbortController | null = null, meshRequest: AbortController | null = null;
 let socket: WebSocket | null = null,
@@ -273,6 +276,34 @@ let rover: RoverExperience | undefined;
 let diagnostics: DiagnosticsOverlay | undefined;
 const vrMapCenter = new THREE.Vector3(), vrMapSize = new THREE.Vector3();
 let vrMapSpan = 4;
+// Walk-through: 1:1 map, its floor on the headset floor, viewer moved by mapWalk.
+const headPosition = new THREE.Vector3(), headDirection = new THREE.Vector3(), yAxis = new THREE.Vector3(0, 1, 0);
+let wasWalking = false;
+function walkingNow() { return mapWalk.walking && renderer.xr.isPresenting; }
+// TEMPORARY test input until the controls layer drives mapWalk: left stick click
+// toggles walk mode, left stick moves the viewer (unused by rover driving).
+let walkClickDown = false, lastWalkInputAt = 0;
+function walkTestInput(now: number) {
+  const dt = Math.min(0.1, Math.max(0, (now - lastWalkInputAt) / 1000)); lastWalkInputAt = now;
+  const left = [...(renderer.xr.getSession()?.inputSources ?? [])].find(source => source.handedness === "left")?.gamepad;
+  if (!left) { walkClickDown = false; return; }
+  const click = !!left.buttons[3]?.pressed;
+  if (click && !walkClickDown) { mapWalk.setMode(mapWalk.walking ? "overview" : "walk"); mapWalk.reset(); }
+  walkClickDown = click;
+  if (!mapWalk.walking) return;
+  const axis = (value: number | undefined) => Math.abs(value ?? 0) < 0.2 ? 0 : value ?? 0;
+  const [x, y] = left.axes.length >= 4 ? [left.axes[2], left.axes[3]] : [left.axes[0], left.axes[1]];
+  mapWalk.moveViewer(-axis(y) * 1.5 * dt, axis(x) * 1.5 * dt);
+}
+function placeWalk() {
+  const head = renderer.xr.getCamera();
+  head.getWorldPosition(headPosition); head.getWorldDirection(headDirection);
+  mapWalk.observeHead(headPosition.x, headPosition.z, Math.atan2(-headDirection.x, -headDirection.z));
+  const { yaw, position } = mapWalk.rootTransform();
+  root.quaternion.setFromAxisAngle(yAxis, yaw);
+  root.position.set(position[0], position[1], position[2]);
+  root.scale.setScalar(1);
+}
 renderer.setAnimationLoop((_time, frame) => {
   const start = performance.now();
   rover?.update(start, frame);
@@ -282,9 +313,13 @@ renderer.setAnimationLoop((_time, frame) => {
     if (driving) feedRequest?.abort();
     syncMapConnection();
   }
-  root.visible = !rover?.vrCameraView;
-  rover?.placeMapOverview(root, vrMapCenter, vrMapSpan);
+  if (renderer.xr.isPresenting) walkTestInput(start);
+  const walking = walkingNow();
+  if (walking !== wasWalking) { wasWalking = walking; visibility(); syncMapConnection(); }
+  root.visible = walking || !rover?.vrCameraView;
+  if (walking) placeWalk(); else rover?.placeMapOverview(root, vrMapCenter, vrMapSpan);
   mapAxes.visible = !renderer.xr.isPresenting;
+  grid.visible = !walking;
   if (renderer.xr.isPresenting) {
     grid.scale.setScalar(Math.max(vrMapSpan, 4) / 2000);
     grid.position.x = vrMapCenter.x; grid.position.z = vrMapCenter.z;
@@ -305,6 +340,7 @@ rover.addCockpitPanel(diagnostics.panel);
 // Prepare shader programs before the headset enters or changes to the map.
 void renderer.compileAsync(scene, camera).catch(() => {});
 setView(new URLSearchParams(location.search).get("view") === "map" ? "3d" : "camera");
+if (new URLSearchParams(location.search).get("walk") === "1") mapWalk.setMode("walk");
 
 function replaceGeometry(
   object: THREE.Points | THREE.Mesh,
@@ -324,6 +360,7 @@ function replaceGeometry(
     geometry.boundingBox?.getCenter(vrMapCenter);
     geometry.boundingBox?.getSize(vrMapSize);
     vrMapSpan = Math.max(vrMapSize.x, vrMapSize.z, 4);
+    if (data.positions.length) mapWalk.setFloor(floorHeight(data.positions));
   }
   object.geometry.dispose();
   object.geometry = geometry;
@@ -336,9 +373,10 @@ function emptyGeometry() {
   };
 }
 function visibility() {
-  scanMarkers.visible = view !== "camera";
-  cloud.visible = view !== "camera";
-  surfaces.visible = !pointsOnly && view === "3d";
+  const walking = walkingNow();
+  scanMarkers.visible = walking || view !== "camera";
+  cloud.visible = walking || view !== "camera";
+  surfaces.visible = !pointsOnly && (walking || view === "3d");
 }
 function frameMap() {
   const positions = cloud.geometry.getAttribute("position");
@@ -423,7 +461,7 @@ function statusLine(next: Status) {
 async function loadMesh(next: Status) {
   if (!mapNeeded() || pendingMesh || pointsRequest || appliedMesh === next.mesh_revision || performance.now() - lastMapAt < MAP_TRANSFER_INTERVAL_MS) return;
   pendingMesh = true;
-  lastMapAt = performance.now();
+  lastMapAt = performance.now(); lastMapKind = "mesh";
   const abort = new AbortController(); meshRequest = abort;
   const wantedGeneration = next.generation,
     wantedRevision = next.mesh_revision,
@@ -442,7 +480,8 @@ async function loadMesh(next: Status) {
       replaceGeometry(surfaces, data, data.indices);
       // Mesh vertices are the same measured reconstruction; avoid a second
       // cellular download just to draw the hybrid point overlay and frame it.
-      replaceGeometry(cloud, data); appliedPoints = -1;
+      // A stride-capped mesh is too sparse for that, so points.bin is pulled too.
+      if (!cappedMesh(next)) { replaceGeometry(cloud, data); appliedPoints = -1; }
       appliedMesh = actualRevision;
     }
   } catch (error) {
@@ -454,7 +493,7 @@ async function loadMesh(next: Status) {
 async function loadPoints(next: Status) {
   if (next.points_transport !== "http" || !mapNeeded() || pointsRequest || meshRequest || appliedPoints === next.revision || performance.now() - lastMapAt < MAP_TRANSFER_INTERVAL_MS) return;
   const abort = new AbortController(); pointsRequest = abort;
-  lastMapAt = performance.now();
+  lastMapAt = performance.now(); lastMapKind = "points";
   const wantedGeneration = next.generation, wantedRevision = next.revision, wantedConnection = connectionVersion;
   try {
     const response = await fetch(api("/map/points.bin"), { cache: "no-store", signal: abort.signal });
@@ -479,6 +518,7 @@ function acceptStatus(next: Status) {
     generation = next.generation;
     appliedMesh = -1;
     appliedPoints = -1;
+    mapWalk.reset();
     replaceGeometry(cloud, emptyGeometry());
     replaceGeometry(surfaces, emptyGeometry());
   }
@@ -528,14 +568,18 @@ function acceptStatus(next: Status) {
     controls.target.copy(position);
   }
   const transfer = chooseMapTransfer({ needed: mapNeeded(), busy: !!(pointsRequest || meshRequest),
-    now: performance.now(), lastStarted: lastMapAt, pointsOnly, view, triangles: next.triangles,
-    pointsTransport: next.points_transport, pointRevision: next.revision, meshRevision: next.mesh_revision,
-    appliedPoints, appliedMesh });
+    now: performance.now(), lastStarted: lastMapAt, pointsOnly, view: walkingNow() ? "3d" : view,
+    triangles: next.triangles, pointsTransport: next.points_transport, pointRevision: next.revision,
+    meshRevision: next.mesh_revision, appliedPoints, appliedMesh, capped: cappedMesh(next), lastKind: lastMapKind });
   if (transfer === "mesh") void loadMesh(next);
   else if (transfer === "points") void loadPoints(next);
   visibility();
 }
+/** Server stride-capped Jetson mesh; phone-built (geometry_source) meshes are not capped this way. */
+function cappedMesh(next: Status) { return next.capped === true && !next.geometry_source; }
 function mapNeeded() {
+  // Walk-through keeps the map live while the rover drives or explores.
+  if (walkingNow()) return true;
   return !mapDriving && (view !== "camera" || (renderer.xr.isPresenting && !rover?.vrCameraView));
 }
 function syncMapConnection() {

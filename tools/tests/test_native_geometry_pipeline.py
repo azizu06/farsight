@@ -15,6 +15,7 @@ import unittest
 from aiohttp import ClientSession, web
 from aiohttp.test_utils import TestClient, TestServer
 from tools.operator_relay import create_app
+from tools.qualify_geometry import qualify
 
 ROOT = Path(__file__).resolve().parents[2]
 BINARY = ROOT / "rust/target/debug/farsight-geometry"
@@ -77,6 +78,12 @@ class NativeGeometryPipelineTests(unittest.IsolatedAsyncioTestCase):
                 else: self.fail("relay did not match and publish native capture UUID/epoch")
                 self.assertEqual(merged["source"], "SIMULATED")
                 self.assertEqual(merged["geometry_source"], "IPHONE ARKIT MESH")
+                # Read-only source-path verdict over the real native/Rust/relay
+                # chain, still with synthetic triangle and Jetson pose metadata.
+                verdict = await qualify(str(client.server.make_url("/")), timeout=3)
+                self.assertTrue(verdict["qualified"], verdict)
+                self.assertEqual(verdict["evidence"]["mesh"]["session_id"], SID)
+                self.assertEqual(verdict["evidence"]["mesh"]["triangles"], 1)
                 response = await client.get("/map/mesh.bin")
                 self.assertEqual(response.status, 200)
                 self.assertEqual(response.headers["X-Map-Session"], SID)
