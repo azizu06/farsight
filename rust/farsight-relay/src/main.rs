@@ -31,7 +31,7 @@ const HOP_HEADERS: &[&str] = &[
     "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
     "te", "trailer", "transfer-encoding", "upgrade", "host", "content-length",
 ];
-const PROXY_PREFIXES: &[&str] = &["/ws/", "/map/", "/geometry/", "/tts/", "/video/", "/mission/", "/phone/"];
+const PROXY_PREFIXES: &[&str] = &["/ws/", "/map/", "/geometry/", "/dense/", "/tts/", "/video/", "/mission/", "/phone/"];
 const PROXY_PATHS: &[&str] = &["/health", "/control/status", "/camera.jpg", "/depth.jpg", "/stream.mjpg", "/ask", "/phone", "/scan", "/speak"];
 /// HTTP requests on these paths are control-plane traffic: they use the
 /// dedicated upstream pool so bulk downloads can never take their slots.
@@ -39,7 +39,7 @@ const CONTROL_PATHS: &[&str] = &["/control/status", "/scan", "/ask"];
 /// Only binary map downloads keep the client's Accept-Encoding across the
 /// cellular leg; everything else asks upstream for identity because the
 /// relay decodes and rewrites JSON (operator_relay.py parity).
-const ENCODED_PATHS: &[&str] = &["/map/points.bin", "/map/mesh.bin", "/map/export.ply", "/geometry/mesh.bin"];
+const ENCODED_PATHS: &[&str] = &["/map/points.bin", "/map/mesh.bin", "/map/export.ply", "/geometry/mesh.bin", "/dense/chunk.bin", "/dense/delta.bin"];
 
 pub(crate) type RemoteSink = Arc<
     tokio::sync::Mutex<
