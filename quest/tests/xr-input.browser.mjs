@@ -629,7 +629,8 @@ try {
     subject.cancelNav = async () => { cancels++; subject.autonomy.clear(); };
     const tick = () => {
       const now = performance.now();
-      const status = { session_id: "interaction-fixture", permit: "fixture-token", permit_ms: 250, rover: true, simulated: true, requires_release: false };
+      // Each tick models a fresh server permit, so held sends are not coalesced as same-permit repeats.
+      const status = { session_id: "interaction-fixture", permit: `fixture-token-${frames}`, permit_ms: 250, rover: true, simulated: true, requires_release: false };
       subject.gate.acceptStatus(status, now); subject.status = status;
       subject.gate.acceptFrame(String(++frames), 0, now);
       subject.lastCanvasDraw = now; subject.lastSendAt = now;
@@ -870,7 +871,7 @@ try {
         right.gamepad.buttons[0].pressed = held;
         subject.gate.acceptFrame(String(++frameId), 0, performance.now());
         subject.lastCanvasDraw = performance.now();
-        subject.update(performance.now(), frame);
+        subject.update(performance.now(), frame); subject.afterRender(performance.now()); // display loop: render, then pump
         stops.add(subject.stopKey);
         await new Promise((resolve) => setTimeout(resolve, 20));
       }
@@ -1050,7 +1051,7 @@ try {
         set();
         subject.gate.acceptFrame(String(++frameId), 0, performance.now());
         subject.lastCanvasDraw = performance.now();
-        subject.update(performance.now(), frame);
+        subject.update(performance.now(), frame); subject.afterRender(performance.now()); // display loop: render, then pump
         await sleep(20);
       }
     };

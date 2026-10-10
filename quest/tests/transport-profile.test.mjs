@@ -1,4 +1,5 @@
 import test from 'node:test';
+import * as frameOrder from '../src/frame-order.js';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
@@ -17,7 +18,7 @@ class ImageFixture {
   decode() { return new Promise(resolve => { decode = resolve; }); }
 }
 vm.runInNewContext(code, { exports: module.exports,
-  require: name => name === './viewer-settings.js' ? viewerSettings : ({}),
+  require: name => name === './viewer-settings.js' ? viewerSettings : name === './frame-order.js' ? frameOrder : ({}),
   document: documentFixture, performance: { now: () => 100 },
   AbortController, Image: ImageFixture, WebSocket: { OPEN: 1 }, window: { setTimeout, clearTimeout },
   URL: { createObjectURL: () => 'blob:fixture', revokeObjectURL: () => {} },
