@@ -81,6 +81,8 @@ export class RoverExperience {
   private frameId = "";
   private pendingFrame: { id: string | null; age: number; at: number } | null = null;
   private lastCanvasDraw = -Infinity;
+  /** A real camera picture has been drawn; later gaps keep it instead of a placeholder. */
+  private pictured = false;
   private inputValid = false;
   private contextLost = false;
   private frameSource = "Waiting for camera";
@@ -992,7 +994,9 @@ export class RoverExperience {
     const now = performance.now();
     return { source: this.sourceTruth.state({ now, frameSource: this.frameSource, frameId: this.frameId, videoAgeMs: this.gate.videoAge(now) }).kind,
       video: this.h264Enabled ? "H.264" : "JPEG", videoAgeMs: this.gate.videoAge(now),
-      decodeMs: this.h264Enabled ? this.h264.decodeMs : this.decodeMs, ackMs: this.ackMs, linkMs: this.status?.link_ms, xr: this.renderer.xr.isPresenting };
+      decodeMs: this.h264Enabled ? this.h264.decodeMs : this.decodeMs, ackMs: this.ackMs, linkMs: this.status?.link_ms, xr: this.renderer.xr.isPresenting,
+      // Per-hop H.264 latency: server capture-to-send age, player lead behind newest data, live-edge corrections.
+      h264Latency: this.h264Enabled ? { ...this.h264.latency } : null };
   }
 
   private pump() {
@@ -1130,6 +1134,7 @@ export class RoverExperience {
       this.resizeCameraCanvas(video.videoWidth, video.videoHeight);
       const crop = cameraCrop(video.videoWidth, video.videoHeight, this.input.pan, this.digitalPan);
       context.drawImage(video, crop.x, crop.y, crop.width, crop.height, 0, 0, this.canvas.width, this.canvas.height);
+      this.pictured = true;
       if (decoded) {
         this.stagedView = { id: decoded.id, age: decoded.age, at: now };
         this.frameSource = decoded.source; this.frameId = decoded.frame === null ? "" : String(decoded.frame);
@@ -1139,6 +1144,7 @@ export class RoverExperience {
       this.resizeCameraCanvas(this.frame.naturalWidth, this.frame.naturalHeight);
       const crop = cameraCrop(this.frame.naturalWidth, this.frame.naturalHeight, this.input.pan, this.digitalPan);
       context.drawImage(this.frame, crop.x, crop.y, crop.width, crop.height, 0, 0, this.canvas.width, this.canvas.height);
+      this.pictured = true;
       if (this.pendingFrame) {
         const pending = this.pendingFrame;
         this.stagedView = { id: pending.id, age: pending.age + now - pending.at, at: now };
@@ -1148,6 +1154,10 @@ export class RoverExperience {
       // original capture age continues growing; duplicate IDs never renew it.
       if (this.gate.frameId === this.frameId) this.stagedRepaint = true;
       this.drawDetections(crop, this.frame.naturalWidth, this.frame.naturalHeight, now);
+    } else if (this.pictured) {
+      // A decoder restart or a gap between frames keeps the last picture on screen; its
+      // age keeps growing and the stale badge says so. Never swap in a full blocking panel.
+      return false;
     } else {
       context.fillStyle = "#141c22"; context.fillRect(0, 0, this.canvas.width, this.canvas.height);
       context.fillStyle = "#dce5ee"; context.font = "22px system-ui"; context.textAlign = "center";

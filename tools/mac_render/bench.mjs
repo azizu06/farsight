@@ -22,6 +22,8 @@ const view = new WebSocket(new URL("/ws/macview", upstream));
 const pose = new WebSocket(new URL("/ws/macview-pose", upstream));
 const samples = [];
 let init = null;
+let requested = null;
+let firstFragmentMs = null;
 const started = performance.now();
 
 function sendPose() {
@@ -43,24 +45,35 @@ view.onmessage = (event) => {
         render_ms: message.render_ms, capture_ms: message.capture_ms, encode_ms: message.encode_ms,
         frame_age_ms: Date.now() - message.capture_wall_ms,
         pose_to_frame_ms: message.pose ? message.capture_mono_ms - message.pose.received_mono_ms : null,
-        bytes: 0,
+        bytes: 0, served_ms: null,
       });
     }
     return;
   }
-  if (samples.length) samples[samples.length - 1].bytes = event.data.byteLength || event.data.length || 0;
-  if (performance.now() - started > seconds * 1000) {
-    const elapsed = (performance.now() - started) / 1000;
+  const now = performance.now();
+  if (samples.length) {
+    const latest = samples[samples.length - 1];
+    latest.bytes = event.data.byteLength || event.data.length || 0;
+    if (requested !== null) latest.served_ms = now - requested;
+    if (firstFragmentMs === null) firstFragmentMs = now - started;
+  }
+  if (now - started > seconds * 1000) {
+    const elapsed = (now - started) / 1000;
     const report = {
       label: "Mac desk, no headset",
       resolution: init ? `${init.width}x${init.height}` : null,
       fps: init?.fps ?? null,
       seconds: elapsed,
       fragments: samples.length,
+      fragments_per_s: samples.length / elapsed,
+      first_fragment_ms: firstFragmentMs,
+      served_ms_p50: percentile(samples.map((item) => item.served_ms), 0.5),
+      served_ms_p95: percentile(samples.map((item) => item.served_ms), 0.95),
       stereo: false,
       render_ms_p50: percentile(samples.map((item) => item.render_ms), 0.5),
       capture_ms_p50: percentile(samples.map((item) => item.capture_ms), 0.5),
       encode_ms_p50: percentile(samples.map((item) => item.encode_ms), 0.5),
+      encode_ms_p95: percentile(samples.map((item) => item.encode_ms), 0.95),
       bytes_per_s: samples.reduce((sum, item) => sum + item.bytes, 0) / elapsed,
       frame_age_ms_p50: percentile(samples.map((item) => item.frame_age_ms), 0.5),
       frame_age_ms_p95: percentile(samples.map((item) => item.frame_age_ms), 0.95),
@@ -74,6 +87,7 @@ view.onmessage = (event) => {
     return;
   }
   sendPose();
+  requested = performance.now();
   view.send(JSON.stringify({ type: "next", request_id: samples.length + 1 }));
 };
-view.onopen = () => view.send(JSON.stringify({ type: "next", request_id: 1 }));
+view.onopen = () => { requested = performance.now(); view.send(JSON.stringify({ type: "next", request_id: 1 })); };

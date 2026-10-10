@@ -12,7 +12,7 @@ test('refuses app/control paths and unsafe endpoint origins before launching', (
   assert.equal(standaloneURL('http://localhost:5173/macview.html?mac=http://localhost:8090').pathname, '/macview.html');
 });
 test('bounded durations and unknown/missing options fail before launching', () => {
-  for (const args of [['--seconds', 'Infinity'], ['--warmup', '0'], ['--seconds', '61'], ['--url'], ['--cdp', 'http://localhost:9222']])
+  for (const args of [['--seconds', 'Infinity'], ['--warmup', '0'], ['--seconds', '61'], ['--url'], ['--cdp', 'http://localhost:9222'], ['--graphics', 'invalid']])
     assert.throws(() => options(args));
   assert.equal(options(['--seconds', '2']).seconds, 2);
 });
@@ -36,8 +36,8 @@ test('stalled presentation, dimension mismatch and errors fail', () => {
 test('empty timing series stay unknown', () => assert.deepEqual(summary([]), { count: 0, p50: null, p95: null, maximum: null }));
 
 // Opt in with MACVIEW_BROWSER_TEST=1 to exercise safety on real Chromium.
-for (const kind of ['forbidden-socket', 'navigation-redirect']) {
-  test(`browser blocks ${kind} before the control server receives it`, { skip: process.env.MACVIEW_BROWSER_TEST !== '1' }, async () => {
+for (const nativeSockets of [false, true]) for (const kind of ['forbidden-socket', 'navigation-redirect']) {
+  test(`browser ${nativeSockets ? 'native' : 'forwarded'} blocks ${kind} before the control server receives it`, { skip: process.env.MACVIEW_BROWSER_TEST !== '1' }, async () => {
     let controlRequests = 0;
     const server = createServer((request, response) => {
       if (request.url.startsWith('/ws/control')) controlRequests++;
@@ -51,9 +51,10 @@ for (const kind of ['forbidden-socket', 'navigation-redirect']) {
     server.on('upgrade', (request, socket) => { if (request.url.startsWith('/ws/control')) controlRequests++; socket.destroy(); });
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     try {
-      const report = await qualify({ ...options([]), url: `http://127.0.0.1:${server.address().port}/macview.html`, warmup: 1, seconds: 1,
+      const report = await qualify({ ...options([]), nativeSockets, url: `http://127.0.0.1:${server.address().port}/macview.html`, warmup: 1, seconds: 1,
         out: await mkdtemp(join(tmpdir(), 'macview-safety-')) });
       assert.equal(report.passed, false); assert.equal(controlRequests, 0);
+      assert.equal(report.decodeProof.passed, false); assert.equal(report.performanceTarget.evaluated, false);
       assert.ok(report.failures.some(error => /Blocked out-of-scope/.test(error)));
     } finally { await new Promise(resolve => server.close(resolve)); }
   });
