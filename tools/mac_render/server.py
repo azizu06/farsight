@@ -25,23 +25,26 @@ from .mp4 import Mp4Reader, fragment_timing
 from .protocol import (
     POSE_STALE_MS,
     parse_pose,
+    percentile,
     pose_to_frame_ms,
     segment_sidecar,
 )
+from .stats import take
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 
 _UNSET = object()
 
-_POSE_PAGE_JS = """(pose) => { window.__macPose = {
-  position: pose.position, quaternion: pose.quaternion, ray: pose.ray,
-  sentMonoMs: pose.sent_mono_ms, sentWallMs: pose.sent_wall_ms,
-  receivedMonoMs: pose.received_mono_ms, receiptAgeMs: pose.receipt_age_ms,
-  tracked: true, session_id: pose.session_id, frame_id: pose.frame_id,
-  pose_id: pose.pose_id, client_nonce: pose.client_nonce,
-  fov_y_deg: pose.fov_y_deg, aspect: pose.aspect, space: pose.space,
-  map_revision: pose.map_revision, eyes: pose.eyes }; }"""
+_CAPTURE_JS = "() => window.__macCapture()"
+# A pending pose rides the capture evaluate: one browser turn applies the pose
+# and produces the frame that uses it, instead of a second page.evaluate
+# queuing behind a slow draw on the page main thread.
+_CAPTURE_POSE_JS = "(pose) => { window.__macPose = pose; return window.__macCapture(); }"
+
+# A single page turn may legitimately take this long while the dense cloud
+# streams in; it is a hang detector, not a pacing bound.
+_EVALUATE_TIMEOUT_S = 10
 
 
 class RenderEncoder:
@@ -64,7 +67,7 @@ class RenderEncoder:
         self._pose_session = None
         self._pose_seq = -1
         self._pending_pose = _UNSET
-        self._pose_pump = None
+        self._feed_behind = False
         self.dropped_captures = 0
         self.last_snapshot = {}
         self.capture_times = deque(maxlen=120)
@@ -102,18 +105,41 @@ class RenderEncoder:
         self.latest_pose = pose if pose["tracked"] else None
         return pose
 
+    def _capture_call(self):
+        """The next capture evaluate. A pending pose is consumed and rides the
+        same browser turn as the frame that is drawn from it."""
+        pose = self._pending_pose
+        if pose is _UNSET:
+            return _CAPTURE_JS, _UNSET
+        self._pending_pose = _UNSET
+        if pose is not None:
+            pose["receipt_age_ms"] = max(0, time.monotonic() * 1000 - pose["received_mono_ms"])
+        return _CAPTURE_POSE_JS, pose
+
     async def _capture(self):
         await self.page.evaluate("() => { window.__macCaptureDriven = true; }")
         interval = 1 / self.fps
         while self.process and self.process.returncode is None:
+            if self._feed_behind:
+                # ffmpeg stdin backed up: a frame captured now would arrive
+                # already stale. Skip it entirely — freshness over throughput.
+                self._feed_behind = False
+                self.dropped_captures += 1
+                await asyncio.sleep(interval)
+                continue
             started, wall = time.monotonic(), time.time() * 1000
             # Render + pixels + provenance are returned atomically by the same
             # browser JS turn. There is one writer and no capture task backlog.
-            params = await asyncio.wait_for(self.page.evaluate("() => window.__macCapture()"), 3)
-            await asyncio.wait_for(self._on_frame(None, params, started * 1000, wall), 3)
+            script, arg = self._capture_call()
+            if arg is _UNSET:
+                params = await asyncio.wait_for(self.page.evaluate(script), _EVALUATE_TIMEOUT_S)
+            else:
+                params = await asyncio.wait_for(self.page.evaluate(script, arg), _EVALUATE_TIMEOUT_S)
+            eval_ms = (time.monotonic() - started) * 1000
+            await self._on_frame(None, params, started * 1000, wall, eval_ms)
             await asyncio.sleep(max(0, interval - (time.monotonic() - started)))
 
-    async def _on_frame(self, session, params, captured=None, wall=None):
+    async def _on_frame(self, session, params, captured=None, wall=None, eval_ms=None):
         started = time.monotonic()
         meta = params.get("meta") or await self.page.evaluate(
             "() => ({ renderMs: (window.__mac && window.__mac.renderMs) ?? 0,"
@@ -125,25 +151,39 @@ class RenderEncoder:
             raise ValueError("screencast exceeds capture limit")
         # Decoding several hundred KB of base64 per frame is pure CPU; keep it
         # off the event loop so websocket sends and pose handling stay prompt.
+        decode_started = time.monotonic()
         jpeg = await asyncio.to_thread(base64.b64decode, params["data"], validate=True)
+        decode_ms = (time.monotonic() - decode_started) * 1000
         self.last_snapshot = meta
         self.frame_id += 1
-        self.samples.append({
+        sample = {
             "frame_id": self.frame_id,
             "input_index": self.frame_id - 1,
             "capture_mono_ms": captured if captured is not None else started * 1000,
             "capture_wall_ms": wall if wall is not None else time.time() * 1000,
             "render_ms": meta.get("renderMs") or 0,
+            "eval_ms": eval_ms,
+            "decode_ms": decode_ms,
+            "jpeg_bytes": len(jpeg),
             "capture_ms": round(time.monotonic() * 1000 - (captured if captured is not None else started * 1000), 3),
             "source": meta.get("source") or "WAITING",
             "pose": meta.get("poseEcho", meta.get("pose")), "map": meta.get("mapStatus", meta.get("map")),
             "fov_y_deg": meta.get("fovY", 50), "aspect": meta.get("aspect", self.width / self.height),
-        })
+        }
+        self.samples.append(sample)
         del self.samples[:-600]
         self.capture_times.append(time.monotonic())
+        feed_wait_ms = 0.0
         if self.process and self.process.stdin and self.process.returncode is None:
             self.process.stdin.write(jpeg)
+            drain_started = time.monotonic()
             await self.process.stdin.drain()
+            feed_wait_ms = (time.monotonic() - drain_started) * 1000
+            # A drain longer than a frame interval means the encoder is behind:
+            # the next capture would be stale before it is even fed.
+            if feed_wait_ms > 1000 / self.fps:
+                self._feed_behind = True
+        sample["feed_wait_ms"] = feed_wait_ms
 
     def _pose_echo(self):
         pose = self.latest_pose
@@ -191,6 +231,11 @@ class RenderEncoder:
                 sidecar["encode_pipeline_ms"] = max(0, time.monotonic() * 1000 - newest["capture_mono_ms"])
                 self.fragment_times.append((time.monotonic(), count))
                 sidecar["pose_to_frame_ms"] = pose_to_frame_ms(newest.get("pose"), newest["capture_mono_ms"])
+                # Input-stage attribution: which part of capture->ffmpeg holds
+                # the time (page turn, base64 decode, stdin backpressure).
+                sidecar["capture_eval_ms"] = newest.get("eval_ms") or 0
+                sidecar["jpeg_bytes"] = newest.get("jpeg_bytes") or 0
+                sidecar["feed_wait_ms"] = newest.get("feed_wait_ms") or 0
                 self._publish({"sidecar": sidecar, "payload": data,
                                "keyframe": _is_keyframe(data)})
 
@@ -212,26 +257,11 @@ class RenderEncoder:
 
     def echo_pose(self, pose):
         """Latest-wins handoff of the newest validated pose to the render page.
-        One in-flight page.evaluate at most; intermediate poses are dropped so
-        72 Hz input can never queue a CDP backlog behind the render loop."""
+        The pose rides the next capture evaluate (_capture_call): the page only
+        draws inside __macCapture anyway, so a standalone evaluate would just
+        queue behind a slow draw on the main thread while delivering the pose
+        no sooner to the frame that uses it."""
         self._pending_pose = pose
-        if self.page is None:
-            return
-        if self._pose_pump is None or self._pose_pump.done():
-            self._pose_pump = asyncio.create_task(self._pose_loop())
-
-    async def _pose_loop(self):
-        while self._pending_pose is not _UNSET:
-            pose, self._pending_pose = self._pending_pose, _UNSET
-            try:
-                if pose is None:
-                    await self.page.evaluate("() => { window.__macPose = null; }")
-                else:
-                    pose["receipt_age_ms"] = max(0, time.monotonic() * 1000 - pose["received_mono_ms"])
-                    await self.page.evaluate(_POSE_PAGE_JS, pose)
-            except Exception:
-                self._pending_pose = _UNSET
-                return
 
     async def _stderr(self):
         while line := await self.process.stderr.readline():
@@ -239,10 +269,6 @@ class RenderEncoder:
 
     async def close(self):
         self.viewers.clear()
-        if self._pose_pump is not None:
-            self._pose_pump.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._pose_pump
         for task in self._tasks:
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
@@ -296,6 +322,13 @@ class App:
                 (encoder.fragment_times[-1][0] - encoder.fragment_times[0][0]))
                 if encoder and len(encoder.fragment_times) > 1 else None,
             "queued_fragments": sum(len(viewer.items) for viewer in encoder.viewers) if encoder else 0,
+            # Input-stage attribution (7775ef3 keeps the capture/encoded fps;
+            # these say where inside the capture->ffmpeg path the time sits).
+            "capture_eval_ms_p50": percentile(take(encoder.samples, "eval_ms"), .50) if encoder else None,
+            "jpeg_kb_p50": (percentile(take(encoder.samples, "jpeg_bytes"), .50) or 0) / 1024 if encoder else None,
+            "feed_wait_ms_p50": percentile(take(encoder.samples, "feed_wait_ms"), .50) if encoder else None,
+            "dropped_captures": encoder.dropped_captures if encoder else None,
+            "viewers": len(encoder.viewers) if encoder else 0,
         })
 
     async def videotoolbox(self):
@@ -320,10 +353,9 @@ class App:
                 await asyncio.wait_for(socket.close(), .25)
             if attribute == "pose_socket" and self.encoder:
                 self.encoder.latest_pose = None
+                # The clear rides the next capture turn like any other pose —
+                # a queued older pose can never overwrite it (latest wins).
                 self.encoder.echo_pose(None)
-                if self.encoder._pose_pump:
-                    with suppress(Exception):
-                        await asyncio.wait_for(asyncio.shield(self.encoder._pose_pump), .5)
             if getattr(self, attribute) is socket:
                 setattr(self, attribute, None)
 
