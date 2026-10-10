@@ -1,4 +1,5 @@
 import math
+import time
 import unittest
 
 from fastapi import FastAPI
@@ -408,6 +409,17 @@ class SocketTests(unittest.TestCase):
         app.include_router(self.service.router)
         self.client = TestClient(app)
 
+    def wait_status(self, ws, predicate, timeout=1):
+        deadline = time.monotonic() + timeout
+        latest = None
+        while time.monotonic() < deadline:
+            latest = ws.receive_json()
+            if time.monotonic() >= deadline:
+                break
+            if predicate(latest):
+                return latest
+        self.fail(f"Authoritative control status timed out: {latest}")
+
     def test_socket_drive_release_disconnect_and_single_owner(self):
         with self.client.websocket_connect("/ws/control") as ws:
             status = ws.receive_json()
@@ -417,11 +429,16 @@ class SocketTests(unittest.TestCase):
                 with self.client.websocket_connect("/ws/control") as other:
                     other.receive_json()
             ws.send_json({"session_id": status["session_id"], "seq": 0, "deadman": False})
+            status = self.wait_status(ws, lambda packet: packet["seq"] == 0)
+            self.assertEqual(status["reason"], "deadman_released")
+            self.assertFalse(status["requires_release"])
             ws.send_json({"session_id": status["session_id"], "permit": status["permit"],
                           "seq": 1, "deadman": True, "v": 0.5, "w": 0,
                           "video_fresh": True, "video_age_ms": 50})
-            active = ws.receive_json()
+            active = self.wait_status(ws, lambda packet: packet["seq"] == 1)
             self.assertEqual(active["left_pwm"], 50)
+            self.assertEqual(active["right_pwm"], 50)
+            self.assertEqual(self.service.state.output()[:2], (50, 50))
         self.assertEqual(self.service.state.output()[:2], (0, 0))
         self.assertIsNone(self.service.state.session_id)
 
@@ -429,8 +446,10 @@ class SocketTests(unittest.TestCase):
         with self.client.websocket_connect("/ws/control") as ws:
             ws.receive_json()
             ws.send_text("not json")
-            status = ws.receive_json()
+            status = self.wait_status(ws, lambda packet: packet["reason"] == "invalid_json")
             self.assertEqual(status["reason"], "invalid_json")
+            self.assertEqual((status["left_pwm"], status["right_pwm"]), (0, 0))
+            self.assertTrue(status["requires_release"])
             public = self.client.get("/control/status").json()
             self.assertNotIn("session_id", public)
             self.assertIsNone(public["permit"])
