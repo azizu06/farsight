@@ -350,28 +350,23 @@ impl CameraService {
 /// SOI marker, cut through the EOI marker. Returns None when the buffer
 /// holds only a partial frame.
 fn next_jpeg(buf: &mut Vec<u8>) -> Option<Vec<u8>> {
-    loop {
-        if buf.len() < 4 {
+    if buf.len() < 4 {
+        return None;
+    }
+    let soi = match buf.windows(2).position(|w| w == [0xFF, 0xD8]) {
+        Some(p) => p,
+        None => {
+            buf.clear();
             return None;
         }
-        let soi = match buf.windows(2).position(|w| w == [0xFF, 0xD8]) {
-            Some(p) => p,
-            None => {
-                buf.clear();
-                return None;
-            }
-        };
-        if soi > 0 {
-            buf.drain(..soi);
-        }
-        // skip(1) drops the SOI window, so e is the EOI marker index minus
-        // one: the marker sits at byte e + 1 and the frame ends at e + 3.
-        let eoi = buf.windows(2).skip(1).position(|w| w == [0xFF, 0xD9]);
-        match eoi {
-            Some(e) => return Some(buf.drain(..e + 3).collect()),
-            None => return None,
-        }
+    };
+    if soi > 0 {
+        buf.drain(..soi);
     }
+    // skip(1) drops the SOI window, so e is the EOI marker index minus
+    // one: the marker sits at byte e + 1 and the frame ends at e + 3.
+    let eoi = buf.windows(2).skip(1).position(|w| w == [0xFF, 0xD9]);
+    eoi.map(|e| buf.drain(..e + 3).collect())
 }
 
 #[cfg(test)]
