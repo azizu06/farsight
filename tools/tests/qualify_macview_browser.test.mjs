@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { standaloneURL, options, failures, summary, qualify } from '../qualify_macview_browser.mjs';
+import { standaloneURL, options, failures, summary, qualify, pixelSummary, videoPixelRead, frameIdentityCounts } from '../qualify_macview_browser.mjs';
 import { createServer } from 'node:http';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -34,6 +34,29 @@ test('stalled presentation, dimension mismatch and errors fail', () => {
   const error = evidence(); error.errors.push('Blocked out-of-scope WebSocket'); assert.ok(failures(error, 1).length);
 });
 test('empty timing series stay unknown', () => assert.deepEqual(summary([]), { count: 0, p50: null, p95: null, maximum: null }));
+test('duplicate or absent callback identity values do not inflate unique counts', () => {
+  const result = frameIdentityCounts([{ mediaTime: 1, presentedFrames: 2 }, { mediaTime: 1, presentedFrames: 2 },
+    { mediaTime: 1.033, presentedFrames: 3 }, { mediaTime: NaN }]);
+  assert.equal(result.uniqueMediaTimeCount, 2); assert.equal(result.uniquePresentedFramesCount, 2);
+  assert.equal(result.mediaTimeSamples, 3); assert.equal(result.presentedFramesSamples, 3);
+});
+test('video-only black/readable samples are distinct from failed pixel reads', () => {
+  const black = pixelSummary({ state: 'readable', width: 1, height: 1, pixels: [0, 0, 0, 255] });
+  assert.equal(black.blackFrameObserved, true); assert.equal(black.nonblackPixels, 0);
+  const visible = pixelSummary({ state: 'readable', width: 1, height: 1, pixels: [30, 40, 50, 255] });
+  assert.equal(visible.blackFrameObserved, false); assert.equal(visible.nonblackFraction, 1);
+  const failed = { state: 'unknown', reason: 'SecurityError: tainted canvas' };
+  assert.deepEqual(pixelSummary(failed), failed); assert.equal(pixelSummary(failed).blackFrameObserved, undefined);
+});
+test('pixel read security failure remains unknown, never zero or black', () => {
+  const oldWindow = globalThis.window, oldDocument = globalThis.document;
+  globalThis.window = { __farsightMacviewQualification: { video: { readyState: 4, videoWidth: 1280, videoHeight: 720 } } };
+  globalThis.document = { createElement: () => ({ getContext: () => ({ drawImage() {}, getImageData() { throw new DOMException('blocked pixels', 'SecurityError'); } }) }) };
+  try {
+    const result = pixelSummary(videoPixelRead()); assert.equal(result.state, 'unknown');
+    assert.match(result.reason, /SecurityError/); assert.equal(result.nonblackPixels, undefined);
+  } finally { globalThis.window = oldWindow; globalThis.document = oldDocument; }
+});
 
 // Opt in with MACVIEW_BROWSER_TEST=1 to exercise safety on real Chromium.
 for (const nativeSockets of [false, true]) for (const kind of ['forbidden-socket', 'navigation-redirect']) {

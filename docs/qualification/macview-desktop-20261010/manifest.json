@@ -68,15 +68,81 @@
       },
       "visual_delivery_passed": false,
       "hardware_qualified": false
+    },
+    {
+      "name": "joined-320553d-5d02bb6",
+      "client_sha": "320553d688f2761801dc439a6a9fd1e7c5957ae5",
+      "loaded_producer_sha": "5d02bb6cd9e30d9c4e903f79256ca3341d8c33d3",
+      "scope": "Joined flat desktop stream has visible decoded scene pixels and matched pose echoes. No headset, stereo, measured-room or control qualification.",
+      "source": "SIMULATED",
+      "stereo": false,
+      "hardware": "Desktop Apple M1 / ANGLE Metal / Chromium; not Quest",
+      "runtime_intervention": "none",
+      "callback_hz": 28.854080791383254,
+      "seeking_count": 0,
+      "matched_pose_echoes": 245,
+      "submitted_poses": 511,
+      "artifacts": {
+        "evidence.json": {
+          "sha256": "f2b620379614e85190ef3659e46ea3cbc8b3aaa84b985a4403b825928adfb5ec",
+          "bytes": 17162
+        },
+        "screenshot.png": {
+          "sha256": "fdc36298a4b65129fae6426e7e510d1fbbeb4959fef2b8155652969aa789ccb8",
+          "bytes": 320563
+        }
+      },
+      "served_build_sha256": {
+        "assets/VRButton-B6fJNAgX.js": "755012dc05c2b3f29318904dce90c34d7bd943c2ea26aa8fec4902eb80daf7b8",
+        "assets/macview-jAqxeCBH.js": "770dba5e7951a1b18b0ddc432262a00fa7be9a4d6d45e7c5821e3066f666c9c4",
+        "assets/main-CWsdCTmv.js": "1d8763ac817397aa4265cd5c6a876de721682ab6951cb240d91cc51d45c2b46a",
+        "assets/main-DxNvDC7a.css": "234a49d21d6e4e6af115408573dd534aae88f577195c72291d57004125065481",
+        "index.html": "03b3b323930f607d10366989c9626049c33616fd42892837caef47818d4ddac2",
+        "macview.html": "d3d878b03c92644d9607d2250cfa752131bd897d25e2d7953040498937703bd9"
+      },
+      "visual_delivery_passed": true,
+      "hardware_qualified": false,
+      "sampling_end_status": "MAC RENDER \u00b7 flat view \u00b7 not stereo \u00b7 SIMULATED \u00b7 404 ms \u00b7 decoded \u00b7 tracked \u00b7 pose round trip 400 ms (not photon latency)",
+      "post_pixel_read_status": "MAC RENDER \u00b7 flat view \u00b7 not stereo \u00b7 SIMULATED \u00b7 661 ms \u00b7 STALE picture \u00b7 tracked \u00b7 pose round trip 652 ms (not photon latency)",
+      "pixel_read_scope": {
+        "state": "readable",
+        "scope": "One end-of-sample 64x36 decoded-video read, excluding page HUD; blackness does not prove room fidelity or generic-scene failure.",
+        "width": 64,
+        "height": 36,
+        "videoWidth": 1280,
+        "videoHeight": 720,
+        "mediaTime": 127.7482,
+        "readNow": 8884.5,
+        "pixelCount": 2304,
+        "nonblackPixels": 2304,
+        "nonblackFraction": 1,
+        "blackChannelThreshold": 3,
+        "luminance": {
+          "minimum": 28.5146,
+          "maximum": 137.3898,
+          "mean": 48.81352803819354,
+          "standardDeviation": 24.237460500575455
+        },
+        "blackFrameObserved": false
+      },
+      "phase_note": "The single pixel read ran about 288 ms after end-of-sampling and stalled the browser. Keep the sampling-end age404ms separate from later age661ms.",
+      "unique_callback_identity_counts": "Not collected by this run; the updated helper records them in future runs."
     }
   ],
   "known_failures": [
     "The a134974 atomic capture path forwards snake_case pose fields to a renderer expecting camelCase, so all 503 sent poses lacked matching echoes.",
     "The a134974 screenshot shows black scene pixels despite roughly 29 Hz decoded video and positive coarse geometry metadata.",
-    "The producer revisions differ; do not attribute this comparison solely to the client."
+    "The producer revisions differ; do not attribute this comparison solely to the client.",
+    "Earlier failed pose/pixel cases were repaired in b390f68 and5d02bb6; preserve them as historical regressions, not current-production claims."
   ],
   "board_evidence": [
     "https://github.com/azizu06/farsight/issues/24#issuecomment-6103109006",
     "https://github.com/azizu06/farsight/issues/24#issuecomment-6103135912"
+  ],
+  "completion_gates_unproven": [
+    "Actual Quest performance/controller/minimal-HUD recording",
+    "Per-eye stereo rendering and presentation",
+    "Measured real-room millions-of-points reconstruction",
+    "Cinematic quality judged on real headset/room"
   ]
 }
