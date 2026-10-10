@@ -122,6 +122,13 @@ class WaitTests(unittest.TestCase):
                                               "FARSIGHT_SERIAL_PORT": "/dev/ttyACM0"}),
                          ["/dev/video0", "/dev/ttyACM0"])
 
+    def test_rig_without_sensors_maps_proximity_and_pan_mount(self):
+        args = launch.build_args({"FARSIGHT_PROXIMITY_STOP": "off", "FARSIGHT_PAN_MOUNT": "none",
+                                  "FARSIGHT_SERIAL_PORT": "/dev/ttyUSB0"})
+        for pair in (["--proximity-stop", "off"], ["--pan-mount", "none"], ["--serial-port", "/dev/ttyUSB0"]):
+            i = args.index(pair[0])
+            self.assertEqual(args[i:i + 2], pair)
+
 
 class ServerContractTests(unittest.TestCase):
     def test_every_launch_flag_is_accepted_by_the_canonical_server(self):
@@ -131,6 +138,11 @@ class ServerContractTests(unittest.TestCase):
                                    text=True, check=True, cwd=os.path.dirname(os.path.dirname(os.path.dirname(__file__)))).stdout
         for flag in [f for _, f in launch.VALUE_FLAGS] + [f for _, f in launch.BOOL_FLAGS] + ["--host", "--port", "--scan-intrinsics"]:
             self.assertIn(flag, help_text, f"jetson.server has no {flag}; update jetson/launch.py")
+
+    def test_physical_scan_pan_needs_a_pan_servo(self):
+        from jetson.mapping.server import create_app
+        with self.assertRaisesRegex(ValueError, "pan servo"):
+            create_app(True, scan_pan=True, pan_mount="none")
 
 
 class EnvFileTests(unittest.TestCase):

@@ -63,7 +63,10 @@ Uncertain or stale (>350 ms) range data, range below 25 cm and a pan head
 outside ±10 degrees block forward translation; turns and reverse remain usable.
 The range part is the proximity stop, on by default; `proximity_stop=False`
 (server `--proximity-stop off`) is an explicit opt-in for navigation runs that
-steer around obstacles. The pan rule always applies. Motion defaults
+steer around obstacles. The pan rule applies with `pan_mount="servo"`, the
+default. `pan_mount="none"` (server `--pan-mount none`) is for a rover with no
+pan servo: a valid commanded pan is accepted but kept at 0, so it never blocks
+forward translation and the Uno never gets `P`. Motion defaults
 to maximum PWM 100 for a small demo area. This does not replace hardware tests
 or a person ready to power off the rover.
 

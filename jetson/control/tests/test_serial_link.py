@@ -98,6 +98,24 @@ class SerialTests(unittest.TestCase):
         self.assertTrue(second.closed)
         self.assertFalse(state.connected)
 
+    def test_no_pan_mount_never_sends_p(self):
+        state = ControlState(proximity_stop=False, pan_mount="none")
+        uno = FakeUno()
+        pump = SerialPump(state, port="FAKE", factory=lambda port, baud, **options: uno)
+        pump.start()
+        try:
+            self.wait_for(lambda: state.connected)
+            session = state.begin()
+            state.accept({"session_id": session, "seq": 0, "deadman": False}, session)
+            token = state.status(issue_permit=True)["permit"]
+            self.assertTrue(state.accept({"session_id": session, "permit": token, "seq": 1, "deadman": True,
+                                          "v": 0.5, "w": 0, "pan": 40, "video_fresh": True,
+                                          "video_age_ms": 0}, session))
+            self.wait_for(lambda: any(b"M 50 50\n" in data for _, data in uno.writes))
+            self.assertFalse([data for _, data in uno.writes if b"P " in data])
+        finally:
+            pump.close()
+
     def test_backend_selection_is_explicit(self):
         state = ControlState()
         pump = SerialPump(state)

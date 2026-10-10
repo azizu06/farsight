@@ -256,6 +256,50 @@ class ProximityStopOffTests(unittest.TestCase):
         self.assertEqual(self.state.output()[:2], (0, 0))
 
 
+class NoPanMountTests(unittest.TestCase):
+    """--pan-mount none: the headset pans digitally; nothing else about the gates changes."""
+
+    def setUp(self):
+        self.clock = Clock()
+        self.state = ControlState(clock=self.clock, proximity_stop=False, pan_mount="none")
+        self.state.set_connected(True)
+        self.session = self.state.begin()
+        self.seq = 0
+        self.send(deadman=False)
+
+    send = PolicyTests.send
+
+    def test_commanded_pan_never_blocks_forward_or_moves_a_servo(self):
+        self.assertTrue(self.send(pan=40))
+        self.assertEqual(self.state.output(), (50, 50, 90))
+        self.assertTrue(self.send(pan=-80, v=0.5, w=0.25))
+        left, right, pan = self.state.output()
+        self.assertGreater(left, right)
+        self.assertEqual(pan, 90)
+        self.assertEqual(self.state.status()["pan_deg"], 90)
+        self.assertFalse(self.state.status()["estop"])
+
+    def test_pan_is_still_validated_and_every_stop_remains(self):
+        self.assertFalse(self.send(pan=90))  # outside -80..80 is still an invalid command
+        self.assertEqual(self.state.reason, "invalid_command")
+        self.send(deadman=False)
+        self.assertTrue(self.send(pan=40))
+        self.clock.now += .26
+        self.assertEqual(self.state.output()[:2], (0, 0))
+        self.assertEqual(self.state.reason, "lease_expired")
+        self.send(deadman=False)
+        self.assertTrue(self.send(pan=40))
+        self.send(deadman=False)
+        self.assertEqual(self.state.output()[:2], (0, 0))
+        self.state.camera_ready = lambda: False
+        self.assertFalse(self.send(pan=40))
+        self.assertEqual(self.state.output()[:2], (0, 0))
+
+    def test_unknown_mount_is_rejected(self):
+        with self.assertRaises(ValueError):
+            ControlState(pan_mount="gimbal")
+
+
 class ScanStartRaceTests(unittest.TestCase):
     """The operator's last teleop heartbeat (WebSocket) and POST /scan (HTTP)
     carry the same permit but travel separately, so either may arrive first."""

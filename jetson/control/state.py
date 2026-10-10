@@ -17,10 +17,11 @@ from jetson.autonomy import Autonomy, valid_person
 class ControlState:
     LEASE = 0.250
     RANGE_TTL = 0.350
+    PAN_MOUNTS = ("servo", "none")
 
     def __init__(self, simulated=False, max_pwm=100, clock=time.monotonic, camera_ready=None, min_pwm=0,
                  detections=None, proximity_stop=True, navigator=None, drive_profile=None,
-                 allow_calibration=False):
+                 allow_calibration=False, pan_mount="servo"):
         if (type(min_pwm) is not int or type(max_pwm) is not int
                 or not 0 <= min_pwm < max_pwm <= 255):
             raise ValueError("PWM bounds must satisfy 0 <= min_pwm < max_pwm <= 255")
@@ -35,6 +36,13 @@ class ControlState:
         # obstacles instead. The pan-angle rule and every lease/link/camera stop
         # stay regardless of this option.
         self.proximity_stop = proximity_stop
+        # "servo": a physical pan head follows the commanded pan, and forward
+        # drive is blocked while it is off-centre. "none": no pan hardware; the
+        # headset pans digitally, so a valid commanded pan is accepted but never
+        # moves anything or blocks forward drive (pan stays 0, the Uno gets no P).
+        if pan_mount not in self.PAN_MOUNTS:
+            raise ValueError(f"pan_mount must be one of {self.PAN_MOUNTS}")
+        self.pan_mount = pan_mount
         # Optional navigation stack (jetson.nav.NavService). When it is
         # available, autonomy modes apply its velocity commands; otherwise the
         # reactive jetson.autonomy policy runs as before.
@@ -92,7 +100,7 @@ class ControlState:
                 raise ValueError("Scan cancelled: operator lease, override, or safety stop")
             if not math.isfinite(w) or not -.35 <= w <= .35 or not -80 <= pan <= 80:
                 raise ValueError("Scan command outside bounded sweep")
-            self.scan_w, self.pan = w, round(pan)
+            self.scan_w, self.pan = w, round(pan) if self.pan_mount == "servo" else 0
             self.output()
             if token is not self.scan_token:
                 raise ValueError("Scan cancelled: camera or range unavailable")
@@ -162,7 +170,8 @@ class ControlState:
                                         or self.range_cm < 25)
 
     def forward_blocked(self):
-        # The pan rule protects the ultrasonic/camera mount and stays on.
+        # The pan rule protects a servo pan mount and stays on with one; without
+        # one, pan is always 0 here.
         return self.range_unsafe() or abs(self.pan) > 10
 
     def camera_is_ready(self):
@@ -265,6 +274,8 @@ class ControlState:
                 else:
                     self.autonomy.select(mode, target_id, now)
                     pan = 0  # autonomy needs a forward-facing ultrasonic/camera
+            if self.pan_mount == "none":
+                pan = 0  # validated above; the headset pans digitally
             if round(pan) != self.pan:
                 # A reading from a previous servo direction is not a forward
                 # obstacle reading, even when the servo returns to the centre.
