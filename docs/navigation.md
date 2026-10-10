@@ -27,6 +27,10 @@ ros2 launch farsight_nav nav.launch.py                 # or the farsight-nav sys
 - **Fallback:** if the bridge is down, silent for 1.5 s, or Nav2's lifecycle is not
   active, `nav.backend` is `fallback` (or `null`), go-to goals are refused with `409`,
   and Explore/Seek drive the reactive policy. Nothing restarts or waits on ROS.
+- **Sensor gate:** Nav2 drives only with a normal-tracking ARKit pose (at most 0.5 s
+  old) and LiDAR depth (at most 1 s old) from the current phone session. There is no
+  dead reckoning. Losing either stops the rover and needs a new deadman press after
+  recovery; a new phone session or map epoch disarms the goal and resets Nav2.
 - **Gating:** the bridge is not a controller. Nav2's `cmd_vel` only moves the rover
   while the operator holds the deadman in an autonomy mode with a live 250 ms lease.
   `POST /nav/goal` only arms a goal; motion starts with the operator's own `goto`
@@ -70,14 +74,17 @@ Loopback only; one bridge at a time; other hosts get close code 1008.
 | Direction | Message |
 |---|---|
 | bridge -> server | `hello {version, node, nav2, controller, slam, costmap_source}` |
-| server -> bridge | `hello {version, speed_mps, turn_radps, max_v, max_w, camera_height, frame, camera_yaw_offset_rad, drive_profile}` |
-| server -> bridge | `pose {transform (16, column-major ARKit camera-to-world), tracking, source, age_ms, floor_y}` every 40 ms; `floor_y` is `-nav_camera_height` |
-| server -> bridge | binary depth: `uint32` header length, JSON header (`frame_id, width, height, fx, fy, cx, cy, transform, floor_y, source, age_ms`; intrinsics scaled to the subsampled size), `uint16` millimetres (0 = no return), at most 160 px wide |
+| server -> bridge | `hello {version, speed_mps, turn_radps, max_v, max_w, camera_height, frame, camera_yaw_offset_rad, drive_profile, generation}` |
+| server -> bridge | `reset {generation, reason}` when the phone session or map epoch changes: the bridge cancels its goal, clears both costmaps and its odometry history |
+| server -> bridge | `pose {transform (16, column-major ARKit camera-to-world), tracking, source, generation, age_ms, floor_y}` every 40 ms, only with fresh normal tracking; `floor_y` is `-nav_camera_height` |
+| server -> bridge | binary depth: `uint32` header length, JSON header (`frame_id, width, height, fx, fy, cx, cy, transform, floor_y, source, age_ms, generation, tracking`; intrinsics scaled to the subsampled size), normal-tracking frames only, `uint16` millimetres (0 = no return), at most 160 px wide |
 | server -> bridge | `range {cm, age_ms}` at 10 Hz; `intent {active, mode, goal {x, y, yaw} in odom, goal_id, target_id}` on change and every 200 ms |
 | bridge -> server | `cmd_vel {linear, angular, goal_id}` (m/s, rad/s counter-clockwise) at the controller rate; go-to commands for another `goal_id` are dropped |
 | bridge -> server | `status {state, goal_id, path, frontiers, message, controller_hz, recoveries, nav2}` at 4 Hz; `path` and `frontiers` in odom |
 
-The bridge publishes `/odom`, TF, `/farsight/depth/points` (PointCloud2),
+The bridge drops any pose or depth sample whose `tracking` is not `normal` or whose
+`generation` is not the current one, so limited tracking or an old phone session
+never renews TF, odometry or costmaps. It publishes `/odom`, TF, `/farsight/depth/points` (PointCloud2),
 `/farsight/depth/image` (32FC1 metres) with `/farsight/depth/camera_info` for nvblox,
 and `/farsight/range` (Range). It sends `NavigateToPose` for an active intent and
 cancels it 0.3 s after the intent goes inactive, so a lease hiccup does not drop

@@ -353,7 +353,14 @@ class ControlState:
             engaged = bool(self.autonomy and self.autonomy.mode != "teleop" and self.deadline)
             if self.navigator is not None and self.autonomy:
                 self.navigator.sync(self.autonomy.mode, self.autonomy.target_id, engaged)
-            if engaged and self.navigator is not None and self.navigator.handles(self.autonomy.mode):
+            fault = (self.navigator.sensor_fault()
+                     if engaged and self.navigator is not None and self.navigator.handles(self.autonomy.mode) else None)
+            if fault:
+                # No fresh normal-tracking pose or measured depth of the current sensor session:
+                # stop now, even with a live lease and fresh cmd_vel, and require a new press.
+                self.stop(fault)
+                v = w = 0.0
+            elif engaged and self.navigator is not None and self.navigator.handles(self.autonomy.mode):
                 # Nav2 drives this mode; a missing or stale velocity command stops.
                 if self.profile is not None:  # calibrated: Nav2 m/s, rad/s straight to wheel PWM
                     command = self.navigator.command(si=True) or (0.0, 0.0)

@@ -43,3 +43,17 @@ def status(state, goal_id, *, path=(), frontiers=(), message="", **extra):
 
 def encode(message):
     return json.dumps(message, separators=(",", ":"))
+
+
+def accept_sample(message, generation):
+    """True if a pose/depth sample may renew TF, odometry or costmaps.
+
+    Only normal ARKit tracking counts, and only for the server's current sensor
+    generation (announced in hello/reset); a missing field means an older server
+    and is accepted for that field only.
+    """
+    if message.get("tracking", "normal") != "normal":
+        return False
+    sample = message.get("generation")
+    return sample is None or generation is None or sample == generation
+

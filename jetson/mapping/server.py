@@ -102,14 +102,6 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
 
     if hasattr(control, "state"):  # recorded replays have no live control loop
         control.state.on_output = mission.drill_motion
-        if nav is not None:
-            def applied(v, w, blocked):
-                for observer in (mission.drill_motion, nav.on_output):
-                    try:
-                        observer(v, w, blocked)
-                    except Exception:
-                        pass  # telemetry/odometry must never affect motor output
-            control.state.on_output = applied
     assistant = SceneAssistant(camera_service, perception, control, server_url=assistant_url,
                                whisper_bin=whisper_bin, whisper_model=whisper_model,
                                piper_bin=piper_bin, piper_model=piper_model, output_dir=tts_dir,

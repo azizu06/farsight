@@ -105,3 +105,46 @@ def depth_points(depth, fx, fy, cx, cy):
     x = (u.astype(np.float32) - cx) * z / fx
     y = (v.astype(np.float32) - cy) * z / fy
     return np.column_stack((x, y, z)).astype(np.float32)
+
+
+class VelocityEstimator:
+    """Body velocity (forward m/s, yaw rate rad/s) from base_link poses over a fixed window.
+
+    Differencing consecutive 30 Hz poses amplifies stamp jitter (a 20 ms stamp gap
+    over 33 ms of motion reads 1.6x the true rate), and MPPI seeds its rollouts
+    with this speed, so spikes make it believe the rover is still spinning. A
+    window of ~150 ms keeps lag small and the noise an order of magnitude lower.
+    """
+
+    def __init__(self, window=0.15, max_linear=1.5, max_angular=4.0):
+        self.window, self.max_linear, self.max_angular = window, max_linear, max_angular
+        self.samples = []   # (t, x, y, unwrapped yaw)
+
+    def add(self, t, x, y, yaw):
+        if self.samples:
+            last = self.samples[-1]
+            if t <= last[0]:
+                return self.estimate()
+            if t - last[0] > 1.0:
+                self.samples = []  # a pose gap: restart rather than average across it
+            else:
+                yaw = last[3] + math.atan2(math.sin(yaw - last[3]), math.cos(yaw - last[3]))
+        self.samples.append((t, x, y, yaw))
+        while len(self.samples) > 2 and t - self.samples[1][0] >= self.window:
+            self.samples.pop(0)
+        return self.estimate()
+
+    def estimate(self):
+        if len(self.samples) < 2:
+            return 0.0, 0.0
+        t0, x0, y0, yaw0 = self.samples[0]
+        t1, x1, y1, yaw1 = self.samples[-1]
+        dt = t1 - t0
+        if dt < self.window / 3:
+            return 0.0, 0.0
+        heading = (yaw0 + yaw1) / 2
+        forward = ((x1 - x0) * math.cos(heading) + (y1 - y0) * math.sin(heading)) / dt
+        angular = (yaw1 - yaw0) / dt
+        return (max(-self.max_linear, min(self.max_linear, forward)),
+                max(-self.max_angular, min(self.max_angular, angular)))
+

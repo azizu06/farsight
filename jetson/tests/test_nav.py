@@ -14,6 +14,19 @@ from jetson.mapping.state import MapState
 from jetson.nav import NavService, Refused, decode_depth, encode_depth, odom_to_world, simplify, world_to_odom
 
 NAV_KEYS = {"state", "mode", "goal", "path", "frontiers", "backend", "message"}
+PHONE = ("phone-session", 1)
+
+
+def feed(nav, tracking="normal", identity=PHONE, frame=True):
+    """A fresh ARKit pose (and, with ``frame``, a LiDAR depth frame) of one sensor session."""
+    mapping = nav.mapping
+    with mapping.lock:
+        mapping.identity, mapping.connected, mapping.tracking = identity, True, tracking
+        mapping.last_received, mapping.pose = time.monotonic(), np.eye(4)
+    if frame:
+        nav.offer_frame(type("Frame", (), dict(header=dict(
+            session_id=identity[0], map_epoch=identity[1], tracking=tracking,
+            _received_monotonic=time.monotonic())))())
 
 
 class Clock:
@@ -72,6 +85,7 @@ class LeaseTests(unittest.TestCase):
         self.clock = Clock()
         self.nav = NavService(MapState(), clock=self.clock)
         self.nav.bridge = object()  # a connected bridge, without a socket
+        feed(self.nav)
         self.state = ControlState(clock=self.clock, navigator=self.nav, proximity_stop=False)
         self.nav.attach(self.state)
         self.state.set_connected(True)
@@ -170,6 +184,94 @@ class LeaseTests(unittest.TestCase):
         self.assertTrue(self.send(mode="goto"))
         self.clock.now += 0.15  # command older than CMD_TTL stops even with a held lease
         self.assertEqual(self.state.output()[:2], (0, 0))
+
+    def drive_goto(self):
+        self.bridge(type="status", state="idle", goal_id=None)
+        self.assertTrue(self.send())
+        self.nav.set_goal(0.5, -1.0)
+        self.assertTrue(self.send(mode="goto"))
+        self.state.output()
+        self.bridge(type="cmd_vel", linear=0.2, angular=0.0, goal_id=self.nav.goal_id)
+        self.assertGreater(self.state.output()[0], 0)
+
+    def test_rgb_camera_alone_never_starts_nav_motion(self):
+        # Review 008 (1): fresh camera, permit, bridge and cmd_vel, but no measured depth or ARKit pose.
+        self.nav = NavService(MapState(), clock=self.clock)
+        self.nav.bridge = object()
+        self.state = ControlState(clock=self.clock, navigator=self.nav, proximity_stop=False)
+        self.nav.attach(self.state)
+        self.state.set_connected(True)
+        self.session = self.state.begin()
+        self.send(deadman=False)
+        self.bridge(type="status", state="idle", goal_id=None)
+        self.assertTrue(self.send())
+        with self.assertRaises(Refused) as refused:
+            self.nav.set_goal(0.5, -1.0)
+        self.assertIn("pose", refused.exception.message)
+        self.assertEqual(self.nav.status_object()["state"], "unavailable")
+        feed(self.nav, frame=False)  # pose but still no depth
+        with self.assertRaises(Refused) as refused:
+            self.nav.set_goal(0.5, -1.0)
+        self.assertIn("depth", refused.exception.message)
+        feed(self.nav)
+        self.nav.set_goal(0.5, -1.0)
+        self.nav.frame_at -= NavService.DEPTH_TTL  # depth stops arriving after the goal was accepted
+        self.send(mode="goto")  # the press is accepted, then the sensor gate stops it
+        self.bridge(type="cmd_vel", linear=0.3, angular=0, goal_id=self.nav.goal_id)
+        self.assertEqual(self.state.output()[:2], (0, 0))
+        self.assertEqual(self.state.status()["reason"], "nav_depth_lost")
+
+    def test_sensor_loss_mid_drive_stops_with_fresh_lease_and_command(self):
+        for lose, reason in ((lambda: setattr(self.nav, "frame_at", self.nav.frame_at - 2), "nav_depth_lost"),
+                             (lambda: setattr(self.nav.mapping, "last_received", time.monotonic() - 1),
+                              "nav_pose_lost")):
+            with self.subTest(reason=reason):
+                feed(self.nav)
+                self.send(deadman=False)
+                self.drive_goto()
+                lose()
+                self.bridge(type="cmd_vel", linear=0.2, angular=0.0, goal_id=self.nav.goal_id)
+                self.assertEqual(self.state.output()[:2], (0, 0))
+                status = self.state.status()
+                self.assertEqual((status["reason"], status["requires_release"]), (reason, True))
+                self.assertFalse(self.send(mode="goto"))  # needs an explicit release first
+                feed(self.nav)
+                self.send(deadman=False)
+                self.assertTrue(self.send(mode="goto"))  # recovered sensors + a new press resume
+
+    def test_sensor_session_change_drops_goal_command_and_depth(self):
+        # Review 008 (2): MapState.start_session for a new phone session or map epoch.
+        self.drive_goto()
+        generation = self.nav.generation
+        self.nav.mapping.start_session(("second", 2), "iPhone")
+        self.bridge(type="cmd_vel", linear=0.2, angular=0.0, goal_id=self.nav.goal_id)
+        self.assertEqual(self.state.output()[:2], (0, 0))
+        self.assertEqual(self.nav.generation, generation + 1)
+        self.assertIsNone(self.nav.goal)
+        self.assertIsNone(self.nav.frame)
+        self.assertIsNone(self.nav.cmd)
+        self.assertEqual(self.nav.intent()["generation"], generation + 1)
+        # A late frame of the old session never becomes depth authority.
+        feed(self.nav, identity=("second", 2), frame=False)
+        self.nav.offer_frame(type("Frame", (), dict(header=dict(session_id=PHONE[0], map_epoch=PHONE[1],
+                                                                 tracking="normal")))())
+        self.assertIsNone(self.nav.frame)
+
+    def test_limited_tracking_is_never_navigation_authority(self):
+        # Review 008 (3): a fresh pose with tracking "limited" or "not_available".
+        self.drive_goto()
+        for tracking in ("limited", "not_available"):
+            with self.subTest(tracking=tracking):
+                feed(self.nav, tracking=tracking)
+                transform, _, source, _ = self.nav.pose_snapshot()
+                self.assertIsNone(transform)
+                self.assertEqual(source, "limited")
+                self.assertIsNone(self.nav.frame)  # the limited frame also withdrew depth
+                self.assertEqual(self.state.output()[:2], (0, 0))
+                self.assertEqual(self.state.status()["reason"], "nav_tracking_limited")
+                feed(self.nav)
+                self.send(deadman=False)
+                self.drive_goto()
 
     def test_controller_change_or_serial_fault_disarms_the_goal(self):
         self.bridge(type="status", state="idle", goal_id=None)
@@ -318,6 +420,25 @@ class ServerTests(unittest.TestCase):
                     self.assertEqual(status["nav"]["goal"], {"x": 0.4, "z": -1.5})
             cancelled = client.post("/nav/cancel").json()
             self.assertIsNone(cancelled["mode"])
+
+    def test_sensor_session_change_sends_bridge_reset_and_retags_samples(self):
+        app = create_app(demo=True, simulate_rover=True, detector="none", nav2=True, proximity_stop=False)
+        with TestClient(app) as client:
+            with client.websocket_connect("/ws/nav") as bridge:
+                bridge.send_json(dict(type="hello", version=1, node="test"))
+                generation = bridge.receive_json()["generation"]
+                app.state.nav.mapping.start_session(("second", 2), "iPhone")
+                deadline, reset = time.monotonic() + 5, None
+                import json
+                while reset is None and time.monotonic() < deadline:
+                    message = bridge.receive()
+                    if message.get("text"):
+                        data = json.loads(message["text"])
+                        if data["type"] == "reset":
+                            reset = data
+                        elif data["type"] in ("pose", "intent"):
+                            self.assertEqual(data["generation"], generation)
+                self.assertEqual(reset["generation"], generation + 1)
 
     def test_bridge_must_be_loopback_and_single(self):
         app = create_app(demo=True, simulate_rover=True, detector="none", nav2=True)

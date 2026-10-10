@@ -73,7 +73,7 @@ def simplify(points, tolerance=0.03, limit=200):
     return reduced
 
 
-def encode_depth(frame, *, floor_y, source, age_ms, max_width=160, max_range=6.0):
+def encode_depth(frame, *, floor_y, source, age_ms, generation=0, max_width=160, max_range=6.0):
     """uint32 header length, JSON header, then little-endian uint16 millimetres (0 = no return).
 
     Low-confidence samples are dropped here so the bridge publishes measured
@@ -92,7 +92,8 @@ def encode_depth(frame, *, floor_y, source, age_ms, max_width=160, max_range=6.0
                   width=int(millimetres.shape[1]), height=int(millimetres.shape[0]),
                   fx=k.fx / stride, fy=k.fy / stride, cx=k.cx / stride, cy=k.cy / stride,
                   transform=np.asarray(frame.transform, float).flatten(order="F").tolist(),
-                  floor_y=floor_y, source=source, age_ms=age_ms)
+                  floor_y=floor_y, source=source, age_ms=age_ms, generation=generation,
+                  tracking=frame.header.get("tracking"))
     data = json.dumps(header, separators=(",", ":")).encode()
     return struct.pack("<I", len(data)) + data + millimetres.tobytes()
 
@@ -108,6 +109,14 @@ def decode_depth(packet):
 def empty_nav(state, message):
     """A nav object with no backend (field-for-field with the Rust server)."""
     return dict(state=state, mode=None, goal=None, path=[], frontiers=[], backend=None, message=message)
+
+
+SENSOR_MESSAGES = {
+    "nav_pose_lost": "No fresh ARKit pose; navigation stopped",
+    "nav_tracking_limited": "ARKit tracking limited; navigation stopped",
+    "nav_depth_lost": "No fresh LiDAR depth; navigation stopped",
+    "nav_sensor_reset": "Sensor session changed; navigation reset",
+}
 
 
 class Refused(Exception):
@@ -128,7 +137,8 @@ class GoalRequest(BaseModel):
 class NavService:
     CMD_TTL = 0.25     # a velocity command older than one control lease stops the rover
     BRIDGE_TTL = 1.5   # no bridge status for this long: Nav2 is unavailable, use the fallback
-    POSE_TTL = 0.5
+    POSE_TTL = 0.5     # Nav2 motion needs a normal-tracking ARKit pose at least this fresh ...
+    DEPTH_TTL = 1.0    # ... and measured depth of the same sensor session at least this fresh
 
     def __init__(self, mapping, *, speed_mps=0.45, turn_radps=3.0, max_v=0.7, max_w=0.8,
                  camera_height=0.15, backed_modes=("goto",), clock=time.monotonic):
@@ -151,11 +161,13 @@ class NavService:
         self.mode, self.target_id, self.active = None, None, False
         self.goal = None            # voxel-map (x, z)
         self.goal_id = 0
-        self.frame = None           # newest RGB-D frame offered by mapping or the simulator
+        self.frame = None           # newest normal-tracking RGB-D frame of the current sensor session
+        self.frame_at = None        # monotonic receipt of self.frame
         self.frame_seq = 0
-        self.dr = [0.0, 0.0, 0.0]   # dead-reckoned x, z, yaw when the phone gives no pose
-        self.dr_last = None
-        self.dr_v = self.dr_w = 0.0
+        # Sensor generation: bumps whenever MapState's (session_id, map_epoch) changes. Old
+        # goals, commands and depth never carry across, and the bridge resets its ROS state.
+        self.identity = mapping.identity if mapping is not None else None
+        self.generation = 0
         self.router = APIRouter()
         self.router.add_api_websocket_route("/ws/nav", self.websocket)
         self.router.add_api_route("/nav/goal", self.post_goal, methods=["POST"], status_code=202)
@@ -167,28 +179,53 @@ class NavService:
 
     # -- inputs from mapping and control --------------------------------------------
 
-    def offer_frame(self, frame):
-        """MapState frame observer: keep only the newest depth frame (no queue)."""
+    def sync_generation(self):
+        """Detect a new sensor session; returns the current generation."""
+        identity = self.mapping.identity if self.mapping is not None else None  # replaced, never mutated
         with self.lock:
-            self.frame = frame
+            if identity != self.identity:
+                self.identity = identity
+                self.generation += 1
+                self.goal = self.cmd = self.frame = self.frame_at = None
+                self.remote = dict(self.remote, state="idle", goal_id=None, path=[], frontiers=[])
+            return self.generation
+
+    def offer_frame(self, frame):
+        """MapState frame observer: keep only the newest depth frame (no queue).
+
+        Only normal-tracking frames of the current sensor session count; any other
+        frame withdraws depth authority until a good one arrives.
+        """
+        self.sync_generation()
+        header = frame.header
+        good = (header.get("tracking") == "normal" and getattr(self.mapping, "tracking", None) == "normal"
+                and (header.get("session_id"), header.get("map_epoch")) == self.identity)
+        with self.lock:
+            self.frame = frame if good else None
+            self.frame_at = header.get("_received_monotonic", time.monotonic()) if good else None
             self.frame_seq += 1
 
-    def on_output(self, v, w, blocked=False):
-        """ControlState.on_output: integrate the applied command for the dead-reckoning pose."""
+    def sensor_fault(self):
+        """None when measured navigation sensors are fresh, else a stop reason.
+
+        A fresh RGB camera is enough to teleoperate, not to navigate: Nav2 motion
+        also needs current-session normal ARKit tracking and LiDAR depth.
+        """
+        generation = self.sync_generation()
+        transform, tracking, source, _ = self.pose_snapshot()
+        if transform is None:
+            return "nav_tracking_limited" if source == "limited" else "nav_pose_lost"
         with self.lock:
-            now = self.clock()
-            if self.dr_last is not None:
-                dt = min(max(now - self.dr_last, 0), 0.25)
-                yaw = self.dr[2] - self.dr_w * self.turn_radps * dt
-                mid = (self.dr[2] + yaw) / 2
-                self.dr[0] -= math.sin(mid) * self.dr_v * self.speed_mps * dt
-                self.dr[1] -= math.cos(mid) * self.dr_v * self.speed_mps * dt
-                self.dr[2] = math.atan2(math.sin(yaw), math.cos(yaw))
-            self.dr_last, self.dr_v, self.dr_w = now, float(v), float(w)
+            if generation != self.generation:
+                return "nav_sensor_reset"
+            if self.frame is None or self.frame_at is None or time.monotonic() - self.frame_at >= self.DEPTH_TTL:
+                return "nav_depth_lost"
+        return None
 
     def sync(self, mode, target_id, active):
         """Called by ControlState on every output tick with the operator's current intent."""
         mode = mode if mode in NAV_MODES else None
+        self.sync_generation()
         with self.lock:
             if mode in ("explore", "seek") and self.goal is not None:
                 self.goal = None  # selecting another autonomy mode disarms go-to-point
@@ -237,6 +274,7 @@ class NavService:
 
     def nav_object(self, mode=None, phase=None, active=None):
         """The viewer contract (docs/interfaces.md); mode/phase come from ControlState."""
+        fault = self.sensor_fault() if self.available() else None
         with self.lock:
             mode = mode if mode in NAV_MODES else None
             active = self.active if active is None else active
@@ -257,6 +295,8 @@ class NavService:
                     state = self._remote_state()
                     message = str(self.remote.get("message") or "")[:200]
                     path = self._world_points(self.remote.get("path") or [], 200, 0.03)
+                if fault:  # Nav2 is up but cannot be trusted to drive: say why
+                    state, message, path = "unavailable", SENSOR_MESSAGES[fault], None
                 if self.goal is not None:
                     goal = dict(x=round(self.goal[0], 3), z=round(self.goal[1], 3))
                 frontiers = self._world_points(self.remote.get("frontiers") or [], 50, 0)
@@ -286,6 +326,7 @@ class NavService:
 
     def detail(self):
         pose_source = self.pose_snapshot()[2] if self.mapping is not None else None  # never under self.lock
+        fault = self.sensor_fault() if self.mapping is not None else "nav_pose_lost"
         with self.lock:
             return dict(available=self.available(), bridge=self.bridge is not None,
                         bridge_age_ms=None if self.bridge is None else round((self.clock() - self.bridge_seen) * 1000),
@@ -293,38 +334,34 @@ class NavService:
                         remote={key: self.remote.get(key) for key in ("state", "goal_id", "message", "controller_hz",
                                                                       "planner_ms", "recoveries", "result", "costmap",
                                                                       "nav2")},
-                        pose_source=pose_source,
+                        pose_source=pose_source, sensor_fault=fault, generation=self.generation,
+                        depth_age_ms=None if self.frame_at is None else round((time.monotonic() - self.frame_at) * 1000),
                         speed_mps=self.speed_mps, turn_radps=self.turn_radps, max_v=self.max_v, max_w=self.max_w)
 
     # -- pose and sensor streams for the bridge ---------------------------------------
 
     def pose_snapshot(self):
-        """(camera-to-world transform, tracking, source, age_s) or (None, ...) when the pose is lost."""
+        """(camera-to-world transform, tracking, source, age_s); transform is None unless the
+        current sensor session has a fresh pose with normal ARKit tracking (source then says why:
+        "limited" or "lost"). Nothing else is navigation authority: no dead reckoning."""
         mapping = self.mapping
         # Lock-free read: MapState replaces (never mutates) these, and fusion holds
         # mapping.lock for whole voxel integrations that pose streaming must not wait on.
         transform, tracking = mapping.pose.copy(), mapping.tracking
         received, connected = mapping.last_received, mapping.connected
         scan, demo, identity = mapping.scan, mapping.demo, mapping.identity
-        now = time.monotonic()
-        age = now - received if received else None
-        if connected and age is not None and age < self.POSE_TTL and not scan:
-            return transform, tracking, "simulated" if demo else "arkit", age
-        if identity is None:
-            with self.lock:
-                x, z, yaw = self.dr
-            c, s = math.cos(yaw), math.sin(yaw)
-            pose = np.eye(4)
-            pose[:3, :3] = [[c, 0, s], [0, 1, 0], [-s, 0, c]]
-            pose[:3, 3] = [x, 0, z]
-            return pose, "normal", "dead_reckoning", 0.0
-        return None, tracking, "lost", age
+        age = time.monotonic() - received if received else None
+        if not connected or age is None or age >= self.POSE_TTL or scan or identity is None:
+            return None, tracking, "lost", age
+        if tracking != "normal":
+            return None, tracking, "limited", age
+        return transform, tracking, "simulated" if demo else "arkit", age
 
     def hello(self):
         """Server hello: drive scaling and, with a drive profile, the chassis calibration."""
         message = dict(type="hello", version=PROTOCOL, speed_mps=self.speed_mps, turn_radps=self.turn_radps,
                        max_v=self.max_v, max_w=self.max_w, camera_height=self.camera_height, frame="arkit",
-                       camera_yaw_offset_rad=0.0, drive_profile=None)
+                       camera_yaw_offset_rad=0.0, drive_profile=None, generation=self.generation)
         profile = getattr(self.control, "profile", None)
         if profile is not None:
             max_pwm = self.control.max_pwm
@@ -340,7 +377,7 @@ class NavService:
             if self.mode == "goto" and self.goal is not None:
                 X, Y = world_to_odom(*self.goal)
                 goal = dict(x=X, y=Y, yaw=None)
-            return dict(type="intent", active=self.active and self.mode in self.backed_modes,
+            return dict(type="intent", generation=self.generation, active=self.active and self.mode in self.backed_modes,
                         mode=self.mode if self.mode in self.backed_modes else None,
                         goal=goal, goal_id=self.goal_id, target_id=self.target_id)
 
@@ -396,26 +433,33 @@ class NavService:
 
             async def send():
                 last_pose = last_range = last_intent_at = 0.0
-                sent_frame, sent_intent = -1, None
+                sent_frame, sent_intent, sent_generation = -1, None, self.generation
                 while True:
                     now = time.monotonic()
+                    generation = self.sync_generation()
+                    if generation != sent_generation:
+                        # New sensor session: the bridge cancels its goal, clears costmaps and
+                        # odometry history, and drops samples tagged with an older generation.
+                        await ws.send_json(dict(type="reset", generation=generation, reason="sensor session changed"))
+                        sent_generation = generation
                     if now - last_pose >= 0.04:
                         transform, tracking, source, age = await asyncio.to_thread(self.pose_snapshot)
-                        if transform is not None:
+                        if transform is not None:  # limited/lost tracking never renews TF or odometry
                             await ws.send_json(dict(type="pose", transform=transform.flatten(order="F").tolist(),
-                                                    tracking=tracking, source=source,
+                                                    tracking=tracking, source=source, generation=generation,
                                                     age_ms=round((age or 0) * 1000, 1),
                                                     floor_y=-self.camera_height))
                         last_pose = now
-                    with self.lock:
-                        frame, seq = self.frame, self.frame_seq
+                    with self.lock:  # a generation change clears self.frame under this lock
+                        frame, seq, frame_generation = self.frame, self.frame_seq, self.generation
                     if frame is not None and seq != sent_frame:
                         received = frame.header.get("_received_monotonic", now)
                         source = "simulated" if self.mapping.demo else "arkit"
                         packet = await asyncio.to_thread(encode_depth, frame, floor_y=-self.camera_height, source=source,
-                                                         age_ms=round(max(0, now - received) * 1000, 1))
+                                                         age_ms=round(max(0, now - received) * 1000, 1),
+                                                         generation=frame_generation)
                         await ws.send_bytes(packet)
-                        sent_frame = seq
+                    sent_frame = seq
                     if self.control is not None and now - last_range >= 0.1:
                         cm, at = self.control.range_cm, self.control.range_at  # no control.lock on the event loop
                         await ws.send_json(dict(type="range", cm=cm,
@@ -469,6 +513,9 @@ class NavService:
             raise Refused(self.nav_object(), "No rover control on this server")
         if not self.available():
             raise Refused(self.status_object(), "Navigation backend unavailable (Nav2 bridge not running)")
+        fault = self.sensor_fault()
+        if fault:
+            raise Refused(self.status_object(), SENSOR_MESSAGES[fault])
         with state.lock:
             now = state.clock()
             state.output()  # apply expiry before judging the lease

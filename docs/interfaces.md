@@ -253,8 +253,17 @@ every `/ws/control` status. Coordinates are voxel-map world metres: map `x, z`
 
 - `state`: `idle` (no goal, deadman not held, or Nav2 ready but idle), `planning`,
   `driving`, `recovering` (back-up/spin/wait/costmap clearing), `arrived` (latched
-  stopped), `failed` (Nav2 aborted, e.g. no path) or `unavailable` (no bridge, or a
-  silent bridge whose commands are ignored, so the rover stops).
+  stopped), `failed` (Nav2 aborted, e.g. no path) or `unavailable` (no bridge, a
+  silent bridge whose commands are ignored, or missing navigation sensors; the
+  rover stops).
+- Navigation sensors: Nav2 only drives with a normal-tracking ARKit pose at most
+  0.5 s old and LiDAR depth at most 1 s old, both from the current phone session
+  and map epoch. A fresh RGB camera alone never qualifies. Losing either while
+  driving stops the rover even with a live lease and fresh Nav2 command, with
+  control `reason` `nav_pose_lost`, `nav_tracking_limited`, `nav_depth_lost` or
+  `nav_sensor_reset` and `requires_release`; it resumes only after the sensors
+  recover and the operator presses again. A new phone session or map epoch also
+  disarms the goal (Nav2's goal and costmaps are reset).
 - `mode`: `explore`, `seek`, `goto` or `null`. `backend`: `nav2` when Nav2 drives the
   current mode, `fallback` when the reactive policy does (Explore/Seek without a
   bridge), `null` when nothing can. `message`: short human-readable detail.
@@ -262,8 +271,9 @@ every `/ws/control` status. Coordinates are voxel-map world metres: map `x, z`
   reduced to 3 cm); empty when not navigating. `frontiers`: at most 50 `[x, z]`.
 - `POST /nav/goal` with exactly `{"x": 2.0, "z": -1.5}` (metres, millimetre
   precision) returns `202` with the nav object, or `409` `{"nav": <nav object>,
-  "message": reason}` when the backend is unavailable, no live operator permit is
-  held (deadman not held, release required, camera stale) or a scan is running;
+  "message": reason}` when the backend is unavailable, navigation sensors are
+  missing, no live operator permit is held (deadman not held, release required,
+  camera stale) or a scan is running;
   `422` for non-finite values. `POST /nav/cancel` (no body) cancels and returns the
   nav object. `GET /nav/status` adds a diagnostic `detail` object.
 - `mode: "goto"` heartbeats are accepted like `explore`/`seek`: same session,

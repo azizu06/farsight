@@ -107,3 +107,26 @@ def test_depth_packet_decoding():
     decoded, depth = protocol.decode_depth(packet)
     assert decoded["width"] == 3
     np.testing.assert_allclose(depth, [[0, 1.0, 2.5], [0, 0, 65.535]])
+
+
+def test_velocity_estimator_rejects_stamp_jitter_and_wraps_yaw():
+    rng = np.random.default_rng(3)
+    estimator = frames.VelocityEstimator()
+    rates = []
+    for i in range(90):  # 3 s at 30 Hz: 0.2 m/s forward while spinning at -1.5 rad/s through +-pi
+        t_true = i / 30
+        yaw = math.atan2(math.sin(1.0 - 1.5 * t_true), math.cos(1.0 - 1.5 * t_true))
+        x, y = 0.2 * t_true * math.cos(yaw), 0.2 * t_true * math.sin(yaw)  # position path barely matters here
+        v, w = estimator.add(t_true + rng.uniform(-0.008, 0.008), x, y, yaw)
+        if i > 10:
+            rates.append(w)
+    assert max(abs(w + 1.5) for w in rates) < 0.25  # raw differencing reaches ~1.6x on this jitter
+    assert estimator.add(10.0, 0, 0, 0) == (0.0, 0.0)  # a pose gap restarts the estimate
+
+
+def test_samples_need_normal_tracking_and_the_current_generation():
+    assert protocol.accept_sample(dict(tracking="normal", generation=2), 2)
+    assert not protocol.accept_sample(dict(tracking="limited", generation=2), 2)
+    assert not protocol.accept_sample(dict(tracking="not_available"), 2)
+    assert not protocol.accept_sample(dict(tracking="normal", generation=1), 2)
+    assert protocol.accept_sample(dict(tracking="normal"), 2)  # pre-generation server

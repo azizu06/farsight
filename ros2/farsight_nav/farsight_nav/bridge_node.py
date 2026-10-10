@@ -28,6 +28,7 @@ from rclpy.time import Time
 from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PoseStamped, TransformStamped, Twist
 from nav2_msgs.action import NavigateToPose
+from nav2_msgs.srv import ClearEntireCostmap
 from nav_msgs.msg import Odometry, Path
 from sensor_msgs.msg import CameraInfo, Image, PointCloud2, PointField, Range
 from std_msgs.msg import String
@@ -122,6 +123,9 @@ class FarsightBridge(Node):
         self.navigate = ActionClient(self, NavigateToPose, "navigate_to_pose")
         # The action server exists before Nav2 is activated; the lifecycle manager knows.
         self.lifecycle = self.create_client(Trigger, "lifecycle_manager_navigation/is_active")
+        self.clear_costmaps = [self.create_client(ClearEntireCostmap, name) for name in
+                               ("local_costmap/clear_entirely_local_costmap",
+                                "global_costmap/clear_entirely_global_costmap")]
         self.nav2_active = False
         self.lifecycle_pending = False
         self.create_timer(1.0, self.check_lifecycle)
@@ -138,9 +142,9 @@ class FarsightBridge(Node):
         self.ws = None
         self.config = {}
         self.yaw_offset = 0.0  # drive profile camera_yaw_offset_rad, from the server hello
+        self.generation = None  # server sensor generation (hello/reset); older samples are dropped
         self.last_tf_stamp = None
-        self.last_base = None       # (time, x, y, yaw) for odometry twist
-        self.twist = (0.0, 0.0)
+        self.velocity = frames.VelocityEstimator()  # odometry twist over a 150 ms window
         self.robot = None           # (x, y, yaw) in odom
         self.path = []              # odom points of the newest plan
         self.goal_handle = None
@@ -176,14 +180,30 @@ class FarsightBridge(Node):
         kind = message.get("type")
         if kind == "hello":
             self.config = message
+            self.generation = message.get("generation")
             offset = message.get("camera_yaw_offset_rad")
             self.yaw_offset = float(offset) if isinstance(offset, (int, float)) and math.isfinite(offset) else 0.0
+        elif kind == "reset":
+            self.on_reset(message)
         elif kind == "pose":
-            self.on_pose(message)
+            if protocol.accept_sample(message, self.generation):
+                self.on_pose(message)
         elif kind == "range":
             self.on_range(message)
         elif kind == "intent":
             self.on_intent(message)
+
+    def on_reset(self, message):
+        """New sensor session: nothing from the old one may steer the rover or mark a costmap."""
+        with self.lock:
+            self.generation = message.get("generation")
+            self.velocity = frames.VelocityEstimator()
+            self.robot = None
+        self.cancel_goal(str(message.get("reason") or "sensor session changed"))
+        for client in self.clear_costmaps:
+            if client.service_is_ready():
+                client.call_async(ClearEntireCostmap.Request())
+        self.get_logger().warning(f"Sensor reset to generation {self.generation}: goal cancelled, costmaps cleared")
 
     def on_pose(self, message, stamp=None):
         transform = frames.transform_from_column_major(message["transform"])
@@ -203,19 +223,8 @@ class FarsightBridge(Node):
         ])
         now = stamp_ns / 1e9
         with self.lock:
-            if self.last_base is not None and now - self.last_base[0] >= 0.02:
-                dt = now - self.last_base[0]
-                dx, dy = base_pos[0] - self.last_base[1], base_pos[1] - self.last_base[2]
-                dyaw = math.atan2(math.sin(yaw - self.last_base[3]), math.cos(yaw - self.last_base[3]))
-                forward = (dx * math.cos(yaw) + dy * math.sin(yaw)) / dt
-                alpha = 0.4
-                self.twist = (alpha * forward + (1 - alpha) * self.twist[0],
-                              alpha * dyaw / dt + (1 - alpha) * self.twist[1])
-                self.last_base = (now, base_pos[0], base_pos[1], yaw)
-            elif self.last_base is None or now - self.last_base[0] > 1.0:
-                self.last_base = (now, base_pos[0], base_pos[1], yaw)
+            twist = self.velocity.add(now, float(base_pos[0]), float(base_pos[1]), yaw)
             self.robot = (base_pos[0], base_pos[1], yaw)
-            twist = self.twist
         odom = Odometry()
         odom.header.stamp, odom.header.frame_id, odom.child_frame_id = stamp, self.odom_frame, self.base_frame
         odom.pose.pose.position.x, odom.pose.pose.position.y = float(base_pos[0]), float(base_pos[1])
@@ -226,6 +235,8 @@ class FarsightBridge(Node):
 
     def handle_depth(self, packet):
         header, depth = protocol.decode_depth(packet)
+        if not protocol.accept_sample(header, self.generation):
+            return  # limited tracking or an older sensor session
         stamp = stamp_from(self, header.get("age_ms"))
         # The frame carries its own pose: publish TF at the cloud's stamp so the costmap's
         # raytrace origin is the camera that actually captured these points.
