@@ -71,7 +71,10 @@ certificate errors or require venue Wi-Fi.
 ## Bounded live transport
 
 RGB targets 15 fps at maximum 640 pixels wide; measured RGB-D targets 6 fps to
-keep local inference traffic manageable. JPEG quality is 0.5. One frame send
+keep local inference traffic manageable. Start cellular driving in RGB-only
+mode, including on a Pro. Qualify the lower-rate RGB-D path separately before
+driving with it: older frames leave less margin inside the 500 ms video guard.
+Stop capture before changing modes. JPEG quality is 0.5. One frame send
 can be in flight. New frames are skipped during that send; they are never kept
 for replay. A send that remains incomplete for 500 ms closes the socket. Any
 disconnect, camera interruption, or backgrounding stops capture; press Start

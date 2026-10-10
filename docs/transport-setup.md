@@ -1,4 +1,4 @@
-# Operator transport: ready for the 6 AM hardware check
+# Operator transport and hardware rehearsal
 
 The operator relay serves the built Quest app from the MacBook on
 `127.0.0.1:8080`. All rover HTTP and WebSocket routes travel through that origin.
@@ -67,7 +67,7 @@ Only one control socket can own the rover. Close the Quest/browser page before
 running the qualifier, then reopen it afterward. A second controller is rejected
 rather than taking control away from the current operator.
 
-## First hardware connection at 6 AM
+## First hardware connection
 
 1. Keep the rover wheels raised. Connect the Uno to the Jetson by USB and the
    camera locally. Start the documented rover service with real serial selected;

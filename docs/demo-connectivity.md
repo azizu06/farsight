@@ -111,21 +111,21 @@ Use the existing `/stream.mjpg` route initially at reduced resolution and frame
 rate, and measure its bitrate. The older 640x480 at 30 fps MJPEG target is not
 our cellular bandwidth budget.
 
-Implement H.264 video in fragmented MP4 over a separate binary WebSocket,
-provisionally `/ws/video`, relayed by the MacBook. Quest feeds it to MediaSource
-and displays a video texture. Send initialization data and codec information,
-and resume from a decodable keyframe after recovery. Check
+The current implementation sends H.264 fragmented MP4 over `/ws/video`, relayed
+by the MacBook. Quest feeds it to MediaSource and displays a video texture.
+Initialization and codec metadata precede fragments; recovery starts a new
+decodable stream. Check
 `MediaSource.isTypeSupported()` against the encoder's actual codec string and
 measure playback latency on Quest before adopting this format.
 [MediaSource documentation](https://developer.mozilla.org/en-US/docs/Web/API/MediaSource)
 describes the playback mechanism; headset compatibility remains a test gate.
 
-These are initial tuning targets, not measured hardware capabilities:
+These are the current software defaults, subject to real-rig qualification:
 
 | Setting | Target |
 |---|---|
-| Resolution and frame rate | 640x480 at 15 fps |
-| H.264 bitrate | About 1 Mbps |
+| Resolution and frame rate | 640x480 at 10 fps |
+| H.264 bitrate | 500 kbps; 200 ms encoder VBV |
 | Keyframe interval | At most 1 second |
 | Encoder settings | Low latency, no B-frames |
 | Sustained rover upload | At least twice the measured total outbound bitrate |
