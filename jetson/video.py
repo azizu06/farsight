@@ -138,7 +138,10 @@ class VideoService:
                 "-i", "pipe:0", "-an", "-c:v", "libx264", "-preset", "ultrafast",
                 "-tune", "zerolatency", "-profile:v", "baseline", "-level", "3.0",
                 "-pix_fmt", "yuv420p", "-b:v", str(self.bitrate), "-maxrate", str(self.bitrate),
-                "-bufsize", str(self.bitrate), "-g", str(self.fps), "-keyint_min", str(self.fps),
+                # A full second of VBV allowed 30 KiB keyframe bursts at a
+                # 500 kbps average. Keep 200 ms of rate-control buffer so the
+                # slow link need not transmit a large stale keyframe at once.
+                "-bufsize", str(max(64000, self.bitrate // 5)), "-g", str(self.fps), "-keyint_min", str(self.fps),
                 "-sc_threshold", "0", "-movflags", "frag_keyframe+empty_moov+default_base_moof",
                 "-video_track_timescale", "1000000",
                 "-frag_duration", "100000", "-f", "mp4", "pipe:1"]

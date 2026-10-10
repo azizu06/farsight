@@ -44,13 +44,17 @@ class ControlService:
 
         async def send_status():
             while True:
+                started = asyncio.get_running_loop().time()
                 # A congested downstream status path makes continued control
                 # unsafe; closing causes a stop instead of queued status tokens.
                 status = self.state.status(issue_permit=True)
                 await asyncio.wait_for(ws.send_json(status), 0.1)
                 if self.on_status:
                     await asyncio.to_thread(self.on_status, status)
-                await asyncio.sleep(0.1)
+                # Match the 20 Hz command cadence. Old 10 Hz permits could
+                # leave just one command period before their 250 ms expiry.
+                # Account for send/record time without queuing catch-up ticks.
+                await asyncio.sleep(max(0, 0.05 - (asyncio.get_running_loop().time() - started)))
 
         async def receive_commands():
             while True:

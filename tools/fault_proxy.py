@@ -14,6 +14,7 @@ from contextlib import suppress
 import json
 import math
 import signal
+import socket
 import time
 
 CHUNK = 16384
@@ -146,6 +147,11 @@ class FaultProxy:
                 asyncio.open_connection(self.upstream_host, self.upstream_port, limit=CHUNK * 2), 3)
             self.writers.add(upstream)
             for connection in (writer, upstream):
+                # asyncio skips its automatic TCP_NODELAY setup on accepted
+                # sockets whose proto is 0 (observed on macOS). Disable Nagle
+                # explicitly so delayed ACKs do not add unrequested 200ms
+                # batching to this latency injector.
+                connection.get_extra_info("socket").setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 connection.transport.set_write_buffer_limits(high=CHUNK * 2, low=CHUNK // 2)
             pipes = [asyncio.create_task(self.pipe(reader, upstream)),
                      asyncio.create_task(self.pipe(remote_reader, writer))]

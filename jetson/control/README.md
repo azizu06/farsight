@@ -22,7 +22,7 @@ all previous permits and requires a new deadman release. A silent/disconnected
 Uno removes connection readiness. No command is stored for reconnection.
 
 One controller owns `/ws/control`; a second is closed with code 1008. The server
-sends a `control_status` object every 100 ms including an opaque `session_id`,
+sends a `control_status` object every 50 ms including an opaque `session_id`,
 `permit`, `permit_ms: 250`, `seq`, `range_cm`, `estop`, `rover`, `simulated`,
 `requires_release`, `reason`, motor PWM, and `max_pwm`. Public status is also at
 `GET /control/status`, without its session ID or a usable permit.
