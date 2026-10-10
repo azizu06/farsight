@@ -5,7 +5,10 @@ map. All requests use the page origin, so the headset stays on the MacBook's USB
 relay instead of trying to reach the Jetson directly.
 
 Build with `npm ci && npm run build` from `quest/`. Run `npm test` for protocol,
-crop geometry, and control safety checks. Use the [operator launcher](../tools/demo.py)
+crop geometry, and control safety checks. `npm run test:browser` runs the
+production `RoverExperience` in headless Chromium (SwiftShader, simulated XR
+poses, generated camera pixels, no backend) for resize and tracking-loss cases;
+run `npx playwright install chromium-headless-shell` once first. Use the [operator launcher](../tools/demo.py)
 for the integrated app; Vite development mode uses port 8443 as its upstream.
 Do not confuse an old server already on that port with a freshly launched demo.
 
@@ -15,8 +18,17 @@ Do not confuse an old server already on that port with a freshly launched demo.
   the right controller is present, its thumbstick works instead. Release the
   trigger to stop. Forward speed is capped at 45% of the server's PWM ceiling;
   calibrate that ceiling on the actual car so motor stiction does not prevent motion.
-- Turn your head to pan. Right A toggles live camera / map; B centers the pan.
-  A view change stops driving and requires a release before another press.
+- Turn your head to pan. Right A selects the person under the controller ray for
+  Seek, or otherwise toggles live camera / map. Right B toggles Explore. Left X
+  centers the pan, left Y (with the trigger held) starts a scan, and left grip
+  starts the rescue drill. A view change stops driving and requires a release.
+- Both controllers must be connected with fresh grip poses each frame, and the
+  newest XR sample must be under 150 ms old (`performance.now()` observation
+  time, never the predicted display time). Losing tracking, a missing XR frame,
+  a hidden or blurred session, or removing/replacing a controller stops driving.
+  The trigger and every button then need an observed release before acting
+  again, so a button held through tracking loss never fires on recovery. The
+  camera and stop reason stay visible when only controller tracking is lost.
 - Desktop: select Live rover, hold Space, then use WASD. The on-screen hold button
   can replace Space. STOP, Escape, opening settings, losing focus, or a connection
   failure stop driving.
@@ -78,7 +90,9 @@ These are required physical checks; desktop tests do not prove them.
    tests. Restore each connection while continuing to hold it. Motion must remain
    stopped until releasing and pressing again.
 5. Open the Quest system menu while holding the trigger. Return with it still held;
-   the rover must remain stopped. Test controller loss and reacquisition too.
+   the rover must remain stopped. Cover one controller behind your back, switch a
+   controller off and on, and hold Y through the loss: the rover stays stopped,
+   the camera stays visible, and nothing acts until each control is released.
 6. Test camera/map switching and both mounting modes. In fixed-camera mode, the
    physical pan must remain centered and detections must follow the cropped image.
 7. Test H.264 on the actual headset under the actual cellular path. Observe video

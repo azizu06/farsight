@@ -323,6 +323,7 @@ export class RoverExperience {
       if ((right ?? null) !== this.rightSource || (movement ?? null) !== this.movementSource) {
         this.stop("Controller changed: release trigger");
         this.rightSource = right ?? null; this.movementSource = movement ?? null;
+        this.latchButtons();
       }
       const reference = this.renderer.xr.getReferenceSpace();
       let pose: XRViewerPose | null = null;
@@ -346,6 +347,7 @@ export class RoverExperience {
           this.stop("XR tracking unavailable: release trigger");
         else this.gate.invalidate("XR tracking unavailable: release trigger");
         this.lastXRAt = -Infinity;
+        this.latchButtons();
         // Keep the camera and stop reason visible when only a controller is lost.
         this.cockpit.visible = !!pose;
         this.cameraScreen.visible = this.xrLive;
@@ -580,6 +582,10 @@ export class RoverExperience {
       context.fillText(`${target ? "SEEK " : ""}${box.cls.slice(0, 30)}${id} ${Math.round(box.conf * 100)}%`, x + 4, Math.max(18, y - 5));
     }
   }
+  /** Held buttons from a lost or replaced controller act only after an observed release. */
+  private latchButtons() {
+    this.toggleDown = this.exploreDown = this.recenterDown = this.scanDown = this.drillDown = true;
+  }
   private createCameraTexture() {
     const texture = new THREE.CanvasTexture(this.canvas);
     texture.colorSpace = THREE.SRGBColorSpace;
@@ -625,8 +631,10 @@ export class RoverExperience {
     c.fillText(`${this.h264Enabled ? "H.264" : "JPEG"} video ${age} · ${range} · ${panMode}`, 28, 90);
     c.fillText(`${ack} · ${detection}${this.status?.estop ? " · FORWARD BLOCKED" : ""}`, 28, 126);
     if (drill || autonomy) { c.font = "18px system-ui"; c.fillText([autonomy, drill].filter(Boolean).join(" · "), 28, 150); }
+    const hint = "Trigger: deadman · Stick: drive · A: seek/map · B: explore · X: center · Y: scan · L grip: drill";
     c.font = "22px system-ui";
-    c.fillText("Trigger: deadman · Stick: drive · A: seek/map · B: explore · X: center · Y: scan", 28, 170);
+    if (c.measureText(hint).width > this.hudCanvas.width - 56) c.font = "18px system-ui";
+    c.fillText(hint, 28, 170);
     c.fillText(this.scanMessage.slice(0, 84), 28, 202);
     this.hudTexture.needsUpdate = true;
     const drawn = this.drillHud.draw(now);

@@ -127,3 +127,9 @@ test("inactive headset or unobserved input cannot invent a deadman release", () 
     assert.equal(gate.decide(true, 150, true, true), true);
   }
 });
+
+test("XR input age uses monotonic observation time, not the predicted XR display time", async () => {
+  const { readFileSync } = await import("node:fs");
+  const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+  assert.match(main, /setAnimationLoop\(\(_time, frame\) => \{\s*rover\?\.update\(performance\.now\(\), frame\)/);
+});

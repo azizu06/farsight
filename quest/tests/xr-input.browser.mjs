@@ -238,6 +238,38 @@ try {
       displayVisible: subject.cockpit.visible,
       v: subject.input.v,
     };
+    viewerOn = true;
+    session.inputSources = [right, left];
+    const rearmedVisible = arm(220);
+    session.visibilityState = "visible-blurred";
+    subject.update(230, frame);
+    const blurred = {
+      rearmedVisible,
+      valid: subject.inputValid,
+      moving: subject.gate.decide(true, 230, true, subject.inputValid, subject.lastXRAt),
+    };
+    session.visibilityState = "visible";
+    subject.update(240, frame);
+    const refocused = {
+      held: subject.input.held,
+      moving: subject.gate.decide(true, 240, true, subject.inputValid, subject.lastXRAt),
+      needsRelease: subject.gate.needsRelease,
+    };
+    // Left Y (buttons[5]) held across tracking loss must not fire scan on recovery.
+    let scans = 0;
+    subject.startScan = async () => { scans++; };
+    left.gamepad.buttons = [0, 1, 2, 3, 4, 5].map(() => ({ pressed: false }));
+    left.gamepad.buttons[5].pressed = true;
+    loseLeft = true;
+    subject.update(250, frame);
+    loseLeft = false;
+    subject.update(260, frame);
+    const scanWhileStillHeld = scans;
+    left.gamepad.buttons[5].pressed = false;
+    subject.update(270, frame);
+    left.gamepad.buttons[5].pressed = true;
+    subject.update(280, frame);
+    const scanLatch = { scanWhileStillHeld, scanAfterRelease: scans };
     xr.isPresenting = false;
     subject.dispose();
     renderer.dispose();
@@ -252,6 +284,9 @@ try {
       removedLeft,
       replacedRight,
       missingViewer,
+      blurred,
+      refocused,
+      scanLatch,
     };
   });
   assert.ok(result.first.pixel[0] > 200);
@@ -291,6 +326,9 @@ try {
     displayVisible: false,
     v: 0,
   });
+  assert.deepEqual(result.blurred, { rearmedVisible: true, valid: false, moving: false });
+  assert.deepEqual(result.refocused, { held: true, moving: false, needsRelease: true });
+  assert.deepEqual(result.scanLatch, { scanWhileStillHeld: 0, scanAfterRelease: 1 });
   const report = {
     passed: true,
     environment:
