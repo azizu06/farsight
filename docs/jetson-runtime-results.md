@@ -33,9 +33,10 @@ OS and USB recovery evidence is in `jetson-recovery-results.md`.
   “foresight is ready for the rover test.” from the generated speech.
   This is a local synthesis/transcription check, not microphone qualification.
 - CUDA 13.2 runtime initialized device 0; TensorRT 10.16.2.10 imported.
-  NVCC 13.2 and cuBLAS development libraries are installed for native GPU
-  voice builds. Pose and COCO target-built engines passed actual CUDA execution;
-  native GPU voice builds remain separate checks.
+  NVCC 13.2 and cuBLAS development libraries are installed. Pose and COCO
+  target-built engines passed actual CUDA execution. The demo is vision only:
+  native voice builds were stopped and optional LLM/Whisper services disabled.
+  Installed voice artifacts are unused and are not demo readiness requirements.
 - Tailscale 1.104.1 and `iproxy` are installed. Tailscale used the official
   [Ubuntu Noble signed package source](https://pkgs.tailscale.com/stable/#ubuntu-noble).
   Tailnet authentication and phone cellular transport remain pending.
@@ -103,6 +104,18 @@ separate checks.
 
 ## Installation transport and remaining qualification
 
+### Desktop baseline, camera waiting
+
+An 11-sample, one-second `tegrastats` capture with Firefox's live viewer open,
+camera `WAITING`, no motors configured, and no native model builds running is
+saved in [the raw log](qualification/jetson-desktop-waiting-tegrastats.txt).
+The board was in its existing 25 W power mode. RAM was 2,922–2,926 MiB of
+7,486 MiB; CPU cores reported 11–33% utilization, GPU utilization 18–37%,
+GPU temperature 44.9–45.2 °C and board input power 4.84–4.96 W.
+These include the desktop/browser and background services; they are not
+inference utilization, isolated GPU memory, or full-rig power measurements.
+Repeat with actual phone capture and navigation before choosing their budgets.
+
 An SSH remote SOCKS proxy bound only to Jetson loopback port 18083 routes
 installation downloads through the Mac's internet connection. APT calls
 explicitly select that proxy; the application does not depend on it.
@@ -110,8 +123,11 @@ Ubuntu's empty sources file was restored from its installer backup and the
 stale installation-media source disabled. No distribution upgrade or
 autoremove was run.
 
-Native CUDA vision/Whisper builds and metric-depth engine execution are still
-being qualified. Phone signing/trust/capture, cellular routing, Quest USB/browser,
+Metric-depth TensorRT execution remains unqualified; measured iPhone LiDAR does
+not depend on that optional model. The iPhone capture app has been signed,
+installed, trusted and launched. Actual phone capture and USB routing remain
+unqualified: the Jetson desktop viewer is open, but health reports no frames
+and no phone USB network address. Cellular routing, Quest USB/browser,
 actual motor direction/PWM, watchdog disconnects and power under load must
 still be verified on the complete rig. Compatible SciPy and cffi wheels were
 installed in the venv to resolve inherited system-package constraints;
