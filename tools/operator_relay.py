@@ -19,6 +19,9 @@ DIST = Path(__file__).resolve().parents[1] / "quest" / "dist"
 HOP_HEADERS = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
                "te", "trailer", "transfer-encoding", "upgrade", "host", "content-length"}
 PROXY_PREFIXES = ("/ws/", "/map/", "/tts/", "/video/", "/mission/", "/phone/")
+# Binary map downloads keep the client's Accept-Encoding so br/gzip crosses the cellular leg.
+# Everything else asks upstream for identity because the relay decodes and rewrites JSON.
+ENCODED_PATHS = {"/map/points.bin", "/map/mesh.bin", "/map/export.ply"}
 PROXY_PATHS = {"/health", "/control/status", "/camera.jpg", "/depth.jpg", "/stream.mjpg", "/ask", "/phone", "/scan"}
 
 
@@ -181,7 +184,8 @@ def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5):
         try:
             headers = forward_headers(request.headers)
             headers = {key: value for key, value in headers.items() if key.lower() != "accept-encoding"}
-            headers["Accept-Encoding"] = "identity"
+            headers["Accept-Encoding"] = ((request.headers.get("Accept-Encoding") or "identity")
+                                          if request.path in ENCODED_PATHS else "identity")
             async with app["http"].request(request.method, target,
                     headers=headers, data=request.content.iter_chunked(65536),
                     allow_redirects=False) as remote:
