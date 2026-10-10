@@ -158,6 +158,14 @@ pub fn build_state(
         *control.on_output.lock().unwrap() =
             Some(Box::new(move |v, w, blocked| m2.drill_motion(v, w, blocked)));
     }
+    // #79/#81: /mission/drill carries the face-detector status, and the face
+    // pass only costs CPU while a drill is running.
+    {
+        let p = perception.clone();
+        mission.set_face_status(Box::new(move || p.face_status()));
+        let m3 = mission.clone();
+        perception.set_face_wanted(Box::new(move || m3.drill_score.running()));
+    }
     let control_on_status: Option<Arc<dyn Fn(&Value) + Send + Sync>> = if record {
         let m3 = mission.clone();
         Some(Arc::new(move |packet| m3.record("control", packet, None)))
@@ -241,6 +249,24 @@ pub fn start_services(state: &Arc<AppState>) {
     state.video.clone().start();
     state.perception.clone().start();
     state.triage.clone().start();
+    {
+        // sample_mission: read-only control telemetry at <=10 Hz; never
+        // issues permits or commands. Replays sample the ReplayControl
+        // read-only packet, same as Python.
+        let mission = state.mission.clone();
+        let control = state.control.clone();
+        let replay_control = state.replay_control.clone();
+        let camera = state.camera.clone();
+        std::thread::spawn(move || loop {
+            let status = replay_control
+                .as_ref()
+                .map(|rc| rc.status())
+                .unwrap_or_else(|| control.status(false));
+            let cam = camera.status()["camera"].as_bool();
+            mission.observe_control(&status, cam);
+            std::thread::sleep(Duration::from_millis(100));
+        });
+    }
     if let Some(session) = &state.replay {
         let session = session.clone();
         std::thread::spawn(move || loop {

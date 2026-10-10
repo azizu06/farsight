@@ -35,6 +35,11 @@ pub struct PerceptionService {
     onnx: Mutex<Option<crate::detector::OnnxDetector>>,
     #[cfg(feature = "detector")]
     face: Mutex<Option<crate::detector::FaceDetector>>,
+    /// The server points this at the rescue drill so the face pass only costs
+    /// CPU while a drill runs (perception.face_wanted, #81).
+    face_wanted: Mutex<Box<dyn Fn() -> bool + Send + Sync>>,
+    #[allow(dead_code)] // Only read under the detector feature.
+    face_error: Mutex<Option<String>>,
     inner: Mutex<Inner>,
     stop: AtomicBool,
 }
@@ -60,12 +65,21 @@ impl PerceptionService {
         } else {
             None
         };
+        // A bad face model disables only the face pass; primary detection
+        // still starts and the error is reported (face_error, #79).
+        #[cfg(feature = "detector")]
+        let mut face_error = None;
         #[cfg(feature = "detector")]
         let face = face_model_path.and_then(|p| {
             crate::detector::FaceDetector::new(p)
-                .map_err(|e| tracing::warn!("Face detector unavailable: {e}"))
+                .map_err(|e| {
+                    tracing::warn!("Face detector unavailable: {e}");
+                    face_error = Some(format!("Face model unavailable: {e}"));
+                })
                 .ok()
         });
+        #[cfg(not(feature = "detector"))]
+        let face_error: Option<String> = None;
         Self {
             camera,
             mode: mode.to_string(),
@@ -75,6 +89,8 @@ impl PerceptionService {
             onnx: Mutex::new(onnx),
             #[cfg(feature = "detector")]
             face: Mutex::new(face),
+            face_wanted: Mutex::new(Box::new(|| true)),
+            face_error: Mutex::new(face_error),
             inner: Mutex::new(Inner {
                 packet: json!({"ts": 0, "frame": -1, "fps": 0, "boxes": [], "detector": "disabled", "source": "WAITING"}),
                 tracker: crate::tracker::Tracker::new(),
@@ -96,9 +112,11 @@ impl PerceptionService {
             } else {
                 Vec::new()
             };
-            if let Some(face) = self.face.lock().unwrap().as_mut() {
-                if let Ok(faces) = face.detect(jpeg) {
-                    boxes.extend(faces);
+            if (self.face_wanted.lock().unwrap())() {
+                if let Some(face) = self.face.lock().unwrap().as_mut() {
+                    if let Ok(faces) = face.detect(jpeg) {
+                        boxes.extend(faces);
+                    }
                 }
             }
             return Ok(boxes);
@@ -112,6 +130,26 @@ impl PerceptionService {
 
     fn track(&self, boxes: &mut Vec<Value>, now: f64) {
         self.inner.lock().unwrap().tracker.update(boxes, now);
+    }
+
+    /// Server hook: face pass only while the rescue drill is active.
+    pub fn set_face_wanted(&self, callback: Box<dyn Fn() -> bool + Send + Sync>) {
+        *self.face_wanted.lock().unwrap() = callback;
+    }
+
+    /// Whether the cls==face pass the rescue drill scores on is loaded.
+    pub fn face_status(&self) -> Value {
+        #[cfg(feature = "detector")]
+        {
+            return json!({
+                "face_detector": self.face.lock().unwrap().is_some(),
+                "face_error": self.face_error.lock().unwrap().clone(),
+            });
+        }
+        #[cfg(not(feature = "detector"))]
+        {
+            json!({"face_detector": false, "face_error": Value::Null})
+        }
     }
 
     pub fn start(self: Arc<Self>) {
@@ -211,13 +249,20 @@ impl PerceptionService {
                 self.mode.clone()
             }
         };
-        json!({
+        let mut health = json!({
             "detector": self.mode,
             "detector_backend": backend,
             "detector_error": self.inner.lock().unwrap().error,
             "detector_fps": if fresh { packet["fps"].clone() } else { json!(0) },
             "detector_inference_ms": if fresh { packet["inference_ms"].clone() } else { Value::Null },
-        })
+        });
+        // face_detector + face_error are part of /health (#79).
+        if let Some(h) = health.as_object_mut() {
+            for (k, v) in self.face_status().as_object().cloned().unwrap_or_default() {
+                h.insert(k, v);
+            }
+        }
+        health
     }
 
     pub fn close(&self) {
