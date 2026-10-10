@@ -1,0 +1,476 @@
+{
+  "schema": 1,
+  "startedAt": "2026-10-10T22:59:58.234Z",
+  "evidenceClass": "desktop-browser-video",
+  "url": "http://127.0.0.1:18999/macview.html?mac=http://127.0.0.1:18870",
+  "limitations": [
+    "Desktop video presentation callbacks are not XR FPS or pose-to-photon latency.",
+    "No headset, controller, stereo, room fidelity, or million-point hardware qualification.",
+    "WebSocket traffic stays browser-native; CDP message observations still add diagnostic overhead."
+  ],
+  "conditions": {
+    "seconds": 8,
+    "warmupSeconds": 12,
+    "headless": true,
+    "minCallbackHz": 20,
+    "socketMode": "native-constructor-guard",
+    "seekIntervention": "none",
+    "browserVersion": "156.0.8078.4",
+    "graphics": "ANGLE Metal (GPU requested)",
+    "localNetworkPermissionOrigin": "http://127.0.0.1:18999",
+    "blockedSeekAttempts": 0,
+    "webglRenderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)",
+    "producerRevision": "1b65ac4, Root-owned stable18870 confirmed on board6103077520; no QA restart"
+  },
+  "errors": [],
+  "consoleErrors": [],
+  "requestsFailed": [],
+  "pose": {
+    "sent": 505,
+    "untracked": 0,
+    "matchedEchoes": 81,
+    "lastSent": {
+      "type": "pose",
+      "version": 1,
+      "sent_mono_ms": 8732.099999964237,
+      "sent_wall_ms": 1791673207892,
+      "head": {
+        "position": [
+          0,
+          1.6,
+          0
+        ],
+        "quaternion": [
+          0,
+          0,
+          0,
+          1
+        ]
+      },
+      "ray": {
+        "origin": [
+          0,
+          1.6,
+          0
+        ],
+        "direction": [
+          0,
+          0,
+          -1
+        ]
+      },
+      "tracked": true,
+      "session_id": "0026fa9b-e774-4d79-b585-2eb2db851986",
+      "frame_id": 505,
+      "client_nonce": "a7d1884a-33cd-4fdf-af1b-6ef749c7e664"
+    },
+    "lastEcho": {
+      "session_id": "0026fa9b-e774-4d79-b585-2eb2db851986",
+      "frame_id": 490,
+      "pose_id": 490,
+      "client_nonce": "f4447d19-c0fe-4e73-9db7-b555937202b3",
+      "sent_mono_ms": 8456.800000011921,
+      "sent_wall_ms": 1791673207616,
+      "received_mono_ms": 358263267.06154096,
+      "space": null,
+      "map_revision": null,
+      "eyes": null
+    }
+  },
+  "stream": {
+    "urls": [
+      "ws://127.0.0.1:18870/ws/macview-pose",
+      "ws://127.0.0.1:18870/ws/macview"
+    ],
+    "init": {
+      "type": "video_init",
+      "version": 1,
+      "mime": "video/mp4; codecs=\"avc1.4D001F\"",
+      "width": 1280,
+      "height": 720,
+      "fps": 30,
+      "stereo": false,
+      "source": "MAC RENDER",
+      "frame_id": null,
+      "age_ms": null,
+      "media_start_s": null,
+      "media_end_s": null,
+      "map": null,
+      "pose": null,
+      "fov_y_deg": null,
+      "aspect": null,
+      "encoder": null,
+      "pose_to_frame_ms": null,
+      "render_ms": null,
+      "capture_ms": null,
+      "encode_ms": null,
+      "timing_scope": null
+    },
+    "segments": 83,
+    "sources": [
+      "MAC RENDER",
+      "SIMULATED"
+    ],
+    "stereoClaims": [
+      false
+    ],
+    "binaryBytes": 291955,
+    "lastSegment": {
+      "type": "video_segment",
+      "version": 1,
+      "mime": null,
+      "width": null,
+      "height": null,
+      "fps": null,
+      "stereo": false,
+      "source": "SIMULATED",
+      "frame_id": 22627,
+      "age_ms": 253.74837493896484,
+      "media_start_s": 754.2,
+      "media_end_s": 754.3,
+      "map": {
+        "source": "SIMULATED",
+        "geometry_source": null,
+        "points": 119287,
+        "triangles": 154790,
+        "generation": 0,
+        "revision": 3441,
+        "mesh_revision": 747,
+        "applied_points_revision": 3432,
+        "applied_mesh_revision": 747,
+        "fresh": true,
+        "age_ms": 1422.5,
+        "connected": true,
+        "retained": false,
+        "partial": false
+      },
+      "pose": {
+        "session_id": "0026fa9b-e774-4d79-b585-2eb2db851986",
+        "frame_id": 490,
+        "pose_id": 490,
+        "client_nonce": "f4447d19-c0fe-4e73-9db7-b555937202b3",
+        "sent_mono_ms": 8456.800000011921,
+        "sent_wall_ms": 1791673207616,
+        "received_mono_ms": 358263267.06154096,
+        "space": null,
+        "map_revision": null,
+        "eyes": null
+      },
+      "fov_y_deg": 50,
+      "aspect": 1.7777777777777777,
+      "encoder": "h264_videotoolbox",
+      "pose_to_frame_ms": 12.23133409023285,
+      "render_ms": 0.10000002384185791,
+      "capture_ms": 11.995,
+      "encode_ms": 0.006041023880243301,
+      "timing_scope": "Mac atomic render request through encoded fragment; not camera or headset age"
+    },
+    "nativeSidecarTail": [
+      {
+        "receivedNow": 7605.099999964237,
+        "mediaStart": 753.1,
+        "mediaEnd": 753.2,
+        "frameId": 22594,
+        "ageMs": 246.27499997615814
+      },
+      {
+        "receivedNow": 7704.699999988079,
+        "mediaStart": 753.2,
+        "mediaEnd": 753.3,
+        "frameId": 22597,
+        "ageMs": 245.50070798397064
+      },
+      {
+        "receivedNow": 7805.099999964237,
+        "mediaStart": 753.3,
+        "mediaEnd": 753.4,
+        "frameId": 22600,
+        "ageMs": 245.33791601657867
+      },
+      {
+        "receivedNow": 7904.899999976158,
+        "mediaStart": 753.4,
+        "mediaEnd": 753.5,
+        "frameId": 22603,
+        "ageMs": 244.77508294582367
+      },
+      {
+        "receivedNow": 8009.300000011921,
+        "mediaStart": 753.5,
+        "mediaEnd": 753.6,
+        "frameId": 22606,
+        "ageMs": 247.68612498044968
+      },
+      {
+        "receivedNow": 8108,
+        "mediaStart": 753.6,
+        "mediaEnd": 753.7,
+        "frameId": 22609,
+        "ageMs": 246.9055419564247
+      },
+      {
+        "receivedNow": 8211,
+        "mediaStart": 753.7,
+        "mediaEnd": 753.8,
+        "frameId": 22612,
+        "ageMs": 248.47254198789597
+      },
+      {
+        "receivedNow": 8314.800000011921,
+        "mediaStart": 753.8,
+        "mediaEnd": 753.9,
+        "frameId": 22615,
+        "ageMs": 252.58991706371307
+      },
+      {
+        "receivedNow": 8413.800000011921,
+        "mediaStart": 753.9,
+        "mediaEnd": 754,
+        "frameId": 22618,
+        "ageMs": 250.17241597175598
+      },
+      {
+        "receivedNow": 8518.800000011921,
+        "mediaStart": 754,
+        "mediaEnd": 754.1,
+        "frameId": 22621,
+        "ageMs": 252.89474999904633
+      }
+    ],
+    "sidecarArrivalGapMs": {
+      "count": 82,
+      "p50": 101.23166599999968,
+      "p95": 106.67508300000009,
+      "maximum": 116.58504200000061
+    },
+    "sidecarTimingMs": {
+      "age_ms": {
+        "count": 83,
+        "p50": 249.52574998140335,
+        "p95": 254.6831250190735,
+        "maximum": 263.54070895910263
+      },
+      "pose_to_frame_ms": {
+        "count": 81,
+        "p50": 3.843958020210266,
+        "p95": 14.217209041118622,
+        "maximum": 60.2413330078125
+      },
+      "render_ms": {
+        "count": 83,
+        "p50": 0.19999998807907104,
+        "p95": 0.30000001192092896,
+        "maximum": 0.40000003576278687
+      },
+      "capture_ms": {
+        "count": 83,
+        "p50": 10.344,
+        "p95": 18.721,
+        "maximum": 30.696
+      },
+      "encode_ms": {
+        "count": 83,
+        "p50": 0.0076249707490205765,
+        "p95": 0.023916014470160007,
+        "maximum": 0.22004201309755445
+      }
+    },
+    "timingScope": "Server-reported fragment sidecars across warmup, sampling and screenshot; not optical/headset latency."
+  },
+  "checkerCheckoutHead": "a1349742d6860cdae0fc367dff3d9e41f1fb8913",
+  "video": {
+    "width": 1280,
+    "height": 720,
+    "currentTime": 753.8201,
+    "paused": false,
+    "readyState": 4,
+    "error": null,
+    "callbackSupported": true,
+    "now": 8535.5,
+    "seeking": false,
+    "seekingEvents": [],
+    "seekedEvents": [],
+    "quality": {
+      "totalVideoFrames": 240,
+      "droppedVideoFrames": 53
+    },
+    "status": "MAC RENDER \u00b7 flat view \u00b7 not stereo \u00b7 SIMULATED \u00b7 668 ms \u00b7 STALE picture \u00b7 tracked \u00b7 pose round trip 467 ms (not photon latency)",
+    "title": "Farsight \u2014 Mac view (flat, not stereo)",
+    "callbacks": 235,
+    "measurementSeconds": 8.00719999998808,
+    "frameTail": [
+      {
+        "now": 8222.1,
+        "receivedNow": 8223.300000011921,
+        "mediaTime": 753.533333,
+        "expectedDisplayTime": 8211.8,
+        "presentationTime": 8211.8,
+        "presentedFrames": 227,
+        "processingDuration": 0.2012
+      },
+      {
+        "now": 8238.8,
+        "receivedNow": 8239.699999988079,
+        "mediaTime": 753.566667,
+        "expectedDisplayTime": 8255.5,
+        "presentationTime": 8239.5,
+        "presentedFrames": 228,
+        "processingDuration": 0.2016
+      },
+      {
+        "now": 8272.1,
+        "receivedNow": 8272.599999964237,
+        "mediaTime": 753.6,
+        "expectedDisplayTime": 8288.8,
+        "presentationTime": 8272.4,
+        "presentedFrames": 229,
+        "processingDuration": 0.1032
+      },
+      {
+        "now": 8322.1,
+        "receivedNow": 8323.199999988079,
+        "mediaTime": 753.633333,
+        "expectedDisplayTime": 8315.6,
+        "presentationTime": 8315.6,
+        "presentedFrames": 230,
+        "processingDuration": 0.2067
+      },
+      {
+        "now": 8355.4,
+        "receivedNow": 8356.699999988079,
+        "mediaTime": 753.666667,
+        "expectedDisplayTime": 8372.1,
+        "presentationTime": 8356.5,
+        "presentedFrames": 231,
+        "processingDuration": 0.207
+      },
+      {
+        "now": 8388.8,
+        "receivedNow": 8390.099999964237,
+        "mediaTime": 753.7,
+        "expectedDisplayTime": 8405.4,
+        "presentationTime": 8389.9,
+        "presentedFrames": 232,
+        "processingDuration": 0.1046
+      },
+      {
+        "now": 8422.1,
+        "receivedNow": 8423.300000011921,
+        "mediaTime": 753.733333,
+        "expectedDisplayTime": 8414.4,
+        "presentationTime": 8414.4,
+        "presentedFrames": 233,
+        "processingDuration": 0.2031
+      },
+      {
+        "now": 8455.5,
+        "receivedNow": 8456.800000011921,
+        "mediaTime": 753.766667,
+        "expectedDisplayTime": 8472.1,
+        "presentationTime": 8456.6,
+        "presentedFrames": 234,
+        "processingDuration": 0.2034
+      },
+      {
+        "now": 8488.8,
+        "receivedNow": 8489.899999976158,
+        "mediaTime": 753.8,
+        "expectedDisplayTime": 8505.4,
+        "presentationTime": 8489.8,
+        "presentedFrames": 235,
+        "processingDuration": 0.0996
+      },
+      {
+        "now": 8522.1,
+        "receivedNow": 8523.399999976158,
+        "mediaTime": 753.833333,
+        "expectedDisplayTime": 8520.7,
+        "presentationTime": 8520.7,
+        "presentedFrames": 236,
+        "processingDuration": 0.2055
+      }
+    ],
+    "callbackHz": 29.34858627239857,
+    "intervalMs": {
+      "count": 234,
+      "p50": 33.30000000000018,
+      "p95": 50,
+      "maximum": 50.100000000000364
+    },
+    "seekingCount": 0,
+    "seekedCount": 0,
+    "bufferAheadSeconds": {
+      "count": 160,
+      "p50": 0.23879999999996926,
+      "p95": 0.2902000000000271,
+      "maximum": 0.2963999999999487
+    },
+    "bufferSeekingSamples": 0,
+    "bufferSampleCount": 160,
+    "processingDurationMs": {
+      "count": 235,
+      "p50": 200.5,
+      "p95": 208,
+      "maximum": 218.4
+    },
+    "mediaTimeAdvanceSeconds": 7.810000000000059,
+    "browserFrameDelta": {
+      "total": 239,
+      "dropped": 53
+    }
+  },
+  "finalPage": {
+    "width": 1280,
+    "height": 720,
+    "currentTime": 753.8742,
+    "paused": false,
+    "readyState": 4,
+    "error": null,
+    "callbackSupported": true,
+    "now": 8587,
+    "seeking": false,
+    "seekingEvents": [],
+    "seekedEvents": [],
+    "quality": {
+      "totalVideoFrames": 240,
+      "droppedVideoFrames": 53
+    },
+    "status": "MAC RENDER \u00b7 flat view \u00b7 not stereo \u00b7 SIMULATED \u00b7 718 ms \u00b7 STALE picture \u00b7 tracked \u00b7 pose round trip 517 ms (not photon latency)",
+    "title": "Farsight \u2014 Mac view (flat, not stereo)"
+  },
+  "screenshot": "/tmp/farsight-browser-production-cf7cbd0-evidence/screenshot.png",
+  "failures": [],
+  "passed": true,
+  "decodeProof": {
+    "passed": true,
+    "scope": "Desktop decoded video sanity only; minimum callback Hz is not a headset performance target."
+  },
+  "performanceTarget": {
+    "evaluated": false,
+    "reason": "No real-headset frame budget, stereo, or pose-to-photon target measured."
+  },
+  "finishedAt": "2026-10-10T23:00:07.958Z",
+  "buildStatus": "Published production cf7cbd0 (#152), unchanged tracked source, independently rebuilt",
+  "servedSnapshotVerification": {
+    "revision": "cf7cbd079c8e5fa87c57a913fe3353f769863653",
+    "method": "exact detached worktree; tracked source unchanged; earlier served standalone HTML and both JS bytes were compared successfully against dist before source-manifest path typo",
+    "assets": {
+      "index.html": "504bdabf4346c5f9540e225fc8a5484b353dbf71978dd42e583e245dbc6e963c",
+      "macview.html": "5523699c98ef2c71798adc8cfde73db4d48ece7272a5e8a15221b3d1920b9f0b",
+      "assets/VRButton-DwYla17G.js": "97864b4a575f2464a7bbf3c3e7c5cf09cf3e67fc048efa6c3aaa89681002b61d",
+      "assets/main-DxNvDC7a.css": "234a49d21d6e4e6af115408573dd534aae88f577195c72291d57004125065481",
+      "assets/macview-Cc_tQeuz.js": "a24617b6114e60abb1572c44316b56621e9e926e6418f2041e184f2fbaf82a2d",
+      "assets/main-jaO9EkUJ.js": "337ffb311d19d6ce146bc965ec429e322ac90e9aa026f02f97ae0584e30ccd62"
+    },
+    "sourceSha256": {
+      "quest/macview.html": "6b86f9108bda3143e7fd7a017879710f754ba4843df1853018a1449485dbdcfb",
+      "quest/src/mac-view-page.ts": "7ef279c61c827a7262a6e9ec4ea7545817e9934157c60ff2ee1bd5148203517f",
+      "quest/src/mac-view.ts": "1cc3feb033d4efa8d753ed1e586168044cfad0da29b8da7033af23533e46698c",
+      "quest/src/h264.ts": "24b5c0013bd53ed46db5cce283b72b60f9f5aa5ce0b94e1e634dc51e680cdb57",
+      "quest/src/live-edge.js": "d80d8ebd0d7e9ee39414ca80a9b6185900bfece96b070bd59b7ec4b1a8ed6092",
+      "quest/src/mac-auto.ts": "fc57d89ee4bd887f5c2130d22d254bc1eb789d62bec67838f313de5b7f503894"
+    },
+    "typescriptCheck": "tsc --noEmit passed",
+    "viteBuild": "Vite7.3.7 production build passed"
+  }
+}
