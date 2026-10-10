@@ -12,7 +12,7 @@ import shutil
 import signal
 import subprocess
 import time
-from contextlib import suppress
+from contextlib import suppress, asynccontextmanager
 from pathlib import Path
 
 from aiohttp import ClientSession, ClientTimeout, TCPConnector, WSMsgType, web
@@ -227,75 +227,88 @@ class App:
             "map": encoder.last_snapshot.get("mapStatus") if encoder else None,
         })
 
-    async def macview(self, request):
-        if self.view_socket is not None and not self.view_socket.closed:
-            raise web.HTTPServiceUnavailable(text="One Mac view consumer is supported; close the other viewer")
+    @asynccontextmanager
+    async def owned_socket(self, attribute, request):
+        existing = getattr(self, attribute)
+        if existing is not None and not existing.closed:
+            raise web.HTTPServiceUnavailable(text="Visual stream already has an owner")
         socket = web.WebSocketResponse(max_msg_size=16384)
-        self.view_socket = socket
-        await socket.prepare(request)
-        encoder = self.encoder
-        if encoder is None or not encoder.init:
-            await socket.send_json({"type": "macview_error", "reason": "encoder not ready"})
-            await socket.close()
+        setattr(self, attribute, socket)
+        try:
+            await socket.prepare(request)
+            yield socket
+        finally:
+            if getattr(self, attribute) is socket:
+                setattr(self, attribute, None)
+            with suppress(Exception):
+                await asyncio.wait_for(socket.close(), .25)
+            if attribute == "pose_socket" and self.encoder:
+                self.encoder.latest_pose = None
+                if self.page:
+                    with suppress(Exception):
+                        await asyncio.wait_for(self.page.evaluate("() => { window.__macPose = null; }"), .5)
+
+    async def macview(self, request):
+        async with self.owned_socket("view_socket", request) as socket:
+            encoder = self.encoder
+            if encoder is None or not encoder.init:
+                await socket.send_json({"type": "macview_error", "reason": "encoder not ready"})
+                await socket.close()
+                return socket
+            await socket.send_json({
+                "type": "video_init", "macview": "macview_init", "version": 1,
+                "mime": encoder.mime, "source": "MAC RENDER",
+                "width": self.args.width, "height": self.args.height,
+                "fps": self.args.fps, "stereo": False,
+            })
+            await socket.send_bytes(encoder.init)
+            async for message in socket:
+                if message.type != WSMsgType.TEXT:
+                    continue
+                try:
+                    body = json.loads(message.data)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(body, dict) or body.get("type") != "next" or type(body.get("request_id")) is not int:
+                    continue
+                try:
+                    item = await asyncio.wait_for(encoder.fragments.get(), timeout=2)
+                except asyncio.TimeoutError:
+                    await socket.send_json({"type": "macview_error", "reason": "no fragment"})
+                    continue
+                sidecar = dict(item["sidecar"], request_id=body.get("request_id"))
+                sidecar["age_ms"] = max(0, time.monotonic() * 1000 - sidecar["capture_mono_ms"])
+                await asyncio.wait_for(socket.send_json(sidecar), .5)
+                await asyncio.wait_for(socket.send_bytes(item["payload"]), .5)
             return socket
-        await socket.send_json({
-            "type": "video_init", "macview": "macview_init", "version": 1,
-            "mime": encoder.mime, "source": "MAC RENDER",
-            "width": self.args.width, "height": self.args.height,
-            "fps": self.args.fps, "stereo": False,
-        })
-        await socket.send_bytes(encoder.init)
-        async for message in socket:
-            if message.type != WSMsgType.TEXT:
-                continue
-            try:
-                body = json.loads(message.data)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(body, dict) or body.get("type") != "next" or type(body.get("request_id")) is not int:
-                continue
-            try:
-                item = await asyncio.wait_for(encoder.fragments.get(), timeout=2)
-            except asyncio.TimeoutError:
-                await socket.send_json({"type": "macview_error", "reason": "no fragment"})
-                continue
-            sidecar = dict(item["sidecar"], request_id=body.get("request_id"))
-            sidecar["age_ms"] = max(0, time.monotonic() * 1000 - sidecar["capture_mono_ms"])
-            await asyncio.wait_for(socket.send_json(sidecar), .5)
-            await asyncio.wait_for(socket.send_bytes(item["payload"]), .5)
-        return socket
 
     async def pose(self, request):
-        if self.pose_socket is not None and not self.pose_socket.closed:
-            raise web.HTTPServiceUnavailable(text="One visual pose writer is supported")
-        socket = web.WebSocketResponse(max_msg_size=16384)
-        self.pose_socket = socket
-        await socket.prepare(request)
-        async for message in socket:
-            if message.type != WSMsgType.TEXT or self.encoder is None:
-                continue
-            try:
-                body = json.loads(message.data)
-                pose = self.encoder.apply_pose(body, time.monotonic() * 1000)
-            except (json.JSONDecodeError, ValueError) as exc:
-                await socket.send_json({"type": "pose_rejected", "reason": str(exc)})
-                continue
-            if self.page is not None:
-                if not pose["tracked"]:
-                    await self.page.evaluate("() => { window.__macPose = null; }")
+        async with self.owned_socket("pose_socket", request) as socket:
+            async for message in socket:
+                if message.type != WSMsgType.TEXT or self.encoder is None:
                     continue
-                pose["receipt_age_ms"] = max(0, time.monotonic() * 1000 - pose["received_mono_ms"])
-                await self.page.evaluate(
-                    """(pose) => { window.__macPose = {
-                      position: pose.position, quaternion: pose.quaternion, ray: pose.ray,
-                      sentMonoMs: pose.sent_mono_ms, sentWallMs: pose.sent_wall_ms,
-                      receivedMonoMs: pose.received_mono_ms, receiptAgeMs: pose.receipt_age_ms,
-                      tracked: true, session_id: pose.session_id, frame_id: pose.frame_id,
-                      pose_id: pose.pose_id, client_nonce: pose.client_nonce,
-                      fov_y_deg: pose.fov_y_deg, aspect: pose.aspect, space: pose.space,
-                      map_revision: pose.map_revision, eyes: pose.eyes }; }""",
-                    pose)
-        return socket
+                try:
+                    body = json.loads(message.data)
+                    pose = self.encoder.apply_pose(body, time.monotonic() * 1000)
+                except (json.JSONDecodeError, ValueError) as exc:
+                    await socket.send_json({"type": "pose_rejected", "reason": str(exc)})
+                    continue
+                if self.page is not None:
+                    if not pose["tracked"]:
+                        await self.page.evaluate("() => { window.__macPose = null; }")
+                        continue
+                    pose["receipt_age_ms"] = max(0, time.monotonic() * 1000 - pose["received_mono_ms"])
+                    await self.page.evaluate(
+                        """(pose) => { window.__macPose = {
+                          position: pose.position, quaternion: pose.quaternion, ray: pose.ray,
+                          sentMonoMs: pose.sent_mono_ms, sentWallMs: pose.sent_wall_ms,
+                          receivedMonoMs: pose.received_mono_ms, receiptAgeMs: pose.receipt_age_ms,
+                          tracked: true, session_id: pose.session_id, frame_id: pose.frame_id,
+                          pose_id: pose.pose_id, client_nonce: pose.client_nonce,
+                          fov_y_deg: pose.fov_y_deg, aspect: pose.aspect, space: pose.space,
+                          map_revision: pose.map_revision, eyes: pose.eyes }; }""",
+                        pose)
+            return socket
 
 
 def create_app(args, browser=None, page=None):
