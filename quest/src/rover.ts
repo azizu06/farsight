@@ -105,7 +105,7 @@ export class RoverExperience {
   private scanning = false;
   private scanCompleting = false;
   private scanDown = false;
-  private scanMessage = "Hold trigger + Y to scan; keep sticks centered";
+  private scanMessage = "Y opens actions; select Scan, then center sticks and hold trigger";
   private scanPollAt = 0;
   private lastXRAt = -Infinity;
   private rightSource: XRInputSource | null = null;
@@ -303,7 +303,7 @@ export class RoverExperience {
   private keyUp = (event: KeyboardEvent) => { this.keys.delete(event.code); };
   private blur = () => { this.keys.clear(); this.pointerHeld = false; this.stop("Window inactive: release deadman"); };
   private visibility = () => { if (document.hidden) this.blur(); };
-  /** Fixed: crop measured pixels and command pan 0. Servo: send head yaw as pan. */
+  /** Fixed: show the full measured frame and command pan 0. Servo: send head yaw as pan. */
   private setMount(fixed: boolean, save: boolean) {
     if (save) { this.settings.origin.mount = "saved"; saveSettings(pageStorage(), { mount: fixed ? "fixed" : "servo" }); }
     this.mountSelect.value = fixed ? "fixed" : "servo";
