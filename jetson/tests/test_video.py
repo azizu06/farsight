@@ -1,0 +1,74 @@
+import asyncio
+import shutil
+import time
+import unittest
+
+from jetson.camera import CameraFrame, CameraService
+from jetson.mapping.demo import simulated_frame
+from jetson.mapping.state import MapState
+from jetson.video import VideoService, codec_from_init
+
+
+class FreshnessTests(unittest.TestCase):
+    def test_pose_heartbeat_does_not_refresh_camera(self):
+        state = MapState(demo=True)
+        frame = simulated_frame(0, 0)
+        state.process(frame)
+        camera = CameraService(state)
+        state.last_frame_received = time.monotonic() - 1
+        state.observe_pose(dict(frame.header, frame_id=1, t_capture=1), frame.transform)
+        self.assertGreater(camera.snapshot().age_ms, 900)
+        self.assertFalse(camera.status()["camera"])
+
+    def test_preview_preserves_source_frame_and_receipt(self):
+        state = MapState(demo=True)
+        state.process(simulated_frame(0, 7))
+        camera = CameraService(state)
+        original, preview = camera.snapshot(), camera.preview(max_width=80)
+        self.assertEqual(preview.frame_id, original.frame_id)
+        self.assertEqual(preview.received, original.received)
+        self.assertEqual(preview.source, "SIMULATED")
+
+    def test_codec_metadata_and_invalid_init(self):
+        self.assertEqual(codec_from_init(b"avcC\x01\x42\xc0\x1e"), "avc1.42C01E")
+        with self.assertRaises(ValueError):
+            codec_from_init(b"invalid")
+
+
+class VideoTests(unittest.IsolatedAsyncioTestCase):
+    async def test_slow_consumer_is_reset_instead_of_corrupted(self):
+        service = VideoService(None)
+        queue = service.subscribe()
+        for _ in range(queue.maxsize + 1):
+            service.publish(b"fragment")
+        self.assertIsNone(queue.get_nowait())
+        self.assertNotIn(queue, service.subscribers)
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg required for real encoding check")
+    async def test_real_ffmpeg_produces_decodable_mp4(self):
+        jpeg = simulated_frame(0, 0).jpeg
+        class Camera:
+            def snapshot(self):
+                return CameraFrame(jpeg, time.monotonic(), 0, "SIMULATED")
+        service = VideoService(Camera(), enabled=True, width=160, height=120, fps=5, bitrate=100000)
+        await service.start()
+        try:
+            for _ in range(300):
+                if service.init is not None or service.error:
+                    break
+                await asyncio.sleep(.01)
+            self.assertIsNone(service.error)
+            self.assertIn(b"moov", service.init)
+            queue = service.subscribe()
+            fragments = [await asyncio.wait_for(queue.get(), 3) for _ in range(7)]
+            self.assertTrue(all(b"moof" in fragment and b"mdat" in fragment for fragment in fragments))
+            decoder = await asyncio.create_subprocess_exec("ffmpeg", "-v", "error", "-i", "pipe:0",
+                       "-f", "null", "-", stdin=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            _, errors = await decoder.communicate(service.init + b"".join(fragments))
+            self.assertEqual(decoder.returncode, 0, errors.decode())
+        finally:
+            await service.close()
+
+
+if __name__ == "__main__":
+    unittest.main()

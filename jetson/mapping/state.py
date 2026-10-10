@@ -25,6 +25,8 @@ class MapState:
         self.processing_generation = 0
         self.paused = False
         self.last_received = 0.0
+        self.last_frame_received = 0.0
+        self.frame_id = -1
         self.last_capture = -1.0
         self.last_pose_capture = -1.0
         self.pose = np.eye(4)
@@ -46,6 +48,8 @@ class MapState:
                 self.jpeg = self.depth_jpeg = None
                 self.depth_range = None
                 self.last_received = 0.0
+                self.last_frame_received = 0.0
+                self.frame_id = -1
             self.connected, self.device = True, device
             self.processing_generation += 1
             self.last_capture = self.last_pose_capture = -1.0
@@ -90,6 +94,8 @@ class MapState:
             generation = self.processing_generation
             self.observe_pose(frame.header, frame.transform)
             self.jpeg = frame.jpeg
+            self.last_frame_received = time.monotonic()
+            self.frame_id = frame.header["frame_id"]
             valid = np.isfinite(frame.depth) & (frame.depth > 0.15) & (frame.depth <= 8)
             scaled = np.where(valid, np.clip(frame.depth / 8 * 255, 0, 255), 0).astype(np.uint8)
             heat = cv2.applyColorMap(255 - scaled, cv2.COLORMAP_TURBO)
@@ -138,6 +144,11 @@ class MapState:
                         position=self.pose[:3, 3].tolist(), transform=self.pose.flatten(order="F").tolist(),
                         voxel_m=self.cloud.size, depth_range=self.depth_range, reason=reason,
                         camera=fresh, detector_fps=0, rover=False, estop=True)
+
+    def camera_snapshot(self):
+        """Pose heartbeats never refresh the camera's capture receipt time."""
+        with self.lock:
+            return self.jpeg, self.last_frame_received, self.frame_id, ("SIMULATED" if self.demo else "IPHONE LIDAR")
 
     def point_packet(self):
         with self.lock:
