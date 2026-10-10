@@ -88,7 +88,11 @@ def forward_headers(headers):
 
 
 def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5, bonded_upstream=None, geometry_upstream=None,
-               render_upstream=None):
+               render_upstream=None, demo_mode=False):
+    if type(demo_mode) is not bool:
+        raise ValueError("Relay demo_mode must be a boolean")
+    if demo_mode and bonded_upstream is not None:
+        raise ValueError("--demo-mode supports single-route control only; cannot combine with --bonded-upstream")
     origin = upstream_origin(upstream)
     second = upstream_origin(bonded_upstream) if bonded_upstream is not None else None
     if second == origin:
@@ -156,6 +160,7 @@ def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5, bonded_upstr
 
     async def relay_health(request):
         packet = {"relay": True, "upstream": str(origin),
+                  "demo_mode": demo_mode,
                   "quest_built": (dist / "index.html").is_file(),
                   "control_closures": control_closures.status(enabled=second is None),
                   "render": {"configured": render is not None, "endpoints": list(RENDER_PATHS),
@@ -214,14 +219,15 @@ def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5, bonded_upstr
                 async for message in source:
                     if message.type == aiohttp.WSMsgType.TEXT:
                         data = message.data
-                        # The relay never holds or replays drive input. A stale
-                        # view is a stop even if a modified client sends motion.
+                        # The relay never holds or replays drive input. Default
+                        # operation zeros a stale view; explicit demo mode leaves
+                        # the actual reported freshness untouched for the server.
                         if control and client_to_rover:
                             try:
                                 command = json.loads(data)
                                 if not isinstance(command, dict):
                                     raise ValueError("Expected command object")
-                                if command.get("deadman") is True:
+                                if command.get("deadman") is True and not demo_mode:
                                     age = command.get("video_age_ms")
                                     if (command.get("video_fresh") is not True
                                             or isinstance(age, bool)
@@ -403,13 +409,15 @@ def main():
     parser.add_argument("--bonded-upstream", help="Opt-in second route to the same --bonded-control Jetson; JPEG only")
     parser.add_argument("--geometry-upstream", help="Opt-in loopback Mac geometry assembler origin, e.g. http://127.0.0.1:8484")
     parser.add_argument("--render-upstream", help="Opt-in loopback Mac renderer origin; reserved frame/pose WebSockets only")
+    parser.add_argument("--demo-mode", action="store_true", help="Opt in to bypass relay displayed-video zeroing; preserves actual freshness fields")
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--dist", type=Path, default=DIST)
     parser.add_argument("--ca-file", help="Trusted CA PEM for a private upstream certificate")
     args = parser.parse_args()
     try:
         app = create_app(args.upstream, args.dist, args.ca_file, bonded_upstream=args.bonded_upstream,
-                         geometry_upstream=args.geometry_upstream, render_upstream=args.render_upstream)
+                         geometry_upstream=args.geometry_upstream, render_upstream=args.render_upstream,
+                         demo_mode=args.demo_mode)
     except (ValueError, OSError) as exc:
         parser.error(str(exc))
     web.run_app(app, host="127.0.0.1", port=args.port, access_log=None,

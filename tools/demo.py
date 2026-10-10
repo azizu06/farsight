@@ -77,6 +77,7 @@ def main():
     parser.add_argument("--bonded-upstream", help="Opt-in second route to the same Jetson; requires server --bonded-control, JPEG only")
     parser.add_argument("--geometry-upstream", help="Optional loopback Mac geometry assembler; does not launch the assembler")
     parser.add_argument("--render-upstream", help="Optional loopback Mac renderer; does not launch or qualify the renderer")
+    parser.add_argument("--demo-mode", action="store_true", help="Opt in to relay displayed-video bypass; no forged freshness or server configuration")
     parser.add_argument("--check", action="store_true", help="Check prerequisites and exit without starting servers")
     args = parser.parse_args()
     processes = []
@@ -84,6 +85,8 @@ def main():
         raise KeyboardInterrupt
     previous_term_handler = signal.signal(signal.SIGTERM, stop_on_signal)
     try:
+        if args.demo_mode and args.bonded_upstream is not None:
+            raise RuntimeError("--demo-mode supports single-route control only; cannot combine with --bonded-upstream")
         packages = ["aiohttp"] + (["numpy", "cv2", "fastapi", "uvicorn"] if args.simulate else [])
         missing = [name for name in packages if importlib.util.find_spec(name) is None]
         if missing:
@@ -165,6 +168,8 @@ def main():
             command += ["--geometry-upstream", args.geometry_upstream]
         if args.render_upstream:
             command += ["--render-upstream", args.render_upstream]
+        if args.demo_mode:
+            command += ["--demo-mode"]
         relay = start(command)
         wait_http(f"http://127.0.0.1:{args.port}/relay/health", relay)
         if args.quest:

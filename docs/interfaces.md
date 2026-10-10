@@ -177,6 +177,21 @@ protocol faults (`invalid_*`, `wrong_session`, `unsupported_mode`, oversized or
 binary frames, `uno_rejected_command`) still latch, the Nav2 sensor gate still
 holds motion at zero until pose and depth are fresh, and the Uno's 300 ms watchdog.
 
+The operator relay has a separate, explicit `--demo-mode` flag, also accepted
+and forwarded to the relay by `tools.demo`. It is **off by default**, has no
+environment-variable fallback, and supports only single-route `/ws/control`;
+combining it with `--bonded-upstream` is rejected before startup. In this relay
+mode, a valid control JSON object retains its actual `video_fresh` and
+`video_age_ms` fields: the relay skips only its displayed-video freshness
+conversion of held-deadman commands to zero. It never substitutes fresh age or
+source evidence. Malformed/non-object JSON and binary control still close with
+1008, the 100 ms control send cap and connection teardown remain in effect,
+and frame/pose render sockets cannot become control routes. Geometry, rendering
+and backend validation are unchanged. The relay flag neither configures the
+Jetson server's mode nor changes the viewer's gates. `GET /relay/health` reports
+the selected relay `demo_mode` as a boolean; it is not camera qualification or
+permission to move.
+
 ### Optional drive-profile modes (`velocity`, `calibrate`)
 
 Both are **off by default**; an unconfigured server answers them with

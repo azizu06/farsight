@@ -159,7 +159,7 @@ The relay has independent HTTP/video and control connection pools. It forwards
 streaming chunks without collecting a full video response, preserves camera frame
 metadata, removes hop-by-hop headers, and uses short send deadlines. Control
 messages have no application queue and no automatic upstream reconnection. A
-reported stale view turns an attempted drive command into a stop; the Jetson's
+reported stale view normally turns an attempted drive command into a stop; the Jetson's
 own permits and watchdog remain the safety authority.
 
 Only configured-upstream absolute URLs are rewritten to local paths. Redirects
@@ -176,6 +176,30 @@ reset/detach logs. This observation identifies where the relay noticed loss;
 it does not prove whether USB power, cellular service or another component
 caused it. Bonded control is explicitly excluded and uses its separate
 `transport` report. These diagnostics do not change stop or reconnect rules.
+
+## Explicit single-route relay demo mode
+
+The relay defaults to zeroing a held-deadman command whose reported displayed
+video is not fresh. An explicit `--demo-mode` opts out of only that relay
+conversion:
+
+```sh
+python -m tools.demo --upstream http://127.0.0.1:18443 --demo-mode --quest
+```
+
+The same flag is available on `tools.operator_relay`. It forwards the real
+`video_fresh` and `video_age_ms` values without replacing them or claiming a
+fresh camera. `GET /relay/health` exposes `demo_mode: true` only when selected;
+there is no environment-variable fallback. It does not enable the Jetson
+server's separate demo mode or change the viewer's freshness gates. The
+server continues to apply its own configured validation and stop behavior.
+
+This option supports single-route control only: combining it with
+`--bonded-upstream` fails before startup. Malformed/non-object JSON and binary
+control still close with 1008, control sends retain the 100 ms cap, and
+disconnects close the upstream without replay. Frame/pose and geometry lanes
+retain their existing routing, limits and behavior. See the exact scope in
+[the control interface](interfaces.md#optional-demo-guards---demo-mode-farsight_demo_mode1).
 
 ## Optional local Mac render transport
 
