@@ -236,19 +236,41 @@ async function main() {
         const s = await status();
         return s.left_pwm > 0 && s.right_pwm > 0 && s.reason === "active" && s;
       }, 4000, 50);
+      const heldAt = Date.now();
+      let heldSamples = 0;
+      while (Date.now() - heldAt < 3000) {
+        const s = await status();
+        if (!(s.left_pwm > 0 && s.right_pwm > 0 && s.reason === "active"))
+          throw new Error(`held forward drive interrupted after ${Date.now() - heldAt} ms: ${s.reason}, PWM ${s.left_pwm}/${s.right_pwm}`);
+        heldSamples++;
+        await sleep(25);
+      }
       await releaseAll(page);
       const releasedAt = Date.now();
       const stopped = await waitFor("rover did not stop after release", async () => {
         const s = await status();
         return s.left_pwm === 0 && s.right_pwm === 0 && s;
       }, 2000, 20);
-      return `PWM ${moving.left_pwm}/${moving.right_pwm} while held; 0/0 (${stopped.reason}) ${Date.now() - releasedAt} ms after release (simulated rover)`;
+      return `PWM ${moving.left_pwm}/${moving.right_pwm}; ${heldSamples} moving samples over 3 s held; 0/0 (${stopped.reason}) ${Date.now() - releasedAt} ms after release (simulated rover)`;
     }, { retries: 1 });
 
     await step("Explore select", async () => {
       await page.keyboard.press("KeyE");
       await holdDeadman(page, simOrigin);
       const s = await waitFor("server never entered explore", async () => { const v = await status(); return v.mode === "explore" && v; }, 4000, 50);
+      const heldAt = Date.now();
+      let heldSamples = 0;
+      const phases = new Set();
+      while (Date.now() - heldAt < 6000) {
+        const current = await status();
+        if (current.mode !== "explore" || !(current.left_pwm || current.right_pwm))
+          throw new Error(`clear-room Explore interrupted after ${Date.now() - heldAt} ms: ${current.reason}, ${current.autonomy_state}, PWM ${current.left_pwm}/${current.right_pwm}`);
+        phases.add(current.autonomy_state);
+        heldSamples++;
+        await sleep(25);
+      }
+      if (!phases.has("forward") || !phases.has("turning"))
+        throw new Error(`Explore did not exercise forward and turn phases: ${[...phases]}`);
       await releaseAll(page);
       await waitFor("explore did not stop on release", async () => { const v = await status(); return v.left_pwm === 0 && v.right_pwm === 0; }, 2000, 20);
       await waitFor("Explore would not disarm", async () => {
@@ -256,7 +278,7 @@ async function main() {
         await page.keyboard.press("KeyE");
         return false;
       }, 2000, 200);
-      return `server mode explore, autonomy_state ${s.autonomy_state}; stopped on release`;
+      return `server mode ${s.mode}; ${heldSamples} moving samples over 6 s, phases ${[...phases]}; stopped on release`;
     }, { retries: 1 });
 
     await step("Seek select (click synthetic person)", async () => {
