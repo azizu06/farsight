@@ -1,5 +1,7 @@
 # Farsight
 
+Optional camera-only room snapshot: [scan setup, model contract and local evidence](docs/scan.md).
+
 See, steer, and search through a rover's camera from a Quest 2. The Jetson Orin
 Nano runs perception, motor safety, and mission recording. A MacBook serves the
 Quest app over USB; two USB-tethered phones provide the cellular connection to

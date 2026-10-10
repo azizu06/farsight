@@ -5,7 +5,9 @@
 The iPhone supplies synchronized ARKit RGB, LiDAR depth, depth confidence, and camera-to-world transforms.
 The Jetson runs `jetson.mapping.server`: it projects measured samples, averages nearby points in 4 cm voxels,
 keeps observed triangle keyframes, and serves the browser. The browser renders Three.js geometry and live camera/depth views.
-No neural model, TensorRT engine, API key, or depth estimation is required for this path.
+No neural model, TensorRT engine, API key, or depth estimation is required for this phone path.
+The optional [camera-only stationary scan](scan.md) uses local metric depth estimation
+and replaces the same point map/viewer; it does not mix camera scans with phone origins.
 
 ```mermaid
 flowchart LR
@@ -99,7 +101,7 @@ The header includes:
 The example `jpeg_len` must be replaced with the actual byte count. Intrinsics describe the transmitted JPEG.
 Image and depth must have the same aspect ratio; cropped, rotated, or independently zoomed images are rejected.
 ARKit optional floor and mesh metadata on v2/v3 bundles is accepted but not used to fabricate geometry.
-Only measured RGB-D creates this map. Full ARKit mesh archives, object detection, and old rover relay messages
+In phone mode, only measured RGB-D creates this map. Full ARKit mesh archives, object detection, and old rover relay messages
 are outside this mapping server's protocol.
 
 ### Coordinates

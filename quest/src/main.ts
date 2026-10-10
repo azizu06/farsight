@@ -414,8 +414,13 @@ function acceptStatus(next: Status) {
   status = next;
   if (!scanMarkers.parent) scene.add(scanMarkers);
   const markers = (next.scan?.markers ?? []).slice(0, 500);
-  scanMarkers.geometry.setAttribute("position", new THREE.Float32BufferAttribute(markers.flatMap(marker => marker.position), 3));
-  scanMarkers.geometry.computeBoundingSphere();
+  if (scanMarkers.userData.revision !== next.revision) {
+    scanMarkers.geometry.dispose();
+    scanMarkers.geometry = new THREE.BufferGeometry();
+    scanMarkers.geometry.setAttribute("position", new THREE.Float32BufferAttribute(markers.flatMap(marker => marker.position), 3));
+    scanMarkers.geometry.computeBoundingSphere();
+    scanMarkers.userData.revision = next.revision;
+  }
   text("panel-note", next.scan ? `Camera-only estimated metric snapshot · ${(next.scan.scan_ms / 1000).toFixed(1)} s${next.scan.approximate ? " · approximate timed rover rotation" : " · commanded physical pan"} · ${markers.length} detection markers` : "Observed RGB-D geometry. Unobserved space stays empty.");
   statusLine(next);
   text(

@@ -59,6 +59,7 @@ export class RoverExperience {
   private scanPending = false;
   private scanArmed = false;
   private scanning = false;
+  private scanCompleting = false;
   private scanDown = false;
   private scanMessage = "Hold trigger + X to scan; keep sticks centered";
   private scanPollAt = 0;
@@ -206,6 +207,7 @@ export class RoverExperience {
     this.autonomy.clear();
     this.scanArmed = false;
     this.scanning = false;
+    this.scanCompleting = false;
     this.input = this.gate.stop(this.input, reason);
     this.send(false);
   }
@@ -220,6 +222,7 @@ export class RoverExperience {
         const next = JSON.parse(event.data) as ControlStatus;
         if (this.gate.acceptStatus(next, performance.now())) {
           this.status = next;
+          if (this.scanning && next.requires_release && next.reason === "scan_finished") this.scanCompleting = true;
           if (typeof next.seq === "number" && this.sent.has(next.seq)) this.ackMs = performance.now() - this.sent.get(next.seq)!;
           if (next.requires_release) this.gate.invalidate(next.reason ?? "Release deadman to continue");
         }
@@ -392,7 +395,7 @@ export class RoverExperience {
     }
     if (now - this.lastSendAt > 200) this.gate.invalidate("Browser paused: release deadman");
     if (this.scanPending) return; // POST reservation must precede scan-mode heartbeats
-    if (this.scanning && this.status?.requires_release && this.status.reason === "scan_finished") {
+    if (this.scanning && this.scanCompleting) {
       this.send(false);
       if (now - this.scanPollAt > 250) { this.scanPollAt = now; void this.pollScan(); }
       return;

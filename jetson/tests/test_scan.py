@@ -4,6 +4,7 @@ import unittest
 import time
 import struct
 import threading
+import os
 import numpy as np
 from fastapi.testclient import TestClient
 
@@ -43,6 +44,20 @@ class ScanGeometryTests(unittest.TestCase):
 
 
 class DepthModelTests(unittest.TestCase):
+    @unittest.skipUnless(os.environ.get("FARSIGHT_DEPTH_MODEL"), "Set FARSIGHT_DEPTH_MODEL for real ONNX/TensorRT smoke")
+    def test_real_depth_model_on_demo_rgb(self):
+        import cv2
+        from jetson.mapping.demo import simulated_frame
+        frame = simulated_frame(0, 0, scan_yaw=0)
+        model = MetricDepth(os.environ["FARSIGHT_DEPTH_MODEL"])
+        try:
+            depth = model.predict(cv2.cvtColor(frame.rgb, cv2.COLOR_RGB2BGR))
+            self.assertEqual(depth.shape, (120, 160))
+            self.assertTrue(np.isfinite(depth).all())
+            self.assertGreater(float(np.median(depth)), .15)
+        finally:
+            model.close()
+
     def test_rgb_imagenet_normalization_and_output_stay_metric(self):
         class Session:
             def get_inputs(self):
@@ -120,6 +135,23 @@ class ScanSafetyTests(unittest.TestCase):
 
 
 class ScanDeliveryTests(unittest.TestCase):
+    def test_markers_use_matching_capture_and_same_yaw_geometry(self):
+        from jetson.mapping.server import create_app
+        from jetson.camera import CameraFrame
+        scanner = create_app(demo=True).state.scanner
+        scanner.result = dict(markers=[])
+        depth = np.full((3, 3), 2, np.float32)
+        rgb = np.zeros((3, 3, 3), np.uint8)
+        frame = CameraFrame(b"", time.monotonic(), 7, "USB CAMERA")
+        packet = dict(fresh=True, error=None, source=frame.source, frame=7,
+                      boxes=[dict(id=4, cls="person", x=1/3, y=1/3, w=1/3, h=1/3)])
+        scanner.collect_markers(frame, depth, rgb, (2, 2, 1, 1), 90, dict(packet, frame=6))
+        self.assertEqual(scanner.result["markers"], [])
+        scanner.collect_markers(frame, depth, rgb, (2, 2, 1, 1), 90, packet)
+        marker = scanner.result["markers"][0]
+        self.assertEqual((marker["id"], marker["cls"]), (4, "person"))
+        np.testing.assert_allclose(marker["position"], [2, 0, 0], atol=1e-6)
+
     def test_release_or_map_reset_during_depth_never_publishes_a_partial_scan(self):
         from jetson.mapping.server import create_app
         from types import SimpleNamespace
@@ -181,6 +213,7 @@ class ScanDeliveryTests(unittest.TestCase):
             status = ws.receive_json()
             heartbeat(True)
             time.sleep(.05)
+            self.assertEqual(client.post("/scan", json=dict(session_id=status["session_id"], permit="invalid")).status_code, 409)
             response = client.post("/scan", json=dict(session_id=status["session_id"], permit=status["permit"]))
             self.assertEqual(response.status_code, 202, response.text)
             deadline = time.monotonic() + 8
@@ -208,6 +241,10 @@ class ScanDeliveryTests(unittest.TestCase):
             self.assertTrue(health["paused"])
             self.assertEqual(health["triangles"], 0)
             heartbeat(False)
+            resumed = client.post("/map/pause", json={"paused": False}).json()
+            self.assertIsNone(resumed["scan"])
+            self.assertEqual(resumed["voxel_m"], .04)
+            client.post("/map/pause", json={"paused": True})
             client.post("/map/reset")
             self.assertEqual(struct.unpack_from("<I", client.get("/map/points.bin").content)[0], 0)
 

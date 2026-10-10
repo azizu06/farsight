@@ -19,6 +19,9 @@ class ScanService:
         if not np.isfinite(turn_dps) or not 20 <= turn_dps <= 180:
             raise ValueError("Scan turn calibration must be 20..180 degrees/second")
         intrinsics_from_fov(640, 480, horizontal_fov)
+        if intrinsics is not None and (len(intrinsics) != 4 or not np.isfinite(intrinsics).all()
+                                       or min(intrinsics[:2]) <= 0):
+            raise ValueError("Scan intrinsics must be finite fx, fy, cx, cy with positive focal lengths")
         self.mapping, self.camera, self.control, self.perception = mapping, camera, control, perception
         self.depth = MetricDepth(model) if model else None
         self.physical_pan, self.fov, self.intrinsics, self.turn_dps = physical_pan, horizontal_fov, intrinsics, turn_dps

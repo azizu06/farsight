@@ -64,6 +64,8 @@ class MapState:
     def clear(self):
         with self.lock:
             self.cloud.clear()
+            if self.scan:
+                self.cloud = VoxelMap()  # restore phone fusion's voxel size/budget
             self.surfaces.clear()
             self.generation += 1
             self.processing_generation += 1

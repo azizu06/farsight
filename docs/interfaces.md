@@ -194,7 +194,8 @@ Optional additive fields (clients ignore unknown fields):
   otherwise the largest box) or `{"type": "scan"}`. Proposals come from keywords in the question
   ("go to", "seek", "approach"; "scan", "look around"), never from the model. The answer then ends with
   "Confirm on the headset to ...". On confirm, the Quest sends `mode: "seek"` + `target_id` on
-  `/ws/control`, which still needs the held deadman; scan has no rover handler yet.
+  `/ws/control`, which still needs the held deadman. Confirmed Scan arms a scan;
+  after closing Settings, release then hold the deadman with centred sticks to start it.
 - `timings`: `{"stt": ms|null, "vlm": ms|null, "tts": ms|null}` per stage; `ms` stays the total.
 - `source`, `simulated`, `observation` (facts given to the model), `assistant_warning`, `speech_warning`.
 
@@ -238,8 +239,45 @@ with an ALSA card, else `paplay` with a Pulse sink; `none` disables). When false
 
 ## WebSocket `/ws/points` (Jetson -> Quest), binary, 3D scan
 
+Legacy reserved contract; not implemented. Camera-only scans use `/ws/map` and
+`/map/points.bin` instead, in the mapper's **negative-Z forward** coordinates.
+
 Little-endian: `uint32 n`, then `n * (float32 x, y, z, uint8 r, g, b, pad)`, metres, rover frame at the scan position
 (x right, y up, z forward, origin at the camera with pan 0).
+
+## Camera-only scan: `POST /scan`, `GET /scan`, existing map transport
+
+`POST /scan` takes `{"session_id":"from control socket","permit":"latest control permit"}`
+and returns 202 with a scan status. Refuses with 409 if already scanning, moving,
+in Explore/Seek, lacking a live held lease, missing fresh camera-only RGB, or
+missing the configured depth model (except synthetic `--demo`). Invalid bodies return 422.
+The public `/control/status` cannot grant this permit. Motors remain disabled
+unless the server explicitly enables a physical serial port or a virtual rover.
+
+Keep sending the ordinary ordered, fresh-video, held-deadman envelope on
+`/ws/control`, now with `mode: "scan"`, `v: 0`, `w: 0`. Only operator heartbeats
+renew the lease. Release, disconnect, expired permit, stale camera/video, or
+teleop/stick override cancels; stale/unsafe range also cancels rover rotation.
+Scan mode without an active reservation fails stopped. Completion requires a release.
+
+`GET /scan` and `/health.scan` report `state` (`idle`, `sweeping`, `complete`,
+`aborted`), `running`, `simulated`, `approximate`, `backend`, `views` (yaw degrees,
+depth milliseconds, sample count), `points`, `scan_ms`, `markers`, and optional `error`.
+Fields beyond `state` and `running` are populated when a scan starts.
+Views sweep -80, -40, 0, 40, 80 degrees. Physical camera pan requires `--scan-pan`;
+the default is bounded timed rover rotation and always reports `approximate: true`.
+No SLAM, odometry, or stitching between rover positions is implied.
+
+On success, replace the existing MapState cloud, clear surfaces, increment map
+generation/revision, and pause fusion. The ordinary `/ws/map` status adds optional
+`scan` metadata for this retained snapshot; its existing binary point snapshot and
+`/map/points.bin` use the same 16-byte XYZ/RGB records as phone mapping, with X right,
+Y up, **Z negative ahead**, origin at the starting camera. Each new scan replaces
+the previous origin; resuming phone/demo fusion clears the scan first.
+`scan.markers` contains up to 500 `{id, cls, position:[x,y,z]}` observations from
+exact-source/frame-matched sweep detections, projected at estimated box-centre depth.
+The existing viewer renders yellow marker points and toggles live camera / scan
+with Quest A; trigger + left X requests a scan. See [scan setup and evidence](scan.md).
 
 ## Serial (Jetson <-> Uno), 115200 baud, newline-terminated ASCII
 
