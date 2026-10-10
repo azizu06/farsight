@@ -298,7 +298,8 @@ def write_build_stamp(repo, payloads):
         raise BundleError("VITE_* environment build inputs are not part of the committed snapshot")
     try:
         subprocess.run(["npm", "--offline", "--ignore-scripts", "--prefix", str(repo / "quest"), "run", "build"],
-                       cwd=repo, check=True, timeout=180, env={**os.environ, "npm_config_offline": "true"})
+                       cwd=repo, check=True, timeout=180, stdout=sys.stderr,
+                       env={**os.environ, "npm_config_offline": "true"})
     except (OSError, subprocess.SubprocessError) as exc:
         raise BundleError("Offline Quest build failed; install dependencies separately before packaging") from exc
     assets = quest_assets(repo)
