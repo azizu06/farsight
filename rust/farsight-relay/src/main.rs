@@ -30,6 +30,10 @@ const PROXY_PATHS: &[&str] = &["/health", "/control/status", "/camera.jpg", "/de
 /// HTTP requests on these paths are control-plane traffic: they use the
 /// dedicated upstream pool so bulk downloads can never take their slots.
 const CONTROL_PATHS: &[&str] = &["/control/status", "/scan", "/ask"];
+/// Only binary map downloads keep the client's Accept-Encoding across the
+/// cellular leg; everything else asks upstream for identity because the
+/// relay decodes and rewrites JSON (operator_relay.py parity).
+const ENCODED_PATHS: &[&str] = &["/map/points.bin", "/map/mesh.bin", "/map/export.ply"];
 
 #[derive(Parser)]
 #[command(about = "Serve Quest over USB and relay the rover through a private network")]
@@ -345,12 +349,23 @@ async fn proxy_http(s: Arc<AppState>, req: Request) -> Response {
         // WebSocket upgrades are routed separately by the router.
         return (StatusCode::BAD_REQUEST, "Expected WebSocket upgrade").into_response();
     }
-    // Forward the client's Accept-Encoding: the jetson leg of the proxy is
-    // the cellular hop, so the server must compress for it and the body
-    // passes through to the browser still encoded.
-    let headers = forward_headers(req.headers());
     let method = req.method().clone();
     let path = req.uri().path().to_string();
+    // Binary map downloads keep the client's Accept-Encoding: the jetson leg
+    // is the cellular hop and encoded bodies pass straight through. Every
+    // other path asks upstream for identity — the relay decodes and rewrites
+    // JSON, so a compressed JSON body would be unmungeable here.
+    let mut headers = forward_headers(req.headers());
+    let ae = if ENCODED_PATHS.contains(&path.as_str()) {
+        req.headers()
+            .get(header::ACCEPT_ENCODING)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("identity")
+            .to_string()
+    } else {
+        "identity".to_string()
+    };
+    headers.insert(header::ACCEPT_ENCODING, HeaderValue::from_str(&ae).unwrap());
     let body = req.into_body();
     let body_bytes = match axum::body::to_bytes(body, 8 * 1024 * 1024).await {
         Ok(b) => b,
