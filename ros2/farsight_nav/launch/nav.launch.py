@@ -2,6 +2,7 @@
 
 ros2 launch farsight_nav nav.launch.py [server:=http://127.0.0.1:8443] [controller:=rpp|mppi]
     [slam:=false|true] [costmap_source:=pointcloud|nvblox] [explore:=true|false] [params_file:=...]
+    [bridge_executor:=events|multithreaded]
 
 slam:=true includes farsight_slam's launch (SLAM Toolbox publishes map->odom); otherwise the
 bridge publishes map->odom as identity and ARKit odometry is the only localization.
@@ -55,7 +56,8 @@ def nav_nodes(context):
              output="screen", parameters=[{"autostart": True, "bond_timeout": 4.0, "node_names": list(NAV2_NODES)}]),
         Node(package="farsight_nav", executable="bridge", name="farsight_bridge", output="screen",
              parameters=[{"server": LaunchConfiguration("server"), "publish_map_odom": not slam,
-                          "controller": controller.upper(), "explore": explore}],
+                          "controller": controller.upper(), "explore": explore,
+                          "executor": LaunchConfiguration("bridge_executor")}],
              remappings=remappings),
     ]
     if slam:
@@ -79,6 +81,8 @@ def generate_launch_description():
         DeclareLaunchArgument("explore", default_value="true",
                               description="Frontier exploration for the server's Explore mode (in the bridge)"),
         DeclareLaunchArgument("params_file", default_value="", description="Override config/nav2_params.yaml"),
+        DeclareLaunchArgument("bridge_executor", default_value="events",
+                              description="events (rclpy EventsExecutor, low CPU) or multithreaded"),
         DeclareLaunchArgument("use_sim_time", default_value="false"),
         DeclareLaunchArgument("log_level", default_value="info"),
         SetParameter("use_sim_time", LaunchConfiguration("use_sim_time")),
