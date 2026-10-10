@@ -44,6 +44,9 @@ pub struct PerceptionService {
     /// The server points this at the rescue drill so the face pass only costs
     /// CPU while a drill runs (perception.face_wanted, #81).
     face_wanted: Mutex<Box<dyn Fn() -> bool + Send + Sync>>,
+    /// Adds `world` to tracked person boxes detected on a held RGB-D frame
+    /// (jetson/mapping/people.py annotate hook).
+    annotate: Mutex<Option<Box<dyn Fn(&mut Vec<Value>, &CameraFrame) + Send + Sync>>>,
     #[allow(dead_code)] // Only read under the detector feature.
     face_error: Mutex<Option<String>>,
     inner: Mutex<Inner>,
@@ -96,6 +99,7 @@ impl PerceptionService {
             #[cfg(feature = "detector")]
             face: Mutex::new(face),
             face_wanted: Mutex::new(Box::new(|| true)),
+            annotate: Mutex::new(None),
             face_error: Mutex::new(face_error),
             inner: Mutex::new(Inner {
                 packet: json!({"ts": 0, "frame": -1, "fps": 0, "boxes": [], "detector": "disabled", "source": "WAITING"}),
@@ -139,6 +143,14 @@ impl PerceptionService {
     }
 
     /// Server hook: face pass only while the rescue drill is active.
+    /// people.py `annotate=` injection: the server wires PersonLocator here.
+    pub fn set_annotate(
+        &self,
+        callback: Box<dyn Fn(&mut Vec<Value>, &CameraFrame) + Send + Sync>,
+    ) {
+        *self.annotate.lock().unwrap() = Some(callback);
+    }
+
     pub fn set_face_wanted(&self, callback: Box<dyn Fn() -> bool + Send + Sync>) {
         *self.face_wanted.lock().unwrap() = callback;
     }
@@ -197,6 +209,9 @@ impl PerceptionService {
                                 }
                             };
                             self.track(&mut boxes, now_monotonic());
+                            if let Some(a) = self.annotate.lock().unwrap().as_ref() {
+                                a(&mut boxes, frame);
+                            }
                             let mut inner = self.inner.lock().unwrap();
                             inner.packet = json!({
                                 "ts": epoch(),
