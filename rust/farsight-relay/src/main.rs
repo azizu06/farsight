@@ -911,7 +911,7 @@ mod recovery_tests {
         let up_port = up_listener.local_addr().unwrap().port();
         tokio::spawn(async move {
             let (sock, _) = up_listener.accept().await.unwrap();
-            let _ws = accept_async(sock).await.unwrap();
+            let ws = accept_async(sock).await.unwrap();
             // Handshake done; now say nothing and never read, forever.
             std::future::pending::<()>().await;
             drop(ws);
