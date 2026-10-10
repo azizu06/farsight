@@ -26,7 +26,8 @@ class ProfileTests(unittest.TestCase):
 
     def test_fixture_rejects_physical_motor_options_before_app_creation(self):
         with patch("jetson.mapping.server.create_app") as create:
-            for options in ({"serial_port": "/dev/test"}, {"simulate_rover": False}):
-                with self.assertRaisesRegex(ValueError, "simulated motors"):
+            for options in ({"serial_port": "/dev/test"}, {"simulate_rover": False},
+                            {"camera_device": 0}):
+                with self.assertRaisesRegex(ValueError, "simulated"):
                     fixture_app("rgb15", server_options=options)
             create.assert_not_called()

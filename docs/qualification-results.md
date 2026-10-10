@@ -197,7 +197,7 @@ Each row is a separate 20-second trial. CPU is process p95 sampled every 100 ms 
 | After | quiet | 2 | 63.0% | 26 | 19.2 ms | 22.1 ms | 308.6 ms | 100.0% |
 | After | combined | 2 | 129.1% | 26 | 23.2 ms | 31.0 ms | 317.0 ms | 100.0% |
 
-The intermediate experiment explicitly overriding two ONNX workers also sustained motion in all four quiet/combined repeats. Quiet CPU p95 was 84.5–88.4%; combined CPU p95 was 132.0–133.7%. Final production trials omit the override. The non-stalled before/after rows show a CPU reduction of roughly 46–74%, while median scheduling behavior changes little. Retain the original failed baseline rather than attributing its entire improvement to the pool limit.
+The intermediate experiment explicitly overriding two ONNX workers also sustained motion in all four quiet/combined repeats. Quiet CPU p95 was 84.5–88.4%; combined CPU p95 was 132.0–133.7%. Final production trials omit the override. The non-stalled before/after rows show a CPU reduction of roughly 46–74%, while typical scheduling lag changes little. Retain the original failed baseline rather than attributing its entire improvement to the pool limit.
 
 | Final source / detector | Load | Repeat | Detector work p95 | JPEG encode p95 | H.264 input-to-fragment p95 | Server lag max | Settled moving |
 |---|---|---:|---:|---:|---:|---:|---:|

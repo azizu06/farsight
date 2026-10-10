@@ -44,8 +44,9 @@ def fixture_app(source, *, server_options=None, scene_path=None):
     options = dict(demo=source == "map5", simulate_rover=True, detector="none",
                    h264=True, video_fps=10, video_bitrate=500000)
     options.update(server_options or {})
-    if options.get("serial_port") or not options.get("simulate_rover"):
-        raise ValueError("Qualification requires simulated motors")
+    if (options.get("serial_port") or options.get("camera_device") is not None
+            or not options.get("simulate_rover")):
+        raise ValueError("Qualification requires simulated inputs and motors")
     app = create_app(**options)
     original_lifespan = app.router.lifespan_context
     stop_events = []
