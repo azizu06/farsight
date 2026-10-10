@@ -185,7 +185,7 @@ export class DenseCloudReceiver {
     try {
       const url = new URL(this.endpoint, globalThis.location?.origin || 'http://localhost');
       for (const [key, value] of Object.entries({ ...this.cursor, source: this.source, limit: DENSE_PAGE_RECORDS })) url.searchParams.set(key, String(value));
-      const response = await this.fetcher(url, { cache: 'no-store', signal: abort.signal, redirect: 'error' });
+      const response = await this.fetcher.call(globalThis, url, { cache: 'no-store', signal: abort.signal, redirect: 'error' });
       if (!response.ok) throw new Error(`Dense HTTP ${response.status}`);
       reader = response.body.getReader(); const chunks = []; let length = 0;
       while (true) {
