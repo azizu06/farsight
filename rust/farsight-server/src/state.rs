@@ -70,6 +70,8 @@ pub struct Inner {
 pub struct MapState {
     pub demo: bool,
     pub inner: Mutex<Inner>,
+    /// Encoded packet cache keyed on (frames, keyframe count); cleared via generation.
+    packets: Mutex<Option<(u64, u64, usize, Vec<u8>, Vec<u8>)>>,
 }
 
 impl MapState {
@@ -103,7 +105,7 @@ impl MapState {
             pose_history: VecDeque::new(),
             scan: None,
         };
-        Self { demo, inner: Mutex::new(inner) }
+        Self { demo, inner: Mutex::new(inner), packets: Mutex::new(None) }
     }
 
     pub fn start_session(&self, identity: Identity, device: String) {
@@ -348,14 +350,32 @@ impl MapState {
         )
     }
 
-    pub fn point_packet(&self) -> Vec<u8> {
+    /// Packets keyed on (frames, keyframes); encoding the whole cloud per
+    /// request was the hot spot — Quest polls these every interval.
+    fn packets(&self) -> (Vec<u8>, Vec<u8>) {
         let s = self.inner.lock().unwrap();
+        let key = (s.generation, s.frames, s.surfaces.keyframes.len());
+        {
+            let cache = self.packets.lock().unwrap();
+            if let Some((g, f, k, pts, mesh)) = cache.as_ref() {
+                if (*g, *f, *k) == key {
+                    return (pts.clone(), mesh.clone());
+                }
+            }
+        }
         let (points, colors) = s.cloud.snapshot();
-        encode_points(&points, &colors)
+        let pts = encode_points(&points, &colors);
+        let mesh = s.surfaces.encode();
+        *self.packets.lock().unwrap() = Some((key.0, key.1, key.2, pts.clone(), mesh.clone()));
+        (pts, mesh)
+    }
+
+    pub fn point_packet(&self) -> Vec<u8> {
+        self.packets().0
     }
 
     pub fn mesh_packet(&self) -> Vec<u8> {
-        self.inner.lock().unwrap().surfaces.encode()
+        self.packets().1
     }
 
     pub fn ply(&self) -> Vec<u8> {
