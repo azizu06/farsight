@@ -723,6 +723,11 @@ impl ControlState {
             let (nv, nw) = command.unwrap_or((0.0, 0.0));
             v = nv;
             w = nw;
+        } else if engaged && self.navigator.is_some() {
+            // #115: Nav2 is the only navigation when configured — hold still,
+            // never drive the reactive policy blind.
+            v = 0.0;
+            w = 0.0;
         } else if engaged {
             let cm = if self.now() - s.range_at < RANGE_TTL { s.range_cm } else { None };
             let snapshot = self.detections.as_ref().map(|d| d()).unwrap_or(json!({}));
@@ -834,17 +839,16 @@ impl ControlState {
             "drive_mode": s.drive.map(|d| d.kind()).unwrap_or("normalized"),
         });
         if let Some(nav) = &self.navigator {
-            let (mode, phase, engaged) = match s.autonomy.as_ref() {
+            let (mode, engaged) = match s.autonomy.as_ref() {
                 Some(a) => (
                     Some(a.mode.as_str()),
-                    Some(a.phase.as_str()),
                     a.mode != "teleop" && s.deadline != 0.0,
                 ),
-                None => (None, None, false),
+                None => (None, false),
             };
             out.as_object_mut()
                 .unwrap()
-                .insert("nav".into(), nav.nav_object(mode, phase, Some(engaged)));
+                .insert("nav".into(), nav.nav_object(mode, Some(engaged)));
         }
         out
     }
