@@ -80,7 +80,7 @@ class RGBDFrame:
     jpeg: bytes
 
 
-def decode_frame(packet, identity):
+def decode_frame(packet, identity, upright=None):
     if not 4 < len(packet) <= MAX_PACKET:
         raise ValueError("Frame exceeds the 8 MiB limit or is empty")
     header_size = struct.unpack_from("<I", packet)[0]
@@ -131,7 +131,8 @@ def decode_frame(packet, identity):
     confidence_data = np.frombuffer(packet, np.uint8, dw * dh, start).reshape(dh, dw).copy()
     if np.any(confidence_data > 2):
         raise ValueError("Confidence values must be 0, 1 or 2")
-    return RGBDFrame(header, rgb, depth_data, confidence_data, calibration, transform, jpeg)
+    frame = RGBDFrame(header, rgb, depth_data, confidence_data, calibration, transform, jpeg)
+    return upright.apply(frame) if upright is not None else frame
 
 
 def world_grid(frame):

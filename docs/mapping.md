@@ -100,6 +100,15 @@ The header includes:
 
 The example `jpeg_len` must be replaced with the actual byte count. Intrinsics describe the transmitted JPEG.
 Image and depth must have the same aspect ratio; cropped, rotated, or independently zoomed images are rejected.
+**Mount orientation.** The rover phone may sit either way up in its landscape cradle. ARKit frames are sensor-native, so
+the Jetson (`jetson/mapping/orientation.py`) reads gravity from each frame's camera pose: when world-up in the camera's image
+plane points down for 3 consecutive frames (past 110 degrees; back at 70 degrees with the same hysteresis, held while the camera
+looks within ~20 degrees of straight up or down) it rotates JPEG, RGB, depth, confidence, principal point and pose by 180 degrees
+before anything else sees the frame. `/camera.jpg`, the video lane, detector boxes, person markers, SBAR/identity crops, the dense
+map and Nav2 therefore stay upright with no phone change, and fusion receives identical world points either way up, so
+nothing is corrected twice. Frames carry `orientation_normalized: "rotated_180"` while rotated. Phone RGB-only frames have no
+pose, so this path covers the LiDAR rover phone only; the Rust server does not normalise yet.
+
 ARKit optional floor and mesh metadata on v2/v3 bundles is accepted but not used to fabricate geometry.
 In phone mode, only measured RGB-D creates this map. Full ARKit mesh archives, object detection, and old rover relay messages
 are outside this mapping server's protocol.

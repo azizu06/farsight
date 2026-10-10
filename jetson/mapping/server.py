@@ -22,6 +22,7 @@ from jetson.sim.stream import SimFeed, stream_world
 from jetson.sim.world import RoverSim
 from jetson.sim.worlds import WORLDS, load as load_world
 from .people import PersonLocator
+from .orientation import UprightNormalizer
 from .phone import Hello, decode_frame, validate_pose
 from .state import MapState
 from jetson.camera import CameraService
@@ -649,11 +650,13 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
             camera_service.phone_rgb = None
             await asyncio.to_thread(state.start_session, identity, hello.device)
 
+            upright = UprightNormalizer()  # per session: the mount may flip live
+
             async def consume():
                 while True:
                     packet, received_at = await queue.get()
                     try:
-                        frame = await asyncio.to_thread(decode_frame, packet, identity)
+                        frame = await asyncio.to_thread(decode_frame, packet, identity, upright)
                         frame.header["_received_monotonic"] = received_at
                         await asyncio.to_thread(state.process, frame, permits=permits)
                     except (ValueError, TypeError, KeyError, ValidationError) as exc:
