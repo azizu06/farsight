@@ -60,9 +60,9 @@ struct CaptureView: View {
                         Text(bridge.secondaryRouteStatus).font(.caption.monospaced())
                     }
                     if bridge.operatorRecoveryWanted && !bridge.running {
-                        Button("Cancel foreground recovery") { bridge.stop(); updateIdleTimer() }
+                        Button("Cancel bridge recovery") { bridge.stop(); updateIdleTimer() }
                     }
-                    Text("PHONE VPN / USB BRIDGE UNQUALIFIED. Background closes all sessions and capture. Explicitly started operator listener re-arms on foreground; camera and motion do not auto-resume.")
+                    Text("PHONE VPN / USB BRIDGE UNQUALIFIED. Background closes all sessions and capture. Operator listeners recover in foreground. Capture retries network faults while started; background requires Start again. Motion needs a fresh trigger press after a fault.")
                         .font(.caption.bold()).foregroundStyle(.orange)
                 }
                 if bridgeRole != .operator {
@@ -139,7 +139,7 @@ struct CaptureView: View {
         .onChange(of: bridge.running) { _, _ in updateIdleTimer() }
         .onChange(of: bridgeRole) { _, role in
             bridge.stop()
-            if role == .operator && capture.running { capture.stop() }
+            if capture.running { capture.stop() }
             updateIdleTimer()
         }
         .onChange(of: dualRoutes) { _, enabled in if enabled { fallbackEnabled = false } }
@@ -156,7 +156,7 @@ struct CaptureView: View {
     }
 
     private func updateIdleTimer() {
-        UIApplication.shared.isIdleTimerDisabled = phase != .background && (capture.running || bridge.running)
+        UIApplication.shared.isIdleTimerDisabled = phase != .background && (capture.running || bridge.running || bridge.operatorRecoveryWanted)
     }
 
     private func bridgeAddress(_ label: String, text: Binding<String>) -> some View {

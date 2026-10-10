@@ -476,6 +476,9 @@ final class PhoneBridge: ObservableObject {
     private var updateScheduled = false, dualArmed = false
     private var foregroundIntent = BridgeForegroundIntent()
     private var operatorConfig: PhoneBridgeConfig?
+    private var foregroundActive = true
+    private var listenerRetry: DispatchWorkItem?
+    private var listenerFailures = 0
 
     init(server: PhoneBridgeServer = PhoneBridgeServer(), secondaryServer: PhoneBridgeServer = PhoneBridgeServer(),
          configuration: @escaping (PhoneBridgeRole, String, String, String, String?) throws -> PhoneBridgeConfig = {
@@ -506,12 +509,14 @@ final class PhoneBridge: ObservableObject {
             let secondary = routeSnapshots[1] ?? PhoneBridgeSnapshot()
             if primary.listenerFailed || secondary.listenerFailed {
                 closeTransport("Dual \(primary.listenerFailed ? "primary" : "fallback") listener failed: \(primary.listenerFailed ? primary.status : secondary.status). Both stopped.")
+                scheduleOperatorRetry()
                 return
             }
             primaryRouteStatus = "Primary listener :\(primary.port) · \(primary.ready ? "ready" : "not ready") · \(primary.active)/16 active · \(primary.errors) errors"
             secondaryRouteStatus = "Fallback listener :\(secondary.port) · \(secondary.ready ? "ready" : "not ready") · \(secondary.active)/16 active · \(secondary.errors) errors"
             listeningPort = primary.ready ? primary.port : 0
             secondaryListeningPort = secondary.ready ? secondary.port : 0
+            if primary.ready && secondary.ready { listenerFailures = 0 }
             if primary.ready && secondary.ready && !dualArmed {
                 dualArmed = true; server.enableAcceptingConnections(); secondaryServer.enableAcceptingConnections()
             }
@@ -519,6 +524,11 @@ final class PhoneBridge: ObservableObject {
             status = dualArmed ? "Dual pinned listeners ready · routes never migrate or replay" : "Starting both dual listeners; requests gated"
             counters = "Primary \(primary.forwardedBytes) bytes · fallback \(secondary.forwardedBytes) bytes"
         } else {
+            if primary.listenerFailed {
+                closeTransport("Bridge listener failed: \(primary.status)")
+                scheduleOperatorRetry(); return
+            }
+            if primary.ready { listenerFailures = 0 }
             running = primary.running; status = primary.status; listeningPort = primary.ready ? primary.port : 0
             counters = "\(primary.active)/16 active (primary \(primary.primaryActive), fallback \(primary.fallbackActive), connecting \(primary.active - primary.primaryActive - primary.fallbackActive)) · \(primary.errors) errors · \(primary.forwardedBytes) bytes · last \(primary.lastChosen)"
         }
@@ -533,6 +543,7 @@ final class PhoneBridge: ObservableObject {
                 throw BridgeError("Operator dual routes require both validated tailnet addresses")
             }
             config.dualRoutes = dualRoutes
+            listenerFailures = 0
             foregroundIntent.explicitStart(role: role); operatorRecoveryWanted = foregroundIntent.operatorWanted
             operatorConfig = role == .operator ? config : nil
             startConfigured(config)
@@ -545,6 +556,7 @@ final class PhoneBridge: ObservableObject {
     }
 
     private func startConfigured(_ config: PhoneBridgeConfig) {
+        listenerRetry?.cancel(); listenerRetry = nil
         let token = UUID(); generation = token; running = true; status = "Starting fixed-upstream bridge"
         dualRoutesActive = config.dualRoutes; dualArmed = false; routeSnapshots.removeAll()
         // Enqueue the complete listener transaction under one lock. A fast
@@ -564,18 +576,36 @@ final class PhoneBridge: ObservableObject {
     }
 
     private func closeTransport(_ reason: String) {
+        listenerRetry?.cancel(); listenerRetry = nil
         generation = UUID(); running = false; status = reason; listeningPort = 0; secondaryListeningPort = 0
         snapshotLock.lock(); snapshotToken = generation; pendingSnapshots.removeAll(); snapshotLock.unlock()
-        dualRoutesActive = false; dualArmed = false
+        dualRoutesActive = false; dualArmed = false; routeSnapshots.removeAll()
         primaryRouteStatus = "Primary listener stopped"; secondaryRouteStatus = "Fallback listener stopped"
         counters = "0 active · bridge stopped"; server.stop(); secondaryServer.stop()
     }
 
+    private func scheduleOperatorRetry() {
+        guard foregroundActive, operatorRecoveryWanted, let config = operatorConfig else { return }
+        listenerFailures = min(listenerFailures + 1, 5)
+        let delay = min(8, 0.5 * pow(2, Double(listenerFailures - 1)))
+        let token = generation
+        status += " Re-arming in \(delay)s; Stop cancels."
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.generation == token, self.foregroundActive,
+                  self.operatorRecoveryWanted, !self.running else { return }
+            self.startConfigured(config)
+        }
+        listenerRetry = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
     func suspendForBackground() {
+        foregroundActive = false
         closeTransport(operatorRecoveryWanted ? "Operator suspended; foreground re-arms listener only" : "Bridge stopped on background")
     }
 
     func recoverOperatorOnActive(role: PhoneBridgeRole) {
+        foregroundActive = true
         guard !running, foregroundIntent.shouldRearmOnActive(role: role), let operatorConfig else { return }
         startConfigured(operatorConfig)
     }

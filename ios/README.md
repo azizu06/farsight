@@ -9,7 +9,8 @@ Operator mode supports the rover-phone primary plus an optional Jetson tailnet
 fallback, disabled by default. Each TCP session keeps its selected route;
 failures close it without replay. The UI shows primary/fallback session counts.
 An explicitly started operator listener re-arms after foregrounding; manual
-Stop or a role change clears that intent. Capture never auto-resumes. The optional
+Stop or a role change clears that intent. Foreground listener bind failures
+retry with 0.5–8 s backoff; both dual listeners restart atomically. The optional
 **Pinned dual routes for host broker** mode binds primary loopback8081 and
 fallback loopback8082 separately for the experimental bonded Mac relay; it is
 mutually exclusive with automatic fallback and remains off by default. Both
@@ -110,9 +111,14 @@ driving with it: older frames leave less margin inside the 500 ms video guard.
 Stop capture before changing modes. JPEG quality is 0.5. One frame send
 can be in flight. New frames are skipped during that send; they are never kept
 for replay. A send that remains incomplete for 500 ms closes the socket. Any
-disconnect, camera interruption, or backgrounding stops capture; press Start
-to create a new phone session and ARKit world origin. The app does not reconnect
-automatically and replay old frames. Stop capture before opening another phone
+network disconnect retries while the app remains foreground and capture is
+explicitly started: 0.5, 1, 2, 4, then 8 s between attempts. Each attempt creates
+a new socket, hello/session ID and camera stream/world origin; old frames and
+callbacks are discarded. Negotiated capture permits silent for 1 s also replace
+the connection. That recovery watchdog grants no freshness and does not change
+the 250/500 ms control/video limits. Stop, role change, backgrounding, camera
+interruption or camera errors cancel capture/retry; press Start to resume.
+Network recovery alone never resumes rover motion; release and press the trigger. Stop capture before opening another phone
 camera connection.
 
 The backend's latest-frame camera timestamp and motor guard are independent
@@ -192,7 +198,8 @@ views and fuses those frames; physical motion on them needs the server's opt-in
 normal tracking without a verified capture clock.
 
 The unsigned build and deterministic Swift tests prove compilation, permit
-parsing, exposure ordering and bounds; they do not prove phone sensor timing,
+parsing, exposure ordering, retry intent/backoff and bounds. Mac loopback tests
+exercise listener failure/recovery, atomic dual ports and Stop/background; they do not prove phone sensor timing,
 camera orientation, USB delivery or real-device capture performance. Measure
 actual headers on the installed phone before declaring that path qualified.
 
