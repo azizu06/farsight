@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Farsight — Mac view (flat, not stereo)</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #080f16; overflow: hidden; }
+      video { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+      .mac-age {
+        position: fixed; right: 12px; bottom: 12px; color: #d7e2ea;
+        font: 13px/1.3 ui-monospace, monospace; background: rgba(0, 0, 0, 0.45);
+        padding: 4px 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <script type="module" src="/src/mac-view-page.ts"></script>
+  </body>
+</html>

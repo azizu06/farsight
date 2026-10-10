@@ -33,7 +33,8 @@ export class H264Viewer {
   /** Decoder processing time of the last presented frame, for diagnostics only. */
   decodeMs: number | null = null;
 
-  constructor(private onFrame: () => void, private onReset: () => void) {
+  constructor(private onFrame: () => void, private onReset: () => void, readonly streamPath = "/ws/video",
+              private hooks: { onMetadata?: (message: Record<string, unknown>) => boolean | void } = {}) {
     this.video.muted = true; this.video.autoplay = true; this.video.playsInline = true;
     this.video.onerror = () => this.reset("Decoder error: restarting H.264");
   }
@@ -57,6 +58,7 @@ export class H264Viewer {
       id: `h264:${segment.request_id}:${this.decodedFrames}`,
       age: segment.boundedAge + performance.now() - segment.receivedAt,
       source: segment.source,
+      metadata: segment,
       frame: sampleFrame(segment.samples, this.decodedMediaTime, segment.media_start_s, segment.media_end_s),
     };
   }
@@ -64,12 +66,15 @@ export class H264Viewer {
     if (this.stopped || this.connecting) return;
     if (!("MediaSource" in window)) { this.state = "H.264 unavailable: MediaSource unsupported"; this.stopped = true; return; }
     this.connecting = true;
-    const socket = new WebSocket(new URL("/ws/video", location.origin).href.replace(/^http/, "ws"));
+    const socket = new WebSocket(new URL(this.streamPath, location.origin).href.replace(/^http/, "ws"));
     this.socket = socket; socket.binaryType = "arraybuffer";
     socket.onmessage = event => {
       if (typeof event.data === "string") {
         try {
           const message = JSON.parse(event.data);
+          if (this.hooks.onMetadata?.(message) === false) {
+            this.state = "Video format rejected"; this.stop(false); return;
+          }
           if (message.type === "video_init") {
             if (typeof message.mime !== "string" || !MediaSource.isTypeSupported(message.mime)) {
               this.state = "H.264 codec unsupported: use JPEG"; this.stop(false); return;
