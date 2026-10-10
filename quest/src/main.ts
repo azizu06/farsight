@@ -3,6 +3,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { VRButton } from "three/addons/webxr/VRButton.js";
 import { decodeMesh, decodePoints } from "./protocol.js";
 import "./style.css";
+import { RoverExperience } from "./rover";
 
 type Status = {
   type: string;
@@ -243,7 +244,8 @@ renderer.xr.addEventListener("sessionstart", () => {
   desktopPosition.copy(camera.position);
   desktopQuaternion.copy(camera.quaternion);
   controls.enabled = false;
-  camera.position.set(status?.position[0] ?? 0, -0.5, status?.position[2] ?? 0);
+  settings.close();
+  camera.position.set(0, 0, 0);
   camera.quaternion.identity();
 });
 renderer.xr.addEventListener("sessionend", () => {
@@ -257,10 +259,16 @@ new ResizeObserver(() => {
   camera.aspect = width / Math.max(height, 1);
   camera.updateProjectionMatrix();
 }).observe($("scene"));
+let rover: RoverExperience | undefined;
 renderer.setAnimationLoop(() => {
+  rover?.update(performance.now());
+  root.visible = !rover?.vrCameraView;
   if (!renderer.xr.isPresenting) controls.update();
   renderer.render(scene, camera);
 });
+
+rover = new RoverExperience(renderer, scene, camera, () => view, setView);
+setView(new URLSearchParams(location.search).get("view") === "map" ? "3d" : "camera");
 
 function replaceGeometry(
   object: THREE.Points | THREE.Mesh,
@@ -321,6 +329,7 @@ function resetView() {
   controls.enableDamping = true;
 }
 function setView(next: string) {
+  if (view !== next) rover?.stop("View changed: release deadman");
   view = next;
   document.querySelectorAll<HTMLElement>("[data-view]").forEach((button) => {
     const selected = button.dataset.view === view;
@@ -334,7 +343,7 @@ function setView(next: string) {
     view === "map";
   camera.up.set(0, view === "map" ? 0 : 1, view === "map" ? -1 : 0);
   controls.enableRotate = view !== "map";
-  if (view === "3d")
+  if (view === "3d" && !renderer.xr.isPresenting)
     camera.position.copy(controls.target).add(new THREE.Vector3(9, 6, 9));
   text(
     "view-label",
@@ -344,7 +353,7 @@ function setView(next: string) {
         ? "Top Perspective"
         : "Camera Perspective",
   );
-  frameMap();
+  if (!renderer.xr.isPresenting) frameMap();
   visibility();
 }
 function notify(message: string) {
@@ -583,7 +592,7 @@ async function updateFeeds() {
     feedBusy ||
     !status?.fresh ||
     document.hidden ||
-    (!settings.open && view !== "camera")
+    !settings.open
   )
     return;
   feedBusy = true;
@@ -600,9 +609,6 @@ async function updateFeeds() {
         const old = image.src;
         image.src = url;
         image.hidden = false;
-        if (id === "rgb")
-          document.querySelector<HTMLImageElement>("#full-camera img")!.src =
-            url;
         if (old.startsWith("blob:")) URL.revokeObjectURL(old);
       } catch {
         /* The status line reports freshness; keep the last measured image. */
@@ -618,5 +624,6 @@ window.addEventListener("beforeunload", () => {
     socket.onclose = null;
     socket.close();
   }
+  rover?.dispose();
   renderer.dispose();
 });
