@@ -79,6 +79,9 @@ pub fn capture_diagnostics(
 pub struct CameraService {
     pub mapping: Arc<MapState>,
     pub device: Option<String>,
+    /// Opt-in (--lidar-drive): fresh /phone ARKit frames with normal tracking may
+    /// drive without a capture-permit binding. Leases and stale stops still apply.
+    pub lidar_drive: bool,
     pub width: u32,
     pub height: u32,
     pub fps: u32,
@@ -88,10 +91,11 @@ pub struct CameraService {
 }
 
 impl CameraService {
-    pub fn new(mapping: Arc<MapState>, device: Option<String>) -> Self {
+    pub fn new(mapping: Arc<MapState>, device: Option<String>, lidar_drive: bool) -> Self {
         Self {
             mapping,
             device,
+            lidar_drive,
             width: 640,
             height: 480,
             fps: 15,
@@ -209,9 +213,14 @@ impl CameraService {
             .unwrap_or(false);
         // Drive eligibility: verified phone RGB, local USB, or a known-safe
         // source; legacy/unverified streams are viewable but cannot drive.
+        let lidar = self.lidar_drive
+            && fresh
+            && frame.as_ref().map(|f| f.source == "IPHONE LIDAR").unwrap_or(false)
+            && self.mapping.lidar_drive_eligible();
         let drive_ready = fresh
             && (self.device.is_some()
                 || bound
+                || lidar
                 || frame.as_ref().map(|f| {
                     f.source == "SIMULATED" || f.source.starts_with("REPLAY")
                 })

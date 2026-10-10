@@ -462,6 +462,12 @@ impl MapState {
         export_ply(&points, &colors)
     }
 
+    /// Live /phone session with normal ARKit tracking (--lidar-drive opt-in).
+    pub fn lidar_drive_eligible(&self) -> bool {
+        let s = self.inner.lock().unwrap();
+        s.connected && !self.demo && s.tracking == "normal"
+    }
+
     pub fn set_paused(&self, paused: bool) {
         self.inner.lock().unwrap().paused = paused;
     }

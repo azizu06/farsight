@@ -114,6 +114,7 @@ pub fn build_state(
     nav_max_w: f64,
     nav_camera_height: f64,
     sim_world: Option<String>,
+    lidar_drive: bool,
 ) -> Arc<AppState> {
     // create_app validation order: sim-world, replay, simulated+serial,
     // nav2+replay, then pan mount.
@@ -165,7 +166,11 @@ pub fn build_state(
     } else {
         None
     };
-    let camera = Arc::new(CameraService::new(mapping.clone(), camera_device.clone()));
+    let camera = Arc::new(CameraService::new(
+        mapping.clone(),
+        camera_device.clone(),
+        lidar_drive,
+    ));
     let mut video = VideoService::new(camera.clone(), h264);
     video.fps = video_fps;
     video.bitrate = video_bitrate;
@@ -1959,6 +1964,7 @@ mod phone_lifecycle_tests {
             0.8,        // nav_max_w
             0.15,       // nav_camera_height
             None,       // sim_world
+            false,      // lidar_drive
         )
     }
 
