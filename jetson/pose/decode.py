@@ -5,7 +5,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-from .pose import is_down
+from .keypoints import is_down
 from .types import Detection
 
 PAD_COLOUR = 114

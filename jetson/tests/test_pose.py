@@ -1,6 +1,6 @@
 import numpy as np
 
-from farsight.detect.pose import is_down
+from jetson.pose.keypoints import is_down
 
 L_SH, R_SH, L_HIP, R_HIP, L_ANK, R_ANK = 5, 6, 11, 12, 15, 16
 

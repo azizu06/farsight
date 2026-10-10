@@ -118,6 +118,39 @@ class PolicyTests(unittest.TestCase):
         self.send(v=0, w=1)
         self.assertEqual(self.state.output()[:2], (100, -100))
 
+    def test_optional_pwm_floor_preserves_zero_reverse_arcs_and_ceiling(self):
+        self.state.min_pwm = 60
+        self.send(v=0, w=0)
+        self.assertEqual(self.state.output()[:2], (0, 0))
+        self.send(v=-0.5, w=0)
+        self.assertEqual(self.state.output()[:2], (-80, -80))
+        self.send(v=0.5, w=0.25)
+        self.assertEqual(self.state.output()[:2], (90, 70))
+        self.send(v=1, w=1)
+        self.assertEqual(self.state.output()[:2], (100, 0))
+        self.send(v=0, w=-1)
+        self.assertEqual(self.state.output()[:2], (-100, 100))
+        self.send(v=0.01, w=0)
+        self.assertEqual(self.state.output()[:2], (60, 60))
+        self.send(deadman=False)
+        self.assertEqual(self.state.output()[:2], (0, 0))
+
+    def test_pwm_floor_remains_stopped_when_forward_blocked(self):
+        self.state.min_pwm = 60
+        self.state.update_range(10)
+        self.send(v=0.5, w=0)
+        self.assertEqual(self.state.output()[:2], (0, 0))
+
+    def test_pwm_configuration_validation_and_service_forwarding(self):
+        for floor, ceiling in ((-1, 100), (100, 100), (101, 100), (0, 256),
+                               (0, 0), (False, 100), (1.5, 100), (0, 100.5)):
+            with self.subTest(floor=floor, ceiling=ceiling), self.assertRaises(ValueError):
+                ControlState(min_pwm=floor, max_pwm=ceiling)
+        service = ControlService(min_pwm=70, max_pwm=110)
+        self.assertEqual(service.status()["min_pwm"], 70)
+        self.assertEqual(service.status()["max_pwm"], 110)
+        self.assertEqual(service.state.output()[:2], (0, 0))
+
     def test_server_camera_guard_stops_motion_and_requires_release(self):
         ready = [True]
         self.state.camera_ready = lambda: ready[0]

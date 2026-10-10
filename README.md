@@ -47,4 +47,6 @@ remains separate: this mapper does not command motors or implement detections.
 
 ## Model licenses
 
-Person/pose detection uses Ultralytics YOLO11n-pose (`models/yolo11n-pose.onnx`, not committed), licensed AGPL-3.0. Run it with `FARSIGHT_DETECTOR=onnx` (needs `pip install -e 'jetson[onnx]'`); on the Jetson the TensorRT backend replaces it.
+Pose detection uses Ultralytics YOLO11n-pose (`models/yolo11n-pose.onnx`, not committed), licensed AGPL-3.0. Run it with
+`python -m jetson.mapping.server --detector pose --detector-model models/yolo11n-pose.onnx` (`pip install onnxruntime` is
+optional; OpenCV DNN is the fallback). Detection boxes then carry `kpts` and `down`. The TensorRT pose backend is a stub until the engine is built on the Jetson.

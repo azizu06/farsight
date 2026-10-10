@@ -16,7 +16,7 @@ class Detection:
     down: bool = False
 
 
-class Detector(Protocol):
+class PoseDetector(Protocol):
     name: str
 
     def detect(self, frame: np.ndarray) -> list[Detection]:

@@ -45,3 +45,25 @@ Bench qualification is required before floor driving:
 
 Host tests and successful compilation do not establish motor polarity, range
 accuracy, braking distance, USB stability, or correct wiring on the real rover.
+
+## Calibrate slow movement
+
+The Jetson server exposes `--max-pwm` (ceiling) and optional `--min-pwm` (floor).
+The floor defaults to **0**, preserving the linear mixer. A nonzero wheel
+command maps between the calibrated floor and ceiling; zero commands remain
+zero. The allowed range is `0 <= min_pwm < max_pwm <= 255`. A low command may
+otherwise produce too little torque to start the ELEGOO motors consistently.
+
+With the wheels lifted, begin at floor zero and increase `--min-pwm` in small
+steps only until both sides start consistently at small forward and reverse
+commands. Repeat with the actual demo battery. Verify release, disconnect,
+obstacle, and watchdog stops still produce exact zero; a floor must never turn
+a stop into a moving wheel command. Check low arcs and pivots too, since the
+floor affects all nonzero wheels and can change turn curvature.
+
+Then qualify on the floor in a clear small area with someone ready to power
+off the rover. Recheck the loaded starting threshold and stopping distance;
+choose the lowest reliable floor and a ceiling that produces suitably slow
+movement. Lifted-wheel spin alone does not establish floor speed or loaded
+torque. Do not claim any PWM value is calibrated until these physical checks
+pass.

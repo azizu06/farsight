@@ -25,7 +25,7 @@ All servers run on the Jetson, port `8443` (HTTPS). The mock server
 |---|---|
 | `GET /` | Quest WebXR app (built `quest/dist`) |
 | `GET /stream.mjpg` | Camera, MJPEG, 640x480, target 30 fps |
-| `GET /health` | `{"camera": bool, "detector_fps": float, "rover": bool, "estop": bool}` (the Jetson server also adds `detector`, `detector_ms`, `camera_fps`) |
+| `GET /health` | `{"camera": bool, "detector_fps": float, "rover": bool, "estop": bool}` |
 
 ## WebSocket `/ws/detections` (Jetson -> Quest), JSON, every inference
 
@@ -46,7 +46,7 @@ Optional pose fields (YOLO11-pose), present when the detector is a pose model:
 
 - `kpts`: 17 COCO keypoints (nose, eyes, ears, shoulders, elbows, wrists, hips, knees, ankles), each `[x, y, conf]`. Omitted if the detector has no pose.
 - `down`: true when the person looks fallen (body axis more than 60 degrees from vertical, or a wide box when keypoints are unreliable). Omitted fields mean false/absent; clients must ignore unknown fields.
-- `id` is the index within the frame for now, not stable across frames.
+- `id` comes from the server's simple IoU tracker, so it stays stable while a person stays in view.
 
 ## WebSocket `/ws/control` (Quest -> Jetson), JSON, 20 Hz while the deadman is held
 

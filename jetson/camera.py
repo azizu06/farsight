@@ -12,6 +12,13 @@ import cv2
 import numpy as np
 
 
+def adjusted_receipt(header, received_at=None):
+    delay = header.get("producer_delay_ms", 0)
+    if type(delay) not in (int, float) or not math.isfinite(delay) or not 0 <= delay <= 60000:
+        raise ValueError("Producer encoding delay must be finite milliseconds in 0..60000")
+    return (time.monotonic() if received_at is None else received_at) - delay / 1000
+
+
 @dataclass(frozen=True)
 class CameraFrame:
     jpeg: bytes
@@ -45,7 +52,8 @@ class CameraService:
         with self.lock:
             return self.frame
 
-    def accept_phone_rgb(self, packet, session_id, previous_frame=-1):
+    def accept_phone_rgb(self, packet, session_id, previous_frame=-1, received_at=None):
+        arrived = time.monotonic() if received_at is None else received_at
         if not isinstance(packet, bytes) or not 4 < len(packet) <= 2 * 1024 * 1024:
             raise ValueError("RGB packet length is invalid")
         length = struct.unpack_from("<I", packet)[0]
@@ -65,7 +73,7 @@ class CameraService:
         image = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
         if image is None or max(image.shape[:2]) > 4096:
             raise ValueError("RGB image cannot be decoded or is excessive")
-        self.phone_rgb = CameraFrame(jpeg, time.monotonic(), frame_id, "PHONE RGB")
+        self.phone_rgb = CameraFrame(jpeg, adjusted_receipt(header, arrived), frame_id, "PHONE RGB")
         return frame_id
 
     def status(self):

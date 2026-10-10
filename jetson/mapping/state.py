@@ -10,6 +10,7 @@ from .geometry import encode_points, export_ply
 from .phone import reconstruct
 from .surfaces import SurfaceMap
 from .voxel import VoxelMap
+from jetson.camera import adjusted_receipt
 
 
 class MapState:
@@ -84,6 +85,7 @@ class MapState:
 
     def process(self, frame):
         started = time.monotonic()
+        camera_receipt = adjusted_receipt(frame.header, frame.header.get("_received_monotonic", started))
         with self.lock:
             if not self.connected or (frame.header["session_id"], frame.header["map_epoch"]) != self.identity:
                 return
@@ -94,7 +96,7 @@ class MapState:
             generation = self.processing_generation
             self.observe_pose(frame.header, frame.transform)
             self.jpeg = frame.jpeg
-            self.last_frame_received = time.monotonic()
+            self.last_frame_received = camera_receipt
             self.frame_id = frame.header["frame_id"]
             valid = np.isfinite(frame.depth) & (frame.depth > 0.15) & (frame.depth <= 8)
             scaled = np.where(valid, np.clip(frame.depth / 8 * 255, 0, 255), 0).astype(np.uint8)

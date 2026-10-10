@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { ControlSafety, stick } from "./control-safety.js";
 import { H264Viewer } from "./h264";
+import { cameraCrop, croppedBox } from "./camera-view.js";
 
 type Box = { id?: number; cls: string; conf: number; x: number; y: number; w: number; h: number };
 type Detections = { frame: number | string; boxes: Box[]; fps?: number; source?: string; simulated?: boolean };
@@ -20,6 +21,10 @@ export class RoverExperience {
   private frameBusy = false;
   private request: AbortController | null = null;
   private frameId = "";
+  private pendingFrame: { id: string | null; age: number; at: number } | null = null;
+  private lastCanvasDraw = -Infinity;
+  private inputValid = false;
+  private contextLost = false;
   private frameSource = "Waiting for camera";
   private frame: HTMLImageElement | null = null;
   private detections: Detections | null = null;
@@ -28,6 +33,9 @@ export class RoverExperience {
   private seq = 0;
   private sent = new Map<number, number>();
   private ackMs: number | null = null;
+  private drill: { active: boolean; remaining_s: number | null; person_encounters: number } | null = null;
+  private drillAt = -Infinity;
+  private drillBusy = false;
   private lastSendAt = 0;
   private input = { held: false, v: 0, w: 0, pan: 0 };
   private keys = new Set<string>();
@@ -50,6 +58,8 @@ export class RoverExperience {
   private holdButton: HTMLButtonElement;
   private h264: H264Viewer;
   private h264Enabled = false;
+  private digitalPan = false;
+  private drawnPan = 0;
   private cameraScreen: THREE.Mesh;
   private lastVideoAt = 0;
   private dirty = true;
@@ -118,12 +128,13 @@ export class RoverExperience {
     videoOption.querySelector("input")!.onchange = event => {
       this.h264Enabled = (event.target as HTMLInputElement).checked;
       this.stop("Video format changed: release deadman");
-      this.gate.frameAt = -Infinity; this.gate.frameAge = Infinity;
+      this.gate.frameAt = -Infinity; this.gate.frameAge = Infinity; this.pendingFrame = null; this.lastCanvasDraw = -Infinity;
       if (this.h264Enabled) this.h264.start(); else this.h264.stop();
       this.dirty = true;
     };
     this.renderer.xr.addEventListener("sessionstart", () => {
       this.stop("VR session started: release trigger");
+      this.inputValid = false; this.keys.clear(); this.pointerHeld = false;
       this.recenter = true; this.xrLive = true; this.setView("camera");
       this.renderer.xr.getSession()?.addEventListener("visibilitychange", () => {
         this.suspended = this.renderer.xr.getSession()?.visibilityState !== "visible";
@@ -132,7 +143,17 @@ export class RoverExperience {
     });
     this.renderer.xr.addEventListener("sessionend", () => {
       this.stop("VR session ended: release deadman"); this.suspended = false;
+      this.inputValid = false; this.keys.clear(); this.pointerHeld = false;
     });
+    this.renderer.domElement.addEventListener("webglcontextlost", () => { this.contextLost = true; this.stop("Display lost: release deadman"); });
+    this.renderer.domElement.addEventListener("webglcontextrestored", () => { this.contextLost = false; this.stop("Display restored: release deadman"); });
+    const cameraOption = document.createElement("label"); cameraOption.className = "camera-mount-option";
+    cameraOption.innerHTML = '<span>Camera mounting</span><select aria-label="Camera mounting mode"><option value="servo">Camera mounted on servo</option><option value="fixed">Fixed camera · digital look-around</option></select><small>Fixed mode crops measured pixels and keeps the physical pan command centered.</small>';
+    document.querySelector("#settings")!.append(cameraOption);
+    cameraOption.querySelector("select")!.onchange = event => {
+      this.digitalPan = (event.target as HTMLSelectElement).value === "fixed";
+      this.stop("Camera mount changed: release deadman"); this.dirty = true;
+    };
     this.connectControl(); this.connectDetections();
     this.timers.push(window.setInterval(() => this.pump(), 50));
     this.timers.push(window.setInterval(() => void this.fetchFrame(), 160));
@@ -144,6 +165,7 @@ export class RoverExperience {
     if (/INPUT|TEXTAREA|SELECT/.test((event.target as HTMLElement)?.tagName ?? "") || event.metaKey || event.ctrlKey || event.altKey || document.querySelector("dialog[open]")) return;
     if (this.getView() !== "camera" || this.renderer.xr.isPresenting) return;
     const key = event.code;
+    if (event.repeat && !this.keys.has(key)) return;
     if (["Space", "KeyW", "KeyA", "KeyS", "KeyD"].includes(key)) {
       event.preventDefault(); this.keys.add(key);
     }
@@ -225,7 +247,7 @@ export class RoverExperience {
       this.frame = image; this.frameSource = source;
       this.frameId = id ?? "";
       // Server capture age + full request/decode time bounds transit age without synchronized clocks.
-      this.gate.acceptFrame(id, ageHeader === null ? Infinity : Number(ageHeader) + now - start, now);
+      this.pendingFrame = { id, age: ageHeader === null ? Infinity : Number(ageHeader) + now - start, at: now };
       this.dirty = true;
     } catch {
       // Keep the last frame visible; its monotonically growing age stops motion.
@@ -255,14 +277,16 @@ export class RoverExperience {
       this.euler.setFromQuaternion(this.quat, "YXZ");
       if (this.recenter) { this.baseYaw = this.euler.y; this.recenter = false; }
       const yaw = Math.atan2(Math.sin(this.euler.y - this.baseYaw), Math.cos(this.euler.y - this.baseYaw));
-      this.input = { held: held && this.xrLive && !this.suspended,
+      this.inputValid = !!right?.gamepad;
+      this.input = { held,
         v: -stick(axes.length >= 4 ? axes[3] : axes[1]) * 0.45,
         w: stick(axes.length >= 4 ? axes[2] : axes[0]) * 0.55,
         pan: THREE.MathUtils.clamp(-THREE.MathUtils.radToDeg(yaw), -80, 80) };
       this.cockpit.position.copy(this.position); this.cockpit.quaternion.copy(this.quat);
     } else {
+      this.inputValid = true;
       this.input = {
-        held: (this.keys.has("Space") || this.pointerHeld) && this.getView() === "camera" && !document.querySelector("dialog[open]"),
+        held: this.keys.has("Space") || this.pointerHeld,
         v: (Number(this.keys.has("KeyW")) - Number(this.keys.has("KeyS"))) * 0.35,
         w: (Number(this.keys.has("KeyD")) - Number(this.keys.has("KeyA"))) * 0.45,
         pan: 0,
@@ -272,14 +296,9 @@ export class RoverExperience {
     this.cameraScreen.visible = this.xrLive;
     if (this.h264Enabled) {
       this.h264.update();
-      const decoded = this.h264.displayedFrame;
-      if (decoded) {
-        this.gate.acceptFrame(decoded.id, decoded.age, now);
-        this.frameSource = decoded.source;
-        this.frameId = String(decoded.frame);
-      }
     }
-    if (this.dirty) this.drawCamera(now);
+    if (this.digitalPan && Math.abs(this.input.pan - this.drawnPan) > 0.1) this.dirty = true;
+    if (this.dirty || now - this.lastCanvasDraw > 100) this.drawCamera(now);
     if (now - this.lastHudAt > 100) { this.drawHUD(now); this.lastHudAt = now; }
   }
   get vrCameraView() { return this.renderer.xr.isPresenting && this.xrLive; }
@@ -287,8 +306,9 @@ export class RoverExperience {
   private pump() {
     const now = performance.now();
     const connected = this.socket?.readyState === WebSocket.OPEN;
-    const active = this.input.held && !document.hidden && !this.suspended;
-    const moving = this.gate.decide(active, now, connected);
+    const contextActive = this.renderer.xr.isPresenting ? this.xrLive && !this.suspended : this.getView() === "camera" && !document.querySelector("dialog[open]");
+    const available = this.inputValid && contextActive && !document.hidden && !this.contextLost && now - this.lastCanvasDraw < 250;
+    const moving = this.gate.decide(this.input.held, now, connected, available);
     // Never add another command behind buffered traffic. Reset the session instead.
     if (connected && this.socket!.bufferedAmount > 0) {
       this.gate.invalidate("Control queue stalled: release deadman"); this.socket!.close(); return;
@@ -305,7 +325,7 @@ export class RoverExperience {
     this.socket.send(JSON.stringify({
       seq, session_id: this.status?.session_id ?? null, permit: this.status?.permit ?? null,
       deadman, v: deadman ? this.input.v : 0, w: deadman ? this.input.w : 0,
-      pan: this.input.pan, mode: "teleop", video_fresh: age < 500,
+      pan: this.digitalPan ? 0 : this.input.pan, mode: "teleop", video_fresh: age < 500,
       video_age_ms: Number.isFinite(age) ? Math.ceil(age) : 999999,
     }));
     this.lastSendAt = performance.now();
@@ -317,20 +337,38 @@ export class RoverExperience {
       if (this.canvas.width !== video.videoWidth || this.canvas.height !== video.videoHeight) {
         this.canvas.width = video.videoWidth; this.canvas.height = video.videoHeight;
       }
-      context.drawImage(video, 0, 0, this.canvas.width, this.canvas.height);
+      const crop = cameraCrop(video.videoWidth, video.videoHeight, this.input.pan, this.digitalPan);
+      context.drawImage(video, crop.x, crop.y, crop.width, crop.height, 0, 0, this.canvas.width, this.canvas.height);
+      const decoded = this.h264.displayedFrame;
+      if (decoded) {
+        this.gate.acceptFrame(decoded.id, decoded.age, now);
+        this.frameSource = decoded.source; this.frameId = String(decoded.frame);
+        this.lastCanvasDraw = now;
+      }
     } else if (!this.h264Enabled && this.frame) {
       if (this.canvas.width !== this.frame.naturalWidth || this.canvas.height !== this.frame.naturalHeight) {
         this.canvas.width = this.frame.naturalWidth; this.canvas.height = this.frame.naturalHeight;
       }
-      context.drawImage(this.frame, 0, 0, this.canvas.width, this.canvas.height);
+      const crop = cameraCrop(this.frame.naturalWidth, this.frame.naturalHeight, this.input.pan, this.digitalPan);
+      context.drawImage(this.frame, crop.x, crop.y, crop.width, crop.height, 0, 0, this.canvas.width, this.canvas.height);
+      if (this.pendingFrame) {
+        const pending = this.pendingFrame;
+        if (this.gate.acceptFrame(pending.id, pending.age + now - pending.at, now)) this.lastCanvasDraw = now;
+        this.pendingFrame = null;
+      }
+      // Repainting a retained frame proves display-loop liveness, while its
+      // original capture age continues growing; duplicate IDs never renew it.
+      if (this.gate.frameId === this.frameId) this.lastCanvasDraw = now;
       const matching = this.detections && String(this.detections.frame) === this.frameId && now - this.detectionsAt < 500;
       if (matching) {
         context.strokeStyle = "#8dffa9"; context.fillStyle = "#8dffa9";
         context.lineWidth = Math.max(2, this.canvas.width / 320);
         context.font = `${Math.max(14, this.canvas.width / 40)}px system-ui`;
         for (const box of this.detections!.boxes) {
-          const x = Math.max(0, box.x) * this.canvas.width, y = Math.max(0, box.y) * this.canvas.height;
-          context.strokeRect(x, y, Math.min(box.w, 1) * this.canvas.width, Math.min(box.h, 1) * this.canvas.height);
+          const visibleBox = croppedBox(box, crop, this.frame.naturalWidth, this.frame.naturalHeight);
+          if (!visibleBox) continue;
+          const x = visibleBox.x * this.canvas.width, y = visibleBox.y * this.canvas.height;
+          context.strokeRect(x, y, visibleBox.w * this.canvas.width, visibleBox.h * this.canvas.height);
           context.fillText(`${box.cls.slice(0, 30)} ${Math.round(box.conf * 100)}%`, x + 4, Math.max(18, y - 5));
         }
       }
@@ -340,6 +378,8 @@ export class RoverExperience {
       context.fillText("Waiting for rover camera", this.canvas.width / 2, this.canvas.height / 2);
       context.textAlign = "left";
     }
+    this.drawnPan = this.input.pan;
+    this.cameraScreen.scale.y = (this.canvas.height / this.canvas.width) / 0.75;
     this.cameraTexture.needsUpdate = true; this.dirty = false;
   }
   private drawHUD(now: number) {
@@ -352,7 +392,9 @@ export class RoverExperience {
     const ack = this.ackMs === null ? "ack pending" : `control ack ${Math.round(this.ackMs)} ms`;
     const range = this.status?.range_cm == null ? "range unknown" : `${Math.round(this.status.range_cm)} cm`;
     const detection = !this.detections ? "detector unavailable" : now - this.detectionsAt > 500 ? "detections stale" : String(this.detections.frame) !== this.frameId ? "detections awaiting matching frame" : `${this.detections.boxes.length} detections`;
-    const detail = `${this.frameSource} · ${this.h264Enabled ? "H.264" : "JPEG"} video ${age} · ${ack} · ${range} · ${detection}${this.h264Enabled && !this.h264.displayedFrame ? " · " + this.h264.state : ""}`;
+    const drill = this.drillLine(now);
+    const panMode = `${this.digitalPan ? "Digital pan (fixed camera)" : "Servo pan"} ${Math.round(this.input.pan)}°`;
+    const detail = `${this.frameSource} · ${panMode} · ${this.h264Enabled ? "H.264" : "JPEG"} video ${age} · ${ack} · ${range} · ${detection}${drill ? " · " + drill : ""}${this.h264Enabled && !this.h264.displayedFrame ? " · " + this.h264.state : ""}`;
     this.message.textContent = headline;
     this.message.dataset.state = moving ? "moving" : ready ? "unsafe" : "ready";
     this.details.textContent = `${detail}${this.status?.estop ? " · FORWARD BLOCKED" : ""}`;
@@ -362,8 +404,9 @@ export class RoverExperience {
     c.fillStyle = simulation ? "#ffc779" : ready ? "#ffb3a8" : "#a6edc4";
     c.font = "bold 32px system-ui"; c.fillText(headline.slice(0, 58), 28, 46);
     c.font = "24px system-ui"; c.fillStyle = "#dce5ee";
-    c.fillText(`${this.frameSource} · ${this.h264Enabled ? "H.264" : "JPEG"} video ${age} · ${range}`, 28, 90);
+    c.fillText(`${this.h264Enabled ? "H.264" : "JPEG"} video ${age} · ${range} · ${panMode}`, 28, 90);
     c.fillText(`${ack} · ${detection}${this.status?.estop ? " · FORWARD BLOCKED" : ""}`, 28, 126);
+    if (drill) { c.font = "18px system-ui"; c.fillText(drill, 28, 150); }
     c.font = "22px system-ui";
     c.fillText("Right trigger: deadman · Left stick: drive · A: map · B: center pan", 28, 170);
     c.fillText("Release trigger after a stop or reconnect", 28, 202);
@@ -374,9 +417,14 @@ export class RoverExperience {
     const parent = document.querySelector("#settings")!;
     const block = document.createElement("section");
     block.className = "local-assistant";
-    block.innerHTML = `<h2>Local scene assistant</h2><form><input aria-label="Question for rover" placeholder="What do you see?" maxlength="500"/><button>Ask</button></form><p role="status">Uses observed detections; runs on rover.</p><a href="/mission/report" target="_blank" rel="noopener">Open mission report</a>`;
+    block.innerHTML = `<h2>Local scene assistant</h2><form><input aria-label="Question for rover" placeholder="What do you see?" maxlength="500"/><button>Ask</button></form><p role="status">Uses observed detections; runs on rover.</p><button type="button" id="start-drill">Start 90-second rescue drill</button><p id="drill-status">Counts observed person tracks as encounters.</p><a href="/mission/report" target="_blank" rel="noopener">Open mission report</a>`;
     parent.append(block);
-    const form = block.querySelector("form")!, input = block.querySelector("input")!, result = block.querySelector("p")!, button = block.querySelector("button")!;
+    const form = block.querySelector("form")!, input = block.querySelector("input")!, result = block.querySelector("p")!, button = form.querySelector("button")!;
+    const drillButton = block.querySelector<HTMLButtonElement>("#start-drill")!;
+    drillButton.onclick = () => void this.updateDrill(true);
+    this.timers.push(window.setInterval(() => {
+      if (document.querySelector<HTMLDialogElement>("#settings")!.open || this.drill?.active) void this.updateDrill(false);
+    }, 1000));
     form.onsubmit = async event => {
       event.preventDefault(); if (!input.value.trim() || button.disabled) return;
       this.stop("Assistant open: release deadman"); button.disabled = true; result.textContent = "Asking rover…";
@@ -388,6 +436,32 @@ export class RoverExperience {
       } catch (error) { result.textContent = `Assistant unavailable: ${String(error)}`; }
       finally { window.clearTimeout(timer); button.disabled = false; }
     };
+  }
+  private drillLine(now: number) {
+    if (!this.drill || this.drill.remaining_s === null) return "";
+    if (now - this.drillAt > 3000) return "Rescue drill status stale";
+    const left = Math.max(0, this.drill.remaining_s - (now - this.drillAt) / 1000);
+    return `${left > 0 ? "Rescue drill " + Math.ceil(left) + "s" : "Rescue drill complete"} · ${this.drill.person_encounters} person encounters`;
+  }
+  private async updateDrill(start: boolean) {
+    if (this.drillBusy || this.stopped) return;
+    this.drillBusy = true;
+    const label = document.querySelector("#drill-status");
+    const abort = new AbortController(), timer = window.setTimeout(() => abort.abort(), 2000);
+    try {
+      if (start) this.stop("Drill started: release deadman");
+      const response = await fetch("/mission/drill", start ? {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ duration_s: 90 }), signal: abort.signal,
+      } : { cache: "no-store", signal: abort.signal });
+      if (!response.ok) throw new Error(`Drill HTTP ${response.status}`);
+      const drill = await response.json();
+      if (typeof drill.active !== "boolean" || !Number.isFinite(drill.person_encounters) ||
+          !(drill.remaining_s === null || Number.isFinite(drill.remaining_s))) throw new Error("Invalid drill status");
+      this.drill = drill; this.drillAt = performance.now();
+      if (label) label.textContent = `${this.drillLine(this.drillAt) || "Ready to start"}. Tracks are encounters, not verified distinct people.`;
+    } catch (error) { if (label) label.textContent = `Drill unavailable: ${String(error)}`; }
+    finally { window.clearTimeout(timer); this.drillBusy = false; }
   }
   dispose() {
     this.stop("Viewer closed"); this.stopped = true;

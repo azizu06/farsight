@@ -1,6 +1,6 @@
 import numpy as np
 
-from farsight.detect.decode import decode, letterbox, nms
+from jetson.pose.decode import decode, letterbox, nms
 
 SIDE = 640
 
