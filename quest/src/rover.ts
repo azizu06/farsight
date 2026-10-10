@@ -6,6 +6,7 @@ import { H264Viewer } from "./h264";
 import { cameraCrop, croppedBox } from "./camera-view.js";
 import { drawDownMarker, linkHealth, poseSegments, strokeSegments } from "./pose-hud.js";
 import { AssistantVoice } from "./assistant-voice";
+import { askText } from "./ask-label.js";
 import { AutonomyIntent, autonomyLabel, containPoint, pickTarget, rayPanelPoint } from "./autonomy.js";
 import { PHRASE_LABELS, sbarLines, speakPhrase } from "./survivor-phrases.js";
 import { DRILL_TRAINS, DrillHud, endLines } from "./drill-hud.js";
@@ -140,7 +141,7 @@ export class RoverExperience {
       <p id="rover-details">Motion disabled until camera and control are fresh.</p>
       <button id="rover-hold" class="hold-button">Hold to enable · WASD to drive</button>
       <button id="rover-explore" aria-pressed="false">Explore (E)</button>
-      <p class="rover-help">Quest: hold right trigger + left stick. A: seek pointed person (else camera/map). B: explore. X: center pan. Y: scan. Left grip: start rescue drill. Hold left trigger: ask by voice (enable in Settings first).<br>Desktop: hold Space + WASD in camera view; click a person to seek; E explores. Stick/WASD takes back control.</p>`;
+      <p class="rover-help">Quest: hold right trigger + left stick. A: seek pointed person (else camera/map). B: explore. X: center pan. Y: scan. Left grip: start rescue drill.<span id="rover-voice-help" hidden> Hold left trigger: ask by voice (enable in Settings first).</span><br>Desktop: hold Space + WASD in camera view; click a person to seek; E explores. Stick/WASD takes back control.</p>`;
     document.querySelector("main")!.append(panel);
     this.sourceBanner = document.createElement("div");
     this.sourceBanner.className = "source-banner"; this.sourceBanner.setAttribute("role", "status");
@@ -228,7 +229,7 @@ export class RoverExperience {
     this.setMount(this.settings.values.mount === "fixed", false);
     this.connectControl(); this.connectDetections();
     if (this.settings.values.h264) this.setVideo(true, false);
-    const refreshHealth = () => void this.sourceTruth.refresh().then(() => this.applyRoverMount());
+    const refreshHealth = () => void this.sourceTruth.refresh().then(() => { this.applyRoverMount(); this.applyVoiceAvailability(); });
     refreshHealth();
     this.timers.push(window.setInterval(refreshHealth, 2000));
     this.timers.push(window.setInterval(() => this.pump(), 50));
@@ -271,6 +272,17 @@ export class RoverExperience {
     if (!mount) return;
     this.settings.origin.mount = "rover";
     this.setMount(mount === "fixed", false);
+  }
+  /** Voice needs the rover's Whisper: without it hide the controls so the left trigger cannot stop the rover for a VOICE ERROR. */
+  private applyVoiceAvailability() {
+    if (this.stopped || !this.voice) return;
+    const health = this.sourceTruth.health as { assistant?: { whisper?: boolean } } | null;
+    const whisper = health?.assistant?.whisper === true;
+    if (whisper === this.voice.voiceAvailable) return;
+    this.voice.setAvailable(whisper);
+    document.querySelector<HTMLElement>("#rover-voice-help")!.hidden = !whisper;
+    if (whisper && this.settings.values.voice) this.voice.restoreVR();
+    this.dirty = true;
   }
   private setVideo(enabled: boolean, save: boolean) {
     if (save) saveSettings(pageStorage(), { h264: enabled });
@@ -760,7 +772,7 @@ export class RoverExperience {
     c.font = "24px system-ui"; c.fillStyle = "#dce5ee";
     c.fillText(`${ack} · ${detection}${this.status?.estop ? " · FORWARD BLOCKED" : ""}`, 28, 126);
     if (drill || autonomy) { c.font = "18px system-ui"; c.fillText([autonomy, drill].filter(Boolean).join(" · "), 28, 150); }
-    const hint = "R trigger: deadman · Stick: drive · A: seek/map · B: explore · X: center · Y: scan · L grip: drill · L trigger: ask";
+    const hint = "R trigger: deadman · Stick: drive · A: seek/map · B: explore · X: center · Y: scan · L grip: drill" + (this.voice?.voiceAvailable ? " · L trigger: ask" : "");
     c.font = "22px system-ui";
     if (c.measureText(hint).width > this.hudCanvas.width - 56) c.font = "18px system-ui";
     c.fillText(hint, 28, 170);
@@ -840,7 +852,7 @@ export class RoverExperience {
     block.querySelector<HTMLButtonElement>("#open-mission-report")!.onclick = () => void this.showReport();
     this.voice = new AssistantVoice(block, document.querySelector<HTMLDialogElement>("#settings")!, button,
       () => this.stop("Assistant active: release deadman"),
-      reply => { result.textContent = `${reply.question ? "Heard: " + reply.question + "\n" : ""}${String(reply.answer ?? "No answer returned")}`; },
+      reply => { result.textContent = `${reply.question ? "Heard: " + reply.question + "\n" : ""}${askText(reply)}`; },
       action => {
         // A confirmed proposal still needs the held deadman; any stick input or stop cancels it.
         if (action.type === "scan") {
@@ -855,7 +867,7 @@ export class RoverExperience {
         result.textContent = `Seek person #${action.target_id} armed: hold the deadman to approach; move the stick to cancel.`;
       });
     this.voice.onVREnabled = () => saveSettings(pageStorage(), { voice: true });
-    if (this.settings.values.voice) this.voice.restoreVR();
+    this.voice.setAvailable(false);  // until /health reports the rover's Whisper
     const phrase = block.querySelector<HTMLSelectElement>(".survivor-phrases select")!, phraseStatus = block.querySelector<HTMLElement>("#phrase-status")!;
     for (const say of block.querySelectorAll<HTMLButtonElement>(".survivor-phrases button")) {
       say.onclick = async () => {
@@ -879,7 +891,7 @@ export class RoverExperience {
       try {
         const response = await fetch("/ask", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: input.value.trim() }), signal: abort.signal });
         if (!response.ok) throw new Error(`Rover returned ${response.status}`);
-        const answer = await response.json(); result.textContent = String(answer.answer ?? "No answer returned"); this.voice?.setReply(answer);
+        const answer = await response.json(); result.textContent = askText(answer); this.voice?.setReply(answer);
       } catch (error) { result.textContent = `Assistant unavailable: ${String(error)}`; }
       finally { window.clearTimeout(timer); button.disabled = false; }
     };

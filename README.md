@@ -92,8 +92,8 @@ HTTPS upstream is supported with certificate verification and `--ca-file`.
 Open `http://localhost:8080` in Quest Browser. Right trigger is the deadman and the
 left stick drives. Right A seeks the person under the controller ray (otherwise it
 toggles camera/map), right B toggles Explore, left X centers pan, left Y scans,
-left grip starts the rescue drill, and the held left trigger asks the local
-assistant by voice. The [Quest controls](quest/README.md#controls) are
+left grip starts the rescue drill, and the left trigger confirms a pending
+assistant proposal (it asks by voice only when the rover has a Whisper model). The [Quest controls](quest/README.md#controls) are
 authoritative. Choose digital look-around for a fixed camera; servo pan requires
 a working camera mount.
 

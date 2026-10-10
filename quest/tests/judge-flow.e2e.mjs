@@ -286,6 +286,8 @@ async function main() {
       const text = await waitFor("no assistant answer", async () => { const t = await answer.textContent(); return t && t !== "Asking rover…" && !t.startsWith("Uses observed") && t; }, 15000);
       if (text.startsWith("Assistant unavailable")) throw new Error(text);
       if (!/simulated/i.test(text)) throw new Error(`answer does not say simulated: ${text.slice(0, 120)}`);
+      if (!/Offline observation summary · \d+ ms · on rover, no internet/.test(text)) throw new Error(`answer lacks source/timing/offline label: ${text.slice(-120)}`);
+      if (await page.locator("#voice-record").isVisible()) throw new Error("voice controls visible although the rover has no Whisper");
       return `"${text.slice(0, 90)}…"`;
     });
 
