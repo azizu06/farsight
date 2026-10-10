@@ -68,8 +68,9 @@ physical camera-to-display delay, both USB-tethered phones/Tailscale, and actual
 Uno/motor/watchdog stop timing require the real rig. Rehearse held-trigger
 recovery, system-menu visibility changes, controller loss, and video/control
 failure with the final integrated build. A real camera run remains necessary for rig-level matched-box evidence. The
-later photo fixture below establishes positive JPEG software rendering; positive
-H.264 raster overlays remain inconclusive.
+later photo fixture establishes positive JPEG software rendering; the subsequent
+H.264 investigation below establishes positive desktop raster overlays after
+the metadata-null drawing fix.
 
 
 ## Later genuine-model positive fixture
@@ -92,7 +93,7 @@ and 40% confidence plus a bus at 94%. Detector health reported ONNX at about
   people and bus. `/tmp/farsight-ui-jpeg-boxes-0.jpg` was inspected directly.
   The small bright-green pixel count from the compressed screenshot was also
   observed; the visible rectangles and labels provide the substantive evidence.
-- **Positive H.264 rendering remains inconclusive:** the photo decoded and
+- **Initial positive H.264 rendering was inconclusive:** the photo decoded and
   the HUD intermittently reported a matching five-detection packet. Eleven
   screenshots of those caption phases showed no visible green raster boxes.
   A matching caption alone is insufficient to certify visible overlays.
@@ -107,3 +108,57 @@ operator server and the user's browser tabs were preserved. The fixture is a
 public test photograph and a simulated producer, rather than a live rover or
 physical rescue observation. All screenshot artifacts are temporary local files
 outside the repository.
+
+
+## H.264 metadata-null drawing regression and revalidation
+
+On October 10, the later isolated investigation reproduced a rendering bug,
+then verified the coordinator's narrow `drawCamera` fix at approximately
+07:03 EDT. The fixture again used the unmodified public bus photograph,
+explicit `SIMULATED` frame receipts at 15 fps, actual YOLO11n ONNX inference,
+and production H.264 encoding at 10 fps / 500000 bits/s. The new isolated
+backend used port 18556 and a temporary Vite source wrapper on port 18096;
+`localhost:8080` and the user's existing tabs were preserved.
+
+The wrapper imported the actual `RoverExperience` class and instrumented its
+canvas `drawImage` and `strokeRect` calls without changing their behavior.
+Before the fix, a bounded trace of 300 draw attempts over 20.752 seconds had
+39 H.264 image paints while displayed metadata was unavailable. Eleven of
+those paints retained the old frame identity and a matching five-box cache,
+but painted no boxes. The decoder's expected-display timestamp was still in
+the future. Painting the new video pixels erased the prior rectangles while
+the HUD retained the previous matching detection count. Sparse detector output
+also makes boxes intermittent; screenshot sampling alone did not explain the
+observed metadata-null erasure.
+
+The fix reads validated displayed metadata before resizing or painting the
+canvas and returns when that metadata is absent. This preserves the previous
+validated pixels and retries pending redraws without renewing their capture
+age. The source validation used shared main `9256147` with this coordinator
+fix present in `quest/src/rover.ts`.
+
+The post-fix trace contained 300 draw attempts over 20.701 seconds:
+
+- 42 attempts observed unavailable displayed metadata; **zero** painted video
+  pixels in those attempts.
+- 43 positive drawing phases painted bounding rectangles.
+- **Zero** image paints had a positive matching detection cache but no
+  bounding-rectangle strokes.
+- Three of six captured H.264 screenshots visibly contained green boxes and
+  class/track/confidence labels aligned to the four persons and bus.
+  `/tmp/farsight-ui-h264-fixed-2.jpg` was inspected directly. The screenshot
+  includes the explicit SIMULATED label and 206 ms reported video age; that
+  value is a software receipt/encode/transit bound, not measured physical
+  camera-to-eye delay.
+
+The final trace is `/tmp/farsight_overlay_trace_fixed.json`; the original
+trace is `/tmp/farsight_overlay_trace.json`. These artifacts are temporary
+local evidence outside the repository. Detection boxes remain intermittent
+because inference is approximately 3 fps and matching is restricted to the
+actual displayed frame. This run does not establish continuous overlay
+coverage, cropped positive overlays, headset presentation, XR texture resize,
+or physical camera and motor behavior.
+
+The fixture backend exited with code 0, Vite exited with code 130 after
+intentional termination, and the sole new Chrome tab was closed. No fixture
+process or browser load remained during subsequent transport measurements.
