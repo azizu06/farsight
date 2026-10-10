@@ -80,6 +80,21 @@ rather than taking control away from the current operator.
    Personal Hotspot. In macOS Network settings, confirm the phone USB service is
    connected. Disable Wi-Fi on the MacBook and Jetson. Confirm internet traffic
    works through the phone USB links.
+   Unplug the **MacBook-to-Jetson commissioning cable** for this test: Tailscale
+   can select that direct USB path even when the Mac's default route is the
+   relay phone. Keep camera phone → Jetson, relay phone → MacBook and Quest →
+   MacBook connected. On the operator Mac, record the read-only route check:
+
+   ```sh
+   python -m tools.qualify_route --output /tmp/farsight-route.json
+   ```
+
+   It checks the iPhone USB default route, Wi-Fi being off and absence of an
+   active rover USB IPv4 path. A failure or missing evidence must be resolved
+   before claiming cellular qualification. This only verifies Mac routing
+   conditions; separately check the Jetson's phone route, real link performance,
+   headset rendering and motor stop behavior. It changes no network settings
+   and does not open a control connection, so the viewer can stay open.
 4. Run `tailscale status` on both computers and `tailscale ping JETSON_PEER` on
    the MacBook. Record direct versus relayed connectivity. Restrict access to the
    rover through the tailnet policy. The software does not configure that policy.

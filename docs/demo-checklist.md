@@ -8,6 +8,7 @@ Goal: under 2 minutes from power-on to video in the headset. Network design: [de
 - [ ] Board profile today is plain HTTP on `192.168.55.1:8443` (USB) or the Tailscale IP, TLS omitted ([jetson-runtime-results.md](jetson-runtime-results.md)); `https://` + `--ca-file` applies only if the service was installed with TLS.
 - [ ] MacBook: `python -m tools.demo --upstream http://<jetson-tailnet-ip>:8443 --check` passes (HTTPS profile: `https://<jetson-tailnet-name>:8443`, plus `--ca-file` for a private CA).
 - [ ] Wi-Fi off on Jetson and MacBook. Both phones have Personal Hotspot allowed and the USB trust prompt accepted.
+- [ ] MacBook-to-Jetson commissioning USB unplugged; `python -m tools.qualify_route --output /tmp/farsight-route.json` passes on the operator Mac. Keep both phone cables and Quest USB connected.
 
 ## Power on, in this order
 
@@ -17,7 +18,7 @@ Goal: under 2 minutes from power-on to video in the headset. Network design: [de
 | 2 | Rover phone: USB to Jetson, Personal Hotspot on | Phone shows "1 connection" |
 | 3 | Jetson: power on. Start a stopwatch. `farsight` unit starts itself | Nothing to type |
 | 4 | MacBook: second phone USB, hotspot on, Wi-Fi off | `tailscale ping <jetson>` replies (note direct vs relayed) |
-| 5 | MacBook: `python -m tools.ready --url http://<jetson>:8443 --require-tensorrt` (HTTPS profile: `https://<jetson>:8443 --ca-file ...`) | Ends `READY`: server, camera, detector, rover, video all OK or SKIP. `--require-tensorrt` fails a CPU (ONNX/HOG) detector, which cannot hold the demo frame rate. Stop the stopwatch on this line. |
+| 5 | MacBook: `python -m tools.ready --url http://<jetson>:8443 --require-tensorrt --require-drive-camera` (HTTPS profile: `https://<jetson>:8443 --ca-file ...`) | Ends `READY`: server, camera, drive-camera eligibility, detector, rover and video pass. Missing/false `camera_drive_ready` blocks this check: a viewable LiDAR feed alone does not qualify physical driving. This is a component readiness check; still measure actual motion/stop behavior. Stop the stopwatch on this line. |
 | 6 | MacBook: `python -m tools.demo --upstream http://<jetson>:8443 --quest` (HTTPS profile: `https://<jetson>:8443 --ca-file ...`) | Prints "Open http://localhost:8080"; `adb reverse --list` shows 8080 |
 | 7 | Quest: USB to MacBook, open `http://localhost:8080`, press Enter VR | Video live, HUD shows video age and link; rover estop clear |
 | 8 | Release and press the deadman once | Motors respond; releasing stops within 250 ms |
