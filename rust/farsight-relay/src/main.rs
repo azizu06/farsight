@@ -26,7 +26,7 @@ const HOP_HEADERS: &[&str] = &[
     "te", "trailer", "transfer-encoding", "upgrade", "host", "content-length",
 ];
 const PROXY_PREFIXES: &[&str] = &["/ws/", "/map/", "/tts/", "/video/", "/mission/", "/phone/"];
-const PROXY_PATHS: &[&str] = &["/health", "/control/status", "/camera.jpg", "/depth.jpg", "/stream.mjpg", "/ask", "/phone"];
+const PROXY_PATHS: &[&str] = &["/health", "/control/status", "/camera.jpg", "/depth.jpg", "/stream.mjpg", "/ask", "/phone", "/scan"];
 
 #[derive(Parser)]
 #[command(about = "Serve Quest over USB and relay the rover through a private network")]
