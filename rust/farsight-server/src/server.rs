@@ -93,6 +93,7 @@ pub fn build_state(
     replay: Option<PathBuf>,
     drive_profile: Option<crate::drive_profile::DriveProfile>,
     allow_calibration: bool,
+    proximity_stop: bool,
 ) -> Arc<AppState> {
     if replay.is_some()
         && (serial_port.is_some() || camera_device.is_some() || demo || simulate_rover || record)
@@ -139,6 +140,7 @@ pub fn build_state(
             None,
             drive_profile,
             allow_calibration,
+            proximity_stop,
         )
         .expect("PWM bounds"),
     );
@@ -671,6 +673,31 @@ async fn mission_triage(State(s): State<Arc<AppState>>, Path(key): Path<String>)
         }
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
+}
+
+/// The nav object when no planner is attached (docs/interfaces.md "Optional
+/// navigation status"): `state: "unavailable"`, everything else empty.
+fn nav_unavailable() -> Value {
+    json!({"state": "unavailable", "mode": Value::Null, "goal": Value::Null,
+           "path": [], "frontiers": [], "backend": Value::Null,
+           "message": "No navigation planner (Nav2 bridge not running)"})
+}
+
+/// POST /nav/goal — 409 until a Nav2/fallback planner exists (the contract
+/// refuses rather than silently ignoring a go-to request).
+async fn nav_goal() -> Response {
+    (
+        StatusCode::CONFLICT,
+        Json(json!({"nav": nav_unavailable(), "message": "No navigation planner (Nav2 bridge not running)"})),
+    )
+        .into_response()
+}
+
+/// POST /nav/cancel — nothing armed; returns the nav object.
+async fn nav_cancel() -> Response {
+    Json(json!({"state": "idle", "mode": Value::Null, "goal": Value::Null,
+                "path": [], "frontiers": [], "backend": Value::Null, "message": ""}))
+        .into_response()
 }
 
 async fn speak_options(State(s): State<Arc<AppState>>) -> Json<Value> {
@@ -1328,7 +1355,9 @@ pub fn router(state: Arc<AppState>, dist: Option<PathBuf>) -> Router {
         .route("/ask", post(ask))
         .route("/speak", get(speak_options))
         .route("/speak", post(speak))
-        .route("/tts/{name}", get(tts));
+        .route("/tts/{name}", get(tts))
+        .route("/nav/goal", post(nav_goal))
+        .route("/nav/cancel", post(nav_cancel));
     let app = if let Some(dist) = dist {
         if dist.is_dir() {
             app.fallback_service(ServeDir::new(dist).append_index_html_on_directories(true))

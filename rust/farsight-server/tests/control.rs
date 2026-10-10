@@ -16,7 +16,7 @@ fn fixture() -> Fixture {
     let now = Arc::new(Mutex::new(10.0f64));
     let n = now.clone();
     let clock: Clock = Arc::new(move || *n.lock().unwrap());
-    let state = ControlState::new(false, 0, 100, None, None, Some(clock), None, false).unwrap();
+    let state = ControlState::new(false, 0, 100, None, None, Some(clock), None, false, true).unwrap();
     state.set_connected(true, None);
     let session = state.begin().unwrap();
     state.update_range(100.0);
@@ -148,9 +148,9 @@ fn pwm_scaling() {
 #[test]
 fn pwm_validation_and_floor() {
     for (floor, ceiling) in [(-1, 100), (100, 100), (101, 100), (0, 256), (0, 0)] {
-        assert!(ControlState::new(false, floor, ceiling, None, None, None, None, false).is_err());
+        assert!(ControlState::new(false, floor, ceiling, None, None, None, None, false, true).is_err());
     }
-    let state = ControlState::new(false, 70, 110, None, None, None, None, false).unwrap();
+    let state = ControlState::new(false, 70, 110, None, None, None, None, false, true).unwrap();
     let status = state.status(false);
     assert_eq!(status["min_pwm"], 70);
     assert_eq!(status["max_pwm"], 110);
@@ -174,7 +174,7 @@ fn camera_guard() {
         None,
         Some(Arc::new(move || *n.lock().unwrap())),
         None,
-        false,
+        false, true,
     ).unwrap();
     state.set_connected(true, None);
     let session = state.begin().unwrap();
@@ -271,7 +271,7 @@ fn mode_fixture(
     let n = now.clone();
     let clock: Clock = Arc::new(move || *n.lock().unwrap());
     let state = ControlState::new(
-        false, min_pwm, 100, None, None, Some(clock), drive_profile, allow_calibration,
+        false, min_pwm, 100, None, None, Some(clock), drive_profile, allow_calibration, true,
     ).unwrap();
     state.set_connected(true, None);
     let session = state.begin().unwrap();
