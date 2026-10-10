@@ -100,6 +100,15 @@ The header includes:
 
 The example `jpeg_len` must be replaced with the actual byte count. Intrinsics describe the transmitted JPEG.
 Image and depth must have the same aspect ratio; cropped, rotated, or independently zoomed images are rejected.
+**Mount orientation.** The rover phone may sit either way up in its landscape cradle. ARKit frames, depth and pose are
+sensor-native and consistent in both mounts, so fusion, Nav2 and the Quest pose are left untouched. The camera lane
+(`jetson/camera.py`, `jetson/mapping/orientation.py`) reads gravity from each frame's pose: when world-up in the image plane
+points down for 3 consecutive frames (past 110 degrees; back at 70 degrees, held while the camera looks within ~20 degrees of
+vertical) it rotates the published JPEG 180 degrees (`CameraFrame.mirrored`). `/camera.jpg`, the video lane, detectors,
+SBAR/identity crops and mission snapshots stay upright; person markers look up depth through a rotated view of the same RGB-D
+frame so boxes still hit the right pixels. `/depth.jpg`, phone RGB-only frames (no pose on the wire) and the Rust server are not
+normalised.
+
 ARKit optional floor and mesh metadata on v2/v3 bundles is accepted but not used to fabricate geometry.
 In phone mode, only measured RGB-D creates this map. Full ARKit mesh archives, object detection, and old rover relay messages
 are outside this mapping server's protocol.
