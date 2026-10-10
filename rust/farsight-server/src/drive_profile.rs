@@ -228,10 +228,17 @@ impl DriveProfile {
             left *= top / biggest;
             right *= top / biggest;
         }
-        (
-            self.side_pwm(left, self.min_pwm_left, cap),
-            self.side_pwm(right, self.min_pwm_right, cap),
-        )
+        let mut left_pwm = self.side_pwm(left, self.min_pwm_left, cap);
+        let mut right_pwm = self.side_pwm(right, self.min_pwm_right, cap);
+        if left_pwm * right_pwm < 0 {
+            // Opposed wheels (in-place turn, very tight arc) scrub: the
+            // straight-line floors stall under payload. Use at least the
+            // lowest PWM the calibration saw spin (7f7a94b parity).
+            let spin_floor = cap.min(self.angular_pwm[0] as i64);
+            left_pwm = left_pwm.signum() * left_pwm.abs().max(spin_floor);
+            right_pwm = right_pwm.signum() * right_pwm.abs().max(spin_floor);
+        }
+        (left_pwm, right_pwm)
     }
 
     // -- forward model (PWM -> body velocity), used by tests ----------------
@@ -379,6 +386,31 @@ mod tests {
         let (left, right) = make_profile().wheel_pwm(0.0, 1.0, None);
         assert!(left < 0);
         assert!(right > 0);
+    }
+
+    #[test]
+    fn in_place_turns_use_the_measured_spin_floor() {
+        // 7f7a94b parity: 2026-10-10 rig, floors L70/R40 from straight runs;
+        // spins measured from PWM 80.
+        let profile = DriveProfile::from_dict(&json!({
+            "version": 1, "max_pwm": 255,
+            "min_pwm": {"left": 70, "right": 40},
+            "linear": {"pwm": [80, 120, 160], "mps": [0.268, 0.416, 0.588]},
+            "angular": {"pwm": [80, 120, 160], "radps": [0.82, 2.5, 3.83]},
+            "half_track_m": 0.166,
+            "trim": {"left": 0.975, "right": 1.025},
+            "camera_yaw_offset_rad": 0.0,
+        }))
+        .unwrap();
+        // Straight-line curve alone gives about L-75/R+60 — both lift to the
+        // measured spin floor.
+        assert_eq!(profile.wheel_pwm(0.0, 0.82, None), (-80, 80));
+        let (left, right) = profile.wheel_pwm(0.0, -2.2, None);
+        assert!(left > 80 && right < -80);
+        // Straight driving keeps its own floors.
+        assert!(profile.wheel_pwm(0.10, 0.0, None).1 < 80);
+        // Never above the cap.
+        assert_eq!(profile.wheel_pwm(0.0, 0.82, Some(75)), (-75, 75));
     }
 
     #[test]
