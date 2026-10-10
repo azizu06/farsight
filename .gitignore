@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 .venv/
+.cache/
 node_modules/
 dist/
 *.engine

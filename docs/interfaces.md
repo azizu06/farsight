@@ -692,6 +692,40 @@ not mark the frame `camera_capture_verified`, and no wire field changes. The
 lease, deadman, release, camera-stale and disconnect stops are unchanged.
 
 
+## Fine measured RGB-D visual lane
+
+`GET /map/dense.bin` on Jetson is separate from the legacy capped map and
+navigation geometry. The Mac mounts `/dense/manifest`, `/dense/chunk.bin`,
+`/dense/delta.bin`, `/dense/status` and `POST /dense/metrics` on relay 8080.
+See `docs/dense-map.md` for launch, budgets and evidence limits.
+
+Delta query: `epoch` (opaque server/capture-generation token), `after` (last
+cursor, initially zero), `limit` (1–8192), `snapshot` (boolean), and `anchor`
+(snapshot-start revision, echoed while paging). Response body is little-endian
+u32 JSON byte length, UTF-8 JSON, then zero or more **16-byte** records:
+signed i32 XYZ in millimetres, u8 RGB, u8 operation (1 upsert, 0 removal).
+The fine-cell key is floor(XYZ_mm / 10) on every axis, including negatives.
+Positions are quantized measured samples, not voxel centers or interpolated
+geometry. RGB remains sRGB on wire and is converted to linear in the viewer.
+
+Metadata: `format: "xyz_mm_rgb8_op"`, `epoch`, `source`, `cursor`, `reset`,
+`snapshot`, `anchor`, `more`, `points` (current retained unique cells),
+`voxel_m: 0.01`, `ttl_s: 30`. A mismatched epoch or journal gap returns
+`reset:true` once at bootstrap start: clear the consumer, then follow
+`snapshot`/`anchor`/`cursor` until `snapshot:false`. The final snapshot cursor
+returns to its start anchor so normal deltas replay updates/removals concurrent
+with bootstrap. A transport reconnect alone never changes capture identity.
+Jetson working-cache budget eviction emits no deletion; expiry, explicit
+removal and reset do. Mac enforces its own retention/expiry bound.
+
+The endpoints negotiate Brotli/gzip over bounded records; no complete
+multi-million-point body is transferred. Chunk replies use the same framing
+with only upserts plus `chunk`, `revision`, `lod`, `sample_voxel_m` and
+`points` (selected count). A chunk is an authoritative bounded replacement,
+not an addition to its previous version. Mac renderer full-detail deltas use
+the delta contract above. The gray ARKit source is selected separately with
+`source=geometry`; it never overwrites calibrated RGB-D colors.
+
 ## Phone-built mesh lane (v1)
 
 The rover iPhone constructs ARKit mesh anchors. The Mac assembles their latest

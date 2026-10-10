@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ValidationError
 import uvicorn
 
-from .compress import EncodedCache
+from .compress import EncodedCache, negotiate, encode
 from .wire import DEFAULT_POINTS_CAP, DEFAULT_TRIANGLES_CAP, POINTS_ENV, TRIANGLES_ENV, cap_from_env
 from .demo import stream_demo
 from jetson.sim.stream import SimFeed, stream_world
@@ -293,6 +293,24 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
     async def points(request: Request):
         return await asyncio.to_thread(map_response, "points", state.point_packet,
                                        request.headers.get("accept-encoding"))
+
+    @app.get("/map/dense.bin")
+    async def dense(request: Request, epoch: str | None = None, after: int = 0,
+                    snapshot: bool = False, anchor: int | None = None, limit: int = 8192):
+        if after < 0 or limit < 1:
+            raise HTTPException(400, "Invalid dense cursor or limit")
+        def build_dense():
+            try:
+                body = state.dense.delta(epoch, after, snapshot, limit, anchor)
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+            coding = negotiate(request.headers.get("accept-encoding"))
+            headers = {"Cache-Control": "no-store", "Vary": "Accept-Encoding"}
+            if coding:
+                body = encode(coding, body)
+                headers["Content-Encoding"] = coding
+            return bulk_response(body, bulk, media_type="application/octet-stream", headers=headers)
+        return await asyncio.to_thread(build_dense)
 
     @app.get("/map/mesh.bin")
     async def mesh(request: Request):

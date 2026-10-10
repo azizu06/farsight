@@ -5,12 +5,14 @@ import unittest
 from pathlib import Path
 
 from tools.operator_relay import is_proxied
+from tools.dense_map import DENSE_PATHS
 
 SRC = Path(__file__).resolve().parents[2] / "quest" / "src"
 # fetch("/x"), fetchImpl("/x"), api("/x"), endpoint("/x"), new URL("/x", ...)
 CALL = re.compile(r"""(?:fetch|fetchImpl|api|endpoint|URL)\(\s*["'`](/[A-Za-z0-9_./-]*)""")
 # Quest-local assets and the relay's own routes are not rover paths.
-LOCAL = {"/relay/health"}
+# Dense routes are served locally by the opt-in demo mount, never Jetson-proxied.
+LOCAL = {"/relay/health"} | DENSE_PATHS
 
 
 def quest_paths():
