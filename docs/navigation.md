@@ -29,10 +29,34 @@ ros2 launch farsight_nav nav.launch.py                 # or the farsight-nav sys
     staged and waits for a new press.
   - **Explore:** the bridge finds frontiers (free cells next to unknown space,
     8-connected clusters of at least 30 cm) on the global costmap every second and
-    sends the best one to Nav2: near, wide and roughly ahead wins. A goal Nav2
-    fails, or one that takes over 25 s, is skipped for the rest of that press.
-    Exploration ends (`arrived`) when no reachable frontier remains. As in the
+    scores observed wide approaches, visible unknown area, frontier size,
+    heading, thin clutter and decaying path revisits. Goals stay in known free
+    space, one footprint short of the unseen boundary. A candidate must support
+    a 0.7 m wide goal and final 1.2 m approach; Nav2 plans the full route. The
+    current broad direction is held for at least 4 s and changes only for a
+    score improvement of 0.8, unless its approach becomes unsafe or disappears.
+    Within 0.6 m it selects the next patch before the current goal completes.
+    A goal Nav2 fails, or one that takes over 25 s, is skipped for that press.
+    Planning gaps get up to 4 s of locally measured creep. With insufficient
+    support it scans in place for up to one measured full turn (10 s ceiling),
+    rescoring every second and departing as soon as a wide frontier qualifies.
+    No useful wide frontier after that ends Explore as `arrived`. As in the
     reactive policy, the first detected person switches Explore to Seek.
+    The 20 Hz planning-gap arbiter uses the current validated depth and pose
+    (each under 0.5 s) and a costmap under 2.5 s. It projects the sampled swept
+    corridor at rover body height into the depth camera: every ray needs a real
+    return beyond the corridor. Unknown/missing forward rays are blocked.
+    The current 0.35 m body disc and actual sampled pose path fill only unknown
+    near-field cells; measured costs remain intact. This supports the occupied
+    body through the LiDAR blind ring. In-place scanning checks measured lethal
+    cells and live body-height depth, rather than treating inflation padding as
+    a physical object inside the rover. The fallback
+    selects the widest supported gentle arc at 0.2 m/s, or turns in place at
+    0.82 rad/s only with an observed clear footprint. A live-plan controller stop
+    is never replaced. A missing footprint, close obstacle, stale capture, or
+    exhausted fallback budget stops. Server deadman, B/STOP, disconnect,
+    capture-loss/release and first-person Seek interlocks still apply; the
+    `/ws/nav` and viewer status contracts are unchanged.
   - **Seek:** the server projects the tracked person's box through the LiDAR depth
     (median of the torso region) to a floor point, and Nav2 drives to a point
     0.8 m short of it on the line from the rover. The goal is re-sent whenever the
@@ -351,3 +375,69 @@ sudo apt install ros-jazzy-slam-toolbox ros-jazzy-pointcloud-to-laserscan
 These are on top of the Nav2 install, and SLAM Toolbox pulls in Ceres.
 `python3-psutil` is only needed for the simulator tests. Never run the simulator tests
 on the Jetson; they are for the Mac/Docker image (`ros2/farsight_slam/docker/Dockerfile`).
+
+### Open-space Explore tuning and evidence
+
+The `farsight_bridge.ros__parameters` section of
+`ros2/farsight_nav/config/nav2_params.yaml` contains all Explore weights and
+limits. Scoring runs in one bounded background worker so the 20 Hz command
+arbiter and sensor callbacks keep running during a large-map score pass; an
+operator/session generation check discards late results after release/reset.
+`params_file:=/path/to/params.yaml` applies the same file to the bridge
+and Nav2. The `ExploreConfig` defaults in `frontiers.py` define the score.
+Clearance uses a capped Euclidean distance transform of lethal + inscribed
+cells (99/100), with a second transform requiring observed traversable support
+throughout the footprint. Actual occupied/swept body discs fill the near-field
+unknown blind ring without erasing measured obstacles. A cluster supplies up to
+32 boundary samples so curved camera frontiers are not reduced to a close
+centroid. Distant all-unknown map padding is cropped with a full sensor-range
+rim to keep the 1 Hz NumPy work small. Unknown area beyond the body trail is
+prospective information gain only;
+known obstacles occlude it. Small lethal blobs near the approach add clutter
+cost. The 25 cm world-aligned visit grid decays over 60 s and survives rolling
+costmap origins. Goal failure/timeout blacklists and commitment reset on a new
+Explore press; visits persist until the sensor session resets.
+
+| Parameter suffix (`explore_…`) | Default | Effect |
+| --- | --- | --- |
+| `min_corridor_width`, `approach_length` | 0.7 m, 1.2 m | Reject narrow goals and short approaches |
+| `sensor_range` | 4.0 m | Visible unknown disc; configurable within 0.3–4 m |
+| `clearance_weight`, `information_weight`, `size_weight` | 2.5, 3.0, 1.5 | Prefer spacious unseen patches |
+| `distance_weight`, `turn_weight`, `clutter_weight`, `revisit_weight` | 0.35, 0.8, 3.0, 3.0 | Penalize long routes, turns, thin clutter, revisits |
+| `commitment_s`, `switch_margin` | 4 s, 0.8 | Resist oscillation; unsafe targets bypass commitment |
+| `transition_distance`, `revisit_decay_s` | 0.6 m, 60 s | Preselect next patch; revisit decay |
+| `creep_mps`, `scan_radps`, `gap_budget_s` | 0.2 m/s, 0.82 rad/s, 4 s | Fresh-depth planning fallback |
+| `body_radius`, `scan_budget_s` | 0.35 m, 10 s | Actual swept-body support; scan stops after one measured full turn or the time ceiling |
+
+Synthetic scenario (`test_frontiers.py`, 10 cm cells): the prior chooser selected
+near table-leg clutter at `(4.45, 2.05)`. The new chooser selects the broad
+hallway frontier `(7.45, 5.05)`, with its observed-free setback goal at
+`(7.008, 4.968)`. Tests also cover narrow-gap rejection, unknown approaches,
+visibility occlusion, hysteresis, revisit decay and immediate unsafe-goal release.
+`test_local_motion.py` exercises 80 consecutive 50 ms steps through valid-sensor
+Nav2/empty-plan transitions and noisy depth, with no idle command gaps, plus
+controller stops, blocked corridors, sensor loss, blind-ring scans and measured
+full-turn exhaustion.
+These are software fixtures, not real-floor evidence.
+
+Read-only calibration check on 2026-10-10 against the rig's live drive profile:
+0.2 m/s maps to left/right PWM 78/69 with the autonomy cap of 100; gentle
+±0.2 rad/s arcs map to 76/74 and 79/64. In-place ±0.82 rad/s maps to ±75/∓60.
+All exceed the reported L70/R40 moving floors. The profile/driver still owns
+trimming and saturation. No Jetson environment, service or restart is changed
+by this implementation. Deployment and real-floor verification belong to the
+Nav2 bring-up owner: compare poles/table legs against the broad hallway, record
+selected targets, actual wheel movement, release/disconnect/capture-loss stops,
+and time spent idle. A green software test does not qualify that floor behavior.
+
+Open-space closed-loop checks (2026-10-10, Docker Jazzy, RPP, ray-cast
+`floorplan`): the body-support/full-turn change reached 80% coverage, 1.647 m
+traveled and zero collisions. With background scoring and short-step preplanning,
+the latest two runs ended at 76.6% and 75.1% coverage (below the existing 80%
+scenario gate), both with zero collisions and a 0.61 s longest standstill.
+The latest run drove 0.990 m with 0.508 m minimum physical clearance; controller
+output was 20 Hz median and bridge CPU averaged 7.9% of one core in the container.
+The initial centroid-only/strict blind-ring candidate never moved (6.5%
+coverage). Startup and command continuity improved; coverage stability still
+needs resolution before this candidate can ship. Actual rig behavior remains
+unverified, and these numbers do not replace a real-floor receipt.
