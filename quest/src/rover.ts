@@ -99,6 +99,7 @@ export class RoverExperience {
   private recenterDown = false;
   private xrLive = true;
   private scanPending = false;
+  private scanPendingCancelled = false;
   private scanArmed = false;
   private scanning = false;
   private scanCompleting = false;
@@ -333,6 +334,7 @@ export class RoverExperience {
   stop(reason: string) {
     // An accepted go-to goal stays armed (see AutonomyIntent.release); motion still needs a fresh deadman press.
     this.autonomy.release();
+    if (this.scanPending) this.scanPendingCancelled = true;
     this.scanArmed = false;
     this.scanning = false;
     this.scanCompleting = false;
@@ -353,7 +355,7 @@ export class RoverExperience {
           this.status = next;
           this.nav = parseNav(next.nav);
           // The next held heartbeat after end_scan reports release_required before most status ticks; pollScan decides complete vs aborted.
-          if (this.scanning && next.requires_release && (next.reason === "scan_finished" || next.reason === "release_required")) this.scanCompleting = true;
+          if ((this.scanning || (this.scanPending && !this.scanPendingCancelled)) && next.requires_release && (next.reason === "scan_finished" || next.reason === "release_required")) this.scanCompleting = true;
           if (typeof next.seq === "number" && this.sent.has(next.seq)) this.ackMs = performance.now() - this.sent.get(next.seq)!;
           if (next.requires_release) this.gate.invalidate(next.reason ?? "Release deadman to continue");
           // Spend a new permit at once while driving: waiting for the next 50 ms
@@ -657,13 +659,28 @@ export class RoverExperience {
       this.renderer.xr.isPresenting ? this.lastXRAt : undefined);
     // Never add another command behind buffered traffic. Reset the session instead.
     if (connected && this.socket!.bufferedAmount > 0) {
+      // A permit callback and the 50 ms timer can run in the same browser turn.
+      // Coalesce that fresh handoff instead of treating one packet as a stall.
+      // Unsafe motion still closes immediately; nothing is queued for replay.
+      if (now - this.lastSendAt < 50 && (!this.lastDeadman || moving)) return;
       this.gate.invalidate("Control queue stalled: release deadman"); this.socket!.close(); return;
     }
     if (now - this.lastSendAt > 200) this.gate.invalidate("Browser paused: release deadman");
-    if (this.scanPending) return; // POST reservation must precede scan-mode heartbeats
-    if (this.scanning && this.scanCompleting) {
+    if ((this.scanning || this.scanPending) && this.scanCompleting) {
       this.send(false);
       if (now - this.scanPollAt > 250) { this.scanPollAt = now; void this.pollScan(); }
+      return;
+    }
+    if (this.scanPending) {
+      if (this.scanPendingCancelled) { this.send(false); return; }
+      if (!moving || this.input.v || this.input.w) {
+        this.scanMessage = "Scan cancelled: release, stale view, or stick override";
+        this.stop(this.scanMessage);
+        return;
+      }
+      // POST delivery may outlast a lease. A scan-mode status proves the server
+      // reserved the scan even while its HTTP response is still in flight.
+      this.send(moving && !this.gate.needsRelease);
       return;
     }
     if (this.scanning && (!moving || this.input.v || this.input.w)) {
@@ -690,7 +707,7 @@ export class RoverExperience {
       seq, session_id: this.status?.session_id ?? null, permit: this.status?.permit ?? null,
       deadman, v: deadman ? this.input.v : 0, w: deadman ? this.input.w : 0,
       pan: this.digitalPan ? 0 : this.input.pan, video_fresh: age < 500,
-      ...(this.scanning ? { mode: "scan" } : this.autonomy.fields(deadman)),
+      ...((this.scanning || (this.scanPending && this.status?.mode === "scan")) ? { mode: "scan" } : this.autonomy.fields(deadman)),
       video_age_ms: Number.isFinite(age) ? Math.ceil(age) : 999999,
     }));
     this.lastSendAt = performance.now();
@@ -704,6 +721,7 @@ export class RoverExperience {
       return;
     }
     this.send(true);
+    this.scanPendingCancelled = false;
     this.scanPending = true;
     const abort = new AbortController(), timer = window.setTimeout(() => abort.abort(), 1000);
     try {
@@ -711,6 +729,7 @@ export class RoverExperience {
         body: JSON.stringify({ session_id: this.status?.session_id, permit: this.status?.permit }), signal: abort.signal });
       if (!response.ok) throw new Error(String((await response.json()).detail ?? response.status));
       const result = await response.json();
+      if (this.scanPendingCancelled) return; // a late 202 must not rearm a cancelled reservation
       this.scanning = true;
       this.scanMessage = `${result.simulated ? "SIMULATED · " : ""}Scanning${result.approximate ? " · approximate rover turn" : " · physical pan"}; keep holding deadman`;
     } catch (error) { this.scanMessage = `Scan unavailable: ${String(error)}`; this.stop(this.scanMessage); }
@@ -722,7 +741,7 @@ export class RoverExperience {
       const response = await fetch("/scan", { cache: "no-store", signal: abort.signal });
       if (!response.ok) throw new Error(`Scan status ${response.status}`);
       const result = await response.json();
-      if (!this.scanning || result.running) return;
+      if ((!this.scanning && !this.scanPending) || result.running) return;
       this.scanMessage = result.state === "complete" ?
         `${result.points.toLocaleString()} points · ${(result.scan_ms / 1000).toFixed(1)} s${result.approximate ? " · approximate" : ""}` : `Scan aborted: ${result.error}`;
       this.stop(this.scanMessage);
