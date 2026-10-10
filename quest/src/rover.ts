@@ -574,7 +574,7 @@ export class RoverExperience {
   private aimRay(frame: XRFrame | undefined, reference: XRReferenceSpace | null, right: XRInputSource | undefined) {
     let ray: XRPose | null = null;
     try { if (frame && reference && right) ray = frame.getPose(right.targetRaySpace, reference) ?? null; } catch { /* Fall back to gaze. */ }
-    if (ray) {
+    if (ray?.transform) {
       const o = ray.transform.orientation, p = ray.transform.position;
       this.raycaster.ray.origin.set(p.x, p.y, p.z);
       this.raycaster.ray.direction.set(0, 0, -1).applyQuaternion(new THREE.Quaternion(o.x, o.y, o.z, o.w));
