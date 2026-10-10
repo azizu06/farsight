@@ -3,6 +3,7 @@
 import unittest
 import time
 import struct
+import threading
 import numpy as np
 from fastapi.testclient import TestClient
 
@@ -119,6 +120,49 @@ class ScanSafetyTests(unittest.TestCase):
 
 
 class ScanDeliveryTests(unittest.TestCase):
+    def test_release_or_map_reset_during_depth_never_publishes_a_partial_scan(self):
+        from jetson.mapping.server import create_app
+        from types import SimpleNamespace
+        for interrupt in ("release", "reset"):
+            with self.subTest(interrupt=interrupt):
+                entered, finish = threading.Event(), threading.Event()
+                class Session:
+                    def get_inputs(self):
+                        return [SimpleNamespace(name="image", shape=[1, 3, 308, 406])]
+                    def run(self, *_):
+                        entered.set()
+                        if not finish.wait(3):
+                            raise RuntimeError("test inference timed out")
+                        return [np.full((1, 308, 406), 2, np.float32)]
+                app = create_app(demo=True, simulate_rover=True, detector="none")
+                app.state.scanner.depth = MetricDepth(session=Session())
+                with TestClient(app) as client, client.websocket_connect("/ws/control") as ws:
+                    status = ws.receive_json()
+                    def send(seq, held, mode):
+                        ws.send_json(dict(session_id=status["session_id"], permit=status["permit"], seq=seq,
+                            deadman=held, v=0, w=0, pan=0, mode=mode, video_fresh=True, video_age_ms=0))
+                    send(1, False, "teleop")
+                    status = ws.receive_json()
+                    send(2, True, "teleop")
+                    time.sleep(.03)
+                    self.assertEqual(client.post("/scan", json=dict(session_id=status["session_id"], permit=status["permit"])).status_code, 202)
+                    self.assertTrue(entered.wait(1))
+                    if interrupt == "reset":
+                        client.post("/map/reset")
+                    else:
+                        send(3, False, "scan")
+                    finish.set()
+                    for seq in range(4, 35):
+                        status = ws.receive_json()
+                        if interrupt == "reset":
+                            send(seq, True, "scan")
+                        result = client.get("/scan").json()
+                        if not result["running"]:
+                            break
+                    self.assertEqual(result["state"], "aborted", result)
+                    self.assertIsNone(app.state.mapping.scan)
+                    self.assertEqual(app.state.control.state.output()[:2], (0, 0))
+
     def test_simulated_sweep_replaces_existing_map_and_survives_reset(self):
         from jetson.mapping.server import create_app
         app = create_app(demo=True, simulate_rover=True, detector="none")
@@ -156,6 +200,9 @@ class ScanDeliveryTests(unittest.TestCase):
             self.assertGreater(count, 1000)
             self.assertLessEqual(count, 100_000)
             self.assertEqual(len(packet), 4 + count * 16)
+            with client.websocket_connect("/ws/map") as map_ws:
+                self.assertEqual(map_ws.receive_json()["scan"]["points"], count)
+                self.assertEqual(map_ws.receive_bytes(), packet)
             health = client.get("/health").json()
             self.assertEqual(health["scan"]["points"], count)
             self.assertTrue(health["paused"])

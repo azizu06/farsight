@@ -57,6 +57,7 @@ export class RoverExperience {
   private recenterDown = false;
   private xrLive = true;
   private scanPending = false;
+  private scanArmed = false;
   private scanning = false;
   private scanDown = false;
   private scanMessage = "Hold trigger + X to scan; keep sticks centered";
@@ -203,6 +204,7 @@ export class RoverExperience {
 
   stop(reason: string) {
     this.autonomy.clear();
+    this.scanArmed = false;
     this.scanning = false;
     this.input = this.gate.stop(this.input, reason);
     this.send(false);
@@ -344,6 +346,7 @@ export class RoverExperience {
       };
     }
     if (this.autonomy.stick(this.input.v, this.input.w)) this.dirty = true;
+    if (this.input.v || this.input.w) this.scanArmed = false;
     this.cockpit.visible = xr;
     this.cameraScreen.visible = this.xrLive;
     if (this.h264Enabled) {
@@ -399,6 +402,10 @@ export class RoverExperience {
       this.stop(this.scanMessage);
     }
     this.send(moving && !this.gate.needsRelease);
+    if (this.scanArmed && moving && !this.input.v && !this.input.w) {
+      this.scanArmed = false;
+      void this.startScan();
+    }
     if (this.scanning && now - this.scanPollAt > 250) {
       this.scanPollAt = now;
       void this.pollScan();
@@ -569,7 +576,12 @@ export class RoverExperience {
       reply => { result.textContent = `${reply.question ? "Heard: " + reply.question + "\n" : ""}${String(reply.answer ?? "No answer returned")}`; },
       action => {
         // A confirmed proposal still needs the held deadman; any stick input or stop cancels it.
-        if (action.type !== "seek") { result.textContent = "Scan confirmed, but room scan is not wired to the rover yet."; return; }
+        if (action.type === "scan") {
+          this.stop("Scan confirmed: release, then hold deadman in live view");
+          this.scanArmed = true;
+          result.textContent = "Scan armed: close Settings, release, then hold the deadman with sticks centered. Release or move a stick to cancel.";
+          return;
+        }
         this.stop(`Seek person #${action.target_id}: release, then hold deadman`);
         this.autonomy.select(action.target_id);
         result.textContent = `Seek person #${action.target_id} armed: hold the deadman to approach; move the stick to cancel.`;

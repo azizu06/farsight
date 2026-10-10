@@ -10,7 +10,8 @@ from unittest import mock
 import numpy as np
 
 from jetson.tensorrt_detector import (CudaRuntime, TensorRTDetector, TensorRTError,
-                                      INPUT_SHAPE, OUTPUT_SHAPE, POSE_OUTPUT_SHAPE, MAX_BUFFER_BYTES, allocation_size)
+                                      INPUT_SHAPE, OUTPUT_SHAPE, POSE_OUTPUT_SHAPE, MAX_BUFFER_BYTES, allocation_size,
+                                      DEPTH_INPUT_SHAPE, DEPTH_OUTPUT_SHAPE)
 
 
 class FakeCuda:
@@ -167,6 +168,18 @@ class DetectorTests(unittest.TestCase):
 
     def create(self):
         return TensorRTDetector(self.path, cuda=self.cuda, trt_module=self.trt, warmup=1)
+
+    def test_metric_depth_contract_accepts_imagenet_input_and_metre_output(self):
+        self.engine.input_shape = DEPTH_INPUT_SHAPE
+        self.engine.output_shape = DEPTH_OUTPUT_SHAPE
+        self.engine.context.input_shape = DEPTH_INPUT_SHAPE
+        with TensorRTDetector(self.path, cuda=self.cuda, trt_module=self.trt, warmup=1,
+                input_shape=DEPTH_INPUT_SHAPE, output_shape=DEPTH_OUTPUT_SHAPE, score_channels=0) as runner:
+            output = runner.predict(np.full(DEPTH_INPUT_SHAPE, -2, np.float32))
+            self.assertEqual(output.shape, DEPTH_OUTPUT_SHAPE)
+            self.assertEqual(output[0, 0, 0], 100)  # metres aren't class probabilities
+        self.assertEqual(self.cuda.buffers, {})
+        self.assertEqual(self.cuda.host, {})
 
     def test_execution_order_warmup_and_detached_output(self):
         detector = self.create()

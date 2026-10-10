@@ -33,11 +33,14 @@ class ScanService:
         frame = self.camera.snapshot()
         if frame is None or frame.age_ms >= 500 or frame.source == "IPHONE LIDAR":
             raise ValueError("Scan requires fresh camera-only RGB (LiDAR uses the existing mapper)")
+        if not self.physical_pan and self.control.state.pan != 0:
+            raise ValueError("Centre physical pan before a fixed-camera rover sweep")
         token = self.control.state.begin_scan(session_id, permit)
+        generation = self.mapping.generation
         self.result = dict(state="sweeping", running=True, simulated=self.mapping.demo,
                            approximate=not self.physical_pan, views=[], points=0, markers=[],
                            backend=self.depth.backend if self.depth else "synthetic-depth")
-        self.task = asyncio.create_task(self.run(token))
+        self.task = asyncio.create_task(self.run(token, generation))
         return self.result.copy()
 
     async def wait(self, token, seconds, *, w=0, pan=0):
@@ -78,46 +81,50 @@ class ScanService:
                 await task
             raise
 
-    async def run(self, token):
+    async def run(self, token, generation):
         started = time.monotonic()
         cloud = VoxelMap(size=.025, capacity=100_000)
-        previous = 0
-        try:
-            async with asyncio.timeout(90):
-                for index, yaw in enumerate(self.YAWS):
-                    if not self.mapping.demo:
-                        if self.physical_pan:
-                            await self.wait(token, .4, pan=yaw)
-                        else:
-                            # Open-loop motor timing is explicitly approximate;
-                            # bounded steps, fresh range, held operator permits.
-                            delta = yaw - previous
-                            await self.wait(token, abs(delta) / self.turn_dps, w=.3 if delta > 0 else -.3)
-                            await self.wait(token, .3)
-                    self.control.state.scan_command(token, pan=yaw if self.physical_pan else 0)
-                    bgr, synthetic, k, frame = await self.capture(token, yaw, index)
-                    at = time.monotonic()
-                    depth = await self.infer(bgr) if self.depth else synthetic
-                    latency = (time.monotonic() - at) * 1000
-                    self.control.state.scan_command(token, pan=yaw if self.physical_pan else 0)
-                    rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-                    xyz, colors = await asyncio.to_thread(back_project, depth, rgb, k, yaw)
-                    await asyncio.to_thread(cloud.integrate, xyz, colors)
-                    self.collect_markers(frame, depth, rgb, k, yaw)
-                    self.result["views"].append(dict(yaw_deg=yaw, depth_ms=round(latency, 2), samples=len(xyz)))
-                    previous = yaw
-                self.control.state.scan_command(token, pan=previous if self.physical_pan else 0)
+        async def sweep():
+            previous = 0
+            for index, yaw in enumerate(self.YAWS):
+                if not self.mapping.demo:
+                    if self.physical_pan:
+                        await self.wait(token, .4, pan=yaw)
+                    else:
+                        # Open-loop motor timing is explicitly approximate;
+                        # bounded steps, fresh range, held operator permits.
+                        delta = yaw - previous
+                        await self.wait(token, abs(delta) / self.turn_dps, w=.3 if delta > 0 else -.3)
+                        await self.wait(token, .3)
+                self.control.state.scan_command(token, pan=yaw if self.physical_pan else 0)
+                bgr, synthetic, k, frame = await self.capture(token, yaw, index)
+                detections = self.perception.snapshot()
+                at = time.monotonic()
+                depth = await self.infer(bgr) if self.depth else synthetic
+                latency = (time.monotonic() - at) * 1000
+                self.control.state.scan_command(token, pan=yaw if self.physical_pan else 0)
+                rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+                xyz, colors = await asyncio.to_thread(back_project, depth, rgb, k, yaw)
+                await asyncio.to_thread(cloud.integrate, xyz, colors)
+                self.collect_markers(frame, depth, rgb, k, yaw, detections)
+                self.result["views"].append(dict(yaw_deg=yaw, depth_ms=round(latency, 2), samples=len(xyz)))
+                previous = yaw
+            self.control.state.scan_command(token, pan=previous if self.physical_pan else 0)
+            with self.mapping.lock:
+                if generation != self.mapping.generation:
+                    raise ValueError("Map reset or sensor origin changed during scan")
                 self.result.update(state="complete", running=False, points=len(cloud.cells),
                                    scan_ms=round((time.monotonic() - started) * 1000, 2))
                 self.mapping.install_scan(cloud, self.result.copy())
+        try:
+            await asyncio.wait_for(sweep(), 90)
         except (Exception, asyncio.CancelledError) as exc:
             self.result.update(state="aborted", running=False, error=str(exc) or "Server shutdown",
                                scan_ms=round((time.monotonic() - started) * 1000, 2))
         finally:
             self.control.state.end_scan(token)
 
-    def collect_markers(self, frame, depth, rgb, k, yaw):
-        packet = self.perception.snapshot()
+    def collect_markers(self, frame, depth, rgb, k, yaw, packet):
         if (frame is None or not packet.get("fresh") or packet.get("error")
                 or packet.get("source") != frame.source or packet.get("frame") != frame.frame_id):
             return
