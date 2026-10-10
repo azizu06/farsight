@@ -80,7 +80,11 @@ class RGBDFrame:
     jpeg: bytes
 
 
-def decode_frame(packet, identity):
+def decode_frame(packet, identity, *, camera_only=False):
+    """Validate the wire packet; camera_only skips depth copying and reconstruction.
+
+    The camera worker can validate its JPEG without waiting for the map worker.
+    """
     if not 4 < len(packet) <= MAX_PACKET:
         raise ValueError("Frame exceeds the 8 MiB limit or is empty")
     header_size = struct.unpack_from("<I", packet)[0]
@@ -124,13 +128,15 @@ def decode_frame(packet, identity):
     bgr = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
     if bgr is None or bgr.shape[:2] != (ih, iw):
         raise ValueError("JPEG dimensions do not match the frame header")
+    confidence_data = np.frombuffer(packet, np.uint8, dw * dh, start + lengths[0] + lengths[1])
+    if np.any(confidence_data > 2):
+        raise ValueError("Confidence values must be 0, 1 or 2")
+    if camera_only:
+        return header, jpeg
     rgb = cv2.cvtColor(cv2.resize(bgr, (dw, dh), interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2RGB)
     start += lengths[0]
     depth_data = np.frombuffer(packet, "<f4", dw * dh, start).reshape(dh, dw).copy()
-    start += lengths[1]
-    confidence_data = np.frombuffer(packet, np.uint8, dw * dh, start).reshape(dh, dw).copy()
-    if np.any(confidence_data > 2):
-        raise ValueError("Confidence values must be 0, 1 or 2")
+    confidence_data = confidence_data.reshape(dh, dw).copy()
     return RGBDFrame(header, rgb, depth_data, confidence_data, calibration, transform, jpeg)
 
 
