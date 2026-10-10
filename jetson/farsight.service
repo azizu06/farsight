@@ -2,7 +2,7 @@
 [Unit]
 Description=Farsight rover server (camera, detector, rover control, video)
 Wants=network-online.target
-After=network-online.target tailscaled.service
+After=network-online.target tailscaled.service farsight-llm.service farsight-whisper.service
 StartLimitIntervalSec=0
 
 [Service]
@@ -11,7 +11,7 @@ User=@USER@
 SupplementaryGroups=dialout video
 WorkingDirectory=@REPO@
 EnvironmentFile=/etc/farsight.env
-# jetson.launch waits up to FARSIGHT_WAIT_SECONDS for the camera and Uno device nodes.
+# jetson.launch waits up to FARSIGHT_WAIT_SECONDS for the camera and Uno device nodes, then execs python -m jetson.server.
 ExecStart=@REPO@/jetson/.venv/bin/python -m jetson.launch
 Restart=on-failure
 RestartSec=2

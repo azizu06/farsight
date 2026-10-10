@@ -1,6 +1,6 @@
 # Demo checklist: cold boot to live VR feed
 
-Goal: under 2 minutes from power-on to video in the headset. Network design: [demo-connectivity.md](demo-connectivity.md). Setup once: `jetson/setup.sh`, `jetson/install_service.sh`, Tailscale on Jetson and MacBook, Quest developer mode + USB debugging approved, `npm --prefix quest ci`.
+Goal: under 2 minutes from power-on to video in the headset. Network design: [demo-connectivity.md](demo-connectivity.md). Setup once ([jetson-bringup.md](jetson-bringup.md)): `jetson/setup.sh`, `jetson/install_service.sh`, Tailscale on Jetson and MacBook, Quest developer mode + USB debugging approved, `npm --prefix quest ci`.
 
 ## Before the 2 minutes (venue, once)
 

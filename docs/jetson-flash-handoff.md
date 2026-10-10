@@ -65,8 +65,8 @@ login on its own, with SSH installed. Then hand it back (last section).
 
 ## Hand back
 Move the USB-C cable to the owner's Mac. The owner runs `ssh-copy-id <user>@192.168.55.1` once and
-their own agent takes over (repo setup: `tools/bootstrap_jetson.sh`, `jetson/setup.sh` on branch
-`1-jetson-stream`, PR https://github.com/azizu06/farsight/pull/20). Report back: success or the exact
+their own agent takes over: follow [jetson-bringup.md](jetson-bringup.md) (`tools/bootstrap_jetson.sh`, then
+`jetson/setup.sh` on the Jetson). Report back: success or the exact
 failing step and error text.
 
 ## Suggested skills

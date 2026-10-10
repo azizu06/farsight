@@ -47,6 +47,8 @@ There is 1 real rule to this project and that is to do ANYTHING and EVERYTHING i
 control. Autonomy is in `jetson/autonomy.py`; its safety integration and test
 commands are documented in `jetson/control/README.md`.
 
+First-time Jetson setup (scripts, service, TLS, measurements): `docs/jetson-bringup.md`.
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.

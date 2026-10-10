@@ -3,7 +3,7 @@
 ## What runs where
 
 The iPhone supplies synchronized ARKit RGB, LiDAR depth, depth confidence, and camera-to-world transforms.
-The Jetson runs `jetson.mapping.server`: it projects measured samples, averages nearby points in 4 cm voxels,
+The Jetson runs `jetson.server`: it projects measured samples, averages nearby points in 4 cm voxels,
 keeps observed triangle keyframes, and serves the browser. The browser renders Three.js geometry and live camera/depth views.
 No neural model, TensorRT engine, API key, or depth estimation is required for this phone path.
 The optional [camera-only stationary scan](scan.md) uses local metric depth estimation
@@ -26,7 +26,7 @@ From the repository root, install dependencies and build the viewer as described
 Then:
 
 ```bash
-.venv/bin/python -m jetson.mapping.server --host 0.0.0.0 --port 8443
+.venv/bin/python -m jetson.server --host 0.0.0.0 --port 8443
 ```
 
 In the existing Pip Scout phone app, point the backend at `ws://JETSON_IP:8443/phone`.
@@ -51,7 +51,7 @@ Reset clears observed geometry but keeps the phone's current ARKit world origin.
 WebXR requires a secure context. Serve the built page and WebSocket from the same trusted HTTPS origin:
 
 ```bash
-.venv/bin/python -m jetson.mapping.server --host 0.0.0.0 --port 8443 \
+.venv/bin/python -m jetson.server --host 0.0.0.0 --port 8443 \
   --ssl-certfile /path/to/trusted-cert.pem --ssl-keyfile /path/to/private-key.pem
 ```
 

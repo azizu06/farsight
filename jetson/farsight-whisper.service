@@ -1,0 +1,19 @@
+# Template: jetson/install_service.sh fills @USER@, @REPO@, @SRC@ and installs it when whisper-server and the model exist.
+[Unit]
+Description=Farsight speech to text (whisper.cpp whisper-server, CUDA)
+After=network.target
+ConditionPathExists=@SRC@/whisper.cpp/build/bin/whisper-server
+ConditionPathExists=@REPO@/models/ggml-base.en.bin
+
+[Service]
+Type=simple
+User=@USER@
+WorkingDirectory=@REPO@
+ExecStart=@SRC@/whisper.cpp/build/bin/whisper-server -m @REPO@/models/ggml-base.en.bin --host 127.0.0.1 --port 8091
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
