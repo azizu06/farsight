@@ -19,7 +19,9 @@ stale samples can never be GO. Permits and session tokens are never stored.
 import argparse
 import html
 import json
+import math
 import os
+import re
 import subprocess
 import sys
 import time
@@ -85,6 +87,43 @@ def pick(source, keys):
     return {key: source[key] for key in keys if isinstance(source, dict) and key in source}
 
 
+def closure_evidence(packet):
+    """Bounded diagnostic whitelist, never a control payload or readiness verdict."""
+    if (not isinstance(packet, dict) or packet.get("scope") != "single-route-control"
+            or type(packet.get("enabled")) is not bool):
+        return None
+    result = dict(scope="single-route-control", enabled=packet["enabled"],
+                  excluded="bonded-control" if packet.get("excluded") == "bonded-control" else None)
+    for key in ("attempts", "opened", "active", "ended", "connect_failures", "prepare_failures"):
+        value = packet.get(key)
+        if type(value) is int and 0 <= value < 2**64:
+            result[key] = value
+    history = packet.get("history")
+    result["history"] = []
+    for row in history[-8:] if isinstance(history, list) else ():
+        if not isinstance(row, dict):
+            continue
+        stamp, duration = row.get("timestamp_utc"), row.get("duration_ms")
+        if (not isinstance(stamp, str) or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z", stamp)
+                or type(duration) not in (int, float) or not math.isfinite(duration) or not 0 <= duration <= 1e12
+                or row.get("first_ended_side") not in ("quest", "upstream")
+                or row.get("operation") not in ("receive", "send", "connect", "prepare")
+                or row.get("reason") not in ("normal", "error", "send_timeout", "invalid_control", "prepare_failure", "connect_failure")):
+            continue
+        try:
+            datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%S.%fZ")
+        except ValueError:
+            continue
+        clean = pick(row, ("timestamp_utc", "duration_ms", "first_ended_side", "operation", "reason"))
+        for key in ("local_close_code", "upstream_close_code"):
+            value = row.get(key)
+            clean[key] = value if type(value) is int and 0 <= value <= 65535 else None
+        name = row.get("exception_class")
+        clean["exception_class"] = name if isinstance(name, str) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,79}", name) else None
+        result["history"].append(clean)
+    return result
+
+
 def collect_sample(url, relay=None, context=None, ssh=None, fetch=passive_get, ssh_run=None):
     """One timestamped sample; any failure becomes an `errors` entry and leaves the value absent (unknown)."""
     sample = dict(t=round(time.time(), 3), errors=[])
@@ -116,7 +155,11 @@ def collect_sample(url, relay=None, context=None, ssh=None, fetch=passive_get, s
         sample["errors"].append(f"camera.jpg: {type(exc).__name__}")
     if relay:
         try:
-            sample["relay"] = pick(fetch(relay, "/relay/health", ALLOWED_RELAY, None), ("relay", "quest_built"))
+            relay_health = fetch(relay, "/relay/health", ALLOWED_RELAY, None)
+            sample["relay"] = pick(relay_health, ("relay", "quest_built"))
+            diagnostics = closure_evidence(relay_health.get("control_closures")) if isinstance(relay_health, dict) else None
+            if diagnostics is not None:
+                sample["relay"]["control_closures"] = diagnostics
         except (OSError, ValueError, urllib.error.URLError) as exc:
             sample["errors"].append(f"relay: {type(exc).__name__}")
     if ssh:

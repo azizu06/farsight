@@ -18,9 +18,9 @@ before anything is written. `--ssh user@host` is optional, explicit, BatchMode
 ## One-command rig day
 
 ```sh
-# Board profile is plain HTTP on 192.168.55.1:8443. Close the Quest/operator page first: qualify_link and
+# Primary phone-owned route: keep tools.phone_usb running on the Mac. Close the Quest/operator page first: qualify_link and
 # pitch_metrics refuse to run while another control socket owner is connected.
-python -m tools.rig_day --url http://192.168.55.1:8443 [--relay http://127.0.0.1:8080] --out runs-rig/day1
+python -m tools.rig_day --url http://127.0.0.1:18443 --relay http://127.0.0.1:8080 --out runs-rig/day1
 python -m tools.rig_day --url ... --out runs-rig/day1 --dry-run            # print the exact commands, run nothing
 python -m tools.rig_day --url ... --out runs-rig/day1 --skip preflight --skip detector
 ```
@@ -44,8 +44,8 @@ when no step failed.
 ## Run it
 
 ```sh
-# Mac, while the Quest drives. Board profile is plain HTTP; for an HTTPS service use https://JETSON:8443 with --insecure/--ca-file as for tools.ready
-python -m tools.rehearse_demo record --url http://JETSON:8443 --relay http://127.0.0.1:8080 --out runs-rehearsal/r1 [--ssh USER@JETSON]
+# Mac, while the Quest drives through the running phone USB helper and relay.
+python -m tools.rehearse_demo record --url http://127.0.0.1:18443 --relay http://127.0.0.1:8080 --out runs-rehearsal/r1
 # A human records each physical result as they watch it
 python -m tools.rehearse_demo mark --dir runs-rehearsal/r1 motor_direction pass --by NAME --note "both wheels forward"
 # Rebuild the report any time (also written by record on exit or Ctrl-C)
@@ -56,6 +56,15 @@ Outputs in the directory: `samples.jsonl` (+ up to 2 rotated files, 2 MB each by
 default; oldest dropped and counted), `meta.json`, `marks.json`, `report.md`,
 `report.html` (dark), `report.json`. Exit code 0 only for GO. Interrupting
 `record` still writes the report from what was recorded.
+
+With `--relay`, samples retain its bounded `control_closures` diagnostics:
+connection counters and at most eight endings per sample, including UTC time,
+observed side/operation, reason and original numeric close codes. Unknown fields,
+payloads and exception messages are excluded. Match those timestamps with
+Jetson serial/kernel logs to diagnose held-driving interruptions. Older relay
+versions without this field remain supported; bonded control is explicitly
+excluded. These diagnostic observations do not change the GO checks or prove
+why a connection ended. Log rotation still bounds total retained data.
 
 ## Latency kinds are not interchangeable
 

@@ -1,4 +1,5 @@
 import json
+import copy
 import tempfile
 import threading
 import unittest
@@ -7,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from tools import rehearse_demo as rh
+from tools.control_closures import ControlClosures
 
 REAL = dict(source="JETSON", camera=True, camera_age_ms=80, camera_source="UVC", detector="trt", detector_backend="tensorrt",
             detector_fps=24.0, detector_error=None, rover=True, estop=False, replay=False,
@@ -53,6 +55,61 @@ def all_marked(state="pass"):
 
 
 class CollectTests(unittest.TestCase):
+    def test_closure_diagnostics_are_retained_without_new_requests_or_payloads(self):
+        diagnostics = ControlClosures()
+        attempt = diagnostics.begin(); attempt.opened()
+        attempt.end("upstream", "send_timeout", 1000, 1006, TimeoutError("SECRET-PAYLOAD"), operation="send")
+        packet = diagnostics.status()
+        packet.update(secret="SECRET-TOKEN", upstream="https://private.example")
+        packet["history"][0].update(command={"permit": "SECRET-PERMIT"}, exception_message="SECRET-PAYLOAD")
+        base = fake_fetch()
+        def fetch(*args, **kwargs):
+            result = base(*args, **kwargs)
+            if args[1] == "/relay/health":
+                result["control_closures"] = packet
+            return result
+        sample = rh.collect_sample("u", relay="r", fetch=fetch)
+        clean = sample["relay"]["control_closures"]
+        self.assertEqual(clean["ended"], 1)
+        self.assertEqual(clean["history"][0]["operation"], "send")
+        self.assertEqual(clean["history"][0]["upstream_close_code"], 1006)
+        self.assertEqual(clean["history"][0]["exception_class"], "TimeoutError")
+        self.assertNotIn("SECRET", json.dumps(sample))
+        self.assertNotIn("private.example", json.dumps(sample))
+        self.assertEqual(base.calls, list(rh.ALLOWED_UPSTREAM) + list(rh.ALLOWED_RELAY))
+        with tempfile.TemporaryDirectory() as directory:
+            log = rh.BoundedLog(directory); log.write(sample); log.close()
+            saved, bad = rh.read_samples(directory)
+            self.assertEqual(bad, 0)
+            self.assertEqual(saved[0]["relay"]["control_closures"], clean)
+
+    def test_closure_history_and_invalid_values_are_bounded(self):
+        owner = ControlClosures()
+        item = owner.begin(); item.opened(); item.end("quest", "normal", 1000, None)
+        packet = owner.status()
+        valid = packet["history"][0]
+        packet["history"] = [dict(valid, duration_ms=i) for i in range(40)]
+        packet["attempts"] = True
+        packet["opened"] = -1
+        clean = rh.closure_evidence(packet)
+        self.assertEqual(len(clean["history"]), 8)
+        self.assertEqual(clean["history"][0]["duration_ms"], 32)
+        self.assertNotIn("attempts", clean)
+        self.assertNotIn("opened", clean)
+        for key, value in (("duration_ms", float("nan")), ("duration_ms", True),
+                           ("timestamp_utc", "2026-99-99T00:00:00.000Z"),
+                           ("timestamp_utc", "SECRET"), ("first_ended_side", "SECRET"),
+                           ("operation", "SECRET"), ("reason", "SECRET")):
+            with self.subTest(key=key):
+                invalid = copy.deepcopy(owner.status())
+                invalid["history"][0][key] = value
+                self.assertEqual(rh.closure_evidence(invalid)["history"], [])
+        self.assertIsNone(rh.closure_evidence({"scope": "unknown", "enabled": True}))
+        self.assertIsNone(rh.closure_evidence({"scope": "single-route-control", "enabled": "yes"}))
+        excluded = rh.closure_evidence(owner.status(enabled=False))
+        self.assertFalse(excluded["enabled"])
+        self.assertEqual(excluded["excluded"], "bonded-control")
+
     def test_only_allowlisted_reads_and_secrets_dropped(self):
         fetch = fake_fetch()
         sample = rh.collect_sample("u", relay="r", fetch=fetch)
