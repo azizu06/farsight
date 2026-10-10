@@ -21,6 +21,13 @@ arduino-cli compile --fqbn arduino:avr:uno rover/farsight_uno
 arduino-cli upload --fqbn arduino:avr:uno --port /dev/ttyACM0 rover/farsight_uno
 ```
 
+**Compile status: not run to completion.** On 2026-10-10 `arduino-cli` 1.5.2 and
+`arduino:avr@1.8.8` installed without sudo, but `arduino-cli compile --fqbn
+arduino:avr:uno rover/farsight_uno` failed on the Apple-silicon dev Mac with
+`avr-g++: bad CPU type in executable` (the AVR toolchain is x86_64-only and Rosetta
+is not installed). The firmware has therefore still not been compiled; run the
+command above on an x86_64/Linux host or the Jetson and record the sketch size here.
+
 Remove the ESP camera module or put its switch in Upload mode: it shares the
 Uno UART. Do not run the serial monitor at the same time as the Jetson.
 
@@ -31,6 +38,27 @@ translation below 25 cm, without an echo, with an off-centre pan head, or while
 the pan servo settles. Reverse and turning remain available. Because the stock
 range sensor pans with the camera, physically keep that sensor facing forward
 or use fixed camera/digital pan to drive while looking sideways.
+
+## Serial protocol test
+
+`rover/serial_test.py` (pyserial) exercises every Uno command: `M 0 0`, `P 90`, `R`,
+an invalid line, out-of-range `M`/`P` values and an over-long line (`ERR line`),
+then prints PASS/FAIL per command. The default is a **dry run that cannot move
+motors**.
+
+```sh
+python rover/serial_test.py --port /dev/ttyACM0                  # dry run
+python rover/serial_test.py --port /dev/ttyACM0 --allow-motion   # wheels raised
+python rover/serial_test.py --selftest                           # simulator, no hardware
+python -m pytest rover/tests                                     # unit tests
+```
+
+`--allow-motion` sends `M 50 50`, then goes silent and times the stop against the
+300 ms watchdog. The firmware has no motor-status reply, so the operator presses
+Enter when the wheels stop; `--tolerance-ms` (default 500) absorbs reaction time,
+so this only catches a watchdog that is missing or grossly late. Keep the forward
+sensor clear or the firmware removes the forward component. `--selftest` and the
+tests run against an in-process model of the sketch and are software evidence only.
 
 Bench qualification is required before floor driving:
 
