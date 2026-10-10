@@ -5,11 +5,6 @@ Every step prints exactly what it commands and keeps renewing the 300 ms motor
 watchdog while a side spins, then sends M 0 0. PWM is capped at --cap (default
 and maximum 120). Wheels must be off the ground.
 
-The firmware removes forward translation while the range check is blocked
-(no echo, < 25 cm, pan off-centre): a single-side forward command would then
-become a half-power pivot. Forward steps therefore read R first and are skipped
-unless it reports >= 25 cm. Reverse steps are never altered.
-
   python rover/wheel_bench.py --port /dev/ttyUSB0 sides --pwm 80 --seconds 2
   python rover/wheel_bench.py --port /dev/ttyUSB0 ramp --side left --dir rev --start 30 --stop 100 --step 10
   python rover/wheel_bench.py --port /dev/ttyUSB0 watchdog --pwm 80
@@ -24,7 +19,6 @@ from serial_test import BOOT_DELAY_S, Link
 
 MAX_CAP = 120
 RENEW_S = 0.1
-CLEAR_CM = 25
 
 
 def wheels(side: str, direction: str, pwm: int) -> tuple[int, int]:
@@ -32,25 +26,11 @@ def wheels(side: str, direction: str, pwm: int) -> tuple[int, int]:
     return (value if side in ("left", "both") else 0, value if side in ("right", "both") else 0)
 
 
-def forward_clear(link: Link) -> tuple[bool, str]:
-    reply = link.ask("R")
-    try:
-        cm = int(reply.split()[1])
-    except (IndexError, ValueError):
-        return False, reply
-    return cm >= CLEAR_CM, reply
-
-
 def spin(link: Link, side: str, direction: str, pwm: int, seconds: float, cap: int, out=print) -> bool:
-    """Run one side (or both) for `seconds`; returns False if the step was skipped or failed."""
+    """Run one side (or both) for `seconds`; returns False if the Uno refused a command."""
     pwm = min(pwm, cap)
     left, right = wheels(side, direction, pwm)
     label = f"{side} {'forward' if direction == 'fwd' else 'reverse'} at PWM {pwm} for {seconds:g} s (M {left} {right})"
-    if direction == "fwd":
-        clear, reply = forward_clear(link)
-        if not clear:
-            out(f"SKIP {label}: forward blocked by range check ({reply!r}); needs R >= {CLEAR_CM}")
-            return False
     out(f"RUN  {label}")
     try:
         end = time.monotonic() + seconds

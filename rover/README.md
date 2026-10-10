@@ -3,12 +3,21 @@
 `farsight_uno/farsight_uno.ino` is original firmware for the **ELEGOO Smart Robot
 Car V4 shield**. It accepts the serial contract at 115200 baud: `M left right`,
 `P degrees`, `R`, newline terminated. Motor values are signed PWM -255..255;
-servo is 10..170 degrees, 90 forward. Invalid commands stop the motors.
+`P` accepts 10..170 degrees (90 forward). Invalid commands stop the motors.
+
+**No ultrasonic sensor or pan servo is mounted** (captain's decision,
+2026-10-10). `R` always replies `R -1` and `P` only drives the unused D10 pin;
+both stay in the protocol for compatibility. The firmware never blocks motion
+on range: obstacle stopping relies entirely on the Jetson/iPhone path (iPhone
+LiDAR depth, the server's stop leases and the operator). Run the Jetson server
+with `--proximity-stop off` (`FARSIGHT_PROXIMITY_STOP=off` for the service);
+otherwise `R -1` reads as a stale range and the server blocks forward driving.
+The server's pan rule (forward blocked while a pan is commanded) stays on.
 
 The V4 pin assignments are facts checked against ELEGOO's
 [official hardware definitions](https://github.com/elegooofficial/ELEGOO-Smart-Robot-Car-Kit-V4.0-New/blob/main/DeviceDriverSet.h):
 left PWM D6/direction D8, right PWM D5/direction D7, bridge standby D3,
-pan servo D10, ultrasonic trigger D13/echo D12, button D2. Confirm the actual
+pan servo D10 (unused), button D2. Confirm the actual
 shield is V4 before flashing. Direction HIGH is assumed forward; verify with
 the wheels off the ground and swap motor leads if needed.
 
@@ -21,8 +30,8 @@ arduino-cli compile --fqbn arduino:avr:uno rover/farsight_uno
 arduino-cli upload --fqbn arduino:avr:uno --port /dev/ttyACM0 rover/farsight_uno
 ```
 
-**Compile status: compiled and flashed (2026-10-10).** `Sketch uses 6066 bytes
-(18%) ... Global variables use 306 bytes (14%)` with `arduino-cli` 1.5.1,
+**Compile status: compiled and flashed from the Jetson (2026-10-10).** Sensorless
+build: `Sketch uses 5100 bytes (15%) ... Global variables use 292 bytes (14%)` with `arduino-cli` 1.5.1,
 `arduino:avr@1.8.8`, Servo 1.3.0. On Apple silicon the macOS AVR toolchain is
 x86_64-only (`avr-g++: bad CPU type`), so use the Linux arm64 build instead,
 either in Docker or on the Jetson. The Jetson has no internet on the rig, so
@@ -52,16 +61,8 @@ Remove the ESP camera module or put its switch in Upload mode: it shares the
 Uno UART. Do not run the serial monitor at the same time as the Jetson.
 
 The Uno starts stopped, stops if no valid `M` arrives for 300 ms, and treats the
-D2 button as an immediate motor stop while held. `R -1` means no valid echo;
-it is **not** a clear road. Forward translation is removed while the pan head is
-off centre or the pan servo settles, and (by default) below 25 cm or without a fresh
-echo. For navigation runs where the Jetson's planner steers around obstacles, the
-proximity part can be compiled out with
-`--build-property compiler.cpp.extra_flags=-DFARSIGHT_DISABLE_PROXIMITY_STOP`; run the
-Jetson server with `--proximity-stop off` to match. Reverse and turning always remain
-available. Because the stock
-range sensor pans with the camera, physically keep that sensor facing forward
-or use fixed camera/digital pan to drive while looking sideways.
+D2 button as an immediate motor stop while held. These three stops are the
+only ones on the Uno; `R -1` means no sensor, **not** a clear road.
 
 ## Serial protocol test
 
@@ -80,16 +81,13 @@ python -m pytest rover/tests                                     # unit tests
 `--allow-motion` sends `M 50 50`, then goes silent and times the stop against the
 300 ms watchdog. The firmware has no motor-status reply, so the operator presses
 Enter when the wheels stop; `--tolerance-ms` (default 500) absorbs reaction time,
-so this only catches a watchdog that is missing or grossly late. Keep the forward
-sensor clear or the firmware removes the forward component. `--selftest` and the
+so this only catches a watchdog that is missing or grossly late. `--selftest` and the
 tests run against an in-process model of the sketch and are software evidence only.
 
 `--allow-motion` needs the person watching the wheels at the same terminal. When
 the observer is elsewhere and reports back, use `rover/wheel_bench.py` instead:
 it prints exactly what it commands, renews the watchdog while a side spins,
-caps PWM at 120, and sends `M 0 0` after every step. Forward steps read `R` first
-and are skipped below 25 cm or with no echo, because the firmware would otherwise
-turn a one-side forward command into a half-power pivot.
+caps PWM at 120, and sends `M 0 0` after every step.
 
 ```sh
 python rover/wheel_bench.py --port /dev/ttyUSB0 sides --pwm 80 --seconds 2      # L fwd, R fwd, L rev, R rev
@@ -101,16 +99,12 @@ Bench qualification is required before floor driving:
 
 1. Lift the wheels; connect serial. `M 0 0` must return `OK`.
 2. Verify positive left/right values move each side forward independently.
-3. Clear the forward sensor; send `M 50 50`, then stop sending. Both sides
-   must stop within 300 ms (plus the bounded 12 ms sensor call).
-4. Send `P 90`, wait 250 ms, and read `R`. Put an object within 25 cm and
-   verify forward is blocked; reverse and turning must still work. A
-   `FARSIGHT_DISABLE_PROXIMITY_STOP` build must keep driving forward instead.
-5. Unplug the USB cable while moving slowly; verify the Uno stops.
-6. Hold the board button; both motors must stop while it is held.
+3. Send `M 50 50`, then stop sending. Both sides must stop within 300 ms.
+4. Unplug the USB cable while moving slowly; verify the Uno stops.
+5. Hold the board button; both motors must stop while it is held.
 
-Host tests and successful compilation do not establish motor polarity, range
-accuracy, braking distance, USB stability, or correct wiring on the real rover.
+Host tests and successful compilation do not establish motor polarity,
+braking distance, USB stability, or correct wiring on the real rover.
 
 ## Calibrate slow movement
 

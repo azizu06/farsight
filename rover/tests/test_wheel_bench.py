@@ -10,8 +10,8 @@ import wheel_bench as wb  # noqa: E402
 class Recorder(st.FakeUno):
     """FakeUno that records every motor state it applies."""
 
-    def __init__(self, range_cm=100):
-        super().__init__(range_cm)
+    def __init__(self):
+        super().__init__()
         self.seen = []
 
     def _command(self, text):
@@ -27,14 +27,8 @@ def test_spin_caps_pwm_and_ends_stopped():
     assert uno.motors == (0, 0)
 
 
-def test_forward_skipped_when_range_blocked():
-    uno = Recorder(range_cm=-1)
-    assert not wb.spin(st.Link(uno), "right", "fwd", 80, 0.2, cap=120, out=lambda *_: None)
-    assert all(m == (0, 0) for m in uno.seen)
-
-
-def test_forward_runs_when_clear():
-    uno = Recorder(range_cm=60)
+def test_single_side_forward_runs_without_range_sensor():
+    uno = Recorder()
     assert wb.spin(st.Link(uno), "right", "fwd", 80, 0.2, cap=120, out=lambda *_: None)
     assert (0, 80) in uno.seen
     assert uno.motors == (0, 0)
