@@ -11,8 +11,8 @@ import { H264Viewer } from "./h264.js";
 import { mapWalk } from "./map-walk.js";
 import { socketUrl } from "./mac-view-urls.js";
 import {
-  DEFAULT_ASPECT, DEFAULT_FOV_Y_DEG, PICTURE_DISTANCE, PoseRing, STEREO_LAYOUT, frameSeenAt, frustumRect, macPresenting, mapPoseMessage,
-  pictureSize, segmentKind, shouldSendPose, viewerEyes,
+  DEFAULT_ASPECT, DEFAULT_FOV_Y_DEG, PICTURE_DISTANCE, PoseRing, STEREO_LAYOUT, frameSeenAt, macPresenting, mapPoseMessage,
+  frameView, pictureSize, shouldSendPose, viewerEyes,
 } from "./mac-auto-pose.js";
 
 export const MACVIEW_PATH = "/ws/macview";
@@ -98,14 +98,15 @@ export class MacAutoView {
     this.sendPose(now, viewerEyes(viewer?.views));
     this.viewer.update();
     const decoded = this.viewer.displayedFrame;
-    // A segment claiming packed stereo without a valid layout is unavailable, never shown as mono.
-    const kind = decoded ? segmentKind(decoded.metadata) : null;
-    const shown = kind === "invalid" ? null : decoded;
-    this.lastFrameAt = frameSeenAt(this.lastFrameAt, this.lastFrameId, shown?.id ?? null, now);
-    if (shown && shown.id !== this.lastFrameId) {
-      this.lastFrameId = shown.id;
-      this.stereoShown = kind === "stereo" && this.placeEyes(shown.pose);
-      if (!this.stereoShown) this.place(shown.pose, shown.fovY);
+    if (decoded && decoded.id !== this.lastFrameId) {
+      // Decide before renewing: the shared VideoTexture already shows this frame, so a
+      // rejected one (bad pair, unknown or foreign pose) drops the picture immediately.
+      const view = frameView(decoded.metadata, decoded.pose, this.ring, this.session);
+      this.lastFrameAt = view ? frameSeenAt(this.lastFrameAt, this.lastFrameId, decoded.id, now) : -Infinity;
+      this.lastFrameId = decoded.id;
+      this.stereoShown = view?.mode === "stereo";
+      if (view?.mode === "stereo") this.placeEyes(view.eyes, view.rects);
+      else if (view) this.place(view.from, decoded.fovY);
     }
     this.presenting = macPresenting(true, this.lastFrameAt, now);
     this.picture.visible = this.presenting && !this.stereoShown;
@@ -156,8 +157,7 @@ export class MacAutoView {
   }
 
   /** Put the picture where it was rendered from (flat reprojection), else in front of the head. */
-  private place(echo: Record<string, unknown> | null, fovY: number | undefined) {
-    const from = this.ring.find(echo) as WorldPose | null;
+  private place(from: WorldPose | null, fovY: number | undefined) {
     const position = from ? this.offset.fromArray(from.position) : this.offset.copy(this.head.position);
     const quaternion = from ? this.picture.quaternion.fromArray(from.quaternion) : this.picture.quaternion.copy(this.head.quaternion);
     const video = this.viewer.video;
@@ -167,20 +167,13 @@ export class MacAutoView {
     this.picture.position.set(0, 0, -PICTURE_DISTANCE).applyQuaternion(quaternion).add(position);
   }
 
-  /**
-   * Place each eye's half where that eye was when the pair was requested, covering
-   * exactly its (asymmetric) frustum. False when the pair's views are unknown.
-   */
-  private placeEyes(echo: Record<string, unknown> | null) {
-    const from = this.ring.find(echo) as WorldPose | null;
-    if (!from || from.eyes.length < 2) return false;
-    return this.eyeQuads.every((quad, index) => {
-      const eye = from.eyes[index], rect = frustumRect(eye.projection);
-      if (!rect) return false;
+  /** Place each eye's half where that eye was when the pair was requested, covering exactly its (asymmetric) frustum. */
+  private placeEyes(eyes: EyePose[], rects: { cx: number; cy: number; width: number; height: number }[]) {
+    this.eyeQuads.forEach((quad, index) => {
+      const eye = eyes[index], rect = rects[index];
       quad.quaternion.fromArray(eye.quaternion);
       quad.scale.set(rect.width, rect.height, 1);
       quad.position.set(rect.cx, rect.cy, -PICTURE_DISTANCE).applyQuaternion(quad.quaternion).add(this.offset.fromArray(eye.position));
-      return true;
     });
   }
 
