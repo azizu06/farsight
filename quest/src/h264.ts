@@ -1,7 +1,7 @@
 import { sampleFrame } from "./camera-view.js";
 import { videoSocketUrl } from "./mac-view-urls.js";
 import { VideoRequests } from "./video-requests.js";
-import { chaseLiveEdge } from "./live-edge.js";
+import { chaseLiveEdge, presentationWait } from "./live-edge.js";
 
 export { videoSocketUrl };
 type Segment = {
@@ -62,13 +62,15 @@ export class H264Viewer {
     });
   }
   get displayedFrame() {
-    if (!this.callbackSupported || this.video.seeking || this.video.paused || this.decodedAt > performance.now() || performance.now() - this.decodedAt >= 250) return null;
+    const now = performance.now(), wait = presentationWait(this.decodedAt, now);
+    if (!this.callbackSupported || this.video.seeking || this.video.paused || wait === null || now - this.decodedAt >= 250) return null;
     const segment = [...this.segments].reverse().find(item =>
       this.decodedMediaTime >= item.media_start_s - 0.0001 && this.decodedMediaTime < item.media_end_s);
     if (!segment) return null;
     return {
       id: `h264:${segment.request_id}:${this.decodedFrames}`,
-      age: segment.boundedAge + performance.now() - segment.receivedAt,
+      // Age at the moment it is on screen, including the wait for its vsync.
+      age: segment.boundedAge + now + wait - segment.receivedAt,
       source: segment.source,
       metadata: segment,
       frame: sampleFrame(segment.samples, this.decodedMediaTime, segment.media_start_s, segment.media_end_s),
@@ -200,7 +202,7 @@ export class H264Viewer {
   private cleanMedia() {
     this.queue = []; this.buffer = null; this.media = null; this.segments = [];
     this.initReceived = false; this.pending = null; this.requests.clear();
-    this.decodedMediaTime = -1; this.decodedAt = -Infinity;
+    this.decodedMediaTime = -1; this.decodedAt = -Infinity; this.lastSeekAt = -Infinity;
     this.video.pause(); this.video.removeAttribute("src"); this.video.load();
     if (this.objectURL) URL.revokeObjectURL(this.objectURL);
     this.objectURL = "";
