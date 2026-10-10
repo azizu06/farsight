@@ -289,6 +289,7 @@ class App:
             "drawn_points": encoder.last_snapshot.get("drawnPoints", 0) if encoder else 0,
             "drawn_triangles": encoder.last_snapshot.get("drawnTriangles", 0) if encoder else 0,
             "map": encoder.last_snapshot.get("mapStatus") if encoder else None,
+            "dense": encoder.last_snapshot.get("dense") if encoder else None,
             "capture_fps": ((len(encoder.capture_times) - 1) / (encoder.capture_times[-1] - encoder.capture_times[0]))
                 if encoder and len(encoder.capture_times) > 1 else None,
             "encoded_frame_fps": (sum(row[1] for row in list(encoder.fragment_times)[1:]) /
