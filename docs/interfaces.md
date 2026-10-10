@@ -58,6 +58,44 @@ Optional pose fields (YOLO11-pose), present when the detector is a pose model:
 - `mode`: `"teleop"` or `"seek"` (seek also sends `"target_id"`).
 - No valid message for 250 ms, or `deadman: false` -> motors zero. Always.
 
+### Optional Explore / Seek extension
+
+The composed rover server also accepts `mode: "explore"`. Existing teleop and
+`mode: "seek"` + integer `target_id` fields retain their meanings. All modes use
+the same session, ordered sequence, server-issued permit, held deadman, and
+fresh-video checks described in [control setup](../jetson/control/README.md).
+Autonomy never renews a permit or lease itself. Example held-deadman heartbeat:
+
+```json
+{"session_id":"from status","permit":"from latest status","seq":813,
+ "deadman":true,"v":0,"w":0,"pan":0,"mode":"seek","target_id":3,
+ "video_fresh":true,"video_age_ms":50}
+```
+
+- Select Explore with `mode: "explore"`, `v: 0`, `w: 0`. It drives at 0.25
+  normalized speed until front range is below 70 cm or four seconds pass, then
+  turns randomly left/right at 0.35 for at most one second and repeats. A fresh
+  person detection automatically hands over to Seek, retaining its track ID
+  even when subsequent heartbeats still say `explore`.
+- Seek turns proportionally to the selected box's horizontal centre. Forward
+  speed tapers to zero at 60 cm (maximum 0.35). Arrival latches stopped. The front
+  ultrasonic measures the nearest obstacle, not necessarily the selected person.
+- A missing target stops movement immediately; one second without a fresh
+  observation latches `target_lost`. Stale/error detections cannot steer Seek.
+- Any nonzero `v` or `w` returns immediately to teleop. This override stays
+  latched against further autonomous heartbeats until a deadman release or an
+  explicit `teleop` message. Release/repress or select teleop then reselect
+  autonomy to retry an arrived/lost target.
+- Autonomy centres pan at zero. Missing/stale front range stops all autonomous
+  motion. Range below 25 cm also stops autonomous turns; normal teleop reverse
+  and turn escape remain available. The PWM ceiling and camera guard still apply.
+
+Status replies add optional `autonomy_state` and `target_id` fields; `mode`
+reports the active mode, including automatic Explore-to-Seek handover. States
+are `idle`, `forward`, `turning`, `tracking`, `target_missing`, `target_lost`,
+`arrived`, `estop`, and `stick_override`. `estop` and `requires_release` retain
+their existing safety meanings. Public status never grants a usable permit.
+
 Jetson replies on the same socket, 10 Hz:
 
 ```json
