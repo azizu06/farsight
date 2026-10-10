@@ -138,6 +138,9 @@ Optional pose fields (YOLO11-pose), present when the detector is a pose model:
 ```
 
 - `v` forward speed and `w` turn rate, both -1..1. `pan` camera yaw in degrees, -80..80, 0 = forward.
+  With `--pan-mount none` (`FARSIGHT_PAN_MOUNT=none`, a rover with no pan servo; the headset
+  pans digitally) the server still validates `pan` but then ignores it: it never blocks forward
+  drive, the Uno never gets `P`, and `pan_deg` stays 90. Default `servo` is unchanged.
 - `mode`: `"teleop"`, `"seek"` (also sends `"target_id"`), `"explore"`, `"scan"`, or `"goto"` (with `--nav2`); the last three are specified below.
 - No valid message for 250 ms, or `deadman: false` -> motors zero. Always.
 - One socket owns control. A new connection starts stopped. First send an
@@ -234,8 +237,8 @@ replay still samples control at 20 Hz):
 ```
 
 `estop` reports a blocked forward translation: unknown/stale range, range below
-25 cm and an ultrasonic pan outside ±10° (the range conditions only while the
-proximity stop is on, the default).
+25 cm and a servo pan outside ±10° (the range conditions only while the
+proximity stop is on, the default; the pan condition only with `--pan-mount servo`, the default).
 Camera/link failure stops all motion regardless. `link_ms` is permit age at command arrival; the browser's acknowledged
 sequence RTT is a different measurement. Optional autonomy fields follow below.
 

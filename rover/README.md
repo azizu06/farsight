@@ -12,7 +12,8 @@ on range: obstacle stopping relies entirely on the Jetson/iPhone path (iPhone
 LiDAR depth, the server's stop leases and the operator). Run the Jetson server
 with `--proximity-stop off` (`FARSIGHT_PROXIMITY_STOP=off` for the service);
 otherwise `R -1` reads as a stale range and the server blocks forward driving.
-The server's pan rule (forward blocked while a pan is commanded) stays on.
+Also run it with `--pan-mount none` (`FARSIGHT_PAN_MOUNT=none`): otherwise the
+server's pan rule blocks forward driving while the headset commands a pan.
 
 The V4 pin assignments are facts checked against ELEGOO's
 [official hardware definitions](https://github.com/elegooofficial/ELEGOO-Smart-Robot-Car-Kit-V4.0-New/blob/main/DeviceDriverSet.h):

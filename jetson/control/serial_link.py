@@ -60,7 +60,8 @@ class SerialPump:
                     break
                 device.reset_input_buffer()
                 device.reset_output_buffer()
-                device.write(b"M 0 0\nP 90\nR\n")
+                servo = self.state.pan_mount == "servo"
+                device.write(b"M 0 0\nP 90\nR\n" if servo else b"M 0 0\nR\n")
                 pending, started = bytearray(), time.monotonic()
                 last_response = started
                 next_tick, next_range, last_pan, settle_at = started, started, 90, started
@@ -93,7 +94,7 @@ class SerialPump:
                         # Commands are never buffered for replay; recompute from
                         # monotonic lease immediately before every serial write.
                         data = f"M {left} {right}\n"
-                        if pan != last_pan:
+                        if servo and pan != last_pan:
                             data += f"P {pan}\n"
                             last_pan, settle_at = pan, now + 0.2
                         if now >= next_range:

@@ -47,7 +47,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                piper_bin=None, piper_model=None, tts_dir=None, face_model=None, whisper_url=None,
                piper_model_es=None, speaker_cmd="auto", triage_interval=3.0,
                depth_model=None, scan_pan=False, scan_fov=70, scan_intrinsics=None, scan_turn_dps=90,
-               record=False, replay=None, proximity_stop=True, nav2=False, nav_speed_mps=0.45,
+               record=False, replay=None, proximity_stop=True, pan_mount="servo", nav2=False, nav_speed_mps=0.45,
                nav_turn_radps=3.0, nav_max_v=0.7, nav_max_w=0.8, nav_camera_height=0.15, bulk_limit_mbps=0, drive_profile=None,
                allow_calibration=False, sim_world=None):
     if sim_world is not None:  # closed-loop simulator: a moving ray-cast rover in a test floor plan
@@ -65,6 +65,8 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
         raise ValueError("Simulated sources cannot be combined with a physical motor serial port")
     if nav2 and replay is not None:
         raise ValueError("Replay is read-only; navigation cannot be combined with it")
+    if scan_pan and pan_mount == "none":
+        raise ValueError("--scan-pan needs a physical pan servo (--pan-mount servo)")
     state = MapState(demo)
     sim = (SimFeed(RoverSim(load_world(sim_world), speed_mps=nav_speed_mps, turn_radps=nav_turn_radps))
            if sim_world is not None else None)
@@ -80,7 +82,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                              camera_ready=lambda: camera_service.status()["camera_drive_ready" if serial_port else "camera"],
                              detections=sim.detections if sim else perception.snapshot,
                              simulated_range=sim.sim.ultrasonic_cm if sim else None,
-                             proximity_stop=proximity_stop, navigator=nav)
+                             proximity_stop=proximity_stop, pan_mount=pan_mount, navigator=nav)
     if nav is not None:
         nav.attach(control.state)
         state.frame_observers.append(nav.offer_frame)
@@ -721,6 +723,10 @@ def main():
     parser.add_argument("--proximity-stop", type=on_off, default=True, metavar="on|off",
                         help="Ultrasonic stop: range < 25 cm or stale range blocks forward (default on). "
                              "'off' is an explicit opt-in for navigation runs that steer around obstacles")
+    parser.add_argument("--pan-mount", choices=("servo", "none"), default="servo",
+                        help="servo: a pan servo follows the commanded pan and forward drive is blocked while "
+                             "it is off-centre (default). none: no pan hardware; the headset pans digitally, "
+                             "the Uno never gets P and pan never blocks forward drive")
     parser.add_argument("--detector", choices=("hog", "pose", "none"), default="hog",
                         help="hog: bundled CPU detector; pose: YOLO11-pose (needs --detector-model); none")
     parser.add_argument("--detector-model", help="YOLOv8/11 ONNX or TensorRT engine path; overrides bundled HOG. With --detector pose: YOLO11-pose model")
@@ -766,6 +772,8 @@ def main():
         parser.error("--sim-world cannot be combined with a real --camera or --replay")
     if args.demo and args.camera:
         parser.error("Choose --demo or a real --camera, not both")
+    if args.scan_pan and args.pan_mount == "none":
+        parser.error("--scan-pan needs a physical pan servo (--pan-mount servo)")
     uvicorn.run(create_app(args.demo, camera_device=args.camera, serial_port=args.serial_port,
                 simulate_rover=args.simulate_rover, detector=args.detector, detector_model=args.detector_model,
                 h264=args.h264, mission_dir=args.mission_dir, max_pwm=args.max_pwm, min_pwm=args.min_pwm,
@@ -778,7 +786,7 @@ def main():
                 scan_intrinsics=args.scan_intrinsics, scan_turn_dps=args.scan_turn_dps,
                 record=args.record, replay=args.replay, bulk_limit_mbps=args.bulk_limit_mbps,
                 drive_profile=args.drive_profile, allow_calibration=args.allow_calibration,
-                proximity_stop=args.proximity_stop,
+                proximity_stop=args.proximity_stop, pan_mount=args.pan_mount,
                 nav2=args.nav2, nav_speed_mps=args.nav_speed_mps, nav_turn_radps=args.nav_turn_radps,
                 nav_max_v=args.nav_max_v, nav_max_w=args.nav_max_w,
                 nav_camera_height=args.nav_camera_height, sim_world=args.sim_world), host=args.host, port=args.port,
