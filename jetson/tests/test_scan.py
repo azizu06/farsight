@@ -1,0 +1,169 @@
+"""Camera-only scan geometry, control safety, and existing map delivery."""
+
+import unittest
+import time
+import struct
+import numpy as np
+from fastapi.testclient import TestClient
+
+from jetson.depth import back_project, intrinsics_from_fov, MetricDepth
+from jetson.mapping.voxel import VoxelMap
+from jetson.control.state import ControlState
+
+
+class ScanGeometryTests(unittest.TestCase):
+    def test_wall_at_two_metres_and_right_yaw_use_viewer_negative_z(self):
+        depth = np.full((3, 3), 2, np.float32)
+        rgb = np.full((3, 3, 3), [12, 34, 56], np.uint8)
+        k = intrinsics_from_fov(3, 3, 90)
+        points, colors = back_project(depth, rgb, k, 0)
+        np.testing.assert_allclose(points[:, 2], -2)
+        np.testing.assert_allclose(points[4], [0, 0, -2], atol=1e-6)
+        np.testing.assert_array_equal(colors[4], [12, 34, 56])
+        turned, _ = back_project(depth, rgb, k, 90)
+        np.testing.assert_allclose(turned[4], [2, 0, 0], atol=1e-6)
+        self.assertGreater(points[0, 1], 0)  # top pixels are above the camera
+
+    def test_voxel_merge_averages_overlap_and_bounds_scan(self):
+        cloud = VoxelMap(size=.04, capacity=50_000)
+        cloud.integrate(np.array([[0, 0, -2], [.01, 0, -2]]),
+                        np.array([[0, 0, 0], [100, 200, 100]], np.uint8))
+        xyz, rgb = cloud.snapshot()
+        np.testing.assert_allclose(xyz, [[.005, 0, -2]])
+        np.testing.assert_array_equal(rgb, [[50, 100, 50]])
+        xyz = np.column_stack((np.arange(60_000) * .05, np.zeros(60_000), np.zeros(60_000)))
+        cloud.integrate(xyz, np.zeros((60_000, 3), np.uint8))
+        self.assertEqual(len(cloud.snapshot()[0]), 50_000)
+
+    def test_invalid_depth_is_excluded(self):
+        d = np.array([[np.nan, np.inf, 0, .15, 9, 2]], np.float32)
+        xyz, _ = back_project(d, np.zeros((1, 6, 3), np.uint8), (2, 2, 5, 0), 0)
+        np.testing.assert_allclose(xyz, [[0, 0, -2]])
+
+
+class DepthModelTests(unittest.TestCase):
+    def test_rgb_imagenet_normalization_and_output_stay_metric(self):
+        class Session:
+            def get_inputs(self):
+                from types import SimpleNamespace
+                return [SimpleNamespace(name="pixel_values", shape=[1, 3, 308, 406])]
+
+            def run(inner, _, feed):
+                blob = feed["pixel_values"]
+                self.assertEqual(blob.shape, (1, 3, 308, 406))
+                np.testing.assert_allclose(blob[0, :, 100, 100],
+                    [(1 - .485) / .229, -.456 / .224, -.406 / .225], rtol=1e-5)
+                return [np.full((1, 308, 406), 2.5, np.float32)]
+
+        bgr = np.zeros((12, 16, 3), np.uint8)
+        bgr[:, :, 2] = 255
+        depth = MetricDepth(session=Session()).predict(bgr)
+        self.assertEqual(depth.shape, (12, 16))
+        np.testing.assert_allclose(depth, 2.5, atol=1e-5)
+
+
+class ScanSafetyTests(unittest.TestCase):
+    def setUp(self):
+        self.now = 10
+        self.state = ControlState(simulated=True, clock=lambda: self.now)
+        self.state.set_connected(True)
+        self.session = self.state.begin()
+        self.seq = 0
+        self.send(deadman=False)
+        self.send()
+
+    def send(self, **values):
+        status = self.state.status(issue_permit=True)
+        self.permit = status["permit"]
+        self.seq += 1
+        self.state.update_range(120)
+        message = dict(session_id=self.session, permit=self.permit, seq=self.seq,
+                       deadman=True, mode="teleop", v=0, w=0, pan=0,
+                       video_fresh=True, video_age_ms=0)
+        message.update(values)
+        return self.state.accept(message, self.session)
+
+    def test_refuses_moving_and_missing_or_wrong_operator_permit(self):
+        for session, permit in ((self.session, None), ("other", self.permit)):
+            with self.assertRaises(ValueError):
+                self.state.begin_scan(session, permit)
+        self.send(w=.3)
+        with self.assertRaises(ValueError):
+            self.state.begin_scan(self.session, self.permit)
+
+    def test_scan_uses_held_lease_and_release_expiry_camera_or_range_abort(self):
+        for failure in ("release", "expiry", "camera", "range", "disconnect", "override"):
+            with self.subTest(failure=failure):
+                self.setUp()
+                token = self.state.begin_scan(self.session, self.permit)
+                self.state.scan_command(token, w=.3)
+                self.assertGreater(self.state.output()[0], 0)
+                self.now += .1
+                self.assertTrue(self.send(mode="scan"))
+                self.assertGreater(self.state.output()[0], 0)
+                if failure == "release":
+                    self.send(deadman=False)
+                elif failure == "expiry":
+                    self.now += .251
+                elif failure == "camera":
+                    self.state.camera_ready = lambda: False
+                elif failure == "range":
+                    self.state.update_range(20)
+                elif failure == "disconnect":
+                    self.state.end(self.session)
+                else:
+                    self.send(w=0)
+                self.assertEqual(self.state.output()[:2], (0, 0))
+                with self.assertRaises(ValueError):
+                    self.state.scan_command(token, w=.3)
+
+
+class ScanDeliveryTests(unittest.TestCase):
+    def test_simulated_sweep_replaces_existing_map_and_survives_reset(self):
+        from jetson.mapping.server import create_app
+        app = create_app(demo=True, simulate_rover=True, detector="none")
+        with TestClient(app) as client, client.websocket_connect("/ws/control") as ws:
+            status = ws.receive_json()
+            seq = 0
+            def heartbeat(held, mode="teleop"):
+                nonlocal seq
+                seq += 1
+                ws.send_json(dict(session_id=status["session_id"], permit=status["permit"], seq=seq,
+                    deadman=held, v=0, w=0, pan=0, mode=mode, video_fresh=True, video_age_ms=0))
+
+            self.assertEqual(client.post("/scan", json={}).status_code, 422)
+            heartbeat(False)
+            time.sleep(.12)
+            status = ws.receive_json()
+            heartbeat(True)
+            time.sleep(.05)
+            response = client.post("/scan", json=dict(session_id=status["session_id"], permit=status["permit"]))
+            self.assertEqual(response.status_code, 202, response.text)
+            deadline = time.monotonic() + 8
+            while time.monotonic() < deadline:
+                status = ws.receive_json()
+                heartbeat(True, "scan")
+                result = client.get("/scan").json()
+                if not result["running"]:
+                    break
+            self.assertEqual(result["state"], "complete", result)
+            self.assertEqual(len(result["views"]), 5)
+            self.assertTrue(result["simulated"])
+            self.assertTrue(result["approximate"])
+            packet = client.get("/map/points.bin").content
+            count = struct.unpack_from("<I", packet)[0]
+            self.assertEqual(count, result["points"])
+            self.assertGreater(count, 1000)
+            self.assertLessEqual(count, 100_000)
+            self.assertEqual(len(packet), 4 + count * 16)
+            health = client.get("/health").json()
+            self.assertEqual(health["scan"]["points"], count)
+            self.assertTrue(health["paused"])
+            self.assertEqual(health["triangles"], 0)
+            heartbeat(False)
+            client.post("/map/reset")
+            self.assertEqual(struct.unpack_from("<I", client.get("/map/points.bin").content)[0], 0)
+
+
+if __name__ == "__main__":
+    unittest.main()

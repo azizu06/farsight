@@ -8,14 +8,16 @@ from .geometry import Calibration
 from .phone import RGBDFrame
 
 
-def simulated_frame(elapsed, frame_id, identity=("simulated-room", 1)):
+def simulated_frame(elapsed, frame_id, identity=("simulated-room", 1), *, scan_yaw=None):
     w, h = 160, 120
     k = Calibration(w, h, 135, 135, w / 2, h / 2)
-    yaw = elapsed * 0.27
+    yaw = elapsed * 0.27 if scan_yaw is None else -np.radians(scan_yaw)
     cosine, sine = np.cos(yaw), np.sin(yaw)
     pose = np.eye(4)
     pose[:3, :3] = [[cosine, 0, sine], [0, 1, 0], [-sine, 0, cosine]]
     pose[:3, 3] = [0.65 * np.sin(elapsed * 0.12), 0, -1.4 + 0.5 * np.cos(elapsed * 0.12)]
+    if scan_yaw is not None:
+        pose[:3, 3] = 0  # scan sweep has one camera origin; no translated mapping
     v, u = np.mgrid[:h, :w]
     rays = np.stack(((u - k.cx) / k.fx, -(v - k.cy) / k.fy, -np.ones((h, w))), -1)
     rays = rays @ pose[:3, :3].T
