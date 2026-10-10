@@ -563,8 +563,8 @@ async fn scan_start(State(s): State<Arc<AppState>>, Json(body): Json<Value>) -> 
 /// occupy the link ahead of control frames for the whole write.
 const PACE_CHUNK: usize = 16 * 1024;
 
-fn paced_body(body: Vec<u8>) -> Body {
-    let all = bytes::Bytes::from(body);
+fn paced_body(body: impl Into<bytes::Bytes>) -> Body {
+    let all = body.into();
     let stream = futures_util::stream::unfold((all, 0usize), |(all, off)| async move {
         if off >= all.len() {
             return None;
@@ -578,37 +578,57 @@ fn paced_body(body: Vec<u8>) -> Body {
 }
 
 async fn map_points(State(s): State<Arc<AppState>>, headers: HeaderMap) -> Response {
-    let (body, coding) = s.mapping.point_packet(accept_encoding(&headers));
-    packet_response(body, coding, false)
+    map_packet_response(&s, crate::state::PacketKind::Points, &headers, false)
 }
 
 async fn map_mesh(State(s): State<Arc<AppState>>, headers: HeaderMap) -> Response {
-    let (body, coding) = s.mapping.mesh_packet(accept_encoding(&headers));
-    packet_response(body, coding, true)
+    map_packet_response(&s, crate::state::PacketKind::Mesh, &headers, false)
+}
+
+/// Revision-keyed ETag + If-None-Match: `?points=http` subscribers poll these
+/// at their own pace, and an unchanged map must not re-download the full
+/// compressed blob over cellular — a 304 costs ~100 bytes. `no-cache` keeps
+/// the client revalidating (the same freshness `no-store` enforced).
+fn map_packet_response(s: &Arc<AppState>, which: crate::state::PacketKind, headers: &HeaderMap, attachment: bool) -> Response {
+    let (body, coding, tag) = s.mapping.packet(which, accept_encoding(headers));
+    let fresh = headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .split(',')
+        .map(str::trim)
+        .any(|t| t == "*" || t == tag);
+    let mut response = if fresh {
+        StatusCode::NOT_MODIFIED.into_response()
+    } else {
+        let mut r = packet_response(body, coding);
+        if attachment {
+            r.headers_mut().insert(header::CONTENT_DISPOSITION, "attachment; filename=\"farsight-scan.ply\"".parse().unwrap());
+        }
+        r
+    };
+    response.headers_mut().insert(header::ETAG, tag.parse().unwrap());
+    response.headers_mut().insert(header::VARY, "Accept-Encoding".parse().unwrap());
+    response.headers_mut().insert(header::CACHE_CONTROL, "no-cache".parse().unwrap());
+    response
 }
 
 fn accept_encoding(headers: &HeaderMap) -> &str {
     headers.get(header::ACCEPT_ENCODING).and_then(|v| v.to_str().ok()).unwrap_or("")
 }
 
-fn packet_response(body: Vec<u8>, coding: &'static str, no_store: bool) -> Response {
+fn packet_response(body: impl Into<bytes::Bytes>, coding: &'static str) -> Response {
     let mut response = Response::new(paced_body(body));
     response.headers_mut().insert(header::CONTENT_TYPE, "application/octet-stream".parse().unwrap());
     response.headers_mut().insert(header::VARY, "Accept-Encoding".parse().unwrap());
     if !coding.is_empty() {
         response.headers_mut().insert(header::CONTENT_ENCODING, coding.parse().unwrap());
     }
-    if no_store {
-        response.headers_mut().insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
-    }
     response
 }
 
 async fn map_export(State(s): State<Arc<AppState>>, headers: HeaderMap) -> Response {
-    let (body, coding) = s.mapping.ply_packet(accept_encoding(&headers));
-    let mut response = packet_response(body, coding, false);
-    response.headers_mut().insert(header::CONTENT_DISPOSITION, "attachment; filename=\"farsight-scan.ply\"".parse().unwrap());
-    response
+    map_packet_response(&s, crate::state::PacketKind::Ply, &headers, true)
 }
 
 async fn map_reset(State(s): State<Arc<AppState>>) -> Json<Value> {
@@ -1107,7 +1127,7 @@ async fn handle_ws_map(socket: WebSocket, s: Arc<AppState>, http_points: bool) {
                     return;
                 }
             } else if status["revision"].as_i64().unwrap_or(-1) != revision {
-                let (packet, _) = mapping.point_packet("");
+                let (packet, ..) = mapping.point_packet("");
                 if tx.send(Message::Text(status.to_string().into())).await.is_err() {
                     return;
                 }

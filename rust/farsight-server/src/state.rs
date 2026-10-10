@@ -1,5 +1,6 @@
 //! Single-session map state. Port of jetson/mapping/state.py.
 
+use bytes::Bytes;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -392,40 +393,53 @@ impl MapState {
             let mesh = s.surfaces.encode();
             drop(s);
             let pts = encode_points(&points, &colors);
-            let ply = export_ply(&points, &colors);
-            *cache = Some(PacketCache { key, pts: VariantCache::new(pts), mesh: VariantCache::new(mesh), ply: VariantCache::new(ply) });
+            // PLY is derived lazily from the cached points.bin records on
+            // first request — running export_ply eagerly every map version
+            // cost ~10-30 ms under this mutex even when nobody downloads it.
+            *cache = Some(PacketCache { key, pts: VariantCache::new(pts), mesh: VariantCache::new(mesh), ply: None });
         }
         cache
     }
 
-    /// Returns (body, content-encoding or "") for one map binary route.
+    /// Returns (body, content-encoding or "", etag) for one map binary route.
     /// Mirrors jetson/mapping/compress.py: cached per map version,
-    /// zstd > br > gzip, identity below the 1 KiB floor.
-    pub fn packet(&self, which: PacketKind, accept_encoding: &str) -> (Vec<u8>, &'static str) {
+    /// zstd > br > gzip, identity below the 1 KiB floor. The etag keys the
+    /// map version plus the representation so unchanged polls can 304.
+    pub fn packet(&self, which: PacketKind, accept_encoding: &str) -> (Bytes, &'static str, String) {
         let coding = negotiate_encoding(accept_encoding);
         let mut cache = self.packet_cached();
         let c = cache.as_mut().unwrap();
-        let v = match which {
-            PacketKind::Points => &mut c.pts,
-            PacketKind::Mesh => &mut c.mesh,
-            PacketKind::Ply => &mut c.ply,
+        let (v, kind) = match which {
+            PacketKind::Points => (&mut c.pts, "points"),
+            PacketKind::Mesh => (&mut c.mesh, "mesh"),
+            PacketKind::Ply => (
+                c.ply.get_or_insert_with(|| VariantCache::new(ply_from_points(&c.pts.raw))),
+                "ply",
+            ),
         };
-        if coding.is_none() || v.raw.len() < 1024 {
-            return (v.raw.clone(), "");
-        }
-        let coding = coding.unwrap();
-        (v.variant(coding), coding.name())
+        let (body, enc) = if coding.is_none() || v.raw.len() < 1024 {
+            (v.raw.clone(), "")
+        } else {
+            let cd = coding.unwrap();
+            (v.variant(cd), cd.name())
+        };
+        let tag = format!(
+            "\"{}-{}-{}-{}-{}\"",
+            c.key.0, c.key.1, c.key.2, kind,
+            if enc.is_empty() { "i" } else { enc }
+        );
+        (body, enc, tag)
     }
 
-    pub fn point_packet(&self, accept_encoding: &str) -> (Vec<u8>, &'static str) {
+    pub fn point_packet(&self, accept_encoding: &str) -> (Bytes, &'static str, String) {
         self.packet(PacketKind::Points, accept_encoding)
     }
 
-    pub fn mesh_packet(&self, accept_encoding: &str) -> (Vec<u8>, &'static str) {
+    pub fn mesh_packet(&self, accept_encoding: &str) -> (Bytes, &'static str, String) {
         self.packet(PacketKind::Mesh, accept_encoding)
     }
 
-    pub fn ply_packet(&self, accept_encoding: &str) -> (Vec<u8>, &'static str) {
+    pub fn ply_packet(&self, accept_encoding: &str) -> (Bytes, &'static str, String) {
         self.packet(PacketKind::Ply, accept_encoding)
     }
 
@@ -463,31 +477,52 @@ pub enum PacketKind {
     Ply,
 }
 
+/// Derive a binary PLY export from cached points.bin records. The record
+/// layout (12 B pos + 3 B rgb + 1 B pad) is the PLY vertex (12 + 3) plus
+/// padding, so this is byte-identical to export_ply on the same cloud.
+fn ply_from_points(raw: &[u8]) -> Vec<u8> {
+    let n = raw
+        .get(..4)
+        .map(|b| u32::from_le_bytes(b.try_into().unwrap()) as usize)
+        .unwrap_or(0);
+    let header = format!(
+        "ply\nformat binary_little_endian 1.0\nelement vertex {}\nproperty float x\nproperty float y\nproperty float z\nproperty uchar red\nproperty uchar green\nproperty uchar blue\nend_header\n",
+        n
+    );
+    let mut out = Vec::with_capacity(header.len() + n * 15);
+    out.extend_from_slice(header.as_bytes());
+    for rec in raw[4..].chunks_exact(16).take(n) {
+        out.extend_from_slice(&rec[..15]);
+    }
+    out
+}
+
 /// Raw bytes plus lazily-built compressed variants, reset per map version.
+/// Bytes keeps every serve a refcount bump instead of a multi-MB memcpy.
 struct VariantCache {
-    raw: Vec<u8>,
-    zstd: Option<Vec<u8>>,
-    br: Option<Vec<u8>>,
-    gz: Option<Vec<u8>>,
+    raw: Bytes,
+    zstd: Option<Bytes>,
+    br: Option<Bytes>,
+    gz: Option<Bytes>,
 }
 
 impl VariantCache {
     fn new(raw: Vec<u8>) -> Self {
-        Self { raw, zstd: None, br: None, gz: None }
+        Self { raw: raw.into(), zstd: None, br: None, gz: None }
     }
 
-    fn variant(&mut self, coding: Coding) -> Vec<u8> {
+    fn variant(&mut self, coding: Coding) -> Bytes {
         let slot = match coding {
             Coding::Zstd => &mut self.zstd,
             Coding::Br => &mut self.br,
             Coding::Gzip => &mut self.gz,
         };
         if slot.is_none() {
-            *slot = Some(match coding {
+            *slot = Some(Bytes::from(match coding {
                 Coding::Zstd => zstd_compress(&self.raw),
                 Coding::Br => brotli_compress(&self.raw),
                 Coding::Gzip => gzip_compress(&self.raw),
-            });
+            }));
         }
         slot.clone().unwrap()
     }
@@ -497,7 +532,7 @@ struct PacketCache {
     key: (u64, u64, usize),
     pts: VariantCache,
     mesh: VariantCache,
-    ply: VariantCache,
+    ply: Option<VariantCache>,
 }
 
 #[derive(Clone, Copy)]
@@ -601,41 +636,41 @@ mod tests {
     #[test]
     fn zstd_variant_served_only_when_advertised() {
         let map = filled_map();
-        let (_, coding) = map.point_packet("br, gzip");
+        let (_, coding, _) = map.point_packet("br, gzip");
         assert_eq!(coding, "br", "zstd must not be served to a client that did not advertise it");
 
-        let (body, coding) = map.point_packet("gzip, br, zstd");
+        let (body, coding, _) = map.point_packet("gzip, br, zstd");
         assert_eq!(coding, "zstd");
         let decoded = zstd::decode_all(&body[..]).unwrap();
-        let (identity, _) = map.point_packet("");
+        let (identity, ..) = map.point_packet("");
         assert_eq!(decoded, identity, "zstd body must decode to the identity payload");
     }
 
     #[test]
     fn zstd_refused_falls_back_to_next_offered() {
         let map = filled_map();
-        let (_, coding) = map.point_packet("zstd;q=0, gzip");
+        let (_, coding, _) = map.point_packet("zstd;q=0, gzip");
         assert_eq!(coding, "gzip");
     }
 
     #[test]
     fn zstd_variants_cover_mesh_and_ply() {
         let map = filled_map();
-        let (mesh_body, coding) = map.mesh_packet("zstd");
+        let (mesh_body, coding, _) = map.mesh_packet("zstd");
         // The demo mesh may sit below the 1 KiB floor; ply is the reliable check.
         if coding == "zstd" {
             assert!(!zstd::decode_all(&mesh_body[..]).unwrap().is_empty());
         }
-        let (ply_body, coding) = map.ply_packet("zstd");
+        let (ply_body, coding, _) = map.ply_packet("zstd");
         assert_eq!(coding, "zstd");
-        let (ply_raw, _) = map.ply_packet("");
+        let (ply_raw, ..) = map.ply_packet("");
         assert_eq!(zstd::decode_all(&ply_body[..]).unwrap(), ply_raw);
     }
 
     #[test]
     fn small_payloads_stay_identity() {
         let map = MapState::new(true); // empty cloud -> raw < 1 KiB
-        let (_, coding) = map.point_packet("zstd, br, gzip");
+        let (_, coding, _) = map.point_packet("zstd, br, gzip");
         assert_eq!(coding, "");
     }
 }
