@@ -1,0 +1,63 @@
+{
+  "scope": "Actual iPhone 17 Pro ARKit RGB-D over USB tether to Jetson; no motors. Snapshot after the human intentionally stopped capture; accumulated mapping preserved. Receipt ages are not sensor/transport latency qualification.",
+  "endpoint": "ws://172.20.10.3:8443",
+  "health": {
+    "connected": false,
+    "fresh": false,
+    "tracking": "stale",
+    "points": 120000,
+    "triangles": 156842,
+    "frames": 302,
+    "rejected": 0,
+    "dropped": 11,
+    "processing_ms": 94.1,
+    "processing_fps": 10.6,
+    "age_ms": 19181,
+    "camera": false,
+    "camera_age_ms": 19197,
+    "camera_frame": 316,
+    "camera_source": "IPHONE LIDAR",
+    "detector_fps": 0,
+    "detector_backend": "pose-tensorrt",
+    "detector_inference_ms": null,
+    "rover": false,
+    "estop": true,
+    "video": {
+      "enabled": true,
+      "ready": true,
+      "error": null,
+      "fps": 10,
+      "bitrate": 500000
+    }
+  },
+  "followup": "Human confirmed intentional Stop. No unexpected disconnect was established.",
+  "resumed_health": {
+    "connected": true,
+    "fresh": true,
+    "tracking": "normal",
+    "points": 18723,
+    "triangles": 48378,
+    "frames": 105,
+    "rejected": 0,
+    "dropped": 20,
+    "processing_ms": 171.6,
+    "processing_fps": 5.8,
+    "age_ms": 172,
+    "camera": true,
+    "camera_age_ms": 243,
+    "camera_frame": 121,
+    "camera_source": "IPHONE LIDAR",
+    "detector_fps": 6.8,
+    "detector_backend": "pose-tensorrt",
+    "detector_inference_ms": 132.3,
+    "rover": false,
+    "estop": true,
+    "video": {
+      "enabled": true,
+      "ready": true,
+      "error": null,
+      "fps": 10,
+      "bitrate": 500000
+    }
+  }
+}

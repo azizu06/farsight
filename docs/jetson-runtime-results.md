@@ -47,6 +47,22 @@ OS and USB recovery evidence is in `jetson-recovery-results.md`.
 
 ## Actual GPU and browser evidence
 
+### Actual native phone capture
+
+The signed, trusted iPhone 17 Pro app connected directly over USB tethering to
+`ws://172.20.10.3:8443` (the actual DHCP address, rather than the app's `.2`
+default). Native ARKit RGB-D produced real camera images, normal tracking,
+120,000 mapped points and measured depth. A JPEG was fetched and visually
+inspected; H.264 was ready and pose TensorRT detections were running. The
+[health snapshot](qualification/jetson-phone-live.json) records the observed
+accumulated counts after the operator intentionally stopped capture. Motors
+were absent and estop remained true.
+
+The human confirmed the stream ended because they tapped Stop; USB networking
+remained active. This proves real phone ingestion, not sustained rig qualification
+or physical camera-to-eye latency. The Jetson desktop now displays the raw
+MJPEG camera stream, avoiding a second 3D renderer on the rover GPU.
+
 Target-built FP16 pose raw inference `[1,56,8400]` passed 20 zero-input runs:
 median 15.29 ms, p95 18.83 ms. COCO `[1,84,8400]` passed the same smoke:
 median 11.66 ms, p95 21.44 ms. Pose also detected four people on the public
@@ -125,9 +141,9 @@ autoremove was run.
 
 Metric-depth TensorRT execution remains unqualified; measured iPhone LiDAR does
 not depend on that optional model. The iPhone capture app has been signed,
-installed, trusted and launched. Actual phone capture and USB routing remain
-unqualified: the Jetson desktop viewer is open, but health reports no frames
-and no phone USB network address. Cellular routing, Quest USB/browser,
+installed, trusted and launched. Actual phone RGB-D capture over USB and an
+operator-initiated stop/restart have now worked; sustained performance and
+sensor-to-display latency remain unqualified. Cellular routing, Quest USB/browser,
 actual motor direction/PWM, watchdog disconnects and power under load must
 still be verified on the complete rig. Compatible SciPy and cffi wheels were
 installed in the venv to resolve inherited system-package constraints;
