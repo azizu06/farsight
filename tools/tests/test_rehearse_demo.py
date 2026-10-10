@@ -266,6 +266,14 @@ class CommandTests(unittest.TestCase):
             self.assertIn(title, text)
         self.assertIn("Not fully qualified", text)
 
+    def test_rig_day_marks_are_physical_and_unknown_until_marked(self):
+        new = {"seek_arrival", "range_stop_25cm", "tailscale_direct", "quest_mic_playback", "wifi_off_run"}
+        self.assertLessEqual(new, {cid for cid, _ in rh.PHYSICAL})
+        checks, _ = rh.evaluate(make_samples(), {}, {}, now=1e9)
+        by_id = {c["id"]: c for c in checks}
+        for cid in new:
+            self.assertEqual((by_id[cid]["kind"], by_id[cid]["state"]), ("physical", "unknown"))
+
 
 if __name__ == "__main__":
     unittest.main()

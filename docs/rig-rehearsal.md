@@ -15,6 +15,32 @@ replays commands or changes a network. Permits and session tokens are dropped
 before anything is written. `--ssh user@host` is optional, explicit, BatchMode
 (no password prompts), and reads only load average and thermal zones. No scans, no sudo.
 
+## One-command rig day
+
+```sh
+# Board profile is plain HTTP on 192.168.55.1:8443. Close the Quest/operator page first: qualify_link and
+# pitch_metrics refuse to run while another control socket owner is connected.
+python -m tools.rig_day --url http://192.168.55.1:8443 [--relay http://127.0.0.1:8080] --out runs-rig/day1
+python -m tools.rig_day --url ... --out runs-rig/day1 --dry-run            # print the exact commands, run nothing
+python -m tools.rig_day --url ... --out runs-rig/day1 --skip preflight --skip detector
+```
+
+`tools/rig_day.py` runs the existing tools unchanged, in this order, each skippable
+with `--skip STEP`: `preflight`, `ready`, `stream` and `detector` (`tools.measure`),
+`qualify_link`, `pitch_metrics` (read-only default, no `--hold-permit`), then
+`rehearse` (`tools.rehearse_demo record`, passive, `--rehearse-minutes`, default 15).
+With `--relay`, qualify_link and pitch_metrics probe the relay; everything else
+uses `--url`. `--seconds`, `--ready-timeout`, `--ready-skip`, `--ca-file`,
+`--insecure`, `--ssh` pass through. Nothing in the default path sends a drive
+command or holds a permit.
+
+The folder gets one log per step (`02-ready.log`...), `qualify_link.json`,
+`pitch.json`, `pitch.md`, `rehearsal/` (samples, report) and `summary.md` with
+PASS/FAIL/SKIPPED per step. PASS means the tool exited 0, not that the rig is
+qualified. The rehearse step is FAIL until the verdict is GO, so a default run is
+NO-GO or INCOMPLETE until a human marks the physical checks (below). Exit 0 only
+when no step failed.
+
 ## Run it
 
 ```sh
@@ -53,6 +79,11 @@ Rover wheels raised until motor direction is confirmed. Start `record` first, th
 7. **Uno watchdog**: kill the Jetson link; the Uno stops itself within 300 ms (scope or video, not eyeballing). `mark uno_watchdog`.
 8. **Power and temperature** after the full 15 minutes (Jetson in the intended power mode, `tegrastats` on the Jetson). `mark power_under_load`, `temperature`.
 9. **Displayed video age** with a physical timer in frame. `mark displayed_video_age`.
+10. **Seek arrival**: Seek/Explore drives to the target and stops at the standoff. `mark seek_arrival`.
+11. **Range stop**: drive at an obstacle; stops at 25 cm by tape measure. `mark range_stop_25cm`.
+12. **Tailscale direct**: `tailscale status`/`tailscale ping` shows a direct path, not DERP. `mark tailscale_direct`.
+13. **Quest mic and playback**: push-to-talk reaches the assistant; reply or phrase is audible. `mark quest_mic_playback`.
+14. **Wi-Fi off run**: venue Wi-Fi off (cellular/tether only), video, control and stop still work. `mark wifi_off_run`.
 
 Measured software checks come from the logger; the marked rows are human
 observations and say who marked them and when. Physical gates in #11, #12 and
