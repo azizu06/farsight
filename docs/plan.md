@@ -53,9 +53,21 @@ ultrasonic sensor.
 it *live*. Head-coupled camera, live teleop, and detection plus safety running on the robot's own
 GPU, in real time.
 
-Ideas we took (ideas only, no code): recorded-run fallback (#18), pose model for skeletons and a
-"person down" flag (#9), Explore random-walk before Seek (#13), frame archive (#17), mock hardware
-so the code runs without the rover (#2).
+Best practices we adopt from RIIS (their code stays theirs; ours is written here):
+- Live source with recorded fallback, clearly labelled (#18)
+- Hardware abstraction with mocks that switch on automatically when hardware is missing (#2, Jetson code)
+- One protocol doc as the contract between rover and UI (`docs/interfaces.md`)
+- Small pub/sub event bus inside the Jetson server (detections, range, mode changes)
+- Config file with environment overrides instead of hard-coded IPs and thresholds
+- YOLO pose for people, with a "person down" flag (#9)
+- Frame archive every Nth frame (#17)
+- Explore by random walk until a person is found, then stop (#13)
+- SBAR triage summary (Situation, Background, Assessment, Recommendation) per person found, written by
+  the local model into the mission report (#17, #19)
+- Survivor phrases in more than one language, spoken on the rover (#19 stretch, Piper has Spanish voices)
+
+Not adopted: ElevenLabs and cloud LLMs (not Knight Hacks sponsors, need internet; our pitch is offline),
+Fetch.ai agents, Unity splat build.
 
 ## Scope rules
 - P0 first, end to end, before anything else. Teleop must be boringly reliable.
