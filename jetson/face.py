@@ -42,7 +42,13 @@ class FaceDetector:
             self.session = None
             self.net = cv2.dnn.readNetFromONNX(str(model_path))
         else:
-            self.session = ort.InferenceSession(str(model_path), providers=["CPUExecutionProvider"])
+            # UltraFace is a small CPU pass alongside GPU perception, voice,
+            # and video. Two threads were faster and steadier than the default
+            # six-core pool on the loaded Jetson; avoid reserving every core.
+            options = ort.SessionOptions()
+            options.intra_op_num_threads = 2
+            self.session = ort.InferenceSession(str(model_path), sess_options=options,
+                                                providers=["CPUExecutionProvider"])
             self.input_name = self.session.get_inputs()[0].name
 
     def detect(self, frame):
