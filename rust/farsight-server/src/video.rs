@@ -2,15 +2,14 @@
 //! an fMP4 stream; each moof+mdat fragment is published to WebSocket
 //! subscribers with capture-matched timing.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::io::{Read, Write};
 use std::process::{ChildStdout, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::{json, Value};
-use tokio::sync::mpsc;
 
 use crate::camera::{CameraFrame, CameraService};
 
@@ -19,6 +18,12 @@ pub struct Fragment {
     pub payload: Vec<u8>,
     pub media_start_s: f64,
     pub media_end_s: f64,
+    /// Independently decodable: this fragment's mdat carries an IDR picture.
+    pub keyframe: bool,
+    /// ffmpeg raw-frame handoff to complete MP4 fragment, milliseconds.
+    pub jetson_encode_ms: Option<f64>,
+    /// Socket receipt to validated camera publication of the last capture, ms.
+    pub camera_ingest_ms: Option<f64>,
     pub received: f64,
     pub frame: i64,
     pub source: String,
@@ -26,15 +31,56 @@ pub struct Fragment {
 }
 
 impl Fragment {
+    /// video_segment fields (payload and receipt stay server-side), matching
+    /// the Python `metadata` dict — every key present, diagnostics nullable.
     pub fn metadata(&self) -> Value {
         json!({
             "media_start_s": self.media_start_s,
             "media_end_s": self.media_end_s,
+            "keyframe": self.keyframe,
+            "jetson_encode_ms": self.jetson_encode_ms,
+            "camera_ingest_ms": self.camera_ingest_ms,
             "frame": self.frame,
             "source": self.source,
             "samples": self.samples,
         })
     }
+}
+
+/// A fragment whose mdat carries an IDR picture, so a viewer can start
+/// decoding on it. ffmpeg writes MP4 samples as AVCC: 4-byte big-endian NAL
+/// lengths, not Annex B start codes, and default-base-is-moof says nothing
+/// about sync samples. (Ported from quest-hud's _is_keyframe.)
+pub fn is_keyframe(data: &[u8]) -> bool {
+    let Some(at) = data.windows(4).position(|w| w == b"mdat") else {
+        return false;
+    };
+    if at < 4 {
+        return false;
+    }
+    let mut size = u32::from_be_bytes(data[at - 4..at].try_into().unwrap()) as u64;
+    let (end, mut pos) = if size == 1 {
+        // 64-bit largesize between kind and payload
+        if at + 12 > data.len() {
+            return false;
+        }
+        size = u64::from_be_bytes(data[at + 4..at + 12].try_into().unwrap());
+        ((at as u64 - 4 + size).min(data.len() as u64) as usize, at + 12)
+    } else {
+        ((at as u64 - 4 + size).min(data.len() as u64) as usize, at + 4)
+    };
+    while pos + 4 <= end {
+        let length = u32::from_be_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
+        pos += 4;
+        if length == 0 || pos + length > end {
+            return false;
+        }
+        if data[pos] & 0x1F == 5 {
+            return true;
+        }
+        pos += length;
+    }
+    false
 }
 
 pub fn codec_from_init(data: &[u8]) -> Result<String, String> {
@@ -61,7 +107,46 @@ pub fn fragment_timing(data: &[u8], fps: u32) -> Result<(u64, u64, f64, f64), St
     Ok((first, count, start, (first + count) as f64 / fps as f64))
 }
 
-pub type Subscriber = mpsc::Receiver<Option<Fragment>>;
+/// One subscriber's bounded fragment backlog (cap 2): a late join waits for
+/// an IDR before seeing any output, a newer queued IDR supersedes older queued
+/// fragments, and overflow of dependent fragments closes the stream for
+/// recovery (video.py subscribe/publish parity).
+struct SubQueue {
+    items: VecDeque<Option<Fragment>>,
+    waiting_keyframe: bool,
+    dead: bool,
+}
+
+struct SubShared {
+    queue: Mutex<SubQueue>,
+    notify: tokio::sync::Notify,
+}
+
+/// Receiver side of a subscriber backlog; `recv` yields `None` once the
+/// backlog bound dropped this subscriber (the WS handler turns it into a
+/// 1013 reconnect).
+pub struct Subscriber {
+    shared: Arc<SubShared>,
+}
+
+impl Subscriber {
+    /// `Some(None)` carries the stream-close fragment; outer `None` means the
+    /// subscriber itself was dropped (queue overflow or service shutdown).
+    pub async fn recv(&self) -> Option<Option<Fragment>> {
+        loop {
+            {
+                let mut q = self.shared.queue.lock().unwrap();
+                if let Some(item) = q.items.pop_front() {
+                    return Some(item);
+                }
+                if q.dead {
+                    return None;
+                }
+            }
+            self.shared.notify.notified().await;
+        }
+    }
+}
 
 pub struct VideoService {
     pub camera: Arc<CameraService>,
@@ -73,8 +158,14 @@ pub struct VideoService {
     pub init: Mutex<Option<Vec<u8>>>,
     pub mime: Mutex<Option<String>>,
     pub error: Mutex<Option<String>>,
-    samples: Mutex<BTreeMap<u64, CameraFrame>>,
-    subscribers: Mutex<Vec<mpsc::Sender<Option<Fragment>>>>,
+    /// Completed MP4 fragment count (video_service.encoded parity).
+    pub encoded: AtomicU64,
+    /// Last fragment's ffmpeg handoff-to-complete time, ms (encode_ms parity).
+    pub encode_ms: Mutex<Option<f64>>,
+    /// Last fragment's camera ingest time, ms (ingest_ms parity).
+    pub ingest_ms: Mutex<Option<f64>>,
+    samples: Mutex<BTreeMap<u64, (CameraFrame, f64)>>,
+    subscribers: Mutex<Vec<Arc<SubShared>>>,
     running: AtomicBool,
     alive: AtomicBool,
 }
@@ -91,6 +182,9 @@ impl VideoService {
             init: Mutex::new(None),
             mime: Mutex::new(None),
             error: Mutex::new(None),
+            encoded: AtomicU64::new(0),
+            encode_ms: Mutex::new(None),
+            ingest_ms: Mutex::new(None),
             samples: Mutex::new(BTreeMap::new()),
             subscribers: Mutex::new(Vec::new()),
             running: AtomicBool::new(false),
@@ -106,16 +200,49 @@ impl VideoService {
             && self.error.lock().unwrap().as_deref().map(|e| e.is_empty()).unwrap_or(true)
     }
 
+    /// Mirrors subscribe(): a bounded (2) backlog that starts out waiting for
+    /// the first independently decodable fragment.
     pub fn subscribe(&self) -> Subscriber {
-        let (tx, rx) = mpsc::channel(8);
-        self.subscribers.lock().unwrap().push(tx);
-        rx
+        let shared = Arc::new(SubShared {
+            queue: Mutex::new(SubQueue {
+                items: VecDeque::with_capacity(2),
+                waiting_keyframe: true,
+                dead: false,
+            }),
+            notify: tokio::sync::Notify::new(),
+        });
+        self.subscribers.lock().unwrap().push(shared.clone());
+        Subscriber { shared }
     }
 
-    /// Mirrors publish(): full consumer queues are dropped entirely — the
-    /// channel closes, which the WS handler turns into a 1013 reconnect.
+    /// Mirrors publish(): subscribers waiting for a keyframe skip dependent
+    /// fragments; a keyframe drains the backlog and unlatches them; a full
+    /// queue is dropped entirely — the channel closes, which the WS handler
+    /// turns into a 1013 reconnect.
     fn publish(&self, fragment: Option<Fragment>) {
-        self.subscribers.lock().unwrap().retain(|tx| tx.try_send(fragment.clone()).is_ok());
+        let mut subs = self.subscribers.lock().unwrap();
+        subs.retain(|shared| {
+            let mut q = shared.queue.lock().unwrap();
+            if let Some(frag) = &fragment {
+                if q.waiting_keyframe && !frag.keyframe {
+                    return true;
+                }
+                if frag.keyframe {
+                    // Jump only at an independently decodable picture.
+                    q.items.clear();
+                    q.waiting_keyframe = false;
+                }
+            }
+            if q.items.len() >= 2 {
+                // Never drop dependent MP4 fragments and keep presenting them.
+                q.dead = true;
+                shared.notify.notify_one();
+                return false;
+            }
+            q.items.push_back(fragment.clone());
+            shared.notify.notify_one();
+            true
+        });
     }
 
     pub fn start(self: Arc<Self>) {
@@ -154,19 +281,24 @@ impl VideoService {
     }
 
     fn run_once(self: &Arc<Self>) {
+        let gop = std::cmp::max(1, self.fps / 4).to_string();
         let args = [
-            "-hide_banner", "-loglevel", "error", "-f", "rawvideo",
+            "-hide_banner", "-loglevel", "error", "-probesize", "32",
+            "-analyzeduration", "0", "-f", "rawvideo",
             "-pix_fmt", "bgr24", "-s", &format!("{}x{}", self.width, self.height),
             "-r", &self.fps.to_string(),
             "-i", "pipe:0", "-an", "-c:v", "libx264", "-preset", "ultrafast",
-            "-tune", "zerolatency", "-profile:v", "baseline", "-level", "3.0",
+            "-tune", "zerolatency", "-threads", "1", "-bf", "0",
+            "-profile:v", "baseline", "-level", "3.0",
             "-pix_fmt", "yuv420p", "-b:v", &self.bitrate.to_string(),
             // ~200ms VBV like Python: tighter buffer keeps latency down.
             "-maxrate", &self.bitrate.to_string(), "-bufsize", &std::cmp::max(64000, self.bitrate / 5).to_string(),
-            "-g", &self.fps.to_string(), "-keyint_min", &self.fps.to_string(),
+            // Short IDR intervals (200 ms at the default 10 fps) let late
+            // joins decode quickly and make stale backlog recovery cheap.
+            "-g", &gop, "-keyint_min", &gop,
             "-sc_threshold", "0", "-movflags", "frag_keyframe+empty_moov+default_base_moof",
             "-video_track_timescale", "1000000",
-            "-frag_duration", "100000", "-f", "mp4", "pipe:1",
+            "-frag_duration", "1", "-flush_packets", "1", "-f", "mp4", "pipe:1",
         ];
         let mut child = match Command::new("ffmpeg").args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
             Ok(c) => c,
@@ -219,13 +351,20 @@ impl VideoService {
                         let resized = img
                             .resize_exact(self.width, self.height, image::imageops::FilterType::Triangle)
                             .to_rgb8();
+                        // JPEG decode may have overlapped a newer receipt;
+                        // never queue an already stale picture into ffmpeg's
+                        // input pipe.
+                        if frame.age_ms() >= 500 {
+                            std::thread::sleep(Duration::from_secs_f64(1.0 / self.fps as f64));
+                            continue;
+                        }
                         let mut bgr = resized.into_raw();
                         for px in bgr.chunks_exact_mut(3) {
                             px.swap(0, 2);
                         }
                         {
                             let mut samples = self.samples.lock().unwrap();
-                            samples.insert(sample_id, frame.clone());
+                            samples.insert(sample_id, (frame.clone(), crate::state::now_monotonic()));
                             while samples.len() > 600 {
                                 samples.pop_first();
                             }
@@ -306,16 +445,44 @@ impl VideoService {
     }
 
     fn build_fragment(&self, payload: Vec<u8>, first: u64, count: u64, start: f64, end: f64) -> Option<Fragment> {
-        let samples = self.samples.lock().unwrap();
-        let captures: Vec<&CameraFrame> = (first..first + count).filter_map(|i| samples.get(&i)).collect();
+        let mut matched = Vec::with_capacity(count as usize);
+        {
+            let mut samples = self.samples.lock().unwrap();
+            for i in first..first + count {
+                if let Some(item) = samples.remove(&i) {
+                    matched.push(item);
+                }
+            }
+        }
+        let captures: Vec<&CameraFrame> = matched.iter().map(|(f, _)| f).collect();
         if captures.len() as u64 != count || captures.is_empty() {
             *self.error.lock().unwrap() = Some("Encoded fragment cannot be matched to capture receipt times".into());
             return None;
         }
+        // ffmpeg raw-frame handoff to complete fragment; socket receipt to
+        // camera publication of the last capture in this fragment.
+        let now = crate::state::now_monotonic();
+        let encode_ms = ((now - matched.iter().map(|(_, t)| *t).fold(f64::INFINITY, f64::min))
+            * 1000.0
+            * 100.0)
+            .round()
+            / 100.0;
+        let last = captures.last().unwrap();
+        let ingest_ms = match (last.published, last.socket_received) {
+            (Some(p), Some(s)) => Some(((p - s) * 1000.0 * 100.0).round() / 100.0),
+            _ => None,
+        };
+        self.encoded.fetch_add(count, Ordering::Relaxed);
+        *self.encode_ms.lock().unwrap() = Some(encode_ms);
+        *self.ingest_ms.lock().unwrap() = ingest_ms;
+        let keyframe = is_keyframe(&payload);
         Some(Fragment {
             payload,
             media_start_s: start,
             media_end_s: end,
+            keyframe,
+            jetson_encode_ms: Some(encode_ms),
+            camera_ingest_ms: ingest_ms,
             received: captures.iter().map(|f| f.received).fold(f64::INFINITY, f64::min),
             frame: captures.last().unwrap().frame_id,
             source: captures.last().unwrap().source.clone(),
@@ -335,5 +502,155 @@ impl VideoService {
 
     pub fn close(&self) {
         self.running.store(false, Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Port of jetson/tests/test_video.py's meaningful assertions: the AVCC
+    /// keyframe scan, the late-join/backlog resume behavior, and the
+    /// diagnostics a real ffmpeg fragment carries.
+    use super::*;
+    use crate::camera::CameraService;
+    use crate::state::MapState;
+
+    fn mdat(nal_type: u8) -> Vec<u8> {
+        // size(4) + "mdat" + one length-prefixed NAL unit.
+        let nal = vec![0x60 | nal_type, 0xAB, 0xCD];
+        let size = (8 + 4 + nal.len()) as u32;
+        let mut data = Vec::new();
+        data.extend_from_slice(&size.to_be_bytes());
+        data.extend_from_slice(b"mdat");
+        data.extend_from_slice(&(nal.len() as u32).to_be_bytes());
+        data.extend_from_slice(&nal);
+        data
+    }
+
+    #[test]
+    fn is_keyframe_scans_the_avcc_sample_list() {
+        assert!(is_keyframe(&mdat(5)));
+        // Only an IDR picture (nal_type 5) restarts a decoder.
+        assert!(!is_keyframe(&mdat(7)));
+        assert!(!is_keyframe(&mdat(1)));
+        assert!(!is_keyframe(&[]));
+        assert!(!is_keyframe(b"moov"));
+        // A truncated length prefix is malformed, not a keyframe.
+        let mut bad = mdat(5);
+        bad.truncate(bad.len() - 2);
+        assert!(!is_keyframe(&bad));
+    }
+
+    fn fragment(keyframe: bool) -> Fragment {
+        Fragment {
+            payload: mdat(if keyframe { 5 } else { 1 }),
+            media_start_s: 0.0,
+            media_end_s: 0.1,
+            keyframe,
+            jetson_encode_ms: Some(0.0),
+            camera_ingest_ms: None,
+            received: 0.0,
+            frame: 0,
+            source: "TEST".into(),
+            samples: Vec::new(),
+        }
+    }
+
+    fn service() -> Arc<VideoService> {
+        Arc::new(VideoService::new(
+            Arc::new(CameraService::new(Arc::new(MapState::new(false)), None, false)),
+            false,
+        ))
+    }
+
+    #[tokio::test]
+    async fn late_join_and_backlog_resume_only_at_newest_keyframe() {
+        let svc = service();
+        let sub = svc.subscribe();
+        // Dependent fragments while waiting for an IDR never reach the queue.
+        svc.publish(Some(fragment(false)));
+        svc.publish(Some(fragment(false)));
+        assert!(sub.shared.queue.lock().unwrap().items.is_empty());
+        // The first IDR unlatches the subscriber.
+        svc.publish(Some(fragment(true)));
+        // Dependents queue behind it...
+        svc.publish(Some(fragment(false)));
+        // ...but a newer IDR jumps the whole backlog.
+        svc.publish(Some(fragment(true)));
+        let first = sub.recv().await.unwrap().unwrap();
+        assert!(first.keyframe);
+        assert!(sub.shared.queue.lock().unwrap().items.is_empty());
+    }
+
+    #[tokio::test]
+    async fn dependent_fragment_overflow_closes_the_subscriber() {
+        let svc = service();
+        let sub = svc.subscribe();
+        svc.publish(Some(fragment(true)));
+        svc.publish(Some(fragment(false)));
+        svc.publish(Some(fragment(false)));
+        // Queue was at cap 2 -> the subscriber is dead. Already-queued items
+        // still drain in order, then the stream closes (None sentinel).
+        assert!(sub.recv().await.unwrap().unwrap().keyframe);
+        assert!(!sub.recv().await.unwrap().unwrap().keyframe);
+        assert!(sub.recv().await.is_none());
+    }
+
+    #[test]
+    fn fragment_metadata_carries_diagnostics_and_samples() {
+        let svc = service();
+        // Seed two captures at media samples 0 and 1 (encoded parity).
+        let frame = CameraFrame {
+            jpeg: vec![1, 2, 3],
+            received: crate::state::now_monotonic() - 0.1,
+            frame_id: 7,
+            source: "TEST".into(),
+            capture_verified: true,
+            capture_binding: None,
+            tracking: Some("normal".into()),
+            mirrored: false,
+            socket_received: Some(crate::state::now_monotonic() - 0.2),
+            published: Some(crate::state::now_monotonic()),
+        };
+        {
+            let mut samples = svc.samples.lock().unwrap();
+            samples.insert(0, (frame.clone(), crate::state::now_monotonic() - 0.05));
+            samples.insert(1, (frame, crate::state::now_monotonic() - 0.05));
+        }
+        let frag = svc
+            .build_fragment(mdat(5), 0, 2, 0.0, 2.0 / svc.fps as f64)
+            .expect("matched fragment");
+        assert!(frag.keyframe);
+        assert_eq!(frag.samples.len(), 2);
+        assert_eq!(frag.frame, 7);
+        assert!(frag.jetson_encode_ms.unwrap() >= 0.0);
+        assert!(frag.camera_ingest_ms.unwrap() >= 0.0);
+        assert_eq!(svc.encoded.load(Ordering::Relaxed), 2);
+        assert!(svc.encode_ms.lock().unwrap().is_some());
+        assert!(svc.ingest_ms.lock().unwrap().is_some());
+        // Single-sample fragment metadata (test_video's len(samples)==1).
+        {
+            let mut samples = svc.samples.lock().unwrap();
+            samples.insert(2, (captures_frame(), crate::state::now_monotonic()));
+        }
+        let one = svc
+            .build_fragment(mdat(1), 2, 1, 2.0 / svc.fps as f64, 3.0 / svc.fps as f64)
+            .expect("one-sample fragment");
+        assert_eq!(one.samples.len(), 1);
+        assert!(!one.keyframe);
+    }
+
+    fn captures_frame() -> CameraFrame {
+        CameraFrame {
+            jpeg: vec![9],
+            received: 0.0,
+            frame_id: 1,
+            source: "TEST".into(),
+            capture_verified: false,
+            capture_binding: None,
+            tracking: None,
+            mirrored: false,
+            socket_received: None,
+            published: None,
+        }
     }
 }

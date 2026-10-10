@@ -32,6 +32,59 @@ use crate::state::{now_monotonic, MapState};
 use crate::triage::{TriageError, TriageService};
 use crate::video::VideoService;
 
+/// Bounded-1 latest-wins slot — asyncio.Queue(maxsize=1) parity for the
+/// phone lanes: `offer` displaces an unprocessed item and returns it so the
+/// caller can count the drop; `wait` yields items until `close`.
+struct LatestSlot<T> {
+    state: Mutex<LatestSlotState<T>>,
+    notify: tokio::sync::Notify,
+}
+
+struct LatestSlotState<T> {
+    item: Option<T>,
+    closed: bool,
+}
+
+impl<T> LatestSlot<T> {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(LatestSlotState { item: None, closed: false }),
+            notify: tokio::sync::Notify::new(),
+        }
+    }
+
+    /// Queue `item`, displacing an unprocessed one if present (returned).
+    fn offer(&self, item: T) -> Option<T> {
+        let displaced = {
+            let mut g = self.state.lock().unwrap();
+            g.item.replace(item)
+        };
+        self.notify.notify_one();
+        displaced
+    }
+
+    /// Next queued item, or None once closed and empty.
+    async fn wait(&self) -> Option<T> {
+        loop {
+            {
+                let mut g = self.state.lock().unwrap();
+                if g.item.is_some() {
+                    return g.item.take();
+                }
+                if g.closed {
+                    return None;
+                }
+            }
+            self.notify.notified().await;
+        }
+    }
+
+    fn close(&self) {
+        self.state.lock().unwrap().closed = true;
+        self.notify.notify_waiters();
+    }
+}
+
 pub struct AppState {
     pub mapping: Arc<MapState>,
     pub camera: Arc<CameraService>,
@@ -497,6 +550,10 @@ pub fn start_services(state: &Arc<AppState>) {
                     frame_id,
                     capture_verified: false,
                     capture_binding: None,
+                            tracking: None,
+                            mirrored: false,
+                            socket_received: None,
+                            published: None,
                     source: "SIMULATED".into(),
                 }));
                 if captured >= next_fusion
@@ -548,7 +605,10 @@ async fn health(State(s): State<Arc<AppState>>) -> Json<Value> {
     obj.insert(
         "video".into(),
         json!({"enabled": s.h264, "ready": s.video.ready(), "error": video_err,
-               "fps": s.video_fps, "bitrate": s.video_bitrate}),
+               "fps": s.video_fps, "bitrate": s.video_bitrate,
+               "encoded_frames": s.video.encoded.load(std::sync::atomic::Ordering::Relaxed),
+               "jetson_encode_ms": *s.video.encode_ms.lock().unwrap(),
+               "camera_ingest_ms": *s.video.ingest_ms.lock().unwrap()}),
     );
     obj.insert(
         "assistant".into(),
@@ -570,6 +630,28 @@ async fn health(State(s): State<Arc<AppState>>) -> Json<Value> {
     if let Some(name) = &s.sim_world {
         obj.insert("sim_world".into(), json!(name));
     }
+    Json(status)
+}
+
+/// GET /video/status — camera status plus encoder timing and the map
+/// processing duration. Lock-free w.r.t. the map mutex: camera diagnostics
+/// remain observable while fusion is busy (state.processing_ms lives in an
+/// atomic for exactly this).
+async fn video_status(State(s): State<Arc<AppState>>) -> Json<Value> {
+    let mut status = s.camera.status();
+    let obj = status.as_object_mut().unwrap();
+    obj.insert("mapping_processing_ms".into(), json!(s.mapping.processing_ms()));
+    obj.insert("enabled".into(), json!(s.h264));
+    obj.insert("ready".into(), json!(s.video.ready()));
+    obj.insert("error".into(), json!(s.video.error.lock().unwrap().clone()));
+    obj.insert(
+        "jetson_encode_ms".into(),
+        json!(*s.video.encode_ms.lock().unwrap()),
+    );
+    obj.insert(
+        "encoded_frames".into(),
+        json!(s.video.encoded.load(std::sync::atomic::Ordering::Relaxed)),
+    );
     Json(status)
 }
 
@@ -1623,7 +1705,7 @@ async fn handle_ws_video(socket: WebSocket, s: Arc<AppState>) {
         close!(1013, "");
     }
     let init = s.video.init.lock().unwrap().clone().unwrap_or_default();
-    let mut queue = s.video.subscribe();
+    let queue = s.video.subscribe();
     let frame = s.camera.snapshot();
     let _ = tx
         .send(Message::Text(
@@ -1664,6 +1746,11 @@ async fn handle_ws_video(socket: WebSocket, s: Arc<AppState>) {
                 Ok(Some(Some(f))) => f,
                 Ok(Some(None)) | Ok(None) | Err(_) => return,
             };
+            // Never put an already stale picture on the wire: the client must
+            // reconnect and resume at a fresh keyframe (send_fragment parity).
+            if now_monotonic() - fragment.received >= 0.5 {
+                return;
+            }
             let mut metadata = fragment.metadata();
             metadata["type"] = json!("video_segment");
             metadata["request_id"] = json!(request_id);
@@ -1745,13 +1832,17 @@ where
         if !hello.supports_scene_depth {
             return Err("This mapper requires measured scene depth".into());
         }
-        let permits = Arc::new(crate::capture_permits::CapturePermits::new(
+        let identity: phone::Identity = (hello.session_id.clone(), hello.map_epoch);
+        // ARKit RGB-D has no supported sensor-to-host clock contract yet. In
+        // particular, claiming the RGB-only AVCapture clock on this endpoint
+        // cannot make an ARKit frame eligible for physical drive.
+        let permits = Arc::new(crate::capture_permits::CapturePermits::with_clocks(
             &hello.session_id,
             hello.map_epoch,
             hello.supports_capture_permits,
+            &[],
         ));
-        let identity: phone::Identity = (hello.session_id.clone(), hello.map_epoch);
-        s.camera.set_phone_rgb(None);
+        s.camera.begin_phone(Some(permits.clone()));
         s.mapping.start_session(identity.clone(), hello.device.clone());
         // Outbound traffic goes through one writer task: the permit issuer
         // ticks at 20 Hz (capture_permits.run parity; issue() returns None
@@ -1790,47 +1881,139 @@ where
         });
         out_tx_opt = Some(out_tx);
         writer_opt = Some(writer);
-        permits_opt = Some(permits);
-        // Frame queue of depth 1, processed on a blocking worker thread.
-        let (qtx, mut qrx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
-        let mapping = s.mapping.clone();
-        let ident = identity.clone();
-        let worker = tokio::spawn(async move {
-            while let Some(packet) = qrx.recv().await {
-                let mapping2 = mapping.clone();
-                let ident2 = ident.clone();
-                let r = tokio::task::spawn_blocking(move || {
-                    phone::decode_frame(&packet, &ident2).and_then(|f| mapping2.process(&f))
-                })
-                .await;
-                match r {
-                    Ok(Ok(())) => {}
-                    Ok(Err(e)) => mapping.reject(e),
-                    Err(_) => {}
+        permits_opt = Some(permits.clone());
+        // Three bounded latest-wins lanes (#157): the camera fast-lane
+        // publishes the phone picture independently of fusion, pose
+        // heartbeats update tracking independently of fusion, and fusion
+        // itself stays a bounded queue. Backpressure on any lane replaces
+        // the unprocessed item instead of holding up the socket reader.
+        let fusion_q = Arc::new(LatestSlot::<(Vec<u8>, f64)>::new());
+        let camera_q = Arc::new(LatestSlot::<(Vec<u8>, f64)>::new());
+        let pose_q = Arc::new(LatestSlot::<(Value, crate::geometry::Mat4)>::new());
+        // Camera fast-lane: validate + publish the JPEG BEFORE offering the
+        // same packet to fusion, so detection work can never hold up the
+        // camera. A decoding error here kills the session (parity).
+        let mut cam_worker = {
+            let (q, fusion, cam, mapping, ident, permits) = (
+                camera_q.clone(),
+                fusion_q.clone(),
+                s.camera.clone(),
+                s.mapping.clone(),
+                identity.clone(),
+                permits.clone(),
+            );
+            tokio::spawn(async move {
+                let mut previous: i64 = -1;
+                while let Some((packet, received_at)) = q.wait().await {
+                    let (cam2, ident2, permits2) = (cam.clone(), ident.clone(), permits.clone());
+                    let r = tokio::task::spawn_blocking(move || {
+                        (
+                            cam2.accept_phone_rgbd(&packet, &ident2, previous, Some(received_at), Some(&permits2)),
+                            packet,
+                        )
+                    })
+                    .await;
+                    match r {
+                        Ok((Ok(v), packet)) => {
+                            previous = v;
+                            // Offer only after camera publication, without
+                            // waiting for fusion.
+                            if fusion.offer((packet, received_at)).is_some() {
+                                mapping.note_dropped();
+                            }
+                        }
+                        Ok((Err(e), _)) => return Err(e),
+                        Err(_) => return Err("Camera fast-lane worker failed".into()),
+                    }
                 }
-            }
-        });
+                Ok(())
+            })
+        };
+        // Pose heartbeats: observe_pose without waiting behind fusion work.
+        let mut pose_worker = {
+            let (q, mapping, ident) = (pose_q.clone(), s.mapping.clone(), identity.clone());
+            tokio::spawn(async move {
+                while let Some((header, transform)) = q.wait().await {
+                    let (m, i) = (mapping.clone(), ident.clone());
+                    match tokio::task::spawn_blocking(move || {
+                        m.observe_session_pose(&i, &header, &transform)
+                    })
+                    .await
+                    {
+                        Ok(Ok(())) => {}
+                        Ok(Err(e)) => return Err(e),
+                        Err(_) => return Err("Pose worker failed".into()),
+                    }
+                }
+                Ok(())
+            })
+        };
+        // Fusion lane: decode + process on a blocking worker thread; rejects
+        // count and keep flowing (consume parity).
+        let mut fusion_worker = {
+            let (q, mapping, ident, permits) =
+                (fusion_q.clone(), s.mapping.clone(), identity.clone(), permits.clone());
+            tokio::spawn(async move {
+                while let Some((packet, received_at)) = q.wait().await {
+                    let (m, i, p) = (mapping.clone(), ident.clone(), permits.clone());
+                    let m2 = m.clone();
+                    let r = tokio::task::spawn_blocking(move || {
+                        phone::decode_frame(&packet, &i).and_then(|mut f| {
+                            f.header["_received_monotonic"] = json!(received_at);
+                            m2.process_permits(&f, Some(&p))
+                        })
+                    })
+                    .await;
+                    match r {
+                        Ok(Ok(())) => {}
+                        Ok(Err(e)) => m.reject(e),
+                        Err(_) => {}
+                    }
+                }
+                Ok(())
+            })
+        };
         loop {
             tokio::select! {
                 msg = rx.next() => match msg {
                     Some(Ok(Message::Binary(bytes))) => {
-                        if qtx.try_send(bytes.to_vec()).is_err() {
-                            s.mapping.inner.lock().unwrap().dropped += 1;
+                        if camera_q.offer((bytes.to_vec(), now_monotonic())).is_some() {
+                            s.camera.note_ingest_dropped();
                         }
                     }
                     Some(Ok(Message::Text(text))) => {
-                        let header: Value = match serde_json::from_str(&text) {
-                            Ok(v) => v,
-                            Err(_) => return Err("Expected a pose message or binary RGB-D frame".into()),
+                        let header: Value = match serde_json::from_str::<Value>(&text) {
+                            Ok(v) if v.is_object() => v,
+                            _ => return Err("Expected a pose message or binary RGB-D frame".into()),
                         };
                         if header.get("type").and_then(Value::as_str) != Some("pose") {
                             return Err("Expected a pose message or binary RGB-D frame".into());
                         }
                         let transform = phone::validate_pose(&header, &identity)?;
-                        s.mapping.observe_pose(&header, &transform)?;
+                        // Tracking loss must revoke opt-in LiDAR drive without
+                        // waiting for the pose/map worker's fusion lock.
+                        s.camera.observe_phone_tracking(&header);
+                        pose_q.offer((header, transform));
                     }
                     Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
                     _ => {}
+                },
+                // FIRST_COMPLETED parity: any worker finishing (cleanly or
+                // with the error it propagates) tears the session down.
+                r = &mut cam_worker => match r {
+                    Ok(Err(e)) => return Err(e),
+                    Ok(Ok(())) => break,
+                    Err(e) => return Err(format!("Camera fast-lane worker failed: {e}")),
+                },
+                r = &mut pose_worker => match r {
+                    Ok(Err(e)) => return Err(e),
+                    Ok(Ok(())) => break,
+                    Err(e) => return Err(format!("Pose worker failed: {e}")),
+                },
+                r = &mut fusion_worker => match r {
+                    Ok(Err(e)) => return Err(e),
+                    Ok(Ok(())) => break,
+                    Err(e) => return Err(format!("Fusion worker failed: {e}")),
                 },
                 // First failure wins (capture_permits.run parity): a dead
                 // writer ends the session even while the receiver stays
@@ -1838,7 +2021,12 @@ where
                 _ = writer_opt.as_mut().unwrap() => break,
             }
         }
-        worker.abort();
+        fusion_q.close();
+        camera_q.close();
+        pose_q.close();
+        cam_worker.abort();
+        pose_worker.abort();
+        fusion_worker.abort();
         Ok(())
     }
     .await;
@@ -1909,7 +2097,7 @@ where
             hello.map_epoch,
             hello.supports_capture_permits,
         ));
-        s.camera.set_phone_rgb(None);
+        s.camera.begin_phone(Some(permits.clone()));
         // One writer task owns tx: the 20 Hz permit issuer ticks alongside
         // frame receipt (capture_permits.run parity).
         let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<Message>(16);
@@ -1947,29 +2135,53 @@ where
         out_tx_opt = Some(out_tx);
         writer_opt = Some(writer);
         permits_opt = Some(permits.clone());
-        let mut previous: i64 = -1;
+        // Bounded latest-wins queue: the decoder always works on the newest
+        // packet while the socket reader keeps flowing (#157 parity).
+        let queue = Arc::new(LatestSlot::<(Vec<u8>, f64)>::new());
+        let mut consumer = {
+            let (q, cam, session, permits) = (
+                queue.clone(),
+                s.camera.clone(),
+                hello.session_id.clone(),
+                permits.clone(),
+            );
+            tokio::spawn(async move {
+                let mut previous: i64 = -1;
+                while let Some((packet, received)) = q.wait().await {
+                    let (c, sn, p) = (cam.clone(), session.clone(), permits.clone());
+                    previous = tokio::task::spawn_blocking(move || {
+                        c.accept_phone_rgb(&packet, &sn, previous, Some(received), Some(&p))
+                    })
+                    .await
+                    .map_err(|_| "worker failed".to_string())??;
+                }
+                Ok(())
+            })
+        };
         loop {
             tokio::select! {
                 message = rx.next() => match message {
                     Some(Ok(Message::Binary(packet))) => {
-                        let packet = packet.to_vec();
-                        let cam = s.camera.clone();
-                        let session = hello.session_id.clone();
-                        let permits_ref = permits.clone();
-                        previous = tokio::task::spawn_blocking(move || {
-                            cam.accept_phone_rgb(&packet, &session, previous, Some(&permits_ref))
-                        })
-                        .await
-                        .map_err(|_| "worker failed".to_string())??;
+                        if queue.offer((packet.to_vec(), now_monotonic())).is_some() {
+                            s.camera.note_ingest_dropped();
+                        }
                     }
-                    Some(Ok(_)) => {}
+                    // receive_bytes parity: a non-binary message ends the session.
+                    Some(Ok(_)) => break,
                     _ => break,
+                },
+                r = &mut consumer => match r {
+                    Ok(Err(e)) => return Err(e),
+                    Ok(Ok(())) => break,
+                    Err(e) => return Err(format!("RGB decode worker failed: {e}")),
                 },
                 // Same lifecycle race as handle_ws_phone: writer failure
                 // revokes the issuer instead of stranding the session.
                 _ = writer_opt.as_mut().unwrap() => break,
             }
         }
+        queue.close();
+        consumer.abort();
         Ok(())
     }
     .await;
@@ -2011,6 +2223,7 @@ pub fn router(state: Arc<AppState>, dist: Option<PathBuf>) -> Router {
         .route("/camera.jpg", get(camera_jpg))
         .route("/depth.jpg", get(depth_jpg))
         .route("/stream.mjpg", get(stream_mjpg))
+        .route("/video/status", get(video_status))
         .route("/ws/video", get(ws_video))
         .route("/ws/detections", get(ws_detections))
         .route("/ws/map", get(ws_map))
