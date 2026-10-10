@@ -50,7 +50,8 @@ pub struct Update {
 }
 
 /// Decode one v1 record. Layout (little-endian):
-///   u8 version | u8 op | u16 flags (bit0: deflate payload)
+///   u8 version | u8 op | u16 flags (bit0: deflate payload; bit1 reserved
+///   for iOS-native Brotli pending tools/qualify_geometry.py codec numbers)
 ///   u64 seq | u64 epoch | 16B session | 16B anchor
 ///   f32 transform[16] | u32 vertex_count | u32 index_count
 ///   payload: vertices f32 xyz | indices u32 (deflated when flag set)
@@ -710,10 +711,15 @@ fn hex_uuid(b: &[u8; 16]) -> String {
     )
 }
 
+/// Quest keeps the existing same-origin shape: the assembled mesh answers
+/// under both /geometry/* and the /map/* aliases so a relay or the headset
+/// can consume this service drop-in next to the Python stack.
 pub fn router(shared: Arc<Shared>) -> Router {
     Router::new()
         .route("/geometry/mesh.bin", get(mesh_bin))
         .route("/geometry/status", get(status))
+        .route("/map/mesh.bin", get(mesh_bin))
+        .route("/map/status", get(status))
         .with_state(shared)
 }
 
