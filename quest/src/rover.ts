@@ -3,6 +3,7 @@ import { ControlSafety, stick } from "./control-safety.js";
 import { H264Viewer } from "./h264";
 import { cameraCrop, croppedBox } from "./camera-view.js";
 import { AssistantVoice } from "./assistant-voice";
+import { VoicePanel } from "./voice-panel";
 
 type Box = { id?: number; cls: string; conf: number; x: number; y: number; w: number; h: number };
 type Detections = { frame: number | string; boxes: Box[]; fps?: number; source?: string; simulated?: boolean };
@@ -39,6 +40,8 @@ export class RoverExperience {
   private drillAt = -Infinity;
   private drillBusy = false;
   private voice: AssistantVoice | null = null;
+  private askPanel: VoicePanel;
+  private seekTarget: number | null = null;
   private lastSendAt = 0;
   private input = { held: false, v: 0, w: 0, pan: 0 };
   private keys = new Set<string>();
@@ -122,6 +125,13 @@ export class RoverExperience {
     this.cockpit.add(screen, hud); this.cockpit.visible = false;
     this.cameraScreen = screen;
     this.scene.add(this.cockpit);
+    // Assistant proposals act only after operator confirmation, then still need the held deadman.
+    this.askPanel = new VoicePanel(this.renderer, this.cockpit, action => {
+      if (action.type !== "seek") return "Confirmed scan: room scan is not wired to the rover yet";
+      this.stop(`Seek person #${action.target_id}: release, then hold deadman`);
+      this.seekTarget = action.target_id;
+      return `Seek person #${action.target_id}: hold the deadman to approach; move the stick to cancel`;
+    });
     this.h264 = new H264Viewer(() => {
       if (performance.now() - this.lastVideoAt > 60) { this.dirty = true; this.lastVideoAt = performance.now(); }
     }, () => this.stop("H.264 restarted: motion disabled"));
@@ -179,6 +189,7 @@ export class RoverExperience {
   private escapeStop = (event: KeyboardEvent) => { if (event.key === "Escape") this.stop("Stopped: release deadman"); };
 
   stop(reason: string) {
+    this.seekTarget = null;
     this.input = this.gate.stop(this.input, reason);
     this.send(false);
   }
@@ -300,6 +311,8 @@ export class RoverExperience {
         pan: 0,
       };
     }
+    if (this.input.v || this.input.w) this.seekTarget = null;
+    this.askPanel.update();
     this.cockpit.visible = xr;
     this.cameraScreen.visible = this.xrLive;
     if (this.h264Enabled) {
@@ -333,7 +346,8 @@ export class RoverExperience {
     this.socket.send(JSON.stringify({
       seq, session_id: this.status?.session_id ?? null, permit: this.status?.permit ?? null,
       deadman, v: deadman ? this.input.v : 0, w: deadman ? this.input.w : 0,
-      pan: this.digitalPan ? 0 : this.input.pan, mode: "teleop", video_fresh: age < 500,
+      pan: this.digitalPan ? 0 : this.input.pan, video_fresh: age < 500,
+      ...(this.seekTarget === null ? { mode: "teleop" } : { mode: "seek", target_id: this.seekTarget }),
       video_age_ms: Number.isFinite(age) ? Math.ceil(age) : 999999,
     }));
     this.lastSendAt = performance.now();
@@ -540,7 +554,7 @@ export class RoverExperience {
   dispose() {
     this.stop("Viewer closed"); this.stopped = true;
     this.timers.forEach(timer => { window.clearInterval(timer); window.clearTimeout(timer); });
-    this.socket?.close(); this.detectionsSocket?.close(); this.request?.abort(); this.h264.stop(); this.voice?.dispose();
+    this.socket?.close(); this.detectionsSocket?.close(); this.request?.abort(); this.h264.stop(); this.voice?.dispose(); this.askPanel.dispose();
     window.removeEventListener("keydown", this.keyDown); window.removeEventListener("keyup", this.keyUp);
     window.removeEventListener("blur", this.blur); document.removeEventListener("visibilitychange", this.visibility);
     document.removeEventListener("keydown", this.escapeStop);

@@ -401,3 +401,10 @@ canvas:focus-visible {
 .voice-assistant .button-row button { padding: 8px 6px; }
 .voice-assistant p { color: #afbdcc; font-size: 10px; }
 .local-assistant > p[role="status"] { white-space: pre-line; }
+.ask-rover { position: fixed; left: 12px; bottom: 12px; z-index: 20; max-width: min(420px, calc(100vw - 24px)); background: #111b25ee; color: #dce5ee; border: 1px solid #2c3d4f; border-radius: 6px; padding: 8px 10px; font: 12px/1.45 system-ui, sans-serif; }
+.ask-rover p { margin: 0 0 6px; }
+.ask-rover .voice-status { font-weight: 600; }
+.ask-rover[data-state="listening"] .voice-status { color: #a6edc4; }
+.ask-rover[data-state="error"] .voice-status { color: #ffb3a8; }
+.ask-rover .voice-buttons { display: flex; gap: 6px; }
+.ask-rover button { touch-action: none; }
