@@ -39,8 +39,10 @@ export function decodeDenseDelta(buffer, selected = 'rgbd') {
       typeof metadata.snapshot !== 'boolean' || typeof metadata.more !== 'boolean' ||
       !(metadata.anchor === null || safeInteger(metadata.anchor)) || metadata.voxel_m !== .01 ||
       typeof metadata.ttl_s !== 'number' || !Number.isFinite(metadata.ttl_s) || metadata.ttl_s < 1 || metadata.ttl_s > 86400 ||
-      (metadata.snapshot && (!metadata.more || metadata.anchor === null)) || (metadata.more && !count))
+      (metadata.snapshot && (!metadata.more || metadata.anchor === null || metadata.cursor >= metadata.anchor)) ||
+      (metadata.reset && metadata.anchor === null) || (count > 0 && metadata.cursor === 0) || (metadata.more && !count))
     throw new Error('Invalid dense cursor metadata');
+  metadata.epoch = metadata.epoch.toLowerCase();
   const identity = sourceIdentity(metadata.source, selected);
   if (identity.key === 'waiting' && (count || metadata.points)) throw new Error('Unidentified dense samples');
   // Decode/validate the entire page before it can mutate retained state.
@@ -157,7 +159,9 @@ export class DenseCloudReceiver {
   accept(page) {
     const { metadata: meta, rows, count, identity } = page;
     const changed = this.epoch !== null && (meta.epoch !== this.epoch || identity.key !== this.identity);
-    if ((this.epoch === null || changed) && !meta.reset) { this.reset(); throw new Error('Dense identity changed without reset'); }
+    if ((this.epoch === null || changed) && !meta.reset) {
+      this.reset(); this.error = 'Dense identity changed without reset'; throw new Error(this.error);
+    }
     if (!meta.reset) {
       if (meta.cursor < this.cursor.after || (meta.more && meta.cursor <= this.cursor.after)) throw new Error('Dense cursor did not advance');
       if (this.cursor.snapshot === 'true' && meta.anchor !== this.cursor.anchor) throw new Error('Dense snapshot anchor changed');
@@ -249,7 +253,7 @@ export class DenseGpuChunks {
         const points = new THREE.Points(geometry, this.material);
         slot = { points, chunk, pending: new Uint8Array(DENSE_CHUNK_CELLS), uploaded: 0 };
         geometry.getAttribute('position').onUpload(() => {
-          this.uploadedWrites += slot.pending.reduce((sum, value) => sum + value, 0);
+          this.uploadedWrites += slot.pending.subarray(0, slot.chunk.count).reduce((sum, value) => sum + value, 0);
           slot.pending.fill(0); slot.uploaded = slot.chunk.count;
         });
         points.onAfterRender = () => { this.frameDrawn += points.geometry.drawRange.count; };
