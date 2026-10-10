@@ -5,6 +5,11 @@ Choose **Rover** to run capture and TCP forwarding together, **Operator** for th
 USB-accessible relay without camera permission, or **Off** for legacy capture.
 Both phone VPN/listener/USB hops still require actual device qualification.
 The bridge defaults off and leaves HTTP/WebSocket messages unchanged.
+Operator mode supports the rover-phone primary plus an optional Jetson tailnet
+fallback, disabled by default. Each TCP session keeps its selected route;
+failures close it without replay. The UI shows primary/fallback session counts.
+An explicitly started operator listener re-arms after foregrounding; manual
+Stop or a role change clears that intent. Capture never auto-resumes.
 In Rover mode, capture and forwarding use the same validated Jetson USB address;
 changing role or addresses requires stopping active capture/forwarding first.
 
@@ -52,7 +57,8 @@ camera, LiDAR, or USB networking behavior.
 
 1. On the rover phone, enable cellular data and Personal Hotspot / Allow Others
    to Join. Trust the Jetson when asked. This local app connection uses the USB
-   hotspot network; cellular uplink serves the Jetson → operator connection.
+   hotspot network. In the primary design, the rover phone owns the cellular
+   relay to the operator phone; raw capture stays on USB.
 2. On the Jetson, identify the iPhone USB network interface and its assigned IP:
    `ip -br addr`, then `ip route`. This requires the Linux iPhone USB driver and
    phone pairing/tethering working; validate it before the demo.
@@ -71,7 +77,7 @@ camera, LiDAR, or USB networking behavior.
    `--camera`**, so the phone owns the camera source. Configure the Uno serial
    port separately only after its firmware and bench checks pass.
 4. Enter `ws://JETSON_USB_IP:8443` in the app and press Start capture. The shown
-   default `172.20.10.2` is an example, not an assured address. Use the Jetson's
+   default `172.20.10.3` is the last observed address, not an assured address. Use the Jetson's
    actual USB-interface IP, not the phone's gateway IP or its cellular address.
 5. Verify sent-frame count increases and `http://JETSON_USB_IP:8443/health`
    reports a fresh camera with `PHONE RGB` or `IPHONE LIDAR`. The MacBook's

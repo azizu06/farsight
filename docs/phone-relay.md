@@ -1,8 +1,11 @@
 # Phone-owned cellular relay
 
 The confirmed design puts the cellular connection on the two iPhones. The Mac
-and Jetson use local USB connections. **Implementation and hardware qualification
-are in progress; the computer-side Tailscale path remains a fallback.**
+and Jetson use local USB connections. The primary native two-phone path has
+delivered live camera, detection and control traffic with Wi-Fi off and the
+Mac-to-Jetson commissioning USB unplugged. Physical driving, Quest playback and
+fault recovery still need the complete rig rehearsal. The optional direct
+Jetson tailnet path is a fallback; it is not required for the phone-owned path.
 
 ```text
 Quest Browser
@@ -135,43 +138,61 @@ down the client is closed immediately. The unit is `Restart=always`, independent
 of `farsight.service`, and was verified to come back after `systemctl restart`
 and after `kill -9`. Check: `curl http://<jetson-tailscale-ip>:8081/health`.
 
-On the operator phone choose the Operator role and enter the **Jetson's**
-Tailscale address (instead of the rover phone's) as the rover address, then
-Stop/Start the bridge. The rover phone keeps capturing to the Jetson over USB
-and needs no change.
+On the operator phone, keep the **Primary rover phone's Tailscale IPv4** set
+to the rover phone. To test the direct route as a fallback, enable **Enable
+fallback Jetson path** and enter the Jetson's Tailscale IPv4. Stop the bridge
+before changing addresses. Fallback is off by default; both routes must reach
+the same Jetson server. No Mac upstream or USB port changes are needed.
 
-### Booth default and one-tap fallback
+### Connection selection and recovery
 
-Measured rover-phone path on main with #88 (Mac phone chain, 2026-10-10, not a
-formal two-phone run): control RTT p50/p95/max 119.5 / 167 / 228 ms, 0
-`expired_permit` per 30 s, max permit gap 108 ms. The direct path has not yet
-been measured on the rig with the Jetson showing an established `:8081`
-connection throughout, so until it is, the rover-phone path stays the qualified
-default and the direct path is the fast option to try. Record the direct
-numbers here once measured and switch the default only if RTT p95/max, expiries
-and permit gap are all no worse.
+Each new operator TCP connection tries the primary, starting the optional
+fallback after 150 ms if no route has won. An immediate primary failure starts
+the fallback immediately. Selection has a total 3 s deadline. Only the winning
+transport receives application bytes; the losing socket is closed before any
+request or control command is read from the client. A failed path is deprioritized
+for 5 s for new connections. An existing healthy primary connection can coexist
+with newer fallback connections; the UI reports counts for each path.
 
-One-tap fallback: re-enter the **rover phone's** Tailscale address in the
-operator app and Stop/Start (the rover phone listener is unchanged). Keep both
-addresses written on the rig sheet.
+Once selected, the route stays fixed for that connection. A midstream failure or
+3 s blocked write closes it; the next connection can choose another route.
+Commands, POST bodies and partial video responses are never replayed. Normal
+idle HTTP connections remain open. TCP keepalive detects a dead peer, but a
+server that still acknowledges TCP while withholding application replies is
+not automatically considered a bad route. The existing control lease and view
+freshness guards remain authoritative and may stop driving before transport
+failure is detected. This provides connection recovery, not uninterrupted
+motion during every single-path failure.
 
-### Wanted app-side change: automatic failover between two upstreams
+Backgrounding closes every bridge session and stops capture. An explicitly
+started **Operator** listener retains its intent only in memory and re-arms on
+foreground, with new connections. Camera capture and motion do not auto-resume;
+the current Quest reconnect/release gate remains. Manual **Stop bridge**, role
+changes and app termination clear that intent. A cold launch requires Start.
+Rover capture and its bridge still require explicit restart after backgrounding.
 
-Today a path drop (direct Jetson or rover phone) needs a human to retype the
-address. The operator bridge should take an ordered list of two upstreams
-(direct Jetson first, rover phone second) and:
+### Evidence and remaining checks
 
-- keep a short TCP connect plus `/health` probe on both, 1 s cadence, at most
-  one in-flight probe each;
-- for every new client connection, dial the first healthy upstream; never
-  splice an existing connection from one upstream to another (a WebSocket
-  control lease must end, not migrate: the stop lease and explicit release stay
-  authoritative);
-- on upstream loss close the client connection at once (the 250 ms lease and
-  500 ms frame freshness then stop motion) and let the client reconnect to the
-  other upstream; require the operator to release before motion resumes, as now;
-- switch back to the preferred upstream only after N consecutive good probes and
-  only between connections, with no flapping inside a drive;
-- show the active upstream and the last switch reason in the bridge status text.
+The measured phone chain with #88 reported control RTT p50/p95/max
+119.5 / 167 / 228 ms, zero expired permits over 30 s and a maximum permit gap of
+108 ms, with H.264 about 9 fps. The [owner's measurement](https://github.com/azizu06/farsight/issues/24#issuecomment-6100097237)
+is transport evidence, not proof of motor behavior or complete Quest operation.
+Keep the phone-to-phone route primary until the optional direct route has its
+own comparable measurements.
 
-This adds no timeout lengthening and keeps single-owner control.
+Portable macOS Network.framework fixtures exercise refused and delayed primary
+connections, zero loser bytes, cooldown, simultaneous primary/fallback sessions,
+midstream reset after a POST prefix, blocked writes, both paths unavailable,
+normal idle, foreground rearming and manual Stop. Run:
+
+```sh
+python3 -m unittest discover -s ios/tests -v
+python3 -m unittest tools.tests.test_phone_bridge_chain -v
+```
+
+These tests use loopback sockets and a simulated backend. Install the updated
+signed app on the operator phone and repeat background/foreground, primary
+loss, both-path loss and required-release checks with the actual two phones,
+Jetson, Quest and wheels lifted. Record recovery time, chosen paths, video age
+and zero-output evidence. Do not replace the primary or declare fault recovery
+qualified based only on compilation or portable fixtures.

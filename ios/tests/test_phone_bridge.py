@@ -14,7 +14,19 @@ class PhoneBridgeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="farsight-phone-bridge-") as work:
             binary = Path(work) / "bridge-fixture"
             subprocess.run(["swiftc", str(ROOT / "ios/FarsightCapture/PhoneBridge.swift"),
+                            str(ROOT / "ios/tests/PhoneBridgeTestSupport.swift"),
                             str(ROOT / "ios/tests/PhoneBridgeFixture.swift"), "-o", str(binary)],
+                           check=True, capture_output=True, text=True, timeout=60)
+            result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=45)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("PASS", result.stdout)
+
+    def test_primary_fallback_and_foreground_recovery(self):
+        with tempfile.TemporaryDirectory(prefix="farsight-phone-fallback-") as work:
+            binary = Path(work) / "fallback-fixture"
+            subprocess.run(["swiftc", str(ROOT / "ios/FarsightCapture/PhoneBridge.swift"),
+                            str(ROOT / "ios/tests/PhoneBridgeTestSupport.swift"),
+                            str(ROOT / "ios/tests/PhoneBridgeFallbackFixture.swift"), "-o", str(binary)],
                            check=True, capture_output=True, text=True, timeout=60)
             result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=45)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
