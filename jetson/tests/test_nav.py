@@ -448,7 +448,7 @@ class LeaseTests(unittest.TestCase):
         self.assertEqual(self.state.status()["autonomy_state"], "stick_override")
         self.assertEqual(self.state.output()[:2], (40, 40))
 
-    def test_bridge_silence_falls_back_and_explore_uses_reactive_policy(self):
+    def test_bridge_silence_holds_every_mode_without_reactive_fallback(self):
         self.bridge(type="status", state="idle", goal_id=None)
         self.send()
         self.nav.set_goal(0.5, -1.0)
@@ -463,11 +463,17 @@ class LeaseTests(unittest.TestCase):
         self.assertEqual((nav["state"], nav["backend"]), ("unavailable", None))
         self.assertEqual(self.state.output()[:2], (0, 0))
         self.send(deadman=False)
-        self.state.update_range(150)
+        self.state.update_range(150)  # clear range would let the reactive policy drive
         self.send(mode="explore")
         nav = self.state.status()["nav"]
-        self.assertEqual((nav["mode"], nav["backend"], nav["state"]), ("explore", "fallback", "driving"))
-        self.assertEqual(self.state.output()[:2], (25, 25))  # reactive Explore, unchanged
+        self.assertEqual((nav["mode"], nav["backend"], nav["state"]), ("explore", None, "unavailable"))
+        self.assertEqual(nav["message"], "Nav2 bridge silent; holding still")
+        self.assertEqual(self.state.output()[:2], (0, 0))  # no blind timed turns
+        self.bridge(type="status", state="idle", goal_id=None)  # bridge back: Nav2 drives again
+        self.send(mode="explore")
+        self.bridge(type="cmd_vel", linear=0.2, angular=0)
+        self.assertEqual(self.state.status()["nav"]["backend"], "nav2")
+        self.assertNotEqual(self.state.output()[:2], (0, 0))
 
     def test_command_caps_and_conversion(self):
         self.nav.receive(dict(type="cmd_vel", linear=10.0, angular=-50.0))
