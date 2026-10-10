@@ -28,6 +28,7 @@ from jetson.control import ControlService
 from jetson.assistant import SceneAssistant, AssistantError
 from jetson.phrases import PhraseSpeaker, SpeechError
 from jetson.triage import TriageBusy, TriageService
+from jetson.drive_profile import DriveProfile
 from jetson.scan import ScanService
 from jetson.bulk import BulkPacer, BulkPacketTooLarge
 from jetson.bulk_response import bulk_response, PacedStreamingResponse
@@ -41,7 +42,9 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                piper_bin=None, piper_model=None, tts_dir=None, face_model=None, whisper_url=None,
                piper_model_es=None, speaker_cmd="auto", triage_interval=3.0,
                depth_model=None, scan_pan=False, scan_fov=70, scan_intrinsics=None, scan_turn_dps=90,
-               record=False, replay=None, bulk_limit_mbps=0):
+               record=False, replay=None, bulk_limit_mbps=0, drive_profile=None, allow_calibration=False):
+    if isinstance(drive_profile, (str, Path)):
+        drive_profile = DriveProfile.load(drive_profile)
     bulk = BulkPacer(bulk_limit_mbps)
     if replay is not None and (serial_port or camera_device is not None or demo or simulate_rover or record):
         raise ValueError("Replay cannot be combined with serial, live/simulated sources, or recording")
@@ -53,6 +56,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
     mission = Mission(mission_dir, record=record)
     perception = ReplayPerception(camera_service) if replay is not None else PerceptionService(camera_service, model=detector_model, mode=detector, on_detection=mission.detect, face_model=face_model)
     control = ReplayControl() if replay is not None else ControlService(serial_port=serial_port, simulate=simulate_rover, max_pwm=max_pwm, min_pwm=min_pwm,
+                             drive_profile=drive_profile, allow_calibration=allow_calibration,
                              camera_ready=lambda: camera_service.status()["camera_drive_ready" if serial_port else "camera"],
                              detections=perception.snapshot)
     replay_session = ReplaySession(replay, camera_service, perception, control) if replay is not None else None
@@ -646,6 +650,9 @@ def main():
     parser.add_argument("--simulate-rover", action="store_true", help="Explicit virtual rover; never opens serial")
     parser.add_argument("--max-pwm", type=int, default=100, help="Initial motor PWM ceiling, 1..255")
     parser.add_argument("--min-pwm", type=int, default=0, help="Measured wheel starting PWM floor; default 0 until calibrated")
+    parser.add_argument("--drive-profile", help="Opt-in measured drive profile (tools.calibrate_drive output); enables mode \"velocity\" in m/s, rad/s")
+    parser.add_argument("--allow-calibration", action="store_true",
+                        help="Accept raw-PWM mode \"calibrate\" from a held-deadman controller; for tools.calibrate_drive on a cleared floor only")
     parser.add_argument("--detector", choices=("hog", "pose", "none"), default="hog",
                         help="hog: bundled CPU detector; pose: YOLO11-pose (needs --detector-model); none")
     parser.add_argument("--detector-model", help="YOLOv8/11 ONNX or TensorRT engine path; overrides bundled HOG. With --detector pose: YOLO11-pose model")
@@ -699,7 +706,8 @@ def main():
                 speaker_cmd=args.speaker_cmd, triage_interval=args.triage_interval,
                 depth_model=args.depth_model, scan_pan=args.scan_pan, scan_fov=args.scan_fov,
                 scan_intrinsics=args.scan_intrinsics, scan_turn_dps=args.scan_turn_dps,
-                record=args.record, replay=args.replay, bulk_limit_mbps=args.bulk_limit_mbps), host=args.host, port=args.port,
+                record=args.record, replay=args.replay, bulk_limit_mbps=args.bulk_limit_mbps,
+                drive_profile=args.drive_profile, allow_calibration=args.allow_calibration), host=args.host, port=args.port,
                 ssl_certfile=args.ssl_certfile, ssl_keyfile=args.ssl_keyfile,
                 ws_max_size=8 * 1024 * 1024, access_log=False,
                 timeout_graceful_shutdown=5)
