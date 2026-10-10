@@ -239,12 +239,13 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
         async def images():
             last = None
             while True:
-                frame = await asyncio.to_thread(camera_service.preview)
-                identity = (frame.source, frame.frame_id) if frame else None
-                if frame and frame.age_ms < 500 and identity != last:
-                    yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame.jpeg + b"\r\n"
-                    last = identity
-                await asyncio.sleep(0.1)
+                latest = camera_service.snapshot()  # cheap; only re-encode a frame we have not sent
+                if latest and latest.age_ms < 500 and (latest.source, latest.frame_id) != last:
+                    frame = await asyncio.to_thread(camera_service.preview)
+                    if frame:
+                        yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame.jpeg + b"\r\n"
+                        last = (frame.source, frame.frame_id)
+                await asyncio.sleep(0.02)
         return StreamingResponse(images(), media_type="multipart/x-mixed-replace; boundary=frame")
 
     @app.websocket("/ws/video")

@@ -1,4 +1,7 @@
+import os
+import tempfile
 import unittest
+from io import StringIO
 from unittest import mock
 
 from jetson import launch
@@ -38,6 +41,27 @@ class BuildArgsTests(unittest.TestCase):
             i = args.index(pair[0])
             self.assertEqual(args[i:i + 2], pair)
 
+    def test_face_video_triage_and_simulation_map_to_server_flags(self):
+        env = {"FARSIGHT_FACE_MODEL": "/m/version-RFB-320.onnx", "FARSIGHT_VIDEO_FPS": "15",
+               "FARSIGHT_VIDEO_BITRATE": "800000", "FARSIGHT_TRIAGE_INTERVAL": "4.5",
+               "FARSIGHT_PIPER_MODEL_ES": "/m/es.onnx", "FARSIGHT_SPEAKER_CMD": "aplay -q",
+               "FARSIGHT_SIMULATE_ROVER": "yes"}
+        args = launch.build_args(env)
+        for pair in (["--face-model", "/m/version-RFB-320.onnx"], ["--video-fps", "15"],
+                     ["--video-bitrate", "800000"], ["--triage-interval", "4.5"],
+                     ["--piper-model-es", "/m/es.onnx"], ["--speaker-cmd", "aplay -q"]):
+            i = args.index(pair[0])
+            self.assertEqual(args[i:i + 2], pair)
+        self.assertIn("--simulate-rover", args)
+
+    def test_simulate_rover_conflicts_with_serial_port(self):
+        with self.assertRaises(ValueError):
+            launch.build_args({"FARSIGHT_SIMULATE_ROVER": "1", "FARSIGHT_SERIAL_PORT": "/dev/ttyACM0"})
+
+    def test_bad_float_rejected(self):
+        with self.assertRaises(ValueError):
+            launch.build_args({"FARSIGHT_TRIAGE_INTERVAL": "soon"})
+
     def test_blank_values_ignored_and_false_flag_off(self):
         args = launch.build_args({"FARSIGHT_CAMERA": "  ", "FARSIGHT_H264": "0"})
         self.assertNotIn("--camera", args)
@@ -73,13 +97,78 @@ class WaitTests(unittest.TestCase):
                          ["/dev/video0", "/dev/ttyACM0"])
 
 
+class ServerContractTests(unittest.TestCase):
+    def test_every_launch_flag_is_accepted_by_the_canonical_server(self):
+        import subprocess
+        import sys
+        help_text = subprocess.run([sys.executable, "-m", "jetson.server", "--help"], capture_output=True,
+                                   text=True, check=True, cwd=os.path.dirname(os.path.dirname(os.path.dirname(__file__)))).stdout
+        for flag in [f for _, f in launch.VALUE_FLAGS] + [f for _, f in launch.BOOL_FLAGS] + ["--host", "--port"]:
+            self.assertIn(flag, help_text, f"jetson.server has no {flag}; update jetson/launch.py")
+
+
+class EnvFileTests(unittest.TestCase):
+    def test_parses_systemd_style_lines(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".env", delete=False) as f:
+            f.write('# comment\n\nFARSIGHT_PORT=9000\nFARSIGHT_CAMERA="/dev/video2"\nFARSIGHT_HOST=\n  \nBAD LINE\n')
+        self.addCleanup(os.unlink, f.name)
+        self.assertEqual(launch.read_env_file(f.name),
+                         {"FARSIGHT_PORT": "9000", "FARSIGHT_CAMERA": "/dev/video2", "FARSIGHT_HOST": ""})
+
+
+class PreflightTests(unittest.TestCase):
+    def problems(self, env, present=()):
+        return launch.preflight(env, exists=lambda p: p in present)
+
+    def test_clean_env_has_no_problems(self):
+        self.assertEqual(self.problems({"FARSIGHT_DETECTOR_MODEL": "/m/p.engine", "FARSIGHT_DETECTOR": "pose"},
+                                       present=("/m/p.engine",)), [])
+
+    def test_missing_files_are_named(self):
+        env = {"FARSIGHT_DETECTOR": "pose", "FARSIGHT_DETECTOR_MODEL": "/m/p.engine",
+               "FARSIGHT_FACE_MODEL": "/m/face.onnx", "FARSIGHT_PIPER_MODEL": "/m/en.onnx",
+               "FARSIGHT_PIPER_MODEL_ES": "/m/es.onnx", "FARSIGHT_SSL_CERTFILE": "/c.pem", "FARSIGHT_SSL_KEYFILE": "/k.pem"}
+        text = "\n".join(self.problems(env))
+        for name in ("/m/p.engine", "/m/face.onnx", "/m/en.onnx", "/m/es.onnx", "/c.pem", "/k.pem"):
+            self.assertIn(name, text)
+
+    def test_pose_without_model_is_flagged(self):
+        self.assertTrue(any("FARSIGHT_DETECTOR_MODEL" in p for p in self.problems({"FARSIGHT_DETECTOR": "pose"})))
+
+    def test_missing_devices_are_flagged(self):
+        env = {"FARSIGHT_CAMERA": "/dev/video0", "FARSIGHT_SERIAL_PORT": "/dev/ttyACM0"}
+        self.assertEqual(len(self.problems(env)), 2)
+        self.assertEqual(self.problems(env, present=("/dev/video0", "/dev/ttyACM0")), [])
+
+
+class DryRunTests(unittest.TestCase):
+    def test_check_prints_command_and_never_execs(self):
+        out = StringIO()
+        with mock.patch.object(launch.os, "execv") as execv:
+            code = launch.main(["--check"], env={"FARSIGHT_PORT": "9000"}, out=out)
+        execv.assert_not_called()
+        self.assertEqual(code, 0)
+        self.assertIn("-m jetson.server --host 0.0.0.0 --port 9000", out.getvalue())
+
+    def test_check_exits_nonzero_on_problems(self):
+        out = StringIO()
+        code = launch.main(["--check"], env={"FARSIGHT_CAMERA": "/dev/video99"}, out=out)
+        self.assertEqual(code, 1)
+        self.assertIn("/dev/video99", out.getvalue())
+
+    def test_check_reports_bad_config(self):
+        out = StringIO()
+        self.assertEqual(launch.main(["--check"], env={"FARSIGHT_PORT": "abc"}, out=out), 1)
+        self.assertIn("FARSIGHT_PORT", out.getvalue())
+
+
 class MainTests(unittest.TestCase):
     def test_missing_device_still_starts_degraded(self):
         with mock.patch.object(launch, "wait_for_devices", return_value=["/dev/ttyACM0"]), \
              mock.patch.object(launch.os, "execv") as execv:
-            launch.main({"FARSIGHT_SERIAL_PORT": "/dev/ttyACM0"})
+            launch.main([], env={"FARSIGHT_SERIAL_PORT": "/dev/ttyACM0"})
         argv = execv.call_args[0][1]
-        self.assertEqual(argv[1:4], ["-m", "jetson.mapping.server", "--host"])
+        self.assertEqual(argv[1:4], ["-m", "jetson.server", "--host"])
         self.assertIn("--serial-port", argv)
 
 

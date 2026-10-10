@@ -37,6 +37,36 @@ class EvaluateTests(unittest.TestCase):
         detail = dict((n, d) for n, _, d in ready.evaluate(health(control=dict(simulated=True))))["rover"]
         self.assertIn("simulated", detail)
 
+    def test_skip_marks_named_subsystems_skipped(self):
+        rows = ready.evaluate(health(camera=True, rover=False, video=dict(enabled=True, ready=False, error=None)),
+                              skip=("rover", "video"))
+        states = {name: state for name, state, _ in rows}
+        self.assertEqual((states["rover"], states["video"]), ("skip", "skip"))
+        self.assertTrue(ready.is_ready(rows))
+
+    def test_detector_detail_shows_backend_and_latency(self):
+        detail = dict((n, d) for n, _, d in ready.evaluate(
+            health(detector="pose", detector_backend="pose-tensorrt", detector_inference_ms=21.4)))["detector"]
+        self.assertIn("pose-tensorrt", detail)
+        self.assertIn("21.4 ms", detail)
+
+    def test_require_tensorrt_fails_cpu_backends(self):
+        cpu = health(detector="pose", detector_backend="pose-onnx")
+        gpu = health(detector="pose", detector_backend="pose-tensorrt")
+        self.assertEqual(dict((n, s) for n, s, _ in ready.evaluate(cpu, require_tensorrt=True))["detector"], "fail")
+        self.assertEqual(dict((n, s) for n, s, _ in ready.evaluate(gpu, require_tensorrt=True))["detector"], "ok")
+        self.assertEqual(dict((n, s) for n, s, _ in ready.evaluate(cpu))["detector"], "ok")
+
+    def test_assistant_row_is_informational(self):
+        on = dict((n, (s, d)) for n, s, d in ready.evaluate(
+            health(assistant=dict(vision_model=True, whisper=True, piper=False))))["assistant"]
+        self.assertEqual(on[0], "ok")
+        self.assertIn("vision", on[1])
+        self.assertIn("no piper", on[1])
+        off = dict((n, s) for n, s, _ in ready.evaluate(
+            health(assistant=dict(vision_model=False, whisper=False, piper=False))))["assistant"]
+        self.assertEqual(off, "skip")
+
     def test_is_ready_ignores_skips_only(self):
         self.assertTrue(ready.is_ready(ready.evaluate(health(detector="none"))))
         self.assertFalse(ready.is_ready(ready.evaluate(health(camera=False))))

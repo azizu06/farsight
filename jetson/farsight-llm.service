@@ -1,0 +1,20 @@
+# Template: jetson/install_service.sh fills @USER@, @REPO@, @SRC@ and installs it when llama-server and the model exist.
+[Unit]
+Description=Farsight vision-language model (llama.cpp llama-server, CUDA)
+After=network.target
+ConditionPathExists=@SRC@/llama.cpp/build/bin/llama-server
+ConditionPathExists=@REPO@/models/Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf
+ConditionPathExists=@REPO@/models/mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf
+
+[Service]
+Type=simple
+User=@USER@
+WorkingDirectory=@REPO@
+ExecStart=@SRC@/llama.cpp/build/bin/llama-server -m @REPO@/models/Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf --mmproj @REPO@/models/mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf --alias local --host 127.0.0.1 --port 8092 -c 4096 -ngl 99 --parallel 1
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
