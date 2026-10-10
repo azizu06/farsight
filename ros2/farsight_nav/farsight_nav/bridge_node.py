@@ -137,6 +137,7 @@ class FarsightBridge(Node):
         self.loop = None
         self.ws = None
         self.config = {}
+        self.yaw_offset = 0.0  # drive profile camera_yaw_offset_rad, from the server hello
         self.last_tf_stamp = None
         self.last_base = None       # (time, x, y, yaw) for odometry twist
         self.twist = (0.0, 0.0)
@@ -175,6 +176,8 @@ class FarsightBridge(Node):
         kind = message.get("type")
         if kind == "hello":
             self.config = message
+            offset = message.get("camera_yaw_offset_rad")
+            self.yaw_offset = float(offset) if isinstance(offset, (int, float)) and math.isfinite(offset) else 0.0
         elif kind == "pose":
             self.on_pose(message)
         elif kind == "range":
@@ -192,7 +195,7 @@ class FarsightBridge(Node):
                 return  # TF must move forward; an older pose adds nothing
             self.last_tf_stamp = stamp_ns
         cam_pos, cam_rot = frames.camera_in_odom(transform, floor_y)
-        base_pos, yaw = frames.base_in_odom(cam_pos, cam_rot)
+        base_pos, yaw = frames.base_in_odom(cam_pos, cam_rot, self.yaw_offset)
         rel_pos, rel_rot = frames.camera_in_base(cam_pos, cam_rot, base_pos, yaw)
         self.tf.sendTransform([
             transform_msg(stamp, self.odom_frame, self.base_frame, base_pos, frames.yaw_quaternion(yaw)),

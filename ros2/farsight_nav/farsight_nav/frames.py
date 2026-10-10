@@ -47,10 +47,19 @@ def camera_in_odom(camera_to_world, floor_y):
     return position, rotation
 
 
-def base_in_odom(camera_position, camera_rotation):
-    """base_link on the floor under the camera, yawed with the camera's forward axis."""
+def base_in_odom(camera_position, camera_rotation, yaw_offset=0.0):
+    """base_link on the floor under the camera, heading along the chassis.
+
+    yaw_offset is the drive profile's camera_yaw_offset_rad (travel heading minus
+    camera heading, counter-clockwise); 0 means the phone looks straight ahead.
+    """
     forward = camera_rotation[:, 0]
-    yaw = math.atan2(forward[1], forward[0])
+    if math.hypot(forward[0], forward[1]) >= 0.2:
+        yaw = math.atan2(forward[1], forward[0])
+    else:  # phone pitched near vertical: forward is 90 degrees clockwise of camera left
+        left = camera_rotation[:, 1]
+        yaw = math.atan2(left[1], left[0]) - math.pi / 2
+    yaw = math.atan2(math.sin(yaw + yaw_offset), math.cos(yaw + yaw_offset))
     return np.array([camera_position[0], camera_position[1], 0.0]), yaw
 
 

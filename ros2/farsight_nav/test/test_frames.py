@@ -52,6 +52,19 @@ def test_camera_pitch_stays_in_base_to_camera_transform():
     assert math.isclose(math.degrees(math.atan2(-forward[2], forward[0])), 12, abs_tol=1e-6)
 
 
+def test_drive_profile_yaw_offset_and_downward_phone():
+    offset = -0.35  # chassis travels 20 degrees clockwise of where the phone looks
+    pose = arkit_pose(0.0, 0.0, math.radians(30), pitch=math.radians(-85))
+    position, rotation = frames.camera_in_odom(pose, floor_y=-0.15)
+    base, yaw = frames.base_in_odom(position, rotation)
+    assert math.isclose(yaw, math.radians(30), abs_tol=1e-9)  # forward axis nearly vertical: left axis used
+    base, yaw = frames.base_in_odom(position, rotation, offset)
+    assert math.isclose(yaw, math.radians(30) + offset, abs_tol=1e-9)
+    _, relative_rotation = frames.camera_in_base(position, rotation, base, yaw)
+    left = relative_rotation[:, 1]  # camera_link stays yawed by -offset inside base_link
+    assert math.isclose(math.atan2(left[1], left[0]) - math.pi / 2, -offset, abs_tol=1e-9)
+
+
 def test_quaternion_matches_rotation():
     rotation = frames.camera_in_odom(arkit_pose(0, 0, 1.1, pitch=0.3), -0.15)[1]
     x, y, z, w = frames.quaternion(rotation)

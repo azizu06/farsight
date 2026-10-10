@@ -142,6 +142,31 @@ class LeaseTests(unittest.TestCase):
         self.assertTrue(self.send(mode="goto", v=0.3))  # stick input disarms
         self.assertIsNone(self.nav.goal)
 
+    def test_drive_profile_maps_nav2_si_command_straight_to_wheel_pwm(self):
+        from jetson.control.tests.test_drive_profile import make_profile
+        profile = make_profile()
+        self.state = ControlState(clock=self.clock, navigator=self.nav, proximity_stop=False, drive_profile=profile)
+        self.nav.attach(self.state)
+        hello = self.nav.hello()
+        self.assertEqual(hello["camera_yaw_offset_rad"], profile.camera_yaw_offset_rad)  # bridge yaws base_link
+        self.assertEqual(hello["drive_profile"]["half_track_m"], profile.half_track_m)
+        self.state.set_connected(True)
+        self.session = self.state.begin()
+        self.send(deadman=False)
+        self.bridge(type="status", state="idle", goal_id=None)
+        self.assertTrue(self.send())
+        self.nav.set_goal(1.0, -2.0)
+        self.assertTrue(self.send(mode="goto"))
+        self.assertEqual(self.state.output()[:2], (0, 0))  # no command yet
+        self.bridge(type="cmd_vel", linear=0.3, angular=0.8)  # forward, curving left (CCW)
+        left, right, _ = self.state.output()
+        self.assertEqual((left, right), profile.wheel_pwm(0.3, 0.8, max_pwm=self.state.max_pwm))
+        self.assertGreater(right, left)
+        self.clock.now += 0.15
+        self.assertTrue(self.send(mode="goto"))
+        self.clock.now += 0.15  # command older than CMD_TTL stops even with a held lease
+        self.assertEqual(self.state.output()[:2], (0, 0))
+
     def test_pre_post_teleop_heartbeat_keeps_goto_but_new_teleop_cancels(self):
         self.bridge(type="status", state="idle", goal_id=None)
         self.assertTrue(self.send())
@@ -196,7 +221,7 @@ class LeaseTests(unittest.TestCase):
 
     def test_command_caps_and_conversion(self):
         self.nav.receive(dict(type="cmd_vel", linear=10.0, angular=-50.0))
-        v, w, _ = self.nav.cmd
+        v, w = self.nav.cmd[:2]
         self.assertEqual((v, w), (self.nav.max_v, self.nav.max_w))
         with self.assertRaises(ValueError):
             self.nav.receive(dict(type="cmd_vel", linear=math.nan, angular=0))

@@ -313,8 +313,9 @@ class ControlState:
         self.reason = "active"
         return True
 
-    def _drive_output(self):
-        kind, values = self.drive
+    def _drive_output(self, kind=None, values=None):
+        if kind is None:
+            kind, values = self.drive
         left, right = (0, 0)
         if self.connected:
             left, right = (values if kind == "calibrate"
@@ -354,6 +355,9 @@ class ControlState:
                 self.navigator.sync(self.autonomy.mode, self.autonomy.target_id, engaged)
             if engaged and self.navigator is not None and self.navigator.handles(self.autonomy.mode):
                 # Nav2 drives this mode; a missing or stale velocity command stops.
+                if self.profile is not None:  # calibrated: Nav2 m/s, rad/s straight to wheel PWM
+                    command = self.navigator.command(si=True)
+                    return self._drive_output("velocity", command if command is not None else (0.0, 0.0))
                 command = self.navigator.command()
                 v, w = command if command is not None else (0.0, 0.0)
             elif engaged:

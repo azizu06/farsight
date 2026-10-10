@@ -146,7 +146,7 @@ class NavService:
         self.bridge = None
         self.bridge_seen = -math.inf
         self.bridge_hello = None
-        self.cmd = None             # (v, w normalized, received monotonic)
+        self.cmd = None             # (v, w normalized, received monotonic, linear m/s, angular rad/s CCW)
         self.remote = {}            # latest bridge status
         self.mode, self.target_id, self.active = None, None, False
         self.goal = None            # voxel-map (x, z)
@@ -209,8 +209,12 @@ class NavService:
     def handles(self, mode):
         return mode in self.backed_modes and self.available()
 
-    def command(self):
-        """Normalized (v, w) for ControlState, or None when no fresh command exists."""
+    def command(self, si=False):
+        """Fresh Nav2 command for ControlState, or None when none exists.
+
+        Normalized (v, w) with positive w turning right by default; with ``si``
+        the raw cmd_vel (m/s, rad/s counter-clockwise) for a calibrated drive profile.
+        """
         with self.lock:
             if not self.available() or self.mode not in self.backed_modes or not self.active:
                 return None
@@ -218,7 +222,7 @@ class NavService:
                 return 0.0, 0.0
             if self.cmd is None or self.clock() - self.cmd[2] > self.CMD_TTL:
                 return None
-            return self.cmd[0], self.cmd[1]
+            return self.cmd[3:5] if si else self.cmd[0:2]
 
     def _remote_state(self):
         remote = self.remote
@@ -310,6 +314,20 @@ class NavService:
             return pose, "normal", "dead_reckoning", 0.0
         return None, tracking, "lost", age
 
+    def hello(self):
+        """Server hello: drive scaling and, with a drive profile, the chassis calibration."""
+        message = dict(type="hello", version=PROTOCOL, speed_mps=self.speed_mps, turn_radps=self.turn_radps,
+                       max_v=self.max_v, max_w=self.max_w, camera_height=self.camera_height, frame="arkit",
+                       camera_yaw_offset_rad=0.0, drive_profile=None)
+        profile = getattr(self.control, "profile", None)
+        if profile is not None:
+            max_pwm = self.control.max_pwm
+            message.update(camera_yaw_offset_rad=profile.camera_yaw_offset_rad, drive_profile=dict(
+                max_linear_mps=round(profile.max_linear_mps(max_pwm), 3),
+                max_angular_radps=round(profile.max_angular_radps(max_pwm), 3),
+                half_track_m=profile.half_track_m))
+        return message
+
     def intent(self):
         with self.lock:
             goal = None
@@ -334,7 +352,7 @@ class NavService:
                 # ROS angular.z is counter-clockwise (left); ControlState positive w turns right.
                 v = max(-self.max_v, min(self.max_v, linear / self.speed_mps))
                 w = max(-self.max_w, min(self.max_w, -angular / self.turn_radps))
-                self.cmd = (v, w, now)
+                self.cmd = (v, w, now, float(linear), float(angular))
             elif kind == "status":
                 self.remote = {key: message.get(key) for key in
                                ("state", "goal_id", "path", "frontiers", "message", "controller_hz",
@@ -363,9 +381,7 @@ class NavService:
             with self.lock:
                 self.bridge_hello = {k: hello.get(k) for k in ("node", "nav2", "controller", "slam", "costmap_source")}
                 self.bridge_seen = self.clock()
-            await ws.send_json(dict(type="hello", version=PROTOCOL, speed_mps=self.speed_mps,
-                                    turn_radps=self.turn_radps, max_v=self.max_v, max_w=self.max_w,
-                                    camera_height=self.camera_height, frame="arkit"))
+            await ws.send_json(self.hello())
 
             async def send():
                 last_pose = last_range = last_intent_at = 0.0
