@@ -241,6 +241,28 @@ sudo nano /etc/farsight.env && sudo systemctl restart farsight
 ```
 
 Identify the Uno port manually and keep `FARSIGHT_CAMERA` blank for the phone.
+
+**ELEGOO Uno (CH340, `1a86:7523`) shows in `lsusb` but no `/dev/ttyUSB*`:** the
+`6.8.12-1021-tegra` kernel ships `usbserial` but not `ch341`
+(`# CONFIG_USB_SERIAL_CH341 is not set`). Build the upstream v6.8.12 driver
+against the installed `nvidia-l4t-kernel-headers` (done on the rig 2026-10-10;
+`ch341.c` sha256 `b286d49d…235951`, fetched on the Mac and copied because the
+Jetson was offline):
+
+```sh
+# Mac
+curl -fsSL -o ch341.c 'https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain/drivers/usb/serial/ch341.c?h=v6.8.12'
+printf 'obj-m += ch341.o\n' > Makefile
+ssh jetson mkdir -p ch341-build && scp ch341.c Makefile jetson:ch341-build/
+# Jetson
+cd ~/ch341-build && make -C /lib/modules/$(uname -r)/build M=$PWD modules
+sudo install -D -m 0644 ch341.ko /lib/modules/$(uname -r)/updates/ch341.ko
+sudo depmod -a $(uname -r) && sudo modprobe ch341   # pulls in usbserial; udev autoloads it on later boots
+ls -l /dev/ttyUSB0                                  # root:dialout
+```
+
+The "compiler differs" warning (13.3 vs 13.2) and the unsigned-module taint are
+expected. A kernel update to a new `uname -r` needs the build repeated.
 Wheels raised first ([rover/README.md](../rover/README.md), [transport-setup.md](transport-setup.md)).
 Complete direction, range, deadman, watchdog and disconnect checks before floor
 driving; a connected serial port alone does not pass these checks.

@@ -5,27 +5,20 @@
 #include <stdlib.h>
 #include <string.h>
 
-// Ultrasonic proximity stop: range < 25 cm or a reading older than 250 ms strips
-// forward translation. On by default. Build with -DFARSIGHT_DISABLE_PROXIMITY_STOP
-// only for navigation runs where the Jetson's planner steers around obstacles (and
-// run the server with --proximity-stop off). The off-centre pan rule, the 300 ms
-// motor watchdog, the stop button and malformed-line stops are unaffected.
-
 const uint8_t LEFT_PWM = 6, RIGHT_PWM = 5, LEFT_DIR = 8, RIGHT_DIR = 7;
-const uint8_t STANDBY = 3, PAN_PIN = 10, TRIGGER = 13, ECHO = 12, STOP_BUTTON = 2;
+const uint8_t STANDBY = 3, PAN_PIN = 10, STOP_BUTTON = 2;
 const unsigned long MOTOR_WATCHDOG_MS = 300;
-const unsigned long RANGE_PERIOD_MS = 100;
+// No ultrasonic sensor or pan servo is mounted: obstacle stopping is the
+// Jetson/iPhone path's job. R always reports -1 and P only moves an unused pin.
 Servo panServo;
 char line[48];
 uint8_t lineLength = 0;
 bool discardLine = false;
-unsigned long partialAt = 0, lastMotorAt = 0, rangeAt = 0, panChangedAt = 0;
-int leftMotor = 0, rightMotor = 0, panAngle = 90, rangeCm = -1;
+unsigned long partialAt = 0, lastMotorAt = 0;
+int panAngle = 90;
 bool motorLease = false;
 
 void setMotors(int left, int right) {
-  leftMotor = left;
-  rightMotor = right;
   // Disable the bridge while changing direction to avoid a powered reversal.
   digitalWrite(STANDBY, LOW);
   digitalWrite(LEFT_DIR, left >= 0 ? HIGH : LOW);
@@ -40,41 +33,12 @@ void stopMotors() {
   motorLease = false;
 }
 
-bool forwardBlocked() {
-#ifndef FARSIGHT_DISABLE_PROXIMITY_STOP
-  if (rangeCm < 25 || millis() - rangeAt > 250) return true;
-#endif
-  return abs(panAngle - 90) > 10 || millis() - panChangedAt < 200;
-}
-
 void checkedMotors(int left, int right) {
   if (digitalRead(STOP_BUTTON) == LOW) {
     stopMotors();
     return;
   }
-  if (left + right > 0 && forwardBlocked()) {
-    // Remove only forward translation; turning and reverse stay available.
-    const int translation = (left + right + 1) / 2;
-    left -= translation;
-    right -= translation;
-  }
   setMotors(left, right);
-}
-
-void measureRange() {
-  digitalWrite(TRIGGER, LOW);
-  delayMicroseconds(2);
-  digitalWrite(TRIGGER, HIGH);
-  delayMicroseconds(10);
-  digitalWrite(TRIGGER, LOW);
-  // Bounded at 12 ms; unlike the default pulseIn timeout this cannot stall
-  // the 300 ms motor watchdog for a second when the echo cable is absent.
-  const unsigned long pulse = pulseIn(ECHO, HIGH, 12000UL);
-  rangeCm = pulse ? (int)(pulse / 58UL) : -1;
-  rangeAt = millis();
-  if (leftMotor + rightMotor > 0 && forwardBlocked()) {
-    checkedMotors(leftMotor, rightMotor);
-  }
 }
 
 bool integer(char *&cursor, long &value) {
@@ -106,15 +70,11 @@ void command(char *text) {
              && a >= 10 && a <= 170) {
     if (panAngle != a) {
       panAngle = (int)a;
-      panChangedAt = millis();
-      rangeCm = -1;
       panServo.write(panAngle);
-      if (leftMotor + rightMotor > 0) checkedMotors(leftMotor, rightMotor);
     }
     Serial.println(F("OK"));
   } else if (text[0] == 'R' && finished(args)) {
-    Serial.print(F("R "));
-    Serial.println(rangeCm);
+    Serial.println(F("R -1"));
   } else {
     stopMotors();
     Serial.println(F("ERR command"));
@@ -128,8 +88,6 @@ void setup() {
   pinMode(RIGHT_PWM, OUTPUT);
   pinMode(LEFT_DIR, OUTPUT);
   pinMode(RIGHT_DIR, OUTPUT);
-  pinMode(TRIGGER, OUTPUT);
-  pinMode(ECHO, INPUT);
   pinMode(STOP_BUTTON, INPUT_PULLUP);
   stopMotors();
   panServo.attach(PAN_PIN);
@@ -138,10 +96,9 @@ void setup() {
 }
 
 void loop() {
-  // Check before potentially blocking sensor IO and after every received byte.
+  // Check every loop and after every received byte.
   if (motorLease && millis() - lastMotorAt >= MOTOR_WATCHDOG_MS) stopMotors();
   if (digitalRead(STOP_BUTTON) == LOW) stopMotors();
-  if (millis() - rangeAt >= RANGE_PERIOD_MS) measureRange();
   if (lineLength && millis() - partialAt > 50) {
     stopMotors();
     lineLength = 0;

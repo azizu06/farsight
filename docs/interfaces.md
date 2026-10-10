@@ -211,9 +211,9 @@ Autonomy never renews a permit or lease itself. Example held-deadman heartbeat:
 - The proximity stop is **on by default**: missing/stale front range stops all
   autonomous motion, range below 25 cm also stops autonomous turns, and forward
   translation is blocked; reverse and turn escape remain available. Turning it off
-  is an explicit opt-in (server `--proximity-stop off` / `FARSIGHT_PROXIMITY_STOP=0`,
-  Uno built with `-DFARSIGHT_DISABLE_PROXIMITY_STOP`) for runs where navigation
-  steers around obstacles. Then range never stops motion, and the reactive policy
+  is an explicit opt-in (server `--proximity-stop off` / `FARSIGHT_PROXIMITY_STOP=0`)
+  for runs where navigation steers around obstacles; the rover as built has no
+  ultrasonic, so its Uno never blocks on range and `R` always replies `-1`. Then range never stops motion, and the reactive policy
   keeps its 70 cm turn cue and estimates Seek arrival from the box width when there
   is no range.
 
