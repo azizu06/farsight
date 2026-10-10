@@ -281,6 +281,16 @@ every `/ws/control` status. Coordinates are voxel-map world metres: map `x, z`
   frontier goal points (widest first) that Explore chooses from. `goal`: the
   go-to point, or in a Nav2 Seek the standoff point 0.8 m short of the person
   (it moves with them); `null` in Explore.
+- `revision`: integer, bumped whenever `path` or `frontiers` change (additive; the Rust server
+  does not send it yet). **Nav lane (opt-in, for cellular):** a `/ws/control` client (direct or
+  bonded) that adds `"nav_lane": "revision"` to its command messages (any heartbeat or release;
+  latched for that socket, or for the bonded session) then gets `nav.path` and `nav.frontiers` only
+  in statuses where `revision` changed, at most every 0.5 s (changes are coalesced to the newest),
+  plus a refresh every 2 s and in the first status after opting in or after a bonded path attaches.
+  Every other status omits both keys: absent means unchanged, so keep the last arrays (an empty
+  array clears them). All other status and lease fields are unchanged and still arrive at 40 Hz.
+  Clients that never opt in keep full arrays in every status. `GET /control/status` and
+  `GET /nav/status` always carry the full arrays and `revision`.
 - `POST /nav/goal` with `{"x": 2.0, "z": -1.5}` (metres, millimetre
   precision; optional `session_id` from the `/ws/control` status binds it to that
   controller) returns `202` with the nav object, or `409` `{"nav": <nav object>,

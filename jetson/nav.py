@@ -108,7 +108,35 @@ def decode_depth(packet):
 
 def empty_nav(state, message):
     """A nav object with no backend (field-for-field with the Rust server)."""
-    return dict(state=state, mode=None, goal=None, path=[], frontiers=[], backend=None, message=message)
+    return dict(state=state, mode=None, goal=None, path=[], frontiers=[], backend=None, message=message, revision=0)
+
+
+class NavLane:
+    """Per-subscriber filter that keeps bulky nav arrays out of most 40 Hz control statuses.
+
+    For a client that opted in (``"nav_lane": "revision"`` in its commands), ``nav.path`` and
+    ``nav.frontiers`` are sent only when ``nav.revision`` changed (at most every MIN_INTERVAL,
+    coalescing changes) or as a REFRESH; every other status omits both keys, which means
+    "unchanged". The first status always carries them. Lease and status fields are untouched.
+    """
+    MIN_INTERVAL = 0.5
+    REFRESH = 2.0
+
+    def __init__(self, clock=time.monotonic):
+        self.clock = clock
+        self.sent_revision, self.sent_at = None, -math.inf
+
+    def apply(self, status):
+        nav = status.get("nav")
+        if not isinstance(nav, dict):
+            return status
+        now = self.clock()
+        if ((nav.get("revision") != self.sent_revision and now - self.sent_at >= self.MIN_INTERVAL)
+                or now - self.sent_at >= self.REFRESH):
+            self.sent_revision, self.sent_at = nav.get("revision"), now
+            return status
+        lean = {key: value for key, value in nav.items() if key not in ("path", "frontiers")}
+        return dict(status, nav=lean)
 
 
 SENSOR_MESSAGES = {
@@ -167,6 +195,7 @@ class NavService:
         self.mode, self.target_id, self.active = None, None, False
         self.goal = None            # voxel-map (x, z)
         self.goal_id = 0
+        self.arrays, self.revision = ([], []), 0  # last path/frontiers sent to viewers, and their version
         self.frame = None           # newest normal-tracking RGB-D frame of the current sensor session
         self.frame_at = None        # monotonic receipt of self.frame
         self.frame_seq = 0
@@ -333,8 +362,11 @@ class NavService:
                            else "Nav2 bridge silent; commands stopped")
                 if mode == "goto" and self.goal is not None:
                     goal = dict(x=round(self.goal[0], 3), z=round(self.goal[1], 3))
-            return dict(state=state, mode=mode, goal=goal, path=path or [], frontiers=frontiers,
-                        backend=backend, message=message)
+            arrays = (path or [], frontiers)
+            if arrays != self.arrays:
+                self.arrays, self.revision = arrays, self.revision + 1
+            return dict(state=state, mode=mode, goal=goal, path=arrays[0], frontiers=frontiers,
+                        backend=backend, message=message, revision=self.revision)
 
     def _world_points(self, odom_points, limit, tolerance):
         points = []
