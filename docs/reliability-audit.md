@@ -24,6 +24,7 @@ The issue branch and review are [PR #153](https://github.com/azizu06/farsight/pu
 | A cancelled session initializer overwrites a new phone, or cancelled cleanup leaves the stream permanently busy | Shield/drain both mutations through repeated cancellation, then release ownership; actual endpoint regressions cover the interleavings |
 | Render capture reports geometry but outputs black idle pictures, or drops the tracked pose at the Python/JS field boundary | Integrate upstream's same-task capture draw and field adapter; preserve real-browser pixel tests and add a Node regression executing the actual producer expression and renderer camera/ray code |
 | The simulation exports dense data without a usable source identity | Initialize its existing source and recognize only the explicit RGB-D simulation identity with a SIMULATED label; Python-to-JS tests cover initial data, reset and continuation |
+| Cinematic camera easing renders an intermediate pose while the frame echoes the latest tracked pose | Draw at the exact accepted pose so Quest's matched-pose placement is valid; preserve cinematic styling. Small head-move/yaw regressions reproduce the mismatch under default settings and `camera=smooth` |
 
 The frame and motion age cutoffs are preserved. Repairs do not grant face
 recognition or model text authority over motors, synthesize metric geometry, or
@@ -67,6 +68,8 @@ face scoring and name-directed navigation remain separately gated work.
 Install the declared Python/ROS test dependencies in the selected interpreter.
 In particular, voice upload tests need `python-multipart`, dense compression
 checks need Brotli, and child ROS smoke scripts need PyYAML in their interpreter.
+The standalone renderer browser fixture also needs Chromium and FFmpeg; its
+software renderer and CPU encoder do not qualify Mac VideoToolbox performance.
 Do not classify a missing package as a model performance failure.
 
 ```sh

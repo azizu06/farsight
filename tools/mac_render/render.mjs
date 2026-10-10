@@ -34,10 +34,9 @@ const height = Number(params.get("height") || 720);
 
 const style = params.get("style") === "unlit" ? "unlit" : "lit";
 // Cinematic is the default look; ?quality=flat reproduces the pre-cine
-// baseline (no splats, no fill light, no grade, hard-snapped camera). Each
-// addition also has its own override: ?camera=snap|smooth, ?jq=0-1, ?aa=0|1.
+// baseline (no splats, no fill light, no grade). JPEG quality and MSAA
+// have independent overrides: ?jq=0-1, ?aa=0|1.
 const cine = params.get("quality") !== "flat";
-const cameraEase = params.has("camera") ? params.get("camera") !== "snap" : cine;
 // MSAA stays opt-in: measured ~2x capture cost on the capture-driven path,
 // and the top LOD rung's 1.5x supersample already gives the stream better
 // anti-aliasing than 4x MSAA. ?aa=1 enables it where the resolve is cheap.
@@ -442,40 +441,8 @@ let appliedPoints = -1;
 let appliedMesh = -1;
 let lastSnapshotKind = null;
 let pose = null;
+const tmp = new THREE.Quaternion();
 const viewPosition = [0, 0, 0];
-
-// Eased camera follow. Pose echoes arrive ~30 Hz; between updates the render
-// camera glides toward the newest received pose with an exponential approach
-// (~95% in ~180 ms), which removes the per-update judder in the video. The
-// pose itself stays the source of truth — __mac.poseEcho reports the
-// received pose verbatim, never the eased camera state. First fixes and
-// discontinuities (tracking reset, teleport) snap instead of gliding in
-// from a stale view.
-const camTargetPos = new THREE.Vector3();
-const camTargetQuat = new THREE.Quaternion();
-const EASE_TAU_MS = 60;
-const EASE_SNAP_M = 0.5;
-const EASE_SNAP_COS = Math.cos(37.5 * Math.PI / 180); // >75 deg turn = snap
-const EASE_SETTLE_M = 0.002;
-const EASE_SETTLE_COS_EPS = 1e-5;
-let camPrimed = false;
-let camSettled = true;
-let lastEaseAt = -1;
-function easeCamera(now) {
-  if (!camPrimed || camSettled) return;
-  const dt = lastEaseAt >= 0 ? Math.min(250, now - lastEaseAt) : 16;
-  lastEaseAt = now;
-  const k = 1 - Math.exp(-dt / EASE_TAU_MS);
-  camera.position.lerp(camTargetPos, k);
-  camera.quaternion.slerp(camTargetQuat, k);
-  if (camera.position.distanceToSquared(camTargetPos) < EASE_SETTLE_M * EASE_SETTLE_M &&
-      1 - Math.abs(camera.quaternion.dot(camTargetQuat)) < EASE_SETTLE_COS_EPS) {
-    camera.position.copy(camTargetPos);
-    camera.quaternion.copy(camTargetQuat);
-    camSettled = true;
-  }
-  frameDirty = true;
-}
 
 // Plug-in layer seam. A layer registers once and hooks every tick without
 // editing this loop: init(ctx) once; poll(ctx, now) every tick — return
@@ -697,20 +664,15 @@ function applyPose() {
   if (next !== pose) {
     pose = next;
     const p = next.position;
-    camTargetPos.set(p[0], p[1], p[2]);
+    // Quest places the captured picture at the pose identified by poseEcho.
+    // Rendering from an intermediate camera would break that reprojection.
+    camera.position.set(p[0], p[1], p[2]);
     const q = next.quaternion;
-    camTargetQuat.set(q[0], q[1], q[2], q[3]).normalize();
+    tmp.set(q[0], q[1], q[2], q[3]).normalize();
+    camera.quaternion.copy(tmp);
     if (Number.isFinite(next.fov_y_deg) && next.fov_y_deg >= 1 && next.fov_y_deg <= 170) camera.fov = next.fov_y_deg;
     if (Number.isFinite(next.aspect) && next.aspect >= .1 && next.aspect <= 5) camera.aspect = next.aspect;
     camera.updateProjectionMatrix();
-    if (!cameraEase || !camPrimed ||
-        camTargetPos.distanceTo(camera.position) > EASE_SNAP_M ||
-        Math.abs(camTargetQuat.dot(camera.quaternion)) < EASE_SNAP_COS) {
-      camera.position.copy(camTargetPos);
-      camera.quaternion.copy(camTargetQuat);
-      camSettled = true;
-    } else camSettled = false;
-    camPrimed = true;
     if (next.ray) {
       const o = next.ray.origin, d = next.ray.direction;
       const scale = 8 / Math.sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
@@ -757,7 +719,6 @@ function drawScene(measure) {
   }
   const now = performance.now();
   applyPose();
-  if (cameraEase) easeCamera(now);
   for (const layer of layers) {
     if (layer.poll?.(layerContext, now)) frameDirty = true;
   }
