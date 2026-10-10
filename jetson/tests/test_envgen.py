@@ -90,7 +90,7 @@ class RenderTests(unittest.TestCase):
         self.assertEqual(Path(selection["FARSIGHT_PIPER_MODEL"]).name, "en_US-lessac-medium.onnx")
 
     def test_partial_auto_pair_never_crosses_projectors_and_explicit_mixed_pair_is_not_ready(self):
-        smol, qwen = envgen.VISION_PAIRS
+        smol, qwen = envgen.SMOLVLM_PAIR, envgen.QWEN25_PAIR
         present = {f"{MODELS}/{name}" for name in (smol[0], *qwen)}
         selected = envgen.model_selection("/home/jet/farsight", exists=present.__contains__)
         self.assertEqual(Path(selected["FARSIGHT_LLM_MODEL"]).name, qwen[0])
@@ -101,6 +101,41 @@ class RenderTests(unittest.TestCase):
         self.assertTrue(selected["warnings"])
         present = {f"{MODELS}/{smol[0]}"}
         self.assertFalse(envgen.model_selection("/home/jet/farsight", exists=present.__contains__)["llm_ready"])
+
+    def test_qwen3_pair_is_default_when_complete_and_never_borrows_another_projector(self):
+        smol, qwen25, qwen3 = envgen.SMOLVLM_PAIR, envgen.QWEN25_PAIR, envgen.QWEN3_PAIR
+        everything = {f"{MODELS}/{name}" for pair in (smol, qwen25, qwen3) for name in pair}
+        chosen = envgen.model_selection("/home/jet/farsight", exists=everything.__contains__)
+        self.assertEqual((Path(chosen["FARSIGHT_LLM_MODEL"]).name, Path(chosen["FARSIGHT_LLM_MMPROJ"]).name), qwen3)
+        # Qwen3 model without its projector falls back to a complete older pair, never to a foreign projector.
+        partial = everything - {f"{MODELS}/{qwen3[1]}"}
+        chosen = envgen.model_selection("/home/jet/farsight", exists=partial.__contains__)
+        self.assertEqual((Path(chosen["FARSIGHT_LLM_MODEL"]).name, Path(chosen["FARSIGHT_LLM_MMPROJ"]).name), smol)
+        only_qwen3_model = {f"{MODELS}/{qwen3[0]}", f"{MODELS}/{qwen25[1]}", f"{MODELS}/{smol[1]}"}
+        self.assertFalse(envgen.model_selection("/home/jet/farsight", exists=only_qwen3_model.__contains__)["llm_ready"])
+        # Smol and Qwen2.5 remain selectable on their own and by explicit override.
+        for pair in (smol, qwen25):
+            present = {f"{MODELS}/{name}" for name in pair}
+            chosen = envgen.model_selection("/home/jet/farsight", exists=present.__contains__)
+            self.assertEqual((Path(chosen["FARSIGHT_LLM_MODEL"]).name, Path(chosen["FARSIGHT_LLM_MMPROJ"]).name), pair)
+            chosen = envgen.model_selection("/home/jet/farsight", exists=everything.__contains__,
+                                            overrides={"FARSIGHT_LLM_MODEL": f"{MODELS}/{pair[0]}"})
+            self.assertEqual(Path(chosen["FARSIGHT_LLM_MMPROJ"]).name, pair[1])
+        for wrong in (smol[1], qwen25[1]):
+            chosen = envgen.model_selection("/home/jet/farsight", exists=everything.__contains__, overrides={
+                "FARSIGHT_LLM_MODEL": f"{MODELS}/{qwen3[0]}", "FARSIGHT_LLM_MMPROJ": f"{MODELS}/{wrong}"})
+            self.assertFalse(chosen["llm_ready"])
+        chosen = envgen.model_selection("/home/jet/farsight", exists=everything.__contains__,
+                                        overrides={"FARSIGHT_LLM_MMPROJ": f"{MODELS}/{qwen3[1]}"})
+        self.assertEqual(Path(chosen["FARSIGHT_LLM_MODEL"]).name, qwen3[0])
+
+    def test_whisper_prefers_base_then_tiny(self):
+        both = {f"{MODELS}/ggml-tiny.en.bin", f"{MODELS}/ggml-base.en.bin"}
+        self.assertEqual(Path(envgen.model_selection("/home/jet/farsight", exists=both.__contains__)["FARSIGHT_WHISPER_MODEL"]).name,
+                         "ggml-base.en.bin")
+        tiny = {f"{MODELS}/ggml-tiny.en.bin"}
+        self.assertEqual(Path(envgen.model_selection("/home/jet/farsight", exists=tiny.__contains__)["FARSIGHT_WHISPER_MODEL"]).name,
+                         "ggml-tiny.en.bin")
 
     def test_explicit_model_paths_override_sensible_automatic_choices(self):
         present = {f"{MODELS}/{name}" for pair in envgen.VISION_PAIRS for name in pair}
@@ -177,6 +212,7 @@ class RenderTests(unittest.TestCase):
             argv = shlex.split(exec_line.partition("=")[2])
             argv = [defaults.get(item[2:-1], item) if item.startswith("${") and item.endswith("}") else item for item in argv]
             if unit == "farsight-llm.service":
+                self.assertEqual(argv[argv.index("--image-max-tokens") + 1], "256")
                 self.assertEqual(argv[argv.index("-m") + 1], selection["FARSIGHT_LLM_MODEL"])
                 self.assertEqual(argv[argv.index("--mmproj") + 1], selection["FARSIGHT_LLM_MMPROJ"])
             elif unit == "farsight-whisper.service":
