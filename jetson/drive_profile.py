@@ -174,8 +174,15 @@ class DriveProfile:
         biggest = max(abs(left), abs(right))
         if biggest > top:
             left, right = left * top / biggest, right * top / biggest
-        return (self._side_pwm(left, self.min_pwm_left, cap),
-                self._side_pwm(right, self.min_pwm_right, cap))
+        left_pwm = self._side_pwm(left, self.min_pwm_left, cap)
+        right_pwm = self._side_pwm(right, self.min_pwm_right, cap)
+        if left_pwm * right_pwm < 0:
+            # Opposed wheels (in-place turn, very tight arc) scrub: the straight-line floors
+            # stall under payload. Use at least the lowest PWM the calibration saw spin.
+            spin_floor = min(cap, int(self.angular_pwm[0]))
+            left_pwm = int(math.copysign(max(abs(left_pwm), spin_floor), left_pwm))
+            right_pwm = int(math.copysign(max(abs(right_pwm), spin_floor), right_pwm))
+        return left_pwm, right_pwm
 
     # -- forward model (PWM -> body velocity), used by tests and analysis ---
     def _wheel_speed(self, pwm, floor, gain):
