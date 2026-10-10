@@ -4,6 +4,7 @@ import { explainStop } from "./stop-reason.js";
 import { ControlSafety, stick } from "./control-safety.js";
 import { H264Viewer } from "./h264";
 import { cameraCrop, croppedBox } from "./camera-view.js";
+import { VRActionMenu, type VRAction } from "./vr-actions";
 import { drawDownMarker, linkHealth, poseSegments, strokeSegments } from "./pose-hud.js";
 import { AssistantVoice } from "./assistant-voice";
 import { askText } from "./ask-label.js";
@@ -33,7 +34,7 @@ export class RoverExperience {
   private sourceBanner: HTMLElement;
   private bannerCanvas = document.createElement("canvas");
   private bannerTexture = new THREE.CanvasTexture(this.bannerCanvas);
-  private bannerPanel = new THREE.Mesh(new THREE.PlaneGeometry(2.8, 0.35), new THREE.MeshBasicMaterial({ map: this.bannerTexture, transparent: true, toneMapped: false, depthTest: false }));
+  private bannerPanel = new THREE.Mesh(new THREE.PlaneGeometry(1.05, 0.15), new THREE.MeshBasicMaterial({ map: this.bannerTexture, transparent: true, toneMapped: false, depthTest: false }));
   private stopCanvas = document.createElement("canvas");
   private stopTexture = new THREE.CanvasTexture(this.stopCanvas);
   private stopPanel = new THREE.Mesh(new THREE.PlaneGeometry(2.8, 0.3), new THREE.MeshBasicMaterial({ map: this.stopTexture, transparent: true, toneMapped: false, depthTest: false }));
@@ -117,6 +118,11 @@ export class RoverExperience {
   private cameraTexture: THREE.CanvasTexture;
   private cameraMaterial: THREE.MeshBasicMaterial;
   private cockpit = new THREE.Group();
+  private cockpitUp = new THREE.Vector3(0, 1, 0);
+  private actionMenu = new VRActionMenu();
+  private pointer = new THREE.Mesh(new THREE.RingGeometry(0.008, 0.016, 20),
+    new THREE.MeshBasicMaterial({ color: 0x7fe8ff, depthTest: false, depthWrite: false }));
+  private hudPanel!: THREE.Mesh;
   private message: HTMLElement;
   private details: HTMLElement;
   private holdButton: HTMLButtonElement;
@@ -157,7 +163,7 @@ export class RoverExperience {
       <button id="rover-explore" aria-pressed="false">Explore (E)</button>
       <button id="rover-nav-cancel">Cancel nav (C)</button>
       <p id="rover-nav" class="rover-nav" role="status" hidden></p>
-      <p class="rover-help">Quest: hold right trigger + left stick. A: seek pointed person (else camera/map). B: explore. X: center pan. Y: scan. Left grip: start rescue drill. Map view: point at the floor, right grip sets a go-to goal; right stick click cancels nav.<span id="rover-voice-help" hidden> Hold left trigger: ask by voice (enable in Settings first).</span><br>Desktop: hold Space + WASD in camera view; click a person to seek; E explores; double-click the map floor for go-to, C cancels. Stick/WASD takes back control.</p>`;
+      <p class="rover-help">Quest: hold right trigger + left stick. A: camera/map. B: stop. X: recenter view. Y: actions menu. Point with the right controller and squeeze right grip to select an action or a person. Left grip: start rescue drill. Map view: point at the floor, right grip sets a go-to goal; right stick click cancels nav.<span id="rover-voice-help" hidden> Hold left trigger: ask by voice (enable in Settings first).</span><br>Desktop: hold Space + WASD in camera view; click a person to seek; E explores; double-click the map floor for go-to, C cancels. Stick/WASD takes back control.</p>`;
     document.querySelector("main")!.append(panel);
     this.sourceBanner = document.createElement("div");
     this.sourceBanner.className = "source-banner"; this.sourceBanner.setAttribute("role", "status");
@@ -197,22 +203,25 @@ export class RoverExperience {
     this.hudTexture.colorSpace = THREE.SRGBColorSpace;
     this.cameraMaterial = new THREE.MeshBasicMaterial({ map: this.cameraTexture, toneMapped: false, depthTest: false });
     const screen = new THREE.Mesh(new THREE.PlaneGeometry(2.8, 2.1), this.cameraMaterial);
-    screen.position.set(0, 0.15, -2.35); screen.renderOrder = 10;
+    screen.position.set(0, 0, -2.35); screen.renderOrder = 10;
     const hud = new THREE.Mesh(new THREE.PlaneGeometry(2.8, 0.60), new THREE.MeshBasicMaterial({ map: this.hudTexture, transparent: true, toneMapped: false, depthTest: false }));
-    hud.position.set(0, -1.10, -2.30); hud.renderOrder = 11;
+    this.hudPanel = hud;
+    hud.position.set(0, -1.23, -2.30); hud.renderOrder = 11;
     this.drillTexture.colorSpace = THREE.SRGBColorSpace;
     this.drillPanel.position.set(2.15, 0.15, -2.1); this.drillPanel.rotation.y = -0.35; this.drillPanel.renderOrder = 12; this.drillPanel.visible = false;
     document.querySelector("#full-camera")!.append(this.drillHud.canvas); this.drillHud.canvas.hidden = true;
     this.bannerCanvas.width = 1024; this.bannerCanvas.height = 128;
     this.bannerTexture.colorSpace = THREE.SRGBColorSpace;
-    this.bannerPanel.position.set(0, 1.45, -2.32); this.bannerPanel.renderOrder = 13;
+    this.bannerPanel.position.set(0, 1.10, -2.32); this.bannerPanel.renderOrder = 13;
     this.stopCanvas.width = 1024; this.stopCanvas.height = 110;
     this.stopTexture.colorSpace = THREE.SRGBColorSpace;
-    this.stopPanel.position.set(0, 1.09, -2.31); this.stopPanel.renderOrder = 13; this.stopPanel.visible = false;
+    this.stopPanel.position.set(0, -1.00, -2.31); this.stopPanel.renderOrder = 13; this.stopPanel.visible = false;
     this.voiceCanvas.width = 768; this.voiceCanvas.height = 512;
     this.voiceTexture.colorSpace = THREE.SRGBColorSpace;
     this.voicePanel.position.set(-2.15, 0.15, -2.1); this.voicePanel.rotation.y = 0.35; this.voicePanel.renderOrder = 12; this.voicePanel.visible = false;
-    this.cockpit.add(screen, hud, this.drillPanel, this.bannerPanel, this.stopPanel, this.voicePanel); this.cockpit.visible = false;
+    this.pointer.visible = false; this.pointer.renderOrder = 30;
+    this.cockpit.add(screen, hud, this.drillPanel, this.bannerPanel, this.stopPanel, this.voicePanel,
+      this.actionMenu.panel, this.pointer); this.cockpit.visible = false;
     this.cameraScreen = screen;
     this.scene.add(this.cockpit);
     this.h264 = new H264Viewer(() => {
@@ -228,7 +237,7 @@ export class RoverExperience {
       this.lastXRAt = -Infinity;
       this.rightSource = null; this.movementSource = null;
       this.inputValid = false; this.keys.clear(); this.pointerHeld = false;
-      this.recenter = true; this.xrLive = true; this.setView("camera");
+      this.recenter = true; this.xrLive = true; this.actionMenu.visible = false; this.setView("camera");
       this.renderer.xr.getSession()?.addEventListener("visibilitychange", () => {
         this.suspended = this.renderer.xr.getSession()?.visibilityState !== "visible";
         if (this.suspended) { this.voice?.stopListening("Headset inactive: voice question cancelled"); this.stop("Headset inactive: release trigger"); }
@@ -240,11 +249,12 @@ export class RoverExperience {
       this.lastXRAt = -Infinity;
       this.rightSource = null; this.movementSource = null;
       this.inputValid = false; this.keys.clear(); this.pointerHeld = false;
+      this.actionMenu.visible = false; this.pointer.visible = false;
     });
     this.renderer.domElement.addEventListener("webglcontextlost", () => { this.contextLost = true; this.stop("Display lost: release deadman"); });
     this.renderer.domElement.addEventListener("webglcontextrestored", () => { this.contextLost = false; this.stop("Display restored: release deadman"); });
     const cameraOption = document.createElement("label"); cameraOption.className = "camera-mount-option";
-    cameraOption.innerHTML = '<span>Camera mounting</span><select aria-label="Camera mounting mode"><option value="servo">Camera mounted on servo</option><option value="fixed">Fixed camera · digital look-around</option></select><small>Fixed mode crops measured pixels and keeps the physical pan command centered.</small>';
+    cameraOption.innerHTML = '<span>Camera mounting</span><select aria-label="Camera mounting mode"><option value="servo">Camera mounted on servo</option><option value="fixed">Fixed camera · full frame</option></select><small>Fixed mode shows the entire camera image and keeps the physical pan command centered.</small>';
     document.querySelector("#settings")!.append(cameraOption);
     this.mountSelect = cameraOption.querySelector("select")!;
     this.mountSelect.onchange = () => this.setMount(this.mountSelect.value === "fixed", true);
@@ -482,7 +492,7 @@ export class RoverExperience {
         const orientation = pose.transform.orientation, position = pose.transform.position;
         this.quat.set(orientation.x, orientation.y, orientation.z, orientation.w);
         this.position.set(position.x, position.y, position.z);
-        this.cockpit.position.copy(this.position); this.cockpit.quaternion.copy(this.quat);
+        if (this.recenter) this.anchorCockpit();
       }
       if (!tracked) {
         this.inputValid = false;
@@ -493,9 +503,10 @@ export class RoverExperience {
         this.lastXRAt = -Infinity;
         this.latchButtons();
         this.navOverlay.setReticle(null);
+        this.pointer.visible = false;
         // Keep the camera and stop reason visible when only a controller is lost.
         this.cockpit.visible = !!pose;
-        this.cameraScreen.visible = this.xrLive;
+        this.cameraScreen.visible = this.xrLive && !this.actionMenu.visible;
         this.paint(now);
         return;
       }
@@ -512,10 +523,16 @@ export class RoverExperience {
       // Free on the right controller: grip (squeeze) sets a go-to goal, thumbstick click cancels nav.
       const goal = !!right?.gamepad?.buttons[1]?.pressed;
       const cancel = !!right?.gamepad?.buttons[3]?.pressed;
-      const aim = this.xrLive ? null : this.aimFloor(frame, reference, right);
+      const aim = this.xrLive || this.actionMenu.visible ? null : this.aimFloor(frame, reference, right);
       this.navOverlay.setReticle(aim);
+      const menuAction = this.updatePointer(frame!, reference, right);
       if (goal && !this.goalDown) {
-        if (this.xrLive) this.noteNav("Go-to: press A for the map, point at the floor, then right grip");
+        if (this.actionMenu.visible) {
+          if (menuAction) this.chooseAction(menuAction);
+        } else if (this.xrLive) {
+          const point = this.panelPoint(frame, reference, right);
+          if (!point || !this.selectAt(point)) this.noteNav("Point at a person, then right grip to select Seek");
+        }
         else if (aim) void this.setGoal(aim);
         else this.noteNav("Go-to: point the right controller at the floor");
       }
@@ -528,24 +545,31 @@ export class RoverExperience {
       if (drill && !this.drillDown) void this.startDrill();
       this.drillDown = drill;
       if (toggle && !this.toggleDown) {
-        // A on a tracked person selects Seek; A anywhere else keeps the camera/map toggle.
-        const point = this.xrLive ? this.panelPoint(frame, reference, right) : null;
-        if (!point || !this.selectAt(point)) { this.xrLive = !this.xrLive; this.stop("View changed: release trigger"); this.setView(this.xrLive ? "camera" : "3d"); }
+        this.actionMenu.visible = false;
+        this.xrLive = !this.xrLive; this.stop("View changed: release trigger");
+        this.setView(this.xrLive ? "camera" : "3d");
       }
-      if (explore && !this.exploreDown && this.xrLive) this.toggleExplore();
-      if (center && !this.recenterDown) this.recenter = true;
+      if (explore && !this.exploreDown) {
+        this.actionMenu.visible = false; this.autonomy.clear();
+        this.stop("Stopped: release trigger");
+        if (navActive(this.nav)) void this.cancelNav("Stopped: navigation cancelled");
+      }
+      if (center && !this.recenterDown) { this.stop("View recentered: release trigger"); this.recenter = true; }
       this.toggleDown = toggle; this.exploreDown = explore; this.recenterDown = center;
       this.euler.setFromQuaternion(this.quat, "YXZ");
-      if (this.recenter && pose) { this.baseYaw = this.euler.y; this.recenter = false; this.panSmoother.reset(); }
+      if (this.recenter && pose) this.anchorCockpit();
       const yaw = Math.atan2(Math.sin(this.euler.y - this.baseYaw), Math.cos(this.euler.y - this.baseYaw));
-      this.inputValid = true;
+      this.inputValid = !this.actionMenu.visible;
       this.input = { held,
         v: -stick(axes.length >= 4 ? axes[3] : axes[1]) * 0.45,
         w: stick(axes.length >= 4 ? axes[2] : axes[0]) * 0.55,
-        pan: this.panSmoother.step(-THREE.MathUtils.radToDeg(yaw), this.panDt()) };
-      if (scan && !this.scanDown) void this.startScan();
+        pan: this.digitalPan ? 0 : this.panSmoother.step(-THREE.MathUtils.radToDeg(yaw), this.panDt()) };
+      if (scan && !this.scanDown) {
+        this.stop("Actions open: release trigger");
+        this.actionMenu.visible = !this.actionMenu.visible;
+        this.inputValid = !this.actionMenu.visible;
+      }
       this.scanDown = scan;
-      this.cockpit.position.copy(this.position); this.cockpit.quaternion.copy(this.quat);
     } else {
       this.inputValid = true;
       this.input = {
@@ -565,30 +589,61 @@ export class RoverExperience {
     this.navOverlay.group.visible = !(xr && this.xrLive);
     if (this.input.v || this.input.w) this.scanArmed = false;
     this.cockpit.visible = xr;
-    this.cameraScreen.visible = this.xrLive;
+    this.cameraScreen.visible = this.xrLive && !this.actionMenu.visible;
+    this.hudPanel.visible = this.xrLive && !this.actionMenu.visible;
+    this.stopPanel.visible = !!this.stopKey && this.xrLive && !this.actionMenu.visible;
     if (this.h264Enabled) {
       this.h264.update();
     }
-    if (this.digitalPan && Math.abs(this.input.pan - this.drawnPan) > 0.1) this.dirty = true;
     this.paint(now);
+  }
+  /** A level screen anchored on entry/recenter, so looking around works naturally. */
+  private anchorCockpit() {
+    this.euler.setFromQuaternion(this.quat, "YXZ");
+    this.baseYaw = this.euler.y;
+    this.cockpit.position.copy(this.position);
+    this.cockpit.quaternion.setFromAxisAngle(this.cockpitUp, this.baseYaw);
+    this.panSmoother.reset(); this.recenter = false;
+  }
+  private updatePointer(frame: XRFrame, reference: XRReferenceSpace | null, right: XRInputSource | undefined) {
+    if (!this.aimRay(frame, reference, right)) {
+      this.pointer.visible = false; this.actionMenu.hover(null); return null;
+    }
+    this.cockpit.updateMatrixWorld(true);
+    const panel = this.actionMenu.visible ? this.actionMenu.panel : this.xrLive ? this.cameraScreen : null;
+    const hit = panel ? this.raycaster.intersectObject(panel, false)[0] : undefined;
+    this.pointer.visible = !!hit;
+    if (hit) { this.pointer.position.copy(this.cockpit.worldToLocal(hit.point.clone())); this.pointer.position.z += .015; }
+    const action = this.actionMenu.hit(hit?.uv); this.actionMenu.hover(action);
+    return action;
+  }
+  private chooseAction(action: VRAction) {
+    this.actionMenu.visible = false;
+    this.stop("Action selected: release trigger");
+    if (action === "explore") this.toggleExplore();
+    else if (action === "scan") {
+      this.autonomy.clear(); this.scanArmed = true;
+      this.scanMessage = "Scan armed: center the stick, then hold the right trigger";
+    } else if (action === "drill") void this.startDrill();
   }
   /** Every canvas repaint is a texture upload; spread camera, HUD and banner over separate frames.
    * Liveness and freshness timing are unchanged: the camera still repaints first, every frame it is due. */
   private paint(now: number) {
-    let painted = (this.dirty || now - this.lastCanvasDraw > 100) && this.drawCamera(now) ? 1 : 0;
+    let painted = (!this.renderer.xr.isPresenting || (this.xrLive && !this.actionMenu.visible)) &&
+      (this.dirty || now - this.lastCanvasDraw > 100) && this.drawCamera(now) ? 1 : 0;
     // An overdue HUD draws anyway, so a moving digital-pan crop cannot starve it.
     if (now - this.lastHudAt > (painted ? 200 : 100)) { this.drawHUD(now); this.lastHudAt = now; painted++; }
     if (this.bannerPending && (!painted || now - this.bannerPending.at > 100)) this.drawBanner();
   }
   /** Controller ray (or head gaze) onto the camera panel, in canvas-normalized coordinates. */
   private panelPoint(frame: XRFrame | undefined, reference: XRReferenceSpace | null, right: XRInputSource | undefined) {
-    this.aimRay(frame, reference, right);
+    if (!this.aimRay(frame, reference, right)) return null;
     this.cockpit.updateMatrixWorld(true);
     return rayPanelPoint(this.raycaster.intersectObject(this.cameraScreen, false)[0]?.uv ?? null);
   }
   /** Controller ray (or head gaze) onto the map floor, in map {x, z}. */
   private aimFloor(frame: XRFrame | undefined, reference: XRReferenceSpace | null, right: XRInputSource | undefined) {
-    this.aimRay(frame, reference, right);
+    if (!this.aimRay(frame, reference, right)) return null;
     return this.mapFloorPoint();
   }
   /** Where the raycaster's ray meets the nav layer's floor (y = 0 in map coordinates). */
@@ -607,9 +662,11 @@ export class RoverExperience {
       const o = ray.transform.orientation, p = ray.transform.position;
       this.raycaster.ray.origin.set(p.x, p.y, p.z);
       this.raycaster.ray.direction.set(0, 0, -1).applyQuaternion(new THREE.Quaternion(o.x, o.y, o.z, o.w));
+      return true;
     } else {
       this.raycaster.ray.origin.copy(this.position);
       this.raycaster.ray.direction.set(0, 0, -1).applyQuaternion(this.quat);
+      return false;
     }
   }
   private selectAt(point: { x: number; y: number }) {
@@ -647,6 +704,15 @@ export class RoverExperience {
   }
   private noteNav(message: string) { this.navMessage = message; this.navMessageAt = performance.now(); this.dirty = true; }
   get navLayer() { return this.navOverlay.group; }
+  placeMapOverview(group: THREE.Group, center: THREE.Vector3, span: number) {
+    if (!this.renderer.xr.isPresenting) {
+      group.position.set(0, 0, 0); group.quaternion.identity(); group.scale.setScalar(1); return;
+    }
+    const scale = Math.min(.35, 2.6 / Math.max(span, 2));
+    group.scale.setScalar(scale); group.quaternion.copy(this.cockpit.quaternion);
+    group.position.set(-center.x * scale, -.65, -2.65 - center.z * scale)
+      .applyQuaternion(this.cockpit.quaternion).add(this.cockpit.position);
+  }
   private toggleExplore() {
     if (this.scanning || this.scanPending) this.stop("Scan cancelled: Explore selected");
     this.autonomy.toggleExplore(); this.dirty = true;
@@ -673,7 +739,7 @@ export class RoverExperience {
   private pump() {
     const now = performance.now();
     const connected = this.socket?.readyState === WebSocket.OPEN;
-    const contextActive = this.renderer.xr.isPresenting ? this.xrLive && !this.suspended : this.getView() === "camera" && !document.querySelector("dialog[open]");
+    const contextActive = this.renderer.xr.isPresenting ? this.xrLive && !this.actionMenu.visible && !this.suspended : this.getView() === "camera" && !document.querySelector("dialog[open]");
     const available = this.inputValid && contextActive && !document.hidden && !this.contextLost && now - this.lastCanvasDraw < 250;
     // No motion while the microphone is requested or open; release is required afterwards.
     if (this.voice?.capturing) this.gate.invalidate("Voice question: release trigger");
@@ -810,7 +876,9 @@ export class RoverExperience {
       context.textAlign = "left";
     }
     this.drawnPan = this.input.pan;
-    this.cameraScreen.scale.y = (this.canvas.height / this.canvas.width) / 0.75;
+    const aspect = this.canvas.width / this.canvas.height;
+    const width = Math.min(3, 1.9 * aspect), height = width / aspect;
+    this.cameraScreen.scale.x = width / 2.8; this.cameraScreen.scale.y = height / 2.1;
     this.cameraTexture.needsUpdate = true; this.dirty = false;
     return true;
   }
@@ -892,7 +960,7 @@ export class RoverExperience {
     this.navStatus.dataset.state = this.nav?.state ?? "none";
     this.navStatus.dataset.backend = this.nav?.backend ?? "none";
     this.navStatus.dataset.pathPoints = String(this.navOverlay.path.visible ? this.navOverlay.path.userData.points : 0);
-    const panMode = `${this.digitalPan ? "Fixed mount · digital pan" : "Servo mount · pan"} ${Math.round(this.input.pan)}°`;
+    const panMode = this.digitalPan ? "Fixed camera · full frame" : `Servo pan ${Math.round(this.input.pan)}°`;
     const detail = `${link.text} · ${this.frameSource} · ${panMode} · ${this.h264Enabled ? "H.264" : "JPEG"} video ${age} · ${ack} · ${range} · ${detection}${drill ? " · " + drill : ""}${this.h264Enabled && !this.h264.displayedFrame ? " · " + this.h264.state : ""} · ${this.scanMessage}`;
     this.message.textContent = headline;
     this.message.dataset.state = moving ? "moving" : ready ? "unsafe" : "ready";
@@ -917,16 +985,13 @@ export class RoverExperience {
     c.fillStyle = simulation ? "#ffc779" : ready ? "#ffb3a8" : "#a6edc4";
     c.font = "bold 32px system-ui"; c.fillText(headline.slice(0, 58), 28, 46);
     c.font = "24px system-ui"; c.fillStyle = "#dce5ee";
-    c.fillText(`${this.h264Enabled ? "H.264" : "JPEG"} video ${age} · ${range} · ${panMode}`, 28, 90);
-    c.font = "bold 24px system-ui"; c.textAlign = "right"; c.fillStyle = link.color;
-    c.fillText(link.text, this.hudCanvas.width - 28, 90); c.textAlign = "left";
-    c.font = "24px system-ui"; c.fillStyle = "#dce5ee";
-    c.fillText(`${ack} · ${detection}${this.status?.estop ? " · FORWARD BLOCKED" : ""}`, 28, 126);
-    if (drill || autonomy || navText) { c.font = "18px system-ui"; c.fillText([autonomy, navText, drill].filter(Boolean).join(" · ").slice(0, 110), 28, 150); }
-    const hint = "R trigger: deadman · Stick: drive · A: seek/map · B: explore · X: center · Y: scan · L grip: drill · R grip: go-to (map) · R stick: cancel nav" + (this.voice?.voiceAvailable ? " · L trigger: ask" : "");
-    for (const size of [22, 18, 16, 14]) { c.font = `${size}px system-ui`; if (c.measureText(hint).width <= this.hudCanvas.width - 56) break; }
-    c.fillText(hint, 28, 170);
-    c.fillText(this.scanMessage.slice(0, 84), 28, 202);
+    c.font = "32px system-ui"; c.fillStyle = "#f3f9fc";
+    c.fillText("Hold RIGHT TRIGGER + LEFT STICK to drive", 28, 94);
+    c.font = "30px system-ui"; c.fillStyle = "#ffb3a8";
+    c.fillText("B  STOP", 28, 143);
+    c.fillStyle = "#bde2f6"; c.fillText("A  Camera / Map    X  Recenter    Y  Actions", 210, 143);
+    c.font = "25px system-ui"; c.fillStyle = link.color;
+    c.fillText(`${link.text} · video ${age}${autonomy ? " · " + autonomy : ""}`, 28, 191);
     this.hudTexture.needsUpdate = true;
   }
 
@@ -947,8 +1012,9 @@ export class RoverExperience {
     const c = this.bannerCanvas.getContext("2d")!;
     c.clearRect(0, 0, 1024, 128); c.fillStyle = colors[0]; c.fillRect(0, 0, 1024, 128);
     c.strokeStyle = colors[1]; c.lineWidth = 6; c.strokeRect(3, 3, 1018, 122);
-    c.fillStyle = colors[1]; c.font = "bold 54px system-ui"; c.fillText(source.title, 28, 62);
-    c.font = "26px system-ui"; c.fillText(source.detail.slice(0, 72), 28, 106);
+    c.fillStyle = colors[1]; c.font = "bold 74px system-ui"; c.textAlign = "center";
+    c.fillText(source.kind === "SIMULATED" ? "SIMULATED FEED" : source.kind === "LIVE" ? "LIVE CAMERA" : source.kind, 512, 89);
+    c.textAlign = "start";
     this.bannerTexture.needsUpdate = true;
   }
   /** Why motion stopped and the one action that recovers it, under the source banner. */
@@ -957,7 +1023,7 @@ export class RoverExperience {
     if (key === this.stopKey) return;
     this.stopKey = key;
     const line = this.sourceBanner.querySelector<HTMLElement>(".stop-reason")!;
-    line.hidden = !stop; this.stopPanel.visible = !!stop;
+    line.hidden = !stop; this.stopPanel.visible = !!stop && this.xrLive && !this.actionMenu.visible;
     if (!stop) return;
     line.dataset.tone = stop.tone;
     line.querySelector("b")!.textContent = stop.cause;
@@ -1136,6 +1202,7 @@ export class RoverExperience {
     document.removeEventListener("keydown", this.escapeStop);
     this.cameraTexture.dispose(); this.hudTexture.dispose(); this.drillTexture.dispose(); this.drillHud.canvas.remove();
     this.bannerTexture.dispose(); this.stopTexture.dispose(); this.voiceTexture.dispose(); this.sourceBanner.remove();
+    this.actionMenu.dispose(); this.pointer.geometry.dispose(); this.pointer.material.dispose();
   }
 }
 

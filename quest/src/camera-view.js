@@ -1,16 +1,8 @@
-/** A fixed camera can only look within its measured frame: never invent pixels. */
+/** Preserve the whole measured frame. Head movement never invents or crops a view. */
 export function cameraCrop(width, height, pan, digital = false) {
   if (![width, height, pan].every(Number.isFinite) || width <= 0 || height <= 0)
     throw new Error("Invalid camera crop geometry");
-  if (!digital) return { x: 0, y: 0, width, height };
-  const croppedWidth = width * 0.7;
-  const croppedHeight = height * 0.7;
-  const yaw = Math.max(-80, Math.min(80, pan)) / 80;
-  return {
-    x: (width - croppedWidth) * (yaw + 1) / 2,
-    y: (height - croppedHeight) / 2,
-    width: croppedWidth, height: croppedHeight,
-  };
+  return { x: 0, y: 0, width, height };
 }
 
 /** Clip observed normalized boxes to the chosen measured crop. */

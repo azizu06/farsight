@@ -112,8 +112,10 @@ Press **Enter VR**. With the car lifted or otherwise unable to travel:
 3. Hold the trigger and move the left stick: check the wheel direction for
    forward, reverse and both turns. Calibrate starting PWM on the real car
    ([rover/README.md](../rover/README.md)).
-4. Turn your head: servo pan follows (or the digital crop moves). Left X
-   recenters.
+4. Turn your head: the screen stays anchored. Servo pan follows only in servo
+   mode; fixed mode retains the whole frame. Left X recenters. Check A switches
+   camera/map, B stops, and Y opens the actions menu. Point and squeeze right
+   grip to select a highlighted action; the menu must block driving.
 5. Hold the left trigger to ask by voice; release to send.
 6. Take the headset off for a few seconds: motion stops and requires a release
    when you return.

@@ -43,6 +43,7 @@ app.innerHTML = `
     <div class="view-label" id="view-label">User Perspective</div>
     <div class="cloud-status" id="cloud-status" role="status" aria-live="off">Connecting to mapper…</div>
     <button class="settings-toggle" id="settings-toggle" title="Settings (Escape)" aria-label="Open viewer settings">Settings</button>
+    <div id="xr-slot" class="xr-launch"></div>
     <p class="navigation-hint" id="navigation-help">
       <span><b>Right drag</b> Orbit</span><span><b>Left drag</b> Pan</span><span><b>Scroll</b> Zoom</span>
       <span><b>Double-click floor</b> Go-to</span><span><b>F</b> Frame scan</span><span><b>P</b> Points / hybrid</span><span><b>Home</b> Reset view</span><span><b>Esc</b> Settings</span>
@@ -73,7 +74,6 @@ app.innerHTML = `
       <div><dt>Skipped / rejected</dt><dd id="dropped">0 / 0</dd></div>
       <div><dt>Session / epoch</dt><dd id="session-id">—</dd></div>
     </dl>
-    <div id="xr-slot"></div>
     <button id="reset" class="reset">Clear scan…</button>
     <p class="panel-note" id="panel-note">Observed RGB-D geometry. Unobserved space stays empty.</p>
   </dialog>
@@ -245,6 +245,7 @@ marker.visible = false;
 const xrButton = VRButton.createButton(renderer);
 xrButton.removeAttribute("style");
 $("xr-slot").append(xrButton);
+// Prepare shader programs before the headset enters or changes to the map.
 const desktopPosition = new THREE.Vector3(),
   desktopQuaternion = new THREE.Quaternion();
 renderer.xr.addEventListener("sessionstart", () => {
@@ -268,6 +269,8 @@ new ResizeObserver(() => {
 }).observe($("scene"));
 let rover: RoverExperience | undefined;
 let diagnostics: DiagnosticsOverlay | undefined;
+const vrMapCenter = new THREE.Vector3(), vrMapSize = new THREE.Vector3();
+let vrMapSpan = 4;
 renderer.setAnimationLoop((_time, frame) => {
   const start = performance.now();
   rover?.update(start, frame);
@@ -278,6 +281,15 @@ renderer.setAnimationLoop((_time, frame) => {
     syncMapConnection();
   }
   root.visible = !rover?.vrCameraView;
+  rover?.placeMapOverview(root, vrMapCenter, vrMapSpan);
+  if (renderer.xr.isPresenting) {
+    grid.scale.setScalar(Math.max(vrMapSpan, 4) / 2000);
+    grid.position.x = vrMapCenter.x; grid.position.z = vrMapCenter.z;
+    renderer.setClearColor(0x080f16);
+  } else {
+    grid.scale.setScalar(1); grid.position.x = grid.position.z = 0;
+    renderer.setClearColor(0x393939);
+  }
   if (!renderer.xr.isPresenting) controls.update();
   renderer.render(scene, camera);
   diagnostics?.frame(start, performance.now() - start, renderer.xr.isPresenting);
@@ -287,6 +299,7 @@ rover = new RoverExperience(renderer, scene, camera, () => view, setView);
 root.add(rover.navLayer);
 diagnostics = new DiagnosticsOverlay(() => rover!.diagnostics());
 rover.addCockpitPanel(diagnostics.panel);
+void renderer.compileAsync(scene, camera).catch(() => {});
 setView(new URLSearchParams(location.search).get("view") === "map" ? "3d" : "camera");
 
 function replaceGeometry(
@@ -302,6 +315,12 @@ function replaceGeometry(
   geometry.setAttribute("color", new THREE.BufferAttribute(data.colors, 3));
   if (indices) geometry.setIndex(new THREE.BufferAttribute(indices, 1));
   geometry.computeBoundingSphere();
+  if (object === cloud) {
+    geometry.computeBoundingBox();
+    geometry.boundingBox?.getCenter(vrMapCenter);
+    geometry.boundingBox?.getSize(vrMapSize);
+    vrMapSpan = Math.max(vrMapSize.x, vrMapSize.z, 4);
+  }
   object.geometry.dispose();
   object.geometry = geometry;
 }
@@ -450,7 +469,7 @@ function acceptStatus(next: Status) {
     replaceGeometry(surfaces, emptyGeometry());
   }
   status = next;
-  if (!scanMarkers.parent) scene.add(scanMarkers);
+  if (!scanMarkers.parent) root.add(scanMarkers);
   const markers = (next.scan?.markers ?? []).slice(0, 500);
   if (scanMarkers.userData.revision !== next.revision) {
     scanMarkers.geometry.dispose();

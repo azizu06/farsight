@@ -22,10 +22,12 @@ Do not confuse an old server already on that port with a freshly launched demo.
   the right controller is present, its thumbstick works instead. Release the
   trigger to stop. Forward speed is capped at 45% of the server's PWM ceiling;
   calibrate that ceiling on the actual car so motor stiction does not prevent motion.
-- Turn your head to pan. Right A selects the person under the controller ray for
-  Seek, or otherwise toggles live camera / map. Right B toggles Explore. Left X
-  centers the pan, left Y (with the trigger held) starts a scan, and left grip
-  starts the rescue drill. A view change stops driving and requires a release.
+- Right A always switches camera/map. Right B stops and cancels navigation.
+  Left X recenters the anchored view. Left Y opens the actions menu; point the
+  right controller and squeeze its grip to select Explore, Scan or Drill. The
+  menu stops driving. In camera view, right grip selects a pointed person for
+  Seek. Release and press the trigger after changing views or selecting an action.
+  Head turns command pan only with a servo mount; fixed mode shows the full frame.
 - Voice controls appear only when the rover's `/health` reports `assistant.whisper`;
   otherwise they stay hidden and the left trigger only confirms a pending proposal.
   With a Whisper model, hold the left trigger to ask the local assistant by voice;
@@ -81,7 +83,8 @@ Do not confuse an old server already on that port with a freshly launched demo.
 - In settings, select the camera mounting. Servo mode shows the full frame and
   sends head yaw as physical pan; the server and Uno block forward driving while
   pan is more than 10° off center. Fixed-camera mode keeps physical pan at zero
-  and moves a 70% crop inside the measured image. It cannot see beyond that image.
+  and shows the entire measured image with its original aspect ratio. The screen
+  stays anchored when you turn your head; X recenters it.
   The HUD names the mount and video format. A mode change requires a new deadman press.
 - Mount, H.264, in-VR voice and diagnostics are saved in `localStorage` and can be
   deep-linked: `?mount=fixed|servo&h264=0|1&voice=0|1&diag=0|1`. A query value
@@ -164,7 +167,7 @@ These are required physical checks; desktop tests do not prove them.
    controller off and on, and hold Y through the loss: the rover stays stopped,
    the camera stays visible, and nothing acts until each control is released.
 6. Test camera/map switching and both mounting modes. In fixed-camera mode, the
-   physical pan must remain centered and detections must follow the cropped image.
+   physical pan must remain centered and detections must follow the full image.
 7. Test H.264 on the actual headset under the actual cellular path. Observe video
    age and control acknowledgment delay; do not increase the freshness limits to
    hide stalls. Retain JPEG as the compatibility fallback.
