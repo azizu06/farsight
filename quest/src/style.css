@@ -425,3 +425,11 @@ canvas:focus-visible {
 .source-banner .stop-reason em { display: block; font-size: 14px; font-style: normal; color: #fff; }
 .source-banner .stop-reason em::before { content: "→ "; }
 @media (max-width: 760px) { .source-banner { top: 58px; } .source-banner strong { font-size: 20px; } }
+.diagnostics {
+  position: absolute; right: 18px; bottom: 18px; z-index: 6; margin: 0; padding: 8px 10px; pointer-events: none;
+  border: 1px solid #506177; border-radius: 6px; background: #111b25e6; color: #dce5ee;
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre;
+}
+.diagnostics[data-tone="ok"] { border-color: #4f8a66; }
+.diagnostics[data-tone="warn"] { border-color: #b8913a; }
+.diagnostics[data-tone="bad"] { border-color: #be7569; }

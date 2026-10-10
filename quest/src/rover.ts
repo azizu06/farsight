@@ -31,6 +31,9 @@ export class RoverExperience {
   private stopTexture = new THREE.CanvasTexture(this.stopCanvas);
   private stopPanel = new THREE.Mesh(new THREE.PlaneGeometry(2.8, 0.3), new THREE.MeshBasicMaterial({ map: this.stopTexture, transparent: true, toneMapped: false, depthTest: false }));
   private stopKey = "";
+  private hudKey = "";
+  private bannerKey = "";
+  private bannerPending: { source: ReturnType<SourceTruth["state"]>; at: number } | null = null;
   private voiceCanvas = document.createElement("canvas");
   private voiceTexture = new THREE.CanvasTexture(this.voiceCanvas);
   private voicePanel = new THREE.Mesh(new THREE.PlaneGeometry(1.2, 0.8), new THREE.MeshBasicMaterial({ map: this.voiceTexture, transparent: true, toneMapped: false, depthTest: false }));
@@ -56,6 +59,7 @@ export class RoverExperience {
   private seq = 0;
   private sent = new Map<number, number>();
   private ackMs: number | null = null;
+  private decodeMs: number | null = null;
   private drillHud = new DrillHud();
   private drillTexture = new THREE.CanvasTexture(this.drillHud.canvas);
   private drillPanel = new THREE.Mesh(new THREE.PlaneGeometry(1.2, 1.2), new THREE.MeshBasicMaterial({ map: this.drillTexture, transparent: true, toneMapped: false, depthTest: false }));
@@ -326,8 +330,10 @@ export class RoverExperience {
       if (blob.size > 2_000_000 || !blob.type.startsWith("image/")) throw new Error("Invalid camera image");
       url = URL.createObjectURL(blob);
       const image = new Image(); image.src = url;
+      const decodeStart = performance.now();
       await image.decode();
       const now = performance.now();
+      this.decodeMs = now - decodeStart;
       if (this.stopped || controller.signal.aborted || this.h264Enabled) return;
       this.frame = image; this.frameSource = source;
       this.frameId = id ?? "";
@@ -383,8 +389,7 @@ export class RoverExperience {
         // Keep the camera and stop reason visible when only a controller is lost.
         this.cockpit.visible = !!pose;
         this.cameraScreen.visible = this.xrLive;
-        if (this.dirty || now - this.lastCanvasDraw > 100) this.drawCamera(now);
-        if (now - this.lastHudAt > 100) { this.drawHUD(now); this.lastHudAt = now; }
+        this.paint(now);
         return;
       }
       this.lastXRAt = now;
@@ -439,8 +444,15 @@ export class RoverExperience {
       this.h264.update();
     }
     if (this.digitalPan && Math.abs(this.input.pan - this.drawnPan) > 0.1) this.dirty = true;
-    if (this.dirty || now - this.lastCanvasDraw > 100) this.drawCamera(now);
-    if (now - this.lastHudAt > 100) { this.drawHUD(now); this.lastHudAt = now; }
+    this.paint(now);
+  }
+  /** Every canvas repaint is a texture upload; spread camera, HUD and banner over separate frames.
+   * Liveness and freshness timing are unchanged: the camera still repaints first, every frame it is due. */
+  private paint(now: number) {
+    let painted = (this.dirty || now - this.lastCanvasDraw > 100) && this.drawCamera(now) ? 1 : 0;
+    // An overdue HUD draws anyway, so a moving digital-pan crop cannot starve it.
+    if (now - this.lastHudAt > (painted ? 200 : 100)) { this.drawHUD(now); this.lastHudAt = now; painted++; }
+    if (this.bannerPending && (!painted || now - this.bannerPending.at > 100)) this.drawBanner();
   }
   /** Controller ray (or head gaze) onto the camera panel, in canvas-normalized coordinates. */
   private panelPoint(frame: XRFrame | undefined, reference: XRReferenceSpace | null, right: XRInputSource | undefined) {
@@ -478,6 +490,15 @@ export class RoverExperience {
   get vrCameraView() { return this.renderer.xr.isPresenting && this.xrLive; }
   get deadmanHeld() { return this.input.held; }
   get videoStreaming() { return this.h264Enabled; }
+  /** Head-locked panel beside the camera, e.g. the diagnostics overlay. */
+  addCockpitPanel(panel: THREE.Object3D) { this.cockpit.add(panel); }
+  /** Read-only figures for the diagnostics overlay. */
+  diagnostics() {
+    const now = performance.now();
+    return { source: this.sourceTruth.state({ now, frameSource: this.frameSource, frameId: this.frameId, videoAgeMs: this.gate.videoAge(now) }).kind,
+      video: this.h264Enabled ? "H.264" : "JPEG", videoAgeMs: this.gate.videoAge(now),
+      decodeMs: this.h264Enabled ? this.h264.decodeMs : this.decodeMs, ackMs: this.ackMs, linkMs: this.status?.link_ms, xr: this.renderer.xr.isPresenting };
+  }
 
   private pump() {
     const now = performance.now();
@@ -569,7 +590,7 @@ export class RoverExperience {
       // Metadata can be ahead of presentation. Retain the validated canvas
       // and its boxes until the decoder confirms the next displayed identity.
       // Keep dirty so the next RAF retries; retained pixels never renew age.
-      if (!decoded) return;
+      if (!decoded) return false;
       const video = this.h264.video;
       this.resizeCameraCanvas(video.videoWidth, video.videoHeight);
       const crop = cameraCrop(video.videoWidth, video.videoHeight, this.input.pan, this.digitalPan);
@@ -602,6 +623,7 @@ export class RoverExperience {
     this.drawnPan = this.input.pan;
     this.cameraScreen.scale.y = (this.canvas.height / this.canvas.width) / 0.75;
     this.cameraTexture.needsUpdate = true; this.dirty = false;
+    return true;
   }
   /** Nearest same-source packet within a few frames of the displayed one; see detection-match.js. */
   private matchingDetections(now: number): { packet: Detections; lag: number; alpha: number } | null {
@@ -683,6 +705,18 @@ export class RoverExperience {
     const exploreButton = document.querySelector<HTMLButtonElement>("#rover-explore");
     exploreButton?.setAttribute("aria-pressed", String(this.autonomy.mode === "explore"));
     this.holdButton.classList.toggle("engaged", moving);
+    this.drawSource(source, now);
+    this.drawStop(explainStop({ unsafe: ready, reason: this.gate.reason, latched: this.gate.needsRelease, cause: this.gate.cause, status: this.status,
+      xr: this.renderer.xr.isPresenting, held: this.input.held, autonomyArmed: this.autonomy.mode !== "teleop",
+      detectorStale: !this.detections || now - this.detectionsAt > 500 }));
+    this.drawVoice();
+    const drawn = this.drillHud.draw(now);
+    this.drillPanel.visible = drawn; this.drillHud.canvas.hidden = !drawn;
+    if (drawn) this.drillTexture.needsUpdate = true;
+    // Identical HUD text needs no repaint or texture upload.
+    const hudKey = [simulation, ready, headline, age, range, panMode, link.text, link.color, ack, detection, this.status?.estop, drill, autonomy, this.scanMessage, this.h264Enabled].join("|");
+    if (hudKey === this.hudKey) return;
+    this.hudKey = hudKey;
     const c = this.hudContext;
     c.clearRect(0, 0, 1024, 220); c.fillStyle = "#111b25ee"; c.fillRect(0, 0, 1024, 220);
     c.fillStyle = simulation ? "#ffc779" : ready ? "#ffb3a8" : "#a6edc4";
@@ -700,21 +734,22 @@ export class RoverExperience {
     c.fillText(hint, 28, 170);
     c.fillText(this.scanMessage.slice(0, 84), 28, 202);
     this.hudTexture.needsUpdate = true;
-    this.drawSource(source);
-    this.drawStop(explainStop({ unsafe: ready, reason: this.gate.reason, latched: this.gate.needsRelease, cause: this.gate.cause, status: this.status,
-      xr: this.renderer.xr.isPresenting, held: this.input.held, autonomyArmed: this.autonomy.mode !== "teleop",
-      detectorStale: !this.detections || now - this.detectionsAt > 500 }));
-    this.drawVoice();
-    const drawn = this.drillHud.draw(now);
-    this.drillPanel.visible = drawn; this.drillHud.canvas.hidden = !drawn;
-    if (drawn) this.drillTexture.needsUpdate = true;
   }
 
-  private drawSource(source: ReturnType<SourceTruth["state"]>) {
-    const colors = { LIVE: ["#14532d", "#bbf7d0"], SIMULATED: ["#7c4a03", "#ffe3a3"], REPLAY: ["#4c1d95", "#e9d5ff"], UNVERIFIED: ["#5b1f1f", "#ffd2ca"] }[source.kind];
+  private drawSource(source: ReturnType<SourceTruth["state"]>, now: number) {
     this.sourceBanner.dataset.kind = source.kind;
     this.sourceBanner.querySelector("strong")!.textContent = source.title;
     this.sourceBanner.querySelector("span")!.textContent = source.detail;
+    // The headset banner repaints on a later frame than the HUD (see paint), and only when its text changed.
+    const key = `${source.kind}|${source.title}|${source.detail.slice(0, 72)}`;
+    if (key === this.bannerKey) { this.bannerPending = null; return; }
+    if (!this.bannerPending) this.bannerPending = { source, at: now }; else this.bannerPending.source = source;
+  }
+  private drawBanner() {
+    const source = this.bannerPending!.source;
+    this.bannerPending = null;
+    this.bannerKey = `${source.kind}|${source.title}|${source.detail.slice(0, 72)}`;
+    const colors = { LIVE: ["#14532d", "#bbf7d0"], SIMULATED: ["#7c4a03", "#ffe3a3"], REPLAY: ["#4c1d95", "#e9d5ff"], UNVERIFIED: ["#5b1f1f", "#ffd2ca"] }[source.kind];
     const c = this.bannerCanvas.getContext("2d")!;
     c.clearRect(0, 0, 1024, 128); c.fillStyle = colors[0]; c.fillRect(0, 0, 1024, 128);
     c.strokeStyle = colors[1]; c.lineWidth = 6; c.strokeRect(3, 3, 1018, 122);
