@@ -28,21 +28,28 @@ ros2 launch farsight_nav nav.launch.py                 # or the farsight-nav sys
     `goto` heartbeats drive it. A goal posted while stopped (deadman not held) is
     staged and waits for a new press.
   - **Explore:** the bridge finds frontiers (free cells next to unknown space,
-    8-connected clusters of at least 30 cm) on the global costmap every second and
+    8-connected clusters of at least 30 cm) on the global costmap every 0.5 s and
     scores observed wide approaches, visible unknown area, frontier size,
     heading, thin clutter and decaying path revisits. Goals stay in known free
     space, one footprint short of the unseen boundary. A candidate must support
     a 0.36 m wide goal (any gap the ~0.35 m body fits through) and final 1.2 m
     approach; if none does, a relaxed pass accepts a 0.36 m corridor with a
-    0.6 m approach. Nav2 plans the full route. The
+    0.6 m approach. If both reject every frontier (common in a real room, where
+    the approach is still unknown), Nav2 gets the nearest broad frontier anyway
+    and plans through unknown; that goal is kept while it lasts. On the
+    2026-10-10 floor run without this fallback, 73% of a 3-minute Explore had
+    22-25 frontiers but "no reachable frontier", and the rover spent most of it
+    scanning in place. Nav2 plans the full route. The
     current broad direction is held for at least 2 s and changes only for a
     score improvement of 0.8, unless its approach becomes unsafe or disappears.
     Within 0.6 m it selects the next patch before the current goal completes.
     A frontier is skipped for 30 s, and the next one picked at once, when Nav2
     aborts or rejects it, starts a recovery on it, gets no 0.3 m closer for 3 s,
-    or has not reached it in 15 s.
+    or has not reached it in 15 s. When the rover stays within 0.4 m for 8 s
+    (spinning, dithering or pushing), the current frontier is skipped and the
+    next goal must lie at least 1.5 m from that spot for 6 s.
     Explore never ends on its own (captain's order, 2026-10-10). Planning gaps,
-    and stretches with no reachable frontier at all, creep along the most open
+    and stretches with no frontier at all, creep along the most open
     measured arc; with no open arc it turns in place to look, restarting after
     each full turn, and re-scores frontiers every 0.5 s. A detected
     person never switches Explore to Seek: people are moving obstacles in the
@@ -59,7 +66,9 @@ ros2 launch farsight_nav nav.launch.py                 # or the farsight-nav sys
     the body disc makes it back straight off (at most 0.35 m, only over floor
     the costmap has seen or the rover has driven), then turn away from it.
     The fallback selects the widest supported gentle arc at 0.25 m/s, or turns
-    in place at 0.82 rad/s; it never stands still waiting for Nav2 (captain,
+    in place at 1.8 rad/s (about PWM 95 per side; at 0.82 rad/s the skid-steer
+    sat at L75/R60, just above the floors, and stalled under payload); it never
+    stands still waiting for Nav2 (captain,
     2026-10-10). Only a stale pose, depth or costmap stops it. Server deadman, B/STOP, the lease
     (link-loss stop) and the Nav2 sensor gate still apply; the
     `/ws/nav` and viewer status contracts are unchanged.
@@ -157,7 +166,7 @@ the goal.
 - **Planner:** `SmacPlanner2D`, `allow_unknown` (goals are often in unseen space),
   0.25 m tolerance.
 - **Controller:** Regulated Pure Pursuit by default (20 Hz, 0.70 m/s, 0.2-0.5 m
-  speed-scaled lookahead, rotate to heading), or MPPI
+  speed-scaled lookahead, rotate in place only beyond 1.0 rad, otherwise arc), or MPPI
   with `controller:=mppi` (1000 samples, 2 s horizon, `vx_max` 0.70 m/s, `wz_max`
   2.5 rad/s). These suit `FARSIGHT_AUTONOMY_MAX_PWM=200` on the 2026-10-10 drive
   profile (0.74 m/s, 3.8 rad/s); no cost-regulated slow zone near obstacles and

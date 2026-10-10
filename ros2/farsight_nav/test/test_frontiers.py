@@ -208,3 +208,16 @@ def test_blacklist_and_release_drop_retained_waypoints():
     assert chooser.choose([edge], (2.05, 4.05, 0), grid, 0.1, (0, 0), now=2) is not None
     chooser.release()
     assert chooser.choose([], (2.05, 4.05, 0), grid, 0.1, (0, 0), now=3) is None
+
+
+def test_progress_window_flags_only_a_full_window_without_net_motion():
+    window = frontiers.ProgressWindow(window_s=8.0, min_m=0.4)
+    # Spinning in place for 7.5 s is not yet a full window.
+    assert not any(window.update(0.5 * i, (0.05 * math.cos(i), 0.05 * math.sin(i))) for i in range(16))
+    assert window.update(8.0, (0.1, 0.0))  # 8 s within 0.4 m: stuck
+    window.reset()
+    # Driving 0.3 m/s keeps leaving the reference circle: never stuck.
+    assert not any(window.update(0.5 * i, (0.15 * i, 0.0)) for i in range(40))
+    # Back and forth over 0.5 m has no net progress but leaves the 0.4 m circle: not stuck.
+    window.reset()
+    assert not any(window.update(0.5 * i, (0.5 * (i % 2), 0.0)) for i in range(40))

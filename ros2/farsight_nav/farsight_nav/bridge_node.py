@@ -110,6 +110,10 @@ class FarsightBridge(Node):
         self.explore_goal_timeout_s = p("explore_goal_timeout_s", 25.0).value
         self.explore_stall_s = p("explore_stall_s", 3.0).value          # no 0.3 m of progress: frontier blocked
         self.explore_blacklist_s = p("explore_blacklist_s", 30.0).value  # a skipped frontier may come back after this
+        # Low net progress over a bounded window forces a frontier away from where the rover is stuck.
+        self.progress = frontiers.ProgressWindow(window_s=p("explore_progress_window_s", 8.0).value,
+                                                 min_m=p("explore_progress_min_m", 0.4).value)
+        self.explore_escape_m = p("explore_escape_m", 1.5).value
         self.explore_config = frontiers.ExploreConfig(**{
             name: p("explore_" + name, field.default).value
             for name, field in frontiers.ExploreConfig.__dataclass_fields__.items()})
@@ -198,6 +202,8 @@ class FarsightBridge(Node):
         self.explore_seq = 0
         self.blacklist = []          # map (x, y, monotonic time) of frontier goals Nav2 failed to reach
         self.explore_blocked = False  # Nav2 started a recovery on the current frontier goal
+        self.explore_fallback = False  # current goal came from the unscored fallback chooser
+        self.escape_from, self.escape_until = None, 0.0  # (x, y) map point to leave after low progress
         self.progress_best, self.progress_at = math.inf, 0.0  # closest distance_remaining and when it improved
         self.create_timer(0.25, self.send_status)
         self.explore_busy = False
@@ -331,6 +337,8 @@ class FarsightBridge(Node):
             if exploring and not self.exploring:
                 self.explore_session += 1
                 self.explore_target, self.blacklist = None, []  # a new Explore press starts fresh
+                self.progress.reset()
+                self.escape_from = None
                 self.no_frontier_since, self.explore_finished = None, False
                 # Keep decaying visits, start a separate commitment object so an
                 # older scoring result cannot arm this new operator press.
@@ -403,9 +411,12 @@ class FarsightBridge(Node):
                     self.explore_again = False
         threading.Thread(target=update, name="explore-score", daemon=True).start()
 
-    def skip_frontier(self, point):
-        """Caller holds the lock. Blacklist a frontier goal for explore_blacklist_s."""
-        self.blacklist.append((float(point[0]), float(point[1]), time.monotonic()))
+    def skip_frontier(self, point=None):
+        """Caller holds the lock. Blacklist a frontier goal (default: the current one) for explore_blacklist_s."""
+        if point is None:
+            point = self.explore_target if self.explore_fallback else (self.explorer.committed or self.explore_target)
+        if point is not None:
+            self.blacklist.append((float(point[0]), float(point[1]), time.monotonic()))
 
     def explore_tick(self):
         with self.lock:
@@ -447,21 +458,40 @@ class FarsightBridge(Node):
             if now - self.pose_at >= 0.5 or now - self.depth_at >= 0.5 or now - self.global_grid_at >= 2.5:
                 return  # server capture-loss interlock owns stopping and explicit rearming
             target = self.explore_target
+            # Low net progress (spinning, dithering, pushing) over the window: leave this spot.
+            stuck = self.progress.update(now, robot_map[:2])
+            if stuck:
+                self.progress.reset()
+                self.escape_from, self.escape_until = tuple(robot_map[:2]), now + 6.0
             # Re-pick the moment the current frontier is blocked: Nav2 began a
             # recovery, or got no 0.3 m closer for explore_stall_s (15 s backstop).
             timed_out = target is not None and (
-                self.explore_blocked or now - self.progress_at > self.explore_stall_s
+                stuck or self.explore_blocked or now - self.progress_at > self.explore_stall_s
                 or now - self.explore_since > self.explore_goal_timeout_s)
             if timed_out:
-                self.skip_frontier(self.explorer.committed or target)
+                self.skip_frontier()
                 self.explorer.release()
             self.blacklist = [bad for bad in self.blacklist if now - bad[2] < self.explore_blacklist_s]
             explorer, blacklist = self.explorer, [bad[:2] for bad in self.blacklist]
-        choice = explorer.choose(found, robot_map, cells, info.resolution, origin,
+            escape = self.escape_from if now < self.escape_until else None
+        candidates = found
+        if escape is not None:  # a genuinely different goal: nothing near the stuck spot
+            candidates = [f for f in found if math.dist(f.goal, escape) >= self.explore_escape_m] or found
+        choice = explorer.choose(candidates, robot_map, cells, info.resolution, origin,
                                  now=now, blacklist=blacklist)
         if choice is None:  # never stop while a rover-width route to any frontier exists
-            choice = explorer.choose(found, robot_map, cells, info.resolution, origin,
+            choice = explorer.choose(candidates, robot_map, cells, info.resolution, origin,
                                      now=now, blacklist=blacklist, relaxed=True)
+        fallback = False
+        if choice is None:
+            # Real rooms: the approach to most frontiers is still unknown, so the measured
+            # corridor checks reject them all. Hand Nav2 the nearest broad one anyway; it plans
+            # through unknown, and a failure or stall re-picks at once. Scan only with none.
+            keep = None
+            if target is not None and not timed_out and self.explore_fallback:
+                keep = next((f for f in candidates if math.dist(f.goal, target) < 0.5), None)
+            choice = keep or frontiers.choose(candidates, robot_map, blacklist=blacklist)
+            fallback = choice is not None
         with self.lock:
             if (session != self.explore_session or not self.exploring
                     or time.monotonic() - self.pose_at >= 0.5 or time.monotonic() - self.depth_at >= 0.5):
@@ -478,12 +508,14 @@ class FarsightBridge(Node):
             self.no_frontier_since = None
             running = self.goal_handle is not None or (
                 self.goal_pending and now - self.goal_sent_at < 5.0)
-            same = target is not None and math.dist(choice.goal, target) < max(0.1, 2 * info.resolution)
+            # A kept fallback frontier drifts as cells clear; re-sending it would restart Nav2.
+            radius = 0.5 if fallback and self.explore_fallback else max(0.1, 2 * info.resolution)
+            same = target is not None and math.dist(choice.goal, target) < radius
             if same and running and not timed_out:
                 return
             # Preselect the next broad patch within the goal tolerance, before
             # Nav2 reports completion. The local policy covers planning gaps.
-            self.explore_target, self.explore_since = choice.goal, now
+            self.explore_target, self.explore_since, self.explore_fallback = choice.goal, now, fallback
             self.explore_seq += 1
             goal_id = f"explore-{self.explore_seq}"
         gx, gy, _ = to_odom(*choice.goal)
@@ -492,7 +524,8 @@ class FarsightBridge(Node):
         sent = self.send_goal(goal_id, dict(x=gx, y=gy, yaw=yaw_odom), explore_session=session)
         with self.lock:
             if sent and session == self.explore_session:
-                self.goal_message = f"Exploring broad frontier {choice.size_m:.1f} m"
+                self.goal_message = (f"Exploring frontier {choice.size_m:.1f} m (route still unseen)" if fallback
+                                     else f"Exploring broad frontier {choice.size_m:.1f} m")
 
     def motion_tick(self):
         """One Explore command writer: current Nav2 or fresh local planning fallback."""
@@ -585,7 +618,7 @@ class FarsightBridge(Node):
                 self.goal_state, self.goal_message = "failed", "Nav2 rejected the goal"
                 if self.exploring and self.explore_target is not None:
                     self.explore_session += 1
-                    self.skip_frontier(self.explorer.committed or self.explore_target)
+                    self.skip_frontier()
                     self.explore_target = None
                     self.explorer.release()
                     repick = True
@@ -628,7 +661,7 @@ class FarsightBridge(Node):
                 # One frontier done (or unreachable): exploration goes on, so never report arrived here.
                 self.explore_session += 1  # discard a scorer snapshot from before this result
                 if result.status != GoalStatus.STATUS_SUCCEEDED and self.explore_target is not None:
-                    self.skip_frontier(self.explorer.committed or self.explore_target)
+                    self.skip_frontier()
                 self.goal_state = "driving"
                 self.goal_message = ("Frontier reached; choosing the next" if result.status == GoalStatus.STATUS_SUCCEEDED
                                      else "Frontier unreachable; trying another")

@@ -62,7 +62,8 @@ def find(grid, resolution, origin, min_cells=MIN_CELLS):
 
 
 def choose(frontiers, robot, blacklist=(), blacklist_radius=0.5, min_distance=0.25):
-    """Legacy geometric chooser (comparison/compatibility); runtime uses Explorer."""
+    """Geometric chooser: near, big, ahead. Explore's fallback when Explorer's
+    measured-approach checks reject every frontier (Nav2 plans through unknown)."""
     best, best_score = None, math.inf
     for frontier in frontiers:
         dx, dy = frontier.goal[0] - robot[0], frontier.goal[1] - robot[1]
@@ -189,6 +190,34 @@ class SweptFootprint:
             unknown = result[rows, cols] < 0
             result[rows[unknown], cols[unknown]] = 0
         return result
+
+
+class ProgressWindow:
+    """Low-net-progress detector over a bounded window of rover positions.
+
+    Stuck means every position of the last ``window_s`` stayed within ``min_m``
+    of the position ``window_s`` ago: spinning in place, dithering or pushing
+    against something all count, whatever the commands were.
+    """
+
+    def __init__(self, window_s=8.0, min_m=0.4):
+        if not all(math.isfinite(v) and v > 0 for v in (window_s, min_m)):
+            raise ValueError("Progress window needs a positive duration and distance")
+        self.window_s, self.min_m = window_s, min_m
+        self.samples = deque()
+
+    def reset(self):
+        self.samples.clear()
+
+    def update(self, now, xy):
+        self.samples.append((now, float(xy[0]), float(xy[1])))
+        # Keep exactly one sample at least window_s old as the reference.
+        while len(self.samples) > 1 and now - self.samples[1][0] >= self.window_s:
+            self.samples.popleft()
+        start_t, x0, y0 = self.samples[0]
+        if now - start_t < self.window_s:
+            return False
+        return all(math.hypot(x - x0, y - y0) < self.min_m for _, x, y in self.samples)
 
 
 def observed_window(grid, resolution, origin, margin=4.0):
