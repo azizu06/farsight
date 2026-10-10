@@ -1,5 +1,10 @@
 """Stereo wire/admission/provenance checks; not stereo raster or Quest evidence."""
 import asyncio
+import json
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
 import unittest
 from unittest.mock import patch, AsyncMock
 from urllib.parse import parse_qs
@@ -23,6 +28,35 @@ def metadata():
 
 
 class StereoContractTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which('ffmpeg') and shutil.which('ffprobe'), 'FFmpeg required')
+    def test_actual_coded_size_stays_fixed_across_canvas_lod_changes(self):
+        import cv2
+        import numpy as np
+        images = []
+        for width, height in [(480, 360), (240, 180), (320, 240)]:
+            image = np.zeros((height, width, 3), np.uint8)
+            image[:, :width // 2] = (0, 0, 255)
+            image[:, width // 2:] = (255, 0, 0)
+            ok, jpeg = cv2.imencode('.jpg', image)
+            self.assertTrue(ok); images.extend([jpeg.tobytes()] * 3)
+        for layout in [None, SBS]:
+            command = RenderEncoder(None, 320, 240, 30, 8_000_000, False, layout=layout).ffmpeg_command()
+            encoded = subprocess.run(command, input=b''.join(images), capture_output=True, timeout=10)
+            self.assertEqual(encoded.returncode, 0, encoded.stderr.decode())
+            with tempfile.TemporaryDirectory() as folder:
+                file = Path(folder) / 'pair.mp4'; file.write_bytes(encoded.stdout)
+                probe = subprocess.run(['ffprobe', '-v', 'error', '-count_frames', '-show_entries',
+                    'stream=width,height,nb_read_frames', '-of', 'json', str(file)], capture_output=True, timeout=5)
+                self.assertEqual(probe.returncode, 0, probe.stderr.decode())
+                stream = json.loads(probe.stdout)['streams'][0]
+                self.assertEqual((stream['width'], stream['height'], stream['nb_read_frames']), (320, 240, '9'))
+                decoded = subprocess.run(['ffmpeg', '-v', 'error', '-i', str(file), '-frames:v', '1',
+                    '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1'], capture_output=True, timeout=5)
+                self.assertEqual(decoded.returncode, 0, decoded.stderr.decode())
+                picture = np.frombuffer(decoded.stdout, np.uint8).reshape(240, 320, 3)
+                self.assertGreater(int(picture[120, 80, 0]), int(picture[120, 80, 2]) + 100)
+                self.assertGreater(int(picture[120, 240, 2]), int(picture[120, 240, 0]) + 100)
+
     def test_labels_and_asymmetric_projections_survive_parser_in_any_order(self):
         parsed = parse_pose(dict(type='pose', version=1, stereo=True, eyes=pair(),
             sent_mono_ms=1, sent_wall_ms=2, head=dict(position=[0, 1.6, 0], quaternion=[0, 0, 0, 1])), 3)

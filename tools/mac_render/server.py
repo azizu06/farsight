@@ -87,10 +87,7 @@ class RenderEncoder:
         self.capture_times = deque(maxlen=120)
         self.fragment_times = deque(maxlen=120)
 
-    async def start(self):
-        if not shutil.which("ffmpeg"):
-            self.error = "ffmpeg unavailable"
-            return
+    def ffmpeg_command(self):
         args, self.encoder = screencast_to_ffmpeg(
             self.width, self.height, self.fps, self.bitrate, self.hardware,
             **({"fragment_ms": 0} if self.layout else {}))
@@ -100,13 +97,20 @@ class RenderEncoder:
             # less steady encoder delay with this output-scoped flag.
             at = args.index("-c:v")
             args[at:at] = ["-flags", "+low_delay"]
+        # Adaptive canvas pixel ratio must not change the advertised video
+        # dimensions in either mode. In stereo both halves scale together.
+        at = args.index("-c:v")
+        args[at:at] = ["-s:v", f"{self.width}x{self.height}"]
         if self.layout:
-            # Adaptive render pixel ratio must not change the declared coded
-            # eye sizes. FFmpeg scales both halves together to the fixed pair.
-            at = args.index("-c:v")
-            args[at:at] = ["-s:v", f"{self.width}x{self.height}"]
             at = max(index for index, value in enumerate(args) if value == "-movflags")
             args[at + 1] += "+frag_every_frame"
+        return args
+
+    async def start(self):
+        if not shutil.which("ffmpeg"):
+            self.error = "ffmpeg unavailable"
+            return
+        args = self.ffmpeg_command()
         self.process = await asyncio.create_subprocess_exec(
             *args, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE)
