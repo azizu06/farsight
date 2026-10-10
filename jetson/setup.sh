@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # One-time Jetson setup after the JetPack 7.2 install. Safe to re-run: every step skips finished work.
 # Usage (on the Jetson, in tmux so SSH drops do not kill it):
-#   bash ~/farsight/jetson/setup.sh [--dry-run] [--core-only] [--skip-builds] [--skip-engines] [--with-vlm] [--power-mode 15W|none]
+#   bash ~/farsight/jetson/setup.sh [--dry-run] [--core-only] [--skip-builds] [--skip-engines] [--with-vlm] [--with-software-ffmpeg] [--power-mode 15W|none]
 # sudo asks for your password once at the start (type it yourself; nothing is stored).
 # --dry-run prints every state-changing command instead of running it.
 set -euo pipefail
@@ -11,6 +11,7 @@ SRC="${FARSIGHT_SRC:-$HOME/src}"
 MODELS="$REPO/models"
 VENV="${FARSIGHT_VENV:-$REPO/jetson/.venv}"
 DRY=0 BUILDS=1 ENGINES=1 VLM=0 CORE=0 POWER=15W
+SOFTWARE_FFMPEG=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY=1 ;;
@@ -18,6 +19,7 @@ while [ $# -gt 0 ]; do
     --skip-builds) BUILDS=0 ;;
     --skip-engines) ENGINES=0 ;;
     --with-vlm) VLM=1 ;;
+    --with-software-ffmpeg) SOFTWARE_FFMPEG=1 ;;
     --power-mode) POWER="${2:?--power-mode needs a name such as 15W, or none}"; shift ;;
     -h|--help) sed -n '2,7p' "$0"; exit 0 ;;
     *) echo "unknown option: $1 (see --help)" >&2; exit 2 ;;
@@ -54,6 +56,19 @@ step "System packages"
 run sudo apt-get update
 run sudo apt-get install -y openssh-server avahi-daemon tmux v4l-utils git cmake build-essential \
   python3-venv python3-pip libcurl4-openssl-dev libssl-dev ffmpeg alsa-utils pulseaudio-utils openssl curl rsync
+step "Software H.264 encoder"
+if [ "$SOFTWARE_FFMPEG" = 1 ]; then
+  ffmpeg_flags=(--install-service-path)
+  [ "$DRY" = 0 ] || ffmpeg_flags+=(--dry-run)
+  bash "$REPO/jetson/install_software_ffmpeg.sh" "${ffmpeg_flags[@]}" \
+    || warn "private FFmpeg repair failed; libx264/H.264 remains unqualified (docs/software-ffmpeg.md)"
+elif [ "$DRY" = 1 ]; then
+  echo "would check ffmpeg -encoders for libx264; opt in with --with-software-ffmpeg if the NVIDIA build omits it"
+elif ! ffmpeg -hide_banner -encoders 2>/dev/null | grep -Eq '[[:space:]]libx264[[:space:]]'; then
+  warn "FFmpeg lacks libx264; use --with-software-ffmpeg or the documented private helper before enabling H.264"
+else
+  echo "libx264 is listed; live encoding/latency still needs its own smoke and camera check"
+fi
 # Ubuntu Server may not include the host pairing/tether helpers needed by the
 # primary rover iPhone. Install available packages; pairing/trust stays manual.
 for pkg in usbmuxd libimobiledevice-utils ipheth-utils; do

@@ -50,6 +50,22 @@ on the service's PATH. A real 640×480, 10 FPS red-frame libx264 encode
 produced `/tmp/farsight-encoder-smoke.mp4` successfully. This qualifies the
 encoder, not phone capture or Quest playback.
 
+The reusable `jetson/install_software_ffmpeg.sh --install-service-path`
+subsequently passed its encoder and encode checks on this board, reused the
+working private prefix and installed `software-ffmpeg.conf` without restarting
+the service. See `software-ffmpeg.md` for repeating this setup.
+
+## Metric depth preparation
+
+The pinned official metric indoor model was exported on the Mac and copied
+over USB. The exact ONNX SHA-256 is
+`7ba4679f646ac5af720a565727cc8352ccb58a52dfc65fceb5874f8ed880190e`.
+Both `jetson.tests.test_scan.DepthModelTests` passed against this actual model
+on Jetson ONNX Runtime, including ImageNet normalization and preserving metric
+output. The reproducible exporter and provenance are documented in
+`models/README.md`. Physical room accuracy and target TensorRT execution remain
+separate checks.
+
 ## Installation transport and remaining qualification
 
 An SSH remote SOCKS proxy bound only to Jetson loopback port 18083 routes
