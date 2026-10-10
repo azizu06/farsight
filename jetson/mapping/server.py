@@ -112,7 +112,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                       video=dict(enabled=h264, ready=video_service.init is not None, error=video_service.error,
                                  fps=video_fps, bitrate=video_bitrate),
                       assistant=dict(vision_model=bool(assistant_url), whisper=bool(whisper_url or (whisper_bin and whisper_model)),
-                                     piper=bool(piper_bin and piper_model)))
+                                     piper=bool(piper_model)))
         return status
 
     @app.get("/map/points.bin")
