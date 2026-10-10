@@ -5,16 +5,25 @@ map. All requests use the page origin, so the headset stays on the MacBook's USB
 relay instead of trying to reach the Jetson directly.
 
 Build with `npm ci && npm run build` from `quest/`. Run `npm test` for protocol,
-crop geometry, and control safety checks. `npm run test:browser` runs the
+full-frame geometry, action-menu hit testing, and control safety checks. `npm run test:browser` runs the
 production `RoverExperience` in headless Chromium (SwiftShader, simulated XR
 poses, generated camera pixels, stubbed microphone, no backend) for resize,
-tracking-loss, left-trigger push-to-talk and source-banner cases;
+tracking loss, A/B/X/Y actions, menu motion blocking, recentering, transformed
+map goal coordinates, left-trigger push-to-talk and source-banner cases;
 run `npx playwright install chromium-headless-shell` once first. `npm run perf`
 profiles the built app under an emulated Quest 2 (IWER) against a running
 simulator; see the [first-run guide](../docs/quest-first-run.md#7-frame-budget).
 Use the [operator launcher](../tools/demo.py)
 for the integrated app; Vite development mode uses port 8443 as its upstream.
 Do not confuse an old server already on that port with a freshly launched demo.
+
+`node tests/vr-visual-audit.mjs --after` launches its own isolated simulated
+server/relay and captures the production stereo view and menu hover into `/tmp`.
+For comparative upload profiling, point `PERF_ORIGIN` at a separate simulated
+relay and run `node tests/perf-audit.browser.mjs`; `PERF_RETURN=1` also checks
+camera return after map mode. These are desktop diagnostics, not Quest
+qualification. The scoped redesign measurement is saved in
+[quest-vr-redesign.json](../docs/qualification/quest-vr-redesign.json).
 
 ## Controls
 

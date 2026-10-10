@@ -1,0 +1,59 @@
+{
+  "scope": "Software-only: isolated SIMULATED source, desktop Chrome on Apple M1, IWER Quest 2. No physical headset or phone qualification.",
+  "before_revision": "7987e1d",
+  "after_asset": "assets/index-D6rqqRhJ.js",
+  "after_asset_sha256": "befe68e24dbe6d42c68899bd8570e88f99fcc68b6855391fee44fc44f56e4c9e",
+  "conditions": {
+    "graphics": "ANGLE Metal",
+    "drawing_buffer": [
+      1280,
+      720
+    ],
+    "cpu_throttle": 4,
+    "seconds_per_phase": 4,
+    "gpu_timers": false,
+    "cpu_profiler": true,
+    "video": "FFmpeg H264 10fps 500kbps",
+    "detector": "none",
+    "input": "head yaw, trigger released"
+  },
+  "camera": {
+    "camera_texture_uploads_per_second": {
+      "before": 55.33,
+      "after": 10.48
+    },
+    "estimated_rgba_upload_MB_per_second": {
+      "before": 75.29,
+      "after": 25.84
+    },
+    "callback_p95_ms": {
+      "before": 1.8,
+      "after": 2.5
+    }
+  },
+  "warmed_map": {
+    "drawCamera_profile_ms_per_second": {
+      "before": 14.95,
+      "after": 0
+    },
+    "callback_p95_ms": {
+      "before": 2.0,
+      "after": 2.7
+    },
+    "max_callback_gap_ms": {
+      "before": 35.3,
+      "after": 108.8
+    }
+  },
+  "return_from_map": {
+    "hidden_seconds": 8,
+    "retained_canvas_age_ms": 7907,
+    "settling_seconds": 2.5,
+    "measurement_seconds": 3,
+    "returned_displayed_video_age_ms": 268,
+    "returned_camera_uploads_per_second": 10.12,
+    "trigger": "released",
+    "page_errors": []
+  },
+  "interpretation": "Camera upload and hidden-camera blit reductions demonstrated. Aggregate CPU and all stalls did not improve; no physical Quest frame-rate claim. Final warning/map-hint polish followed this frozen asset measurement."
+}
