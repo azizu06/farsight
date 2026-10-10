@@ -15,7 +15,7 @@ import { DetectionCache, PACKET_FRESH_MS } from "./detection-match.js";
 import { defaultMount, loadSettings, pageStorage, saveSettings } from "./viewer-settings.js";
 import { PanSmoother } from "./pan-smoothing.js";
 import { encounterLine, summaryLines, timelineLines } from "./mission-report.js";
-import { floorHit, goalBody, navActive, navLabel, parseNav, postNav } from "./nav-view.js";
+import { floorHit, goalBody, mergeNav, navActive, navLabel, parseNav, postNav } from "./nav-view.js";
 import { NavOverlay, type Nav } from "./nav-overlay";
 
 type Box = { id?: number; cls: string; conf: number; x: number; y: number; w: number; h: number; kpts?: number[][]; down?: boolean };
@@ -380,7 +380,7 @@ export class RoverExperience {
         if (this.gate.acceptStatus(next, performance.now())) {
           this.status = next;
           if (newSession) this.resetSessionView();
-          this.nav = parseNav(next.nav);
+          this.nav = mergeNav(next.nav, this.nav, !newSession);
           // The next held heartbeat after end_scan reports release_required before most status ticks; pollScan decides complete vs aborted.
           this.observeScanStatus(next);
           if (typeof next.seq === "number" && this.sent.has(next.seq)) this.ackMs = performance.now() - this.sent.get(next.seq)!;
@@ -687,11 +687,12 @@ export class RoverExperience {
   private async setGoal(point: { x: number; z: number }) {
     if (this.navBusy) return;
     this.navBusy = true;
+    const controllerSession = this.status?.session_id, controllerSocket = this.socket;
     const body = goalBody(point);
     this.noteNav(`Sending go-to (${body.x.toFixed(2)}, ${body.z.toFixed(2)})…`);
     try {
       const result = await postNav("/nav/goal", body);
-      if (this.stopped) return;
+      if (this.stopped || this.status?.session_id !== controllerSession || this.socket !== controllerSocket) return;
       if (result.nav) this.nav = result.nav;
       if (!result.ok) { this.noteNav(`Go-to rejected: ${result.error}`); return; }
       if (this.scanning || this.scanPending) this.stop("Scan cancelled: go-to selected");
@@ -701,10 +702,11 @@ export class RoverExperience {
   }
   /** Disarm go-to locally first (fail toward teleop), then POST /nav/cancel. */
   private async cancelNav(reason = "Navigation cancelled") {
+    const controllerSession = this.status?.session_id, controllerSocket = this.socket;
     if (this.autonomy.mode === "goto") this.autonomy.clear();
     this.dirty = true;
     const result = await postNav("/nav/cancel");
-    if (this.stopped) return;
+    if (this.stopped || this.status?.session_id !== controllerSession || this.socket !== controllerSocket) return;
     if (result.nav) this.nav = result.nav;
     this.noteNav(result.ok ? reason : `${reason} locally; server: ${result.error}`);
   }
@@ -801,6 +803,7 @@ export class RoverExperience {
     if (this.sent.size > 100) this.sent.delete(this.sent.keys().next().value!);
     this.socket.send(JSON.stringify({
       seq, session_id: this.status?.session_id ?? null, permit: this.status?.permit ?? null,
+      nav_lane: "revision",
       deadman, v: deadman ? this.input.v : 0, w: deadman ? this.input.w : 0,
       pan: this.digitalPan ? 0 : this.input.pan, video_fresh: age < 500,
       ...((this.scanning || (this.scanPending && this.status?.mode === "scan")) ? { mode: "scan" } : this.autonomy.fields(deadman)),
