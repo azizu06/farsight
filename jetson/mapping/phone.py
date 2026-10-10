@@ -142,6 +142,13 @@ def world_grid(frame):
     return (local @ frame.transform[:3, :3].T + frame.transform[:3, 3]).astype(np.float32)
 
 
+def measured_points(frame):
+    """Every valid native depth pixel with its associated RGB; no mesh stride."""
+    usable = valid_depth(frame.depth, near=0.15, far=8, edge_ratio=0.12)
+    usable &= frame.confidence >= 1
+    return world_grid(frame)[usable], frame.rgb[usable]
+
+
 # Coarser grid strides kept per keyframe for the capped visual mesh export.
 VISUAL_LODS = (4, 8)
 

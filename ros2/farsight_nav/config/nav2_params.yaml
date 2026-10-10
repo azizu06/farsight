@@ -148,7 +148,7 @@ controller_server:
       regulated_linear_scaling_min_speed: 0.25
       use_rotate_to_heading: true
       allow_reversing: false
-      rotate_to_heading_min_angle: 0.6
+      rotate_to_heading_min_angle: 1.0     # arc into turns up to ~57 deg; in-place skid-steer spins scrub and stall under payload
       max_angular_accel: 8.0          # ramps from measured odom w: at 4 the first 0.2 rad/s step fell below the wheel floors and rotate-to-heading stalled (sim popup)
       max_robot_pose_search_dist: 4.0
       interpolate_curvature_after_goal: false
@@ -306,7 +306,7 @@ behavior_server:
     transform_tolerance: 0.3
     simulate_ahead_time: 1.5
     max_rotational_vel: 2.2
-    min_rotational_vel: 0.5
+    min_rotational_vel: 1.5            # ~PWM 78 per side on the drive profile: in-place spins stay above both wheel floors
     rotational_acc_lim: 4.0
 
 lifecycle_manager_navigation:
@@ -333,11 +333,14 @@ farsight_bridge:
     explore_goal_timeout_s: 15.0       # backstop: skip a frontier Nav2 has not reached in 15 s
     explore_stall_s: 3.0               # skip a frontier when Nav2 got no 0.3 m closer for 3 s
     explore_blacklist_s: 30.0          # a skipped frontier may be retried after 30 s
+    explore_progress_window_s: 8.0     # stuck: the rover stayed within explore_progress_min_m for this long
+    explore_progress_min_m: 0.4
+    explore_escape_m: 1.5              # after low progress, pick a frontier at least this far from the stuck spot
     explore_tick_s: 0.5                # frontier re-score / goal decision period
     explore_switch_margin: 0.8
     explore_transition_distance: 0.6
     explore_creep_mps: 0.3           # above both wheel floors (PWM 70/40) on the drive profile
-    explore_scan_radps: 0.82
+    explore_scan_radps: 1.8           # ~PWM 95 per side; 0.82 rad/s sat at L75/R60, just above the floors, and stalled on the floor
     explore_gap_budget_s: 4.0
     explore_scan_budget_s: 10.0
     explore_body_radius: 0.2          # rover half-width + 2.5 cm: body-disc and driven-floor checks

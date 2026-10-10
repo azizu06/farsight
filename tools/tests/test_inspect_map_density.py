@@ -195,6 +195,74 @@ class DensityTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(fields["points_cap"]["value"])
         self.assertEqual(fields["dropped"]["value"], 7)
 
+    async def test_operator_404_falls_back_with_both_attempts_and_actual_url(self):
+        self.responses["/map/status"] = lambda request: web.Response(status=404, text="old server")
+        self.bodies["/health"] = self.bodies["/map/status"].copy()
+        report = await self.run_hops("operator")
+        hop = report["hops"][0]
+        self.assertTrue(hop["ok"])
+        self.assertTrue(hop["fallback_attempted"])
+        self.assertTrue(hop["requested_url"].endswith("/map/status"))
+        self.assertTrue(hop["url"].endswith("/health"))
+        self.assertEqual([attempt["http_status"] for attempt in hop["attempts"]], [404, 200])
+        self.assertIn("HTTP 404", hop["attempts"][0]["error"])
+        self.assertEqual(hop["attempts"][0]["response_excerpt"], "old server")
+        self.assertEqual(hop["evidence"]["retained_unique_points"]["value"], 123456)
+        self.assertEqual(self.requests, [("GET", "/map/status", "identity"), ("GET", "/health", "identity")])
+        self.assertIn("legacy_operator_health_fallback", [item["kind"] for item in report["findings"]])
+
+    async def test_operator_404_bad_health_remains_failure_with_provenance(self):
+        self.responses["/map/status"] = lambda request: web.Response(status=404)
+        for response in (lambda request: web.Response(status=502, text="upstream down"),
+                         lambda request: web.Response(body=b"bad json"),
+                         lambda request: web.HTTPFound("/ws/control"),
+                         lambda request: web.Response(body=b"x" * 101)):
+            self.responses["/health"] = response
+            report = await self.run_hops("operator", max_bytes=100)
+            hop = report["hops"][0]
+            self.assertFalse(hop["ok"])
+            self.assertFalse(report["all_endpoints_responded"])
+            self.assertIsNone(hop["evidence"])
+            self.assertEqual(len(hop["attempts"]), 2)
+            self.assertEqual(hop["attempts"][0]["http_status"], 404)
+            self.assertTrue(hop["url"].endswith("/health"))
+            self.assertTrue(hop["error"])
+        self.assertTrue(all(path in ("/map/status", "/health") for _, path, _ in self.requests))
+
+    async def test_non404_and_nonoperator_404_do_not_fallback(self):
+        for status in (401, 403, 502, 503):
+            self.requests.clear()
+            self.responses["/map/status"] = lambda request: web.Response(status=status)
+            hop = (await self.run_hops("operator"))["hops"][0]
+            self.assertFalse(hop["fallback_attempted"])
+            self.assertEqual(len(hop["attempts"]), 1)
+            self.assertEqual(self.requests, [("GET", "/map/status", "identity")])
+        self.requests.clear()
+        self.responses["/geometry/status"] = lambda request: web.Response(status=404)
+        hop = (await self.run_hops("geometry"))["hops"][0]
+        self.assertFalse(hop["fallback_attempted"])
+        self.assertEqual(self.requests, [("GET", "/geometry/status", "identity")])
+        self.requests.clear()
+        self.responses.pop("/map/status")
+        self.delays["/map/status"] = .3
+        hop = (await self.run_hops("operator", timeout=.05))["hops"][0]
+        self.assertFalse(hop["fallback_attempted"])
+        self.assertEqual(self.requests, [("GET", "/map/status", "identity")])
+
+    async def test_operator_fallback_shares_overall_deadline(self):
+        self.responses["/map/status"] = lambda request: web.Response(status=404)
+        self.delays = {"/map/status": .07, "/health": .07}
+        started = time.monotonic()
+        report = await self.run_hops("operator", timeout=.11)
+        elapsed = time.monotonic() - started
+        self.assertLess(elapsed, .2)
+        hop = report["hops"][0]
+        self.assertFalse(hop["ok"])
+        self.assertTrue(hop["fallback_attempted"])
+        self.assertEqual(hop["attempts"][0]["http_status"], 404)
+        self.assertIn("timeout", hop["error"])
+        self.assertEqual(self.requests, [("GET", "/map/status", "identity"), ("GET", "/health", "identity")])
+
 
 class CLITests(unittest.TestCase):
     def test_endpoint_allowlist(self):
