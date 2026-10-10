@@ -124,6 +124,8 @@ class ControlTelemetry:
 
 
 class Mission:
+    PERSON_REFRESH_S = 3.0  # at most one SBAR refresh per person track in this window
+
     def __init__(self, directory=None, record=False, drill_clock=time.monotonic):
         self.started = time.time()
         self.id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
@@ -150,6 +152,7 @@ class Mission:
         self.telemetry = ControlTelemetry(on_flag=self.persist_flag)
         # Called as on_person(key, encounter, jpeg, snapshot_url) for each new person track.
         self.on_person = None
+        self.person_notified = {}  # key -> (down flag, time) of the last SBAR request
         # Returns {face_detector, face_error}; the server points it at the perception service.
         self.face_status = dict
 
@@ -191,6 +194,7 @@ class Mission:
                 if drilling and box["cls"] == "person":
                     self.drill_seen.add(key)
                 if previous:
+                    self._refresh_person(key, box, now, frame)
                     continue
                 cls = str(box.get("cls", "object"))[:32]
                 if cls in self.classes or len(self.classes) < 100:
@@ -208,10 +212,29 @@ class Mission:
                     with (self.directory / "events.jsonl").open("a") as log:
                         log.write(json.dumps(event) + "\n")
                 if box["cls"] == "person" and self.on_person:
-                    self.on_person(key, dict(self.encounters[key]), frame.jpeg, event["snapshot_url"])
+                    self._notify_person(key, now, frame, event["snapshot_url"])
             # Cap in-memory tracks; persisted evidence remains in the mission directory.
             while len(self.encounters) > 500:
                 self.encounters.pop(next(iter(self.encounters)))
+
+    def _notify_person(self, key, now, frame, snapshot_url):
+        self.person_notified[key] = (self.encounters[key].get("down"), now)
+        while len(self.person_notified) > 500:
+            self.person_notified.pop(next(iter(self.person_notified)))
+        self.on_person(key, dict(self.encounters[key]), frame.jpeg, snapshot_url)
+
+    def _refresh_person(self, key, box, now, frame):
+        """Re-issue on_person when a person's down flag differs from the one their SBAR was written for.
+
+        Comparing with the last notified flag (not the previous frame) keeps a change that lands inside
+        the rate-limit window pending until the window passes.
+        """
+        down = box.get("down")
+        if box.get("cls") != "person" or not self.on_person or type(down) is not bool:
+            return
+        noted, at = self.person_notified.get(key, (None, -self.PERSON_REFRESH_S))
+        if down != noted and now - at >= self.PERSON_REFRESH_S:
+            self._notify_person(key, now, frame, None)  # None keeps the first snapshot
 
     def observe_control(self, status, camera=None):
         """Mission sampler hook: read-only control status, at most ControlTelemetry.SAMPLE_HZ."""

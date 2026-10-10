@@ -50,10 +50,11 @@ export function summaryLines(report) {
   return lines;
 }
 
-/** One track line with time first seen, duration in view and range at first sight. */
+/** One track line with the down flag, time first seen, duration in view and range at first sight. */
 export function encounterLine(entry, startedAt) {
   const parts = [`${String(entry?.cls ?? "object")} · track ${entry?.id ?? "?"}`,
     `${Math.round((Number(entry?.conf) || 0) * 100)}%`, String(entry?.source ?? "unknown source")];
+  if (entry?.down === true) parts.push("down");
   if (finite(entry?.first_seen)) {
     const seen = finite(entry.last_seen) ? Math.max(0, Math.round(entry.last_seen - entry.first_seen)) : 0;
     parts.push(`seen ${missionTime(entry.first_seen, startedAt)} for ${seen}s`);

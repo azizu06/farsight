@@ -109,6 +109,27 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(len(model.calls), 1)
         self.assertEqual(model.calls[0][1]["range_cm"], 80)
 
+    def test_sbar_refreshes_when_tracked_person_goes_down(self):
+        self.service(FakeModel(), enabled=False)
+        self.mission.PERSON_REFRESH_S = 0
+        self.mission.detect(dict(boxes=[person(down=False)]), frame(1))
+        self.assertIn("upright", self.mission.report()["triage"]["PHONE RGB:3"]["assessment"])
+        self.mission.detect(dict(boxes=[person(down=False)]), frame(2))
+        self.mission.detect(dict(boxes=[person(down=True)]), frame(3))
+        entry = self.mission.report()["triage"]["PHONE RGB:3"]
+        self.assertIn("down", entry["assessment"].lower())
+        self.assertIs(entry["down"], True)
+
+    def test_down_change_inside_rate_limit_window_is_applied_once_the_window_passes(self):
+        self.service(FakeModel(), enabled=False)
+        self.mission.PERSON_REFRESH_S = 60
+        self.mission.detect(dict(boxes=[person(down=False)]), frame(1))
+        self.mission.detect(dict(boxes=[person(down=True)]), frame(2))
+        self.assertIn("upright", self.mission.report()["triage"]["PHONE RGB:3"]["assessment"])
+        self.mission.PERSON_REFRESH_S = 0
+        self.mission.detect(dict(boxes=[person(down=True)]), frame(3))
+        self.assertIn("down", self.mission.report()["triage"]["PHONE RGB:3"]["assessment"].lower())
+
     def test_non_person_and_repeat_frames_do_not_trigger_triage(self):
         model = FakeModel()
         self.service(model)
