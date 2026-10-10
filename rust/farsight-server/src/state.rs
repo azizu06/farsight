@@ -89,6 +89,11 @@ pub struct MapState {
     /// depth/occupancy and labels keep full resolution. 0 = uncapped.
     pub points_cap: usize,
     pub triangles_cap: usize,
+    /// Opt-in Jetson fusion bypass (new offload architecture): keep /phone
+    /// pose + depth (Nav2) and the camera feed (inference/control), but skip
+    /// RGB-D point/mesh fusion — geometry arrives via the phone ARKit lane
+    /// assembled on the Mac instead. Status stays honest about map source.
+    pub fusion_bypass: bool,
 }
 
 impl MapState {
@@ -132,6 +137,7 @@ impl MapState {
             revision_tx,
             points_cap: 0,
             triangles_cap: 0,
+            fusion_bypass: false,
         }
     }
 
@@ -299,9 +305,12 @@ impl MapState {
             .expect("depth JPEG encode");
             s.depth_jpeg = Some(jpeg_buf);
             may_fuse = !s.paused
+                && !self.fusion_bypass
                 && frame.header["tracking"].as_str() == Some("normal")
                 && s.tracking == "normal";
-            s.reason = if s.paused {
+            s.reason = if self.fusion_bypass {
+                Some("Geometry lane external; fusion bypassed".into())
+            } else if s.paused {
                 Some("Fusion paused".into())
             } else if !may_fuse {
                 Some("ARKit tracking limited; fusion frozen".into())
@@ -376,6 +385,7 @@ impl MapState {
             "triangles": s.surfaces.count,
             "capped": (self.points_cap > 0 && s.cloud.cells.len() > self.points_cap)
                 || (self.triangles_cap > 0 && s.surfaces.count > self.triangles_cap),
+            "fusion_bypass": self.fusion_bypass,
             "keyframes": s.surfaces.keyframes.len(),
             "frames": s.frames,
             "rejected": s.rejected,

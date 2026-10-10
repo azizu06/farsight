@@ -116,6 +116,7 @@ pub fn build_state(
     sim_world: Option<String>,
     lidar_drive: bool,
     visual_caps: (usize, usize),
+    fusion_bypass: bool,
 ) -> Arc<AppState> {
     // create_app validation order: sim-world, replay, simulated+serial,
     // nav2+replay, then pan mount.
@@ -145,6 +146,7 @@ pub fn build_state(
     let mut mapping_state = MapState::new(demo);
     mapping_state.points_cap = visual_caps.0;
     mapping_state.triangles_cap = visual_caps.1;
+    mapping_state.fusion_bypass = fusion_bypass;
     let mapping = Arc::new(mapping_state);
     let sim = sim_world.as_ref().map(|name| {
         let world = crate::sim::load(name).unwrap_or_else(|e| panic!("{e}"));
@@ -1970,6 +1972,7 @@ mod phone_lifecycle_tests {
             None,       // sim_world
             false,      // lidar_drive
             (0, 0),     // visual_caps: uncapped in tests
+            false,      // fusion_bypass
         )
     }
 
