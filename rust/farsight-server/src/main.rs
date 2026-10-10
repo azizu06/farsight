@@ -176,6 +176,17 @@ struct Args {
     /// enables it (#109 contract).
     #[arg(long)]
     fusion_bypass: bool,
+    /// YuNet face-detection ONNX for the opt-in identity lane
+    /// (env FARSIGHT_IDENTITY_YUNET; flag overrides, like Python's env).
+    #[arg(long)]
+    identity_yunet: Option<String>,
+    /// SFace face-embedding ONNX for identity (env FARSIGHT_IDENTITY_SFACE).
+    #[arg(long)]
+    identity_sface: Option<String>,
+    /// Optional identity gallery JSON path (env FARSIGHT_IDENTITY_GALLERY);
+    /// unset keeps enrollment in-memory only.
+    #[arg(long)]
+    identity_gallery: Option<String>,
 }
 
 #[global_allocator]
@@ -301,6 +312,11 @@ async fn main() {
             || matches!(std::env::var("FARSIGHT_FUSION_BYPASS").ok().as_deref(), Some("1") | Some("true") | Some("on")),
         args.demo_mode
             || matches!(std::env::var("FARSIGHT_DEMO_MODE").ok().as_deref(), Some("1") | Some("true") | Some("on")),
+        (
+            args.identity_yunet.or_else(|| std::env::var("FARSIGHT_IDENTITY_YUNET").ok()),
+            args.identity_sface.or_else(|| std::env::var("FARSIGHT_IDENTITY_SFACE").ok()),
+            args.identity_gallery.or_else(|| std::env::var("FARSIGHT_IDENTITY_GALLERY").ok()),
+        ),
     );
     server::start_services(&state);
     let dist = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../quest/dist");
