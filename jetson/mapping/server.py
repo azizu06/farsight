@@ -283,6 +283,10 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
 
     map_cache = EncodedCache()
 
+    @app.get("/map/status")
+    async def map_status():
+        return await asyncio.to_thread(state.status)
+
     def map_version():
         return state.generation, state.revision, state.surfaces.revision
 
