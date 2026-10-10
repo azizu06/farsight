@@ -47,6 +47,14 @@ Do not confuse an old server already on that port with a freshly launched demo.
   the missing proof. SIMULATED and REPLAY stay shown through disconnects until
   the server explicitly reports otherwise. Its camera source, frame and age are
   display truth only, not sensor or display qualification.
+- Directly under the source banner (headset and desktop), a stop panel names
+  why motion stopped and the one action that recovers it, e.g. "Command lease
+  expired (link lag > 250 ms) → Check Wi-Fi/USB link, then release and hold
+  right trigger". `src/stop-reason.js` maps every server `control_status.reason`
+  code, `ControlSafety` readiness block and client latch; it is display only and
+  hidden while ready or driving. A latch keeps its first specific cause, so an
+  echoed `deadman_released` does not hide the real one. Add a mapping there
+  (and a test) when adding a server stop code or client latch.
 - Desktop: select Live rover, hold Space, then use WASD. The on-screen hold button
   can replace Space. STOP, Escape, opening settings, losing focus, or a connection
   failure stop driving.
@@ -82,6 +90,12 @@ Map snapshots and surface downloads pause in live camera view. They resume when
 opening the map or settings. Detections are drawn only on matching JPEG frame IDs;
 boxes are clipped and transformed in digital-crop mode. H.264 boxes require per-sample capture IDs matching the decoder timestamp; older
 servers without those IDs still play video but omit uncertain overlays.
+
+Pose and fall overlays (`src/pose-hud.js`) ride the same matched-frame boxes: when a
+detection carries `kpts`, confident limbs (conf >= 0.3, both ends inside the crop) are
+stroked as one path per frame; `down: true` adds a red frame with a "PERSON DOWN" tag.
+The HUD link chip is red ("LINK LOST") when no control status has arrived for 500 ms,
+otherwise shows the server `link_ms` and the detector fps. No pose data is invented.
 
 The local scene assistant accepts text in settings. Optional voice starts only
 when clicking Ask by voice, records at most 10 seconds, and sends audio to the rover

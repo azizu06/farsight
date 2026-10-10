@@ -1,14 +1,16 @@
 import * as THREE from "three";
 import { SourceTruth } from "./source-banner.js";
+import { explainStop } from "./stop-reason.js";
 import { ControlSafety, stick } from "./control-safety.js";
 import { H264Viewer } from "./h264";
 import { cameraCrop, croppedBox } from "./camera-view.js";
+import { drawDownMarker, linkHealth, poseSegments, strokeSegments } from "./pose-hud.js";
 import { AssistantVoice } from "./assistant-voice";
 import { AutonomyIntent, autonomyLabel, containPoint, pickTarget, rayPanelPoint } from "./autonomy.js";
 import { PHRASE_LABELS, sbarLines, speakPhrase } from "./survivor-phrases.js";
 import { DRILL_TRAINS, DrillHud, endLines } from "./drill-hud.js";
 
-type Box = { id?: number; cls: string; conf: number; x: number; y: number; w: number; h: number };
+type Box = { id?: number; cls: string; conf: number; x: number; y: number; w: number; h: number; kpts?: number[][]; down?: boolean };
 type Detections = { frame: number | string; boxes: Box[]; fps?: number; source?: string; simulated?: boolean };
 type ControlStatus = {
   type?: string; session_id: string; permit: string; permit_ms: number; seq?: number;
@@ -24,6 +26,10 @@ export class RoverExperience {
   private bannerCanvas = document.createElement("canvas");
   private bannerTexture = new THREE.CanvasTexture(this.bannerCanvas);
   private bannerPanel = new THREE.Mesh(new THREE.PlaneGeometry(2.8, 0.35), new THREE.MeshBasicMaterial({ map: this.bannerTexture, transparent: true, toneMapped: false, depthTest: false }));
+  private stopCanvas = document.createElement("canvas");
+  private stopTexture = new THREE.CanvasTexture(this.stopCanvas);
+  private stopPanel = new THREE.Mesh(new THREE.PlaneGeometry(2.8, 0.3), new THREE.MeshBasicMaterial({ map: this.stopTexture, transparent: true, toneMapped: false, depthTest: false }));
+  private stopKey = "";
   private voiceCanvas = document.createElement("canvas");
   private voiceTexture = new THREE.CanvasTexture(this.voiceCanvas);
   private voicePanel = new THREE.Mesh(new THREE.PlaneGeometry(1.2, 0.8), new THREE.MeshBasicMaterial({ map: this.voiceTexture, transparent: true, toneMapped: false, depthTest: false }));
@@ -124,7 +130,7 @@ export class RoverExperience {
     document.querySelector("main")!.append(panel);
     this.sourceBanner = document.createElement("div");
     this.sourceBanner.className = "source-banner"; this.sourceBanner.setAttribute("role", "status");
-    this.sourceBanner.innerHTML = "<strong></strong><span></span>";
+    this.sourceBanner.innerHTML = '<strong></strong><span></span><p class="stop-reason" hidden><b></b><em></em></p>';
     document.querySelector("main")!.append(this.sourceBanner);
     this.message = panel.querySelector("#rover-message")!;
     this.details = panel.querySelector("#rover-details")!;
@@ -163,10 +169,13 @@ export class RoverExperience {
     this.bannerCanvas.width = 1024; this.bannerCanvas.height = 128;
     this.bannerTexture.colorSpace = THREE.SRGBColorSpace;
     this.bannerPanel.position.set(0, 1.45, -2.32); this.bannerPanel.renderOrder = 13;
+    this.stopCanvas.width = 1024; this.stopCanvas.height = 110;
+    this.stopTexture.colorSpace = THREE.SRGBColorSpace;
+    this.stopPanel.position.set(0, 1.09, -2.31); this.stopPanel.renderOrder = 13; this.stopPanel.visible = false;
     this.voiceCanvas.width = 768; this.voiceCanvas.height = 512;
     this.voiceTexture.colorSpace = THREE.SRGBColorSpace;
     this.voicePanel.position.set(-2.15, 0.15, -2.1); this.voicePanel.rotation.y = 0.35; this.voicePanel.renderOrder = 12; this.voicePanel.visible = false;
-    this.cockpit.add(screen, hud, this.drillPanel, this.bannerPanel, this.voicePanel); this.cockpit.visible = false;
+    this.cockpit.add(screen, hud, this.drillPanel, this.bannerPanel, this.stopPanel, this.voicePanel); this.cockpit.visible = false;
     this.cameraScreen = screen;
     this.scene.add(this.cockpit);
     this.h264 = new H264Viewer(() => {
@@ -603,6 +612,7 @@ export class RoverExperience {
     context.strokeStyle = "#8dffa9"; context.fillStyle = "#8dffa9";
     context.lineWidth = Math.max(2, this.canvas.width / 320);
     context.font = `${Math.max(14, this.canvas.width / 40)}px system-ui`;
+    const segments: number[] = [];
     for (const box of packet.boxes) {
       const visibleBox = croppedBox(box, crop, width, height);
       if (!visibleBox) continue;
@@ -614,7 +624,12 @@ export class RoverExperience {
       context.strokeRect(x, y, visibleBox.w * this.canvas.width, visibleBox.h * this.canvas.height);
       const id = Number.isSafeInteger(box.id) ? ` #${box.id}` : "";
       context.fillText(`${target ? "SEEK " : ""}${box.cls.slice(0, 30)}${id} ${Math.round(box.conf * 100)}%`, x + 4, Math.max(18, y - 5));
+      if (box.down === true) {
+        drawDownMarker(context, { x, y, w: visibleBox.w * this.canvas.width, h: visibleBox.h * this.canvas.height }, this.canvas.width, Math.max(16, this.canvas.width / 32));
+      }
+      if (box.kpts) segments.push(...poseSegments(box.kpts, crop, width, height));
     }
+    strokeSegments(context, segments, this.canvas.width, this.canvas.height, "#7fd4ff", Math.max(2, this.canvas.width / 240));
   }
   /** Held buttons from a lost or replaced controller act only after an observed release. */
   private latchButtons() {
@@ -648,11 +663,13 @@ export class RoverExperience {
     const range = this.status?.range_cm == null ? "range unknown" : `${Math.round(this.status.range_cm)} cm`;
     const matching = this.matchingDetections(now);
     const detection = matching ? `${matching.boxes.length} detections` : !this.detections ? "detector unavailable" : now - this.detectionsAt > 500 ? "detections stale" : "detections awaiting matching frame";
+    const link = linkHealth({ now, receivedAt: this.gate.receivedAt, connected: this.socket?.readyState === WebSocket.OPEN,
+      linkMs: this.status?.link_ms, detFps: this.detections?.fps });
     const drill = this.drillLine(now);
     const intent = this.autonomy.mode === "seek" ? `Seek #${this.autonomy.targetId} armed` : this.autonomy.mode === "explore" ? "Explore armed" : "";
     const autonomy = [intent, autonomyLabel(this.status)].filter(Boolean).join(" → ");
     const panMode = `${this.digitalPan ? "Digital pan (fixed camera)" : "Servo pan"} ${Math.round(this.input.pan)}°`;
-    const detail = `${this.frameSource} · ${panMode} · ${this.h264Enabled ? "H.264" : "JPEG"} video ${age} · ${ack} · ${range} · ${detection}${drill ? " · " + drill : ""}${this.h264Enabled && !this.h264.displayedFrame ? " · " + this.h264.state : ""} · ${this.scanMessage}`;
+    const detail = `${link.text} · ${this.frameSource} · ${panMode} · ${this.h264Enabled ? "H.264" : "JPEG"} video ${age} · ${ack} · ${range} · ${detection}${drill ? " · " + drill : ""}${this.h264Enabled && !this.h264.displayedFrame ? " · " + this.h264.state : ""} · ${this.scanMessage}`;
     this.message.textContent = headline;
     this.message.dataset.state = moving ? "moving" : ready ? "unsafe" : "ready";
     this.details.textContent = `${autonomy ? autonomy + " · " : ""}${detail}${this.status?.estop ? " · FORWARD BLOCKED" : ""}`;
@@ -665,6 +682,9 @@ export class RoverExperience {
     c.font = "bold 32px system-ui"; c.fillText(headline.slice(0, 58), 28, 46);
     c.font = "24px system-ui"; c.fillStyle = "#dce5ee";
     c.fillText(`${this.h264Enabled ? "H.264" : "JPEG"} video ${age} · ${range} · ${panMode}`, 28, 90);
+    c.font = "bold 24px system-ui"; c.textAlign = "right"; c.fillStyle = link.color;
+    c.fillText(link.text, this.hudCanvas.width - 28, 90); c.textAlign = "left";
+    c.font = "24px system-ui"; c.fillStyle = "#dce5ee";
     c.fillText(`${ack} · ${detection}${this.status?.estop ? " · FORWARD BLOCKED" : ""}`, 28, 126);
     if (drill || autonomy) { c.font = "18px system-ui"; c.fillText([autonomy, drill].filter(Boolean).join(" · "), 28, 150); }
     const hint = "R trigger: deadman · Stick: drive · A: seek/map · B: explore · X: center · Y: scan · L grip: drill · L trigger: ask";
@@ -674,6 +694,9 @@ export class RoverExperience {
     c.fillText(this.scanMessage.slice(0, 84), 28, 202);
     this.hudTexture.needsUpdate = true;
     this.drawSource(source);
+    this.drawStop(explainStop({ unsafe: ready, reason: this.gate.reason, latched: this.gate.needsRelease, cause: this.gate.cause, status: this.status,
+      xr: this.renderer.xr.isPresenting, held: this.input.held, autonomyArmed: this.autonomy.mode !== "teleop",
+      detectorStale: !this.detections || now - this.detectionsAt > 500 }));
     this.drawVoice();
     const drawn = this.drillHud.draw(now);
     this.drillPanel.visible = drawn; this.drillHud.canvas.hidden = !drawn;
@@ -691,6 +714,24 @@ export class RoverExperience {
     c.fillStyle = colors[1]; c.font = "bold 54px system-ui"; c.fillText(source.title, 28, 62);
     c.font = "26px system-ui"; c.fillText(source.detail.slice(0, 72), 28, 106);
     this.bannerTexture.needsUpdate = true;
+  }
+  /** Why motion stopped and the one action that recovers it, under the source banner. */
+  private drawStop(stop: ReturnType<typeof explainStop>) {
+    const key = stop ? `${stop.tone}|${stop.cause}|${stop.recovery}` : "";
+    if (key === this.stopKey) return;
+    this.stopKey = key;
+    const line = this.sourceBanner.querySelector<HTMLElement>(".stop-reason")!;
+    line.hidden = !stop; this.stopPanel.visible = !!stop;
+    if (!stop) return;
+    line.dataset.tone = stop.tone;
+    line.querySelector("b")!.textContent = stop.cause;
+    line.querySelector("em")!.textContent = stop.recovery;
+    const c = this.stopCanvas.getContext("2d")!, warn = stop.tone === "warn";
+    c.clearRect(0, 0, 1024, 110); c.fillStyle = warn ? "#4a3606ee" : "#3b0d0dee"; c.fillRect(0, 0, 1024, 110);
+    c.fillStyle = warn ? "#ffe08a" : "#ffb3a8"; c.font = "bold 36px system-ui";
+    c.fillText(`${warn ? "⚠" : "■"} ${stop.cause}`.slice(0, 54), 24, 44);
+    c.fillStyle = "#ffffff"; c.font = "28px system-ui"; c.fillText(`→ ${stop.recovery}`.slice(0, 66), 24, 90);
+    this.stopTexture.needsUpdate = true;
   }
   private drawVoice() {
     const voice = this.voice, action = voice?.pendingAction ?? null;
@@ -842,7 +883,7 @@ export class RoverExperience {
     window.removeEventListener("blur", this.blur); window.removeEventListener("click", this.click); document.removeEventListener("visibilitychange", this.visibility);
     document.removeEventListener("keydown", this.escapeStop);
     this.cameraTexture.dispose(); this.hudTexture.dispose(); this.drillTexture.dispose(); this.drillHud.canvas.remove();
-    this.bannerTexture.dispose(); this.voiceTexture.dispose(); this.sourceBanner.remove();
+    this.bannerTexture.dispose(); this.stopTexture.dispose(); this.voiceTexture.dispose(); this.sourceBanner.remove();
   }
 }
 
