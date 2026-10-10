@@ -87,9 +87,13 @@ at both ends. Use the actual rover address:
 
 This explicit HTTP example travels inside the encrypted Tailscale tunnel.
 HTTPS upstream is supported with certificate verification and `--ca-file`.
-Open `http://localhost:8080` in Quest Browser. Right trigger is the deadman, left
-stick drives, A toggles camera/map, and B centers pan. Choose digital look-around
-for a fixed camera; servo pan requires a working camera mount.
+Open `http://localhost:8080` in Quest Browser. Right trigger is the deadman and the
+left stick drives. Right A seeks the person under the controller ray (otherwise it
+toggles camera/map), right B toggles Explore, left X centers pan, left Y scans,
+left grip starts the rescue drill, and the held left trigger asks the local
+assistant by voice. The [Quest controls](quest/README.md#controls) are
+authoritative. Choose digital look-around for a fixed camera; servo pan requires
+a working camera mount.
 
 The Jetson stops on its 250 ms permit lease; the Uno has a separate 300 ms
 watchdog. Stale video or reconnection requires releasing and pressing again.
