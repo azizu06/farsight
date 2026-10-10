@@ -389,8 +389,9 @@ def main():
     parser.add_argument("--simulate-rover", action="store_true", help="Explicit virtual rover; never opens serial")
     parser.add_argument("--max-pwm", type=int, default=100, help="Initial motor PWM ceiling, 1..255")
     parser.add_argument("--min-pwm", type=int, default=0, help="Measured wheel starting PWM floor; default 0 until calibrated")
-    parser.add_argument("--detector", choices=("hog", "none"), default="hog", help="Bundled CPU person detector")
-    parser.add_argument("--detector-model", help="YOLOv8/11 ONNX or TensorRT engine path; overrides bundled HOG")
+    parser.add_argument("--detector", choices=("hog", "pose", "none"), default="hog",
+                        help="hog: bundled CPU detector; pose: YOLO11-pose (needs --detector-model); none")
+    parser.add_argument("--detector-model", help="YOLOv8/11 ONNX or TensorRT engine path; overrides bundled HOG. With --detector pose: YOLO11-pose model")
     parser.add_argument("--h264", action="store_true", help="Enable ffmpeg H264 fragmented MP4 WebSocket")
     parser.add_argument("--mission-dir", help="Persist detection evidence beneath this directory")
     args = parser.parse_args()
