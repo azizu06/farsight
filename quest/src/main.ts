@@ -2,6 +2,7 @@ import { mapResponseRevision } from "./map-response.js";
 import { chooseMapTransfer, MAP_TRANSFER_INTERVAL_MS } from "./map-transfer.js";
 import { floorHeight, mapWalk } from "./map-walk.js";
 import { PersonMarkers } from "./person-markers.js";
+import { DenseMapView } from "./dense-map";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { VRButton } from "three/addons/webxr/VRButton.js";
@@ -329,6 +330,10 @@ renderer.setAnimationLoop((_time, frame) => {
     renderer.setClearColor(0x393939);
   }
   if (!renderer.xr.isPresenting) controls.update();
+  denseView.update(start, renderer.xr.isPresenting ? renderer.xr.getCamera() : camera,
+    (renderer.xr.isPresenting || !document.hidden) && mapNeeded());
+  if (denseView.active) { cloud.visible = false; surfaces.visible = false; }
+  else visibility();
   try { renderer.render(scene, camera); } catch (error) { rover?.renderFailed(); throw error; }
   // Commit camera freshness and renew the control lease only after this frame rendered without throwing.
   rover?.afterRender(performance.now());
@@ -374,6 +379,11 @@ function emptyGeometry() {
     count: 0,
   };
 }
+const denseView = new DenseMapView(root, renderer, (bounds, floor) => {
+  bounds.getCenter(vrMapCenter); bounds.getSize(vrMapSize);
+  vrMapSpan = Math.max(vrMapSize.x, vrMapSize.z, 4);
+  mapWalk.setFloor(floor);
+});
 function visibility() {
   const walking = walkingNow();
   scanMarkers.visible = walking || view !== "camera";
@@ -787,5 +797,6 @@ window.addEventListener("beforeunload", () => {
   }
   rover?.dispose();
   diagnostics?.dispose();
+  denseView.dispose();
   renderer.dispose();
 });

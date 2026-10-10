@@ -1,1 +1,4 @@
 aiohttp>=3.12,<4
+# Optional --dense-map retained visual lane.
+numpy>=1.26,<3
+brotli>=1.1,<2

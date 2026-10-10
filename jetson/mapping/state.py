@@ -7,7 +7,8 @@ import cv2
 import numpy as np
 
 from .geometry import encode_points, export_ply
-from .phone import VISUAL_LODS, reconstruct
+from .phone import VISUAL_LODS, reconstruct, measured_points
+from .dense import DenseMap
 from .surfaces import SurfaceMap
 from .voxel import VoxelMap
 from .wire import decimate_mesh_bin, decimate_points_bin
@@ -19,10 +20,11 @@ FUSION_BYPASSED = "Geometry lane external; fusion bypassed"
 class MapState:
     def __init__(self, demo=False, fusion_bypass=False):
         self.lock = threading.RLock()
-        # With the bypass the Jetson builds no 3D map: frames still publish the camera,
-        # depth view, pose and the navigation observers, but no voxel/mesh integration.
+        # Bypass only coarse voxel/mesh fusion. Frames still publish the camera,
+        # depth, pose and navigation observations, and retain measured dense detail.
         self.fusion_bypass = fusion_bypass
         self.cloud = VoxelMap()
+        self.dense = DenseMap(cache_only=True)
         self.surfaces = SurfaceMap()
         self.demo = demo
         self.connected = demo
@@ -70,6 +72,7 @@ class MapState:
                 self.last_frame_received = 0.0
                 self.frame_id = -1
             self.connected, self.device = True, device
+            self.dense.source = list(identity)
             self.processing_generation += 1
             self.last_capture = self.last_pose_capture = -1.0
             self.pose_history.clear()
@@ -79,6 +82,7 @@ class MapState:
     def clear(self):
         with self.lock:
             self.cloud.clear()
+            self.dense.clear(list(self.identity) if self.identity else None)
             if self.scan:
                 self.cloud = VoxelMap()  # restore phone fusion's voxel size/budget
             self.surfaces.clear()
@@ -148,6 +152,8 @@ class MapState:
             self.depth_range = [round(float(np.min(frame.depth[valid])), 2), round(float(np.max(frame.depth[valid])), 2)] if valid.any() else None
             may_fuse = (not self.fusion_bypass and not self.paused and frame.header["tracking"] == "normal"
                         and self.tracking == "normal")
+            may_dense = (not self.paused and frame.header["tracking"] == "normal"
+                         and self.tracking == "normal")
             self.reason = (FUSION_BYPASSED if self.fusion_bypass else "Fusion paused" if self.paused
                            else "ARKit tracking limited; fusion frozen" if not may_fuse else None)
         for observer in self.frame_observers:
@@ -155,6 +161,12 @@ class MapState:
                 observer(frame)
             except Exception:
                 pass  # navigation must never break mapping or camera publication
+        if may_dense:
+            detail, rgb = measured_points(frame)
+            with self.lock:
+                if (generation == self.processing_generation and self.connected
+                        and not self.paused and self.tracking == "normal"):
+                    self.dense.integrate(detail, rgb)
         if not may_fuse:
             return
         points, colors, mesh, lods = reconstruct(frame, lods=VISUAL_LODS)
