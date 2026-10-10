@@ -12,6 +12,7 @@ import { AutonomyIntent, autonomyLabel, containPoint, pickTarget, rayPanelPoint 
 import { PHRASE_LABELS, sbarLines, speakPhrase } from "./survivor-phrases.js";
 import { DRILL_TRAINS, DrillHud, endLines } from "./drill-hud.js";
 import { DetectionCache, PACKET_FRESH_MS } from "./detection-match.js";
+import { IdentityCards } from "./identity-card.js";
 import { defaultH264, defaultMount, loadSettings, pageStorage, saveSettings } from "./viewer-settings.js";
 import { PanSmoother } from "./pan-smoothing.js";
 import { encounterLine, summaryLines, timelineLines } from "./mission-report.js";
@@ -87,6 +88,15 @@ export class RoverExperience {
   private detections: Detections | null = null;
   private detectionsAt = -Infinity;
   private detectionFrames = new DetectionCache();
+  private identityCanvas = document.createElement("canvas");
+  private identityTexture = new THREE.CanvasTexture(this.identityCanvas);
+  private identityPanel = new THREE.Mesh(new THREE.PlaneGeometry(.84, .448),
+    new THREE.MeshBasicMaterial({ map: this.identityTexture, transparent: true,
+      toneMapped: false, depthTest: false, depthWrite: false }));
+  private identityDirty = true;
+  private lastIdentityPaint = -Infinity;
+  private identityPaintSource = "";
+  private identityCards = new IdentityCards({ onChange: () => { this.identityDirty = true; } });
   private status: ControlStatus | null = null;
   private seq = 0;
   private sent = new Map<number, number>();
@@ -255,6 +265,16 @@ export class RoverExperience {
     this.cockpit.add(screen, this.drillPanel, this.bannerPanel, this.stopPanel, this.voicePanel,
       this.actionMenu.panel, this.hintPanel, this.pointer); this.cockpit.visible = false;
     this.cameraScreen = screen;
+    this.identityCanvas.width = 300; this.identityCanvas.height = 160;
+    this.identityCanvas.hidden = true;
+    this.identityCanvas.setAttribute("aria-label", "Recently recognized faces");
+    Object.assign(this.identityCanvas.style, { position: "absolute", top: "12px", right: "12px",
+      width: "min(300px, 42vw)", height: "auto", pointerEvents: "none" });
+    document.querySelector("#full-camera")!.append(this.identityCanvas);
+    this.identityTexture.colorSpace = THREE.SRGBColorSpace;
+    this.identityPanel.position.set(.93, .79, .025);
+    this.identityPanel.renderOrder = 15; this.identityPanel.visible = false;
+    this.cameraScreen.add(this.identityPanel);
     this.scene.add(this.cockpit);
     this.h264 = new H264Viewer(() => {
       if (performance.now() - this.lastVideoAt > 60) { this.dirty = true; this.lastVideoAt = performance.now(); }
@@ -293,6 +313,7 @@ export class RoverExperience {
     this.mountSelect.onchange = () => this.setMount(this.mountSelect.value === "fixed", true);
     this.setMount(this.settings.values.mount === "fixed", false);
     this.connectControl(); this.connectDetections();
+    void this.connectIdentity();
     if (this.settings.values.h264) this.setVideo(true, false);
     this.pollHealth(performance.now());
     void this.fetchFrame();
@@ -310,6 +331,17 @@ export class RoverExperience {
     }
     if (key === "KeyE" && !event.repeat) { event.preventDefault(); this.toggleExplore(); }
   };
+  private async connectIdentity() {
+    const abort = new AbortController(), timer = window.setTimeout(() => abort.abort(), 2000);
+    try {
+      const response = await fetch("/phone/identity/status", { cache: "no-store", signal: abort.signal });
+      if (!response.ok) return;
+      const status = await response.json();
+      if (!this.stopped && status.enabled && status.ready)
+        this.identityCards.connect(this.endpoint("/ws/identity"));
+    } catch { /* Recognition is optional; its absence never changes camera or control. */ }
+    finally { window.clearTimeout(timer); }
+  }
   // The 3D scene canvas sits above the camera canvas, so map window clicks onto the camera image.
   private click = (event: MouseEvent) => {
     if (this.getView() !== "camera" || this.renderer.xr.isPresenting || !(event.target instanceof HTMLCanvasElement)) return;
@@ -794,9 +826,24 @@ export class RoverExperience {
   private paint(now: number) {
     let painted = (!this.renderer.xr.isPresenting || !this.actionMenu.visible) &&
       (this.dirty || now - this.lastCanvasDraw > 100) && this.drawCamera(now) ? 1 : 0;
+    this.paintIdentity(now);
     // An overdue HUD draws even when fresh camera frames are arriving.
     if (now - this.lastHudAt > (painted ? 200 : 100)) { this.drawHUD(now); this.lastHudAt = now; painted++; }
     if (this.bannerPending && (!painted || now - this.bannerPending.at > 100)) this.drawBanner();
+  }
+  private paintIdentity(now: number) {
+    if (!this.identityCanvas || (!this.identityDirty && this.identityPaintSource === this.frameSource
+        && now - this.lastIdentityPaint < 100)) return;
+    const context = this.identityCanvas.getContext("2d")!;
+    context.clearRect(0, 0, 300, 160);
+    const count = this.identityCards.draw(context, { now, source: this.frameSource, x: 0, y: 0, width: 300 });
+    // This layer expires even when H.264 cannot confirm another decoded frame.
+    // Updating identity pixels never marks camera presentation or renews its age.
+    if (count || this.identityPanel.visible || this.identityDirty) this.identityTexture.needsUpdate = true;
+    this.identityPanel.visible = count > 0;
+    this.identityCanvas.hidden = count === 0;
+    this.identityDirty = false; this.lastIdentityPaint = now;
+    this.identityPaintSource = this.frameSource;
   }
   /** A tracked controller ray onto the camera panel, in canvas-normalized coordinates. */
   private panelPoint(frame: XRFrame | undefined, reference: XRReferenceSpace | null, right: XRInputSource | undefined) {
@@ -1416,6 +1463,9 @@ export class RoverExperience {
     this.stop("Viewer closed", true); this.stopped = true;
     this.timers.forEach(timer => { window.clearInterval(timer); window.clearTimeout(timer); });
     this.socket?.close(); this.detectionsSocket?.close();
+    this.identityCards.close();
+    this.identityCanvas.remove(); this.identityTexture.dispose();
+    this.identityPanel.geometry.dispose(); (this.identityPanel.material as THREE.Material).dispose();
     for (const request of this.frameRequests.values()) request.controller.abort();
     this.frameRequests.clear(); this.h264.stop(); this.voice?.dispose();
     window.removeEventListener("keydown", this.keyDown); window.removeEventListener("keyup", this.keyUp);

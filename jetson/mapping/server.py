@@ -28,6 +28,8 @@ from jetson.camera import CameraService
 from jetson.capture_permits import CapturePermits
 from jetson.video import VideoService
 from jetson.perception import PerceptionService
+from jetson.identity_service import IdentityService
+from jetson.identity_api import identity_router
 from jetson.mission import Mission
 from jetson.replay import ReplayControl, ReplayPerception, ReplaySession
 from jetson.control import ControlService
@@ -87,6 +89,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
     sim = (SimFeed(RoverSim(load_world(sim_world), speed_mps=nav_speed_mps, turn_radps=nav_turn_radps))
            if sim_world is not None else None)
     camera_service = CameraService(state, device=camera_device, lidar_drive=lidar_drive)
+    identity_service = IdentityService.from_environment(camera_service)
     video_service = VideoService(camera_service, enabled=h264, fps=video_fps, bitrate=video_bitrate)
     mission = Mission(mission_dir, record=record)
     # Opt-in ROS 2 Nav2 backend (ros2/farsight_nav); without --nav2 autonomy is unchanged.
@@ -167,6 +170,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
         await camera_service.start()
         await video_service.start()
         await perception.start()
+        await identity_service.start()
         triage.start()
         try:
             yield
@@ -184,6 +188,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
             await assistant.close()
             await phrases.close()
             await asyncio.to_thread(triage.close)
+            await identity_service.close()
             await perception.close()
             await video_service.close()
             await camera_service.close()
@@ -199,6 +204,8 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
     app.state.video = video_service
     app.state.control = control
     app.state.perception = perception
+    app.state.identity = identity_service
+    app.include_router(identity_router(identity_service))
     mission.face_status = perception.face_status
     perception.face_wanted = mission.drill_score.running
     app.state.mission = mission
