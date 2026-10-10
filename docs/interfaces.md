@@ -633,7 +633,7 @@ lease, deadman, release, camera-stale and disconnect stops are unchanged.
 
 The rover iPhone constructs ARKit mesh anchors. The Mac assembles their latest
 replacements and serves Quest map snapshots locally. Jetson retains camera,
-fresh measured depth and pose for inference/control/Nav2; `--fusion-bypass`
+fresh measured depth and pose for inference/control/Nav2; `--map-fusion off`
 skips its visual map reconstruction. ARKit mesh updates are reconstruction,
 not a replacement for live navigation depth.
 
@@ -653,7 +653,7 @@ The fixed **124-byte** header matches `rust/farsight-geometry` and
 |---|---|
 | 0 | u8 version, 1 |
 | 1 | u8 operation: replace 0, remove 1, reset 2, snapshot-end 3 |
-| 2 | u16 flags: 0 raw, bit 0 zlib-framed DEFLATE, bit 1 standard Brotli; compression bits are mutually exclusive |
+| 2 | u16 coding: 0 raw, 1 zlib-framed DEFLATE, 2 standard Brotli; other values are rejected |
 | 4 | u64 wire sequence |
 | 12 | u64 capture map epoch |
 | 20 | 16 raw UUID bytes: capture session |
