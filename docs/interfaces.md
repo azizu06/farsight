@@ -16,8 +16,13 @@ Jetson Orin Nano (on the rover)  -- the brain
 Arduino Uno (ELEGOO V4 board) -> motors, pan servo, ultrasonic
 ```
 
-All servers run on the Jetson, port `8443` (HTTPS). The mock server
-(`tools/mock_jetson.py`) serves the same endpoints from a laptop with a video file.
+The current rover service runs on the Jetson at port `8443` (HTTP inside
+Tailscale or configured HTTPS). The MacBook serves the Quest app and proxies
+HTTP/WebSockets on `localhost:8080`; Quest accesses it through USB ADB reverse.
+Two USB-tethered phones supply the cellular tunnel. The private LAN is an
+alternative, not a venue-network dependency. `tools.demo --simulate` launches
+explicit ray-cast camera/map and virtual rover sources. See
+[transport setup](transport-setup.md) and [native phone capture](../ios/README.md).
 
 ## HTTP
 
@@ -26,6 +31,15 @@ All servers run on the Jetson, port `8443` (HTTPS). The mock server
 | `GET /` | Quest WebXR app (built `quest/dist`) |
 | `GET /stream.mjpg` | Camera, MJPEG, 640x480, target 30 fps |
 | `GET /health` | `{"camera": bool, "detector_fps": float, "rover": bool, "estop": bool}` |
+| `GET /camera.jpg` | Latest JPEG; `X-Frame-Id`, `X-Frame-Age-Ms`, `X-Frame-Source`; no-store |
+| `GET /control/status` | Read-only control status; no usable permit |
+| `GET /mission/report` | Evidence, persistence/source labels, drill results |
+| `POST /mission/drill` | `{"duration_s":90}`, person-track encounters, not distinct identities |
+
+Camera age is receiver receipt age adjusted by reported producer encoding time
+and server queue/decode delay. It does not measure pre-callback sensor exposure
+or the phone-to-Jetson transit. Measure physical camera-to-display latency on
+the actual rig; never advertise this metadata as that full measurement.
 
 ## WebSocket `/ws/detections` (Jetson -> Quest), JSON, every inference
 
@@ -51,12 +65,24 @@ Optional pose fields (YOLO11-pose), present when the detector is a pose model:
 ## WebSocket `/ws/control` (Quest -> Jetson), JSON, 20 Hz while the deadman is held
 
 ```json
-{"seq": 812, "deadman": true, "v": 0.4, "w": -0.2, "pan": 15, "mode": "teleop"}
+{"session_id":"from latest control status","permit":"from latest control status",
+ "seq":812,"deadman":true,"v":0.4,"w":-0.2,"pan":15,"mode":"teleop",
+ "video_fresh":true,"video_age_ms":120}
 ```
 
 - `v` forward speed and `w` turn rate, both -1..1. `pan` camera yaw in degrees, -80..80, 0 = forward.
 - `mode`: `"teleop"` or `"seek"` (seek also sends `"target_id"`).
 - No valid message for 250 ms, or `deadman: false` -> motors zero. Always.
+- One socket owns control. A new connection starts stopped. First send an
+  ordered release `{"session_id":"...","seq":0,"deadman":false}`; then a new
+  physical press can send motion. Repeat release/press after a fault.
+- `permit` is an opaque token issued every 100 ms and expires 250 ms after its
+  **server issue**, checked against the Jetson monotonic clock. Arrival never
+  grants a new 250 ms lease. Expired/out-of-order/invalid messages stop motion;
+  sequence numbers must be increasing JavaScript-safe integers.
+- `video_age_ms` must be finite and at most 500 ms; `video_fresh` must be true.
+  The server independently requires a fresh camera. Source loss stops all
+  motion. Client decoded/drawn freshness also stops when the display stalls.
 
 ### Optional Explore / Seek extension
 
@@ -99,14 +125,52 @@ their existing safety meanings. Public status never grants a usable permit.
 Jetson replies on the same socket, 10 Hz:
 
 ```json
-{"seq": 812, "range_cm": 64, "estop": false, "mode": "teleop", "link_ms": 38}
+{"type":"control_status","session_id":"...","permit":"opaque token","permit_ms":250,
+ "seq":812,"range_cm":64,"estop":false,"mode":"teleop","link_ms":38,
+ "rover":true,"simulated":false,"requires_release":false,"reason":"active",
+ "left_pwm":40,"right_pwm":20,"pan_deg":90,"max_pwm":100,"min_pwm":0}
 ```
 
-`estop` is true when `range_cm < 25`; forward motion is blocked, reverse and turning are allowed.
+`estop` also covers unknown/stale range and an ultrasonic pan outside ±10°.
+Those conditions block forward translation; camera/link failure stops all
+motion. `link_ms` is permit age at command arrival; the browser's acknowledged
+sequence RTT is a different measurement. Optional autonomy fields follow below.
+
+## H264 over WebSocket `/ws/video`
+
+Enable the server with `--h264`; enable the viewer's H.264 checkbox separately.
+Initial profile is 640x480, 10 fps, 500 kbps software encoding. The Orin Nano has
+no NVENC. JPEG remains a compatibility path.
+
+The server sends `video_init` JSON containing `mime` (actual H.264 codec string)
+and `source`, followed by MP4 initialization bytes. The client pipelines exactly
+two `{"type":"next","request_id":1}` requests. Each response is JSON then
+fragment bytes:
+
+```json
+{"type":"video_segment","request_id":1,"media_start_s":0.1,"media_end_s":0.2,
+ "frame":42,"source":"PHONE RGB","age_ms":90,"server_wait_ms":40,
+ "samples":[{"media_start_s":0.1,"media_end_s":0.2,"frame":42}]}
+```
+
+Media times use the MP4 presentation timeline. Decoder frame callbacks select
+the matching capture sample for overlays and freshness. Add full per-request
+elapsed time and subsequent local elapsed time to `age_ms`. Subtract only the
+finite, nonnegative, bounded `server_wait_ms` measured after server request
+receipt; missing or invalid wait metadata retains the full conservative bound.
+Never subtract network transit. Congestion resets the complete stream from
+initialization/keyframe; no dependent fragments are silently dropped and reused.
+An encoder failure clears readiness, closes consumers, and restarts the encoder.
 
 ## `POST /ask` (Quest -> Jetson), local assistant
 
 Request: `multipart/form-data` with `audio` (webm/wav from the Quest mic) or JSON `{"text": "what do you see?"}`.
+The current implementation supports optional loopback llama-server, local
+whisper-cli and Piper. With no VLM, `model` is `local-observation-summary`;
+successful VLM answers use `local-vision-model`. Current answers always have
+`action: null`. Missing audio dependencies return 503 while typed text remains
+available. Uploads are bounded to 8 MiB and local conversion to twenty seconds.
+See [assistant setup](assistant-setup.md).
 Response:
 
 ```json
