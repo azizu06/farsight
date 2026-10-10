@@ -11,10 +11,12 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::Mutex;
 
-#[derive(Default)]
 struct Bucket {
-    tokens: f64,
-    last: Option<Instant>,
+    /// Scheduled finish time of the last committed send. Idle credit is the
+    /// amount this timestamp lags behind now, clamped to `burst` — so a send
+    /// may start early only after real idle time, and slept time can never be
+    /// re-credited as fresh tokens.
+    next: Option<Instant>,
 }
 
 pub struct BulkPacer {
@@ -24,7 +26,7 @@ pub struct BulkPacer {
 
 impl BulkPacer {
     fn new(rate_mbps: f64) -> Self {
-        Self { rate: rate_mbps * 1_000_000.0 / 8.0, bucket: Mutex::new(Bucket::default()) }
+        Self { rate: rate_mbps * 1_000_000.0 / 8.0, bucket: Mutex::new(Bucket { next: None }) }
     }
 
     async fn take(&self, n: usize) {
@@ -33,20 +35,18 @@ impl BulkPacer {
         }
         let mut b = self.bucket.lock().await;
         let now = Instant::now();
-        // Small bursts only: a big credit lets one bulk payload occupy the
-        // shared link long enough to delay control frames behind it.
-        let burst = self.rate / 40.0; // up to 25ms of credit
-        let tokens = match b.last {
-            Some(last) => (b.tokens + (now - last).as_secs_f64() * self.rate).min(burst),
-            None => burst,
+        // Small bursts only: up to 25ms of accumulated idle credit lets a bulk
+        // payload start early; anything beyond is scheduled (GCRA-style).
+        let burst = Duration::from_millis(25);
+        let earliest = now.checked_sub(burst).unwrap_or(now);
+        let start = match b.next {
+            Some(t) => t.max(earliest),
+            None => earliest,
         };
-        b.last = Some(now);
-        let n = n as f64;
-        if n > tokens {
-            b.tokens = 0.0;
-            tokio::time::sleep(Duration::from_secs_f64((n - tokens) / self.rate)).await;
-        } else {
-            b.tokens = tokens - n;
+        let wake = start + Duration::from_secs_f64(n as f64 / self.rate);
+        b.next = Some(wake);
+        if wake > now {
+            tokio::time::sleep(wake - now).await;
         }
     }
 }

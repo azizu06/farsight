@@ -399,15 +399,31 @@ async fn scan_start(State(s): State<Arc<AppState>>, Json(body): Json<Value>) -> 
     }
 }
 
+/// Bulk bodies leave in 16KiB credit-sized pieces so a large snapshot can't
+/// occupy the link ahead of control frames for the whole write.
+const PACE_CHUNK: usize = 16 * 1024;
+
+fn paced_body(body: Vec<u8>) -> Body {
+    let all = bytes::Bytes::from(body);
+    let stream = futures_util::stream::unfold((all, 0usize), |(all, off)| async move {
+        if off >= all.len() {
+            return None;
+        }
+        let end = (off + PACE_CHUNK).min(all.len());
+        crate::pacer::pace(end - off).await;
+        let chunk = all.slice(off..end);
+        Some((Ok::<_, std::convert::Infallible>(chunk), (all, end)))
+    });
+    Body::from_stream(stream)
+}
+
 async fn map_points(State(s): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     let (body, coding) = s.mapping.point_packet(accept_encoding(&headers));
-    crate::pacer::pace(body.len()).await;
     packet_response(body, coding, false)
 }
 
 async fn map_mesh(State(s): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     let (body, coding) = s.mapping.mesh_packet(accept_encoding(&headers));
-    crate::pacer::pace(body.len()).await;
     packet_response(body, coding, true)
 }
 
@@ -416,7 +432,9 @@ fn accept_encoding(headers: &HeaderMap) -> &str {
 }
 
 fn packet_response(body: Vec<u8>, coding: &'static str, no_store: bool) -> Response {
-    let mut response = ([(header::CONTENT_TYPE, "application/octet-stream"), (header::VARY, "Accept-Encoding")], body).into_response();
+    let mut response = Response::new(paced_body(body));
+    response.headers_mut().insert(header::CONTENT_TYPE, "application/octet-stream".parse().unwrap());
+    response.headers_mut().insert(header::VARY, "Accept-Encoding".parse().unwrap());
     if !coding.is_empty() {
         response.headers_mut().insert(header::CONTENT_ENCODING, coding.parse().unwrap());
     }
@@ -427,14 +445,11 @@ fn packet_response(body: Vec<u8>, coding: &'static str, no_store: bool) -> Respo
 }
 
 async fn map_export(State(s): State<Arc<AppState>>) -> Response {
-    (
-        [
-            (header::CONTENT_TYPE, "application/octet-stream"),
-            (header::CONTENT_DISPOSITION, "attachment; filename=\"farsight-scan.ply\""),
-        ],
-        s.mapping.ply(),
-    )
-        .into_response()
+    let mut response = Response::new(paced_body(s.mapping.ply()));
+    let h = response.headers_mut();
+    h.insert(header::CONTENT_TYPE, "application/octet-stream".parse().unwrap());
+    h.insert(header::CONTENT_DISPOSITION, "attachment; filename=\"farsight-scan.ply\"".parse().unwrap());
+    response
 }
 
 async fn map_reset(State(s): State<Arc<AppState>>) -> Json<Value> {
@@ -498,11 +513,10 @@ async fn map_pause(State(s): State<Arc<AppState>>, Json(body): Json<Value>) -> R
 async fn camera_jpg(State(s): State<Arc<AppState>>) -> Response {
     match s.camera.preview() {
         Some(frame) => {
-            crate::pacer::pace(frame.jpeg.len()).await;
             let fid = frame.frame_id;
             let age = frame.age_ms();
             let source = frame.source.clone();
-            let mut resp = Response::new(Body::from(frame.jpeg));
+            let mut resp = Response::new(paced_body(frame.jpeg));
             let h = resp.headers_mut();
             h.insert(header::CONTENT_TYPE, "image/jpeg".parse().unwrap());
             h.insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
@@ -518,11 +532,13 @@ async fn camera_jpg(State(s): State<Arc<AppState>>) -> Response {
 async fn depth_jpg(State(s): State<Arc<AppState>>) -> Response {
     let jpeg = s.mapping.inner.lock().unwrap().depth_jpeg.clone();
     match jpeg {
-        Some(j) => (
-            [(header::CONTENT_TYPE, "image/jpeg"), (header::CACHE_CONTROL, "no-store")],
-            j,
-        )
-            .into_response(),
+        Some(j) => {
+            let mut resp = Response::new(paced_body(j));
+            let h = resp.headers_mut();
+            h.insert(header::CONTENT_TYPE, "image/jpeg".parse().unwrap());
+            h.insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+            resp
+        }
         None => (StatusCode::SERVICE_UNAVAILABLE, "Waiting for measured depth").into_response(),
     }
 }
@@ -539,8 +555,14 @@ async fn stream_mjpg(State(s): State<Arc<AppState>>) -> Response {
                     let mut part = b"--frame\r\nContent-Type: image/jpeg\r\n\r\n".to_vec();
                     part.extend_from_slice(&f.jpeg);
                     part.extend_from_slice(b"\r\n");
-                    crate::pacer::pace(part.len()).await;
-                    yield Ok::<_, std::io::Error>(part);
+                    let all = bytes::Bytes::from(part);
+                    let mut off = 0usize;
+                    while off < all.len() {
+                        let end = (off + PACE_CHUNK).min(all.len());
+                        crate::pacer::pace(end - off).await;
+                        yield Ok::<_, std::io::Error>(all.slice(off..end).to_vec());
+                        off = end;
+                    }
                     last = identity;
                 }
             }
