@@ -24,9 +24,13 @@ def feed(nav, tracking="normal", identity=PHONE, frame=True):
         mapping.identity, mapping.connected, mapping.tracking = identity, True, tracking
         mapping.last_received, mapping.pose = time.monotonic(), np.eye(4)
     if frame:
-        nav.offer_frame(type("Frame", (), dict(header=dict(
-            session_id=identity[0], map_epoch=identity[1], tracking=tracking,
-            _received_monotonic=time.monotonic())))())
+        from jetson.mapping.geometry import Calibration
+        depth = np.full((120, 160), 3.0, np.float32)
+        nav.offer_frame(type("Frame", (), dict(
+            header=dict(session_id=identity[0], map_epoch=identity[1], tracking=tracking,
+                        _received_monotonic=time.monotonic()),
+            depth=depth, confidence=np.full(depth.shape, 2, np.uint8), transform=np.eye(4),
+            calibration=Calibration(160, 120, 135, 135, 79.5, 59.5)))())
 
 
 class Clock:
@@ -272,6 +276,60 @@ class LeaseTests(unittest.TestCase):
                 feed(self.nav)
                 self.send(deadman=False)
                 self.drive_goto()
+
+    def test_seek_projects_the_person_through_depth_and_follows_with_standoff(self):
+        from jetson.mapping.geometry import Calibration
+        depth = np.full((120, 160), 3.0, np.float32)
+        frame = type("Frame", (), dict(header=dict(session_id=PHONE[0], map_epoch=PHONE[1], tracking="normal",
+                                                    _received_monotonic=time.monotonic()),
+                                        depth=depth, confidence=np.full(depth.shape, 2, np.uint8),
+                                        calibration=Calibration(160, 120, 135, 135, 79.5, 59.5),
+                                        transform=np.eye(4)))()
+        self.nav.offer_frame(frame)
+        boxes = [dict(id=4, cls="person", x=0.45, y=0.2, w=0.1, h=0.6)]
+        self.state.detections = lambda: dict(boxes=boxes, fresh=True, age_ms=10, error=None)
+        self.bridge(type="status", state="idle", goal_id=None)
+        self.assertTrue(self.send(mode="seek", target_id=4))
+        self.state.output()
+        seek = self.nav.seek
+        self.assertAlmostEqual(seek["person"][0], 0.0, places=1)
+        self.assertAlmostEqual(seek["person"][1], -3.0, places=1)
+        self.assertAlmostEqual(self.nav.intent()["goal"]["x"], 3.0 - self.nav.standoff, places=3)  # odom X = -z
+        first = self.nav.intent()["goal_id"]
+        self.assertTrue(first.startswith("seek-"))
+        self.assertEqual(self.state.status()["nav"]["mode"], "seek")
+        depth[:] = 4.0  # the person walked 1 m further away
+        self.nav.seek_checked = 0
+        self.state.output()
+        self.assertNotEqual(self.nav.intent()["goal_id"], first)
+        self.bridge(type="cmd_vel", linear=0.2, angular=0.0, goal_id=self.nav.intent()["goal_id"])
+        self.assertGreater(self.state.output()[0], 0)
+        depth[:] = 0.9  # close enough: arrived, stopped
+        self.nav.seek_checked = 0
+        self.state.output()
+        self.assertEqual(self.state.output()[:2], (0, 0))
+        self.assertEqual(self.state.status()["nav"]["state"], "arrived")
+        boxes.clear()  # out of view long enough: target lost
+        self.nav.SEEK_LOST_S, self.nav.seek_checked = 0.0, 0
+        self.state.output()
+        self.assertEqual(self.state.status()["nav"]["state"], "failed")
+
+    def test_nav_explore_hands_over_to_seek_on_the_first_person(self):
+        boxes, detector = [], dict(error=None)
+        self.state.detections = lambda: dict(boxes=boxes, fresh=True, age_ms=10, error=detector["error"])
+        self.bridge(type="status", state="driving", goal_id="explore-1")
+        self.assertTrue(self.send(mode="explore"))
+        self.state.output()
+        self.assertEqual(self.nav.intent()["mode"], "explore")
+        self.assertEqual(self.state.status()["nav"]["backend"], "nav2")
+        boxes.append(dict(id=7, cls="person", x=0.4, y=0.2, w=0.1, h=0.5))
+        detector["error"] = "detector stalled"  # boxes from a faulted detector are not a person sighting
+        self.state.output()
+        self.assertEqual(self.nav.intent()["mode"], "explore")
+        detector["error"] = None
+        self.state.output()
+        self.assertEqual((self.state.status()["mode"], self.nav.intent()["mode"]), ("seek", "seek"))
+        self.assertEqual(self.nav.intent()["target_id"], 7)
 
     def test_controller_change_or_serial_fault_disarms_the_goal(self):
         self.bridge(type="status", state="idle", goal_id=None)

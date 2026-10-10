@@ -23,11 +23,19 @@ def topic_once(topic, timeout=20):
 def bringup():
     with Stack("smoke", ["--demo", "--simulate-rover", "--proximity-stop", "off"]) as stack:
         stack.nav_ready()
-        topics = subprocess.run(["ros2", "topic", "list"], capture_output=True, text=True).stdout.split()
-        for topic in ("/odom", "/farsight/depth/points", "/farsight/depth/image", "/farsight/depth/camera_info",
-                      "/farsight/range", "/local_costmap/costmap", "/global_costmap/costmap", "/cmd_vel"):
-            if topic not in topics:
-                raise AssertionError(f"missing topic {topic}")
+        expected = {"/odom", "/farsight/depth/points", "/farsight/depth/image", "/farsight/depth/camera_info",
+                    "/farsight/range", "/local_costmap/costmap", "/global_costmap/costmap", "/cmd_vel"}
+        listed = set()
+
+        def all_listed():
+            # A fresh ros2 daemon can list before discovery has finished: poll, do not sample once.
+            listed.update(subprocess.run(["ros2", "topic", "list"], capture_output=True, text=True).stdout.split())
+            return expected <= listed
+
+        try:
+            stack.wait(all_listed, 20, "topics never appeared")
+        except AssertionError as exc:
+            raise AssertionError(f"{exc}; missing {sorted(expected - listed)}") from None
         topic_once("/odom")
         topic_once("/local_costmap/costmap")
         info = topic_once("/farsight/depth/camera_info")

@@ -274,7 +274,10 @@ every `/ws/control` status. Coordinates are voxel-map world metres: map `x, z`
   current mode, `fallback` when the reactive policy does (Explore/Seek without a
   bridge), `null` when nothing can. `message`: short human-readable detail.
 - `path`: at most 200 `[x, z]` points of the current Nav2 plan (Douglas-Peucker
-  reduced to 3 cm); empty when not navigating. `frontiers`: at most 50 `[x, z]`.
+  reduced to 3 cm); empty when not navigating. `frontiers`: at most 50 `[x, z]`
+  frontier goal points (widest first) that Explore chooses from. `goal`: the
+  go-to point, or in a Nav2 Seek the standoff point 0.8 m short of the person
+  (it moves with them); `null` in Explore.
 - `POST /nav/goal` with exactly `{"x": 2.0, "z": -1.5}` (metres, millimetre
   precision) returns `202` with the nav object, or `409` `{"nav": <nav object>,
   "message": reason}` when the backend is unavailable, navigation sensors are

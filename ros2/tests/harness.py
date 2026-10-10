@@ -8,6 +8,7 @@ import asyncio
 import json
 import os
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -20,18 +21,27 @@ import websockets
 REPO = os.environ.get("FARSIGHT_REPO", "/farsight")
 VENV_PY = os.environ.get("FARSIGHT_SERVER_PYTHON", "/opt/farsight-venv/bin/python")
 OUT = os.environ.get("FARSIGHT_OUT", "/out")
+# Off the container, pick a port nothing serves (the Jetson's live server is on 8443).
+PORT = int(os.environ.get("FARSIGHT_TEST_PORT", "8443"))
 
 
 class Stack:
     """Starts the rover server and the ROS navigation launch; stops both (process groups) on exit."""
 
-    def __init__(self, name, server_args=(), launch_args=(), port=8443):
-        self.name, self.port = name, port
+    def __init__(self, name, server_args=(), launch_args=(), port=None):
+        self.name, self.port = name, port or PORT
         self.server_args, self.launch_args = list(server_args), list(launch_args)
-        self.url = f"http://127.0.0.1:{port}"
+        self.url = f"http://127.0.0.1:{self.port}"
         self.processes = []
 
     def __enter__(self):
+        try:
+            socket.create_connection(("127.0.0.1", self.port), timeout=1).close()
+        except OSError:
+            pass
+        else:
+            # Never drive someone else's server: the test operator holds a real deadman lease.
+            raise RuntimeError(f"port {self.port} is already in use; set FARSIGHT_TEST_PORT to a free port")
         os.makedirs(OUT, exist_ok=True)
         env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
         server = [VENV_PY, "-m", "jetson.server", "--host", "127.0.0.1", "--port", str(self.port),
@@ -101,7 +111,7 @@ class Operator:
 
     def __init__(self, url, mode="teleop"):
         self.url = url.replace("http://", "ws://") + "/ws/control"
-        self.mode, self.v, self.w = mode, 0.0, 0.0
+        self.mode, self.v, self.w, self.target_id = mode, 0.0, 0.0, None
         self.holding = True
         self.status = {}
         self.samples = []      # (monotonic, status) for every control_status received
@@ -137,31 +147,38 @@ class Operator:
                     released = True
                     continue
                 released = False
-                await ws.send(json.dumps(dict(
-                    session_id=status["session_id"], permit=status["permit"], seq=seq, deadman=True,
-                    v=self.v, w=self.w, pan=0, mode=self.mode, video_fresh=True, video_age_ms=0)))
+                command = dict(session_id=status["session_id"], permit=status["permit"], seq=seq, deadman=True,
+                               v=self.v, w=self.w, pan=0, mode=self.mode, video_fresh=True, video_age_ms=0)
+                if self.mode == "seek":
+                    command["target_id"] = self.target_id
+                await ws.send(json.dumps(command))
 
 
 def report(name, ok, detail):
-    line = f"{'PASS' if ok else 'FAIL'} {name}: {detail}"
+    line = f"{'PASS' if ok is True else 'FAIL' if ok is False else ok} {name}: {detail}"
     print(line, flush=True)
     with open(os.path.join(OUT, "results.txt"), "a") as handle:
         handle.write(line + "\n")
     return ok
 
 
-def main(checks):
-    """Run named check functions; exit non-zero if any fails."""
+def main(checks, informational=()):
+    """Run named check functions; exit non-zero if any gating one fails.
+
+    Checks named in ``informational`` are comparisons: their outcome is reported as
+    INFO-PASS / INFO-FAIL and never fails the run.
+    """
     failures = 0
     only = set(sys.argv[1:])
     for name, check in checks:
         if only and name not in only:
             continue
         started = time.monotonic()
+        info = name in informational
         try:
             detail = check()
-            report(name, True, f"{detail} ({time.monotonic() - started:.0f} s)")
+            report(name, "INFO-PASS" if info else True, f"{detail} ({time.monotonic() - started:.0f} s)")
         except Exception as exc:
-            failures += 1
-            report(name, False, f"{exc} ({time.monotonic() - started:.0f} s)")
+            failures += not info
+            report(name, "INFO-FAIL" if info else False, f"{exc} ({time.monotonic() - started:.0f} s)")
     sys.exit(1 if failures else 0)

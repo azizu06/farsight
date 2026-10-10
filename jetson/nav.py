@@ -141,7 +141,7 @@ class NavService:
     DEPTH_TTL = 1.0    # ... and measured depth of the same sensor session at least this fresh
 
     def __init__(self, mapping, *, speed_mps=0.45, turn_radps=3.0, max_v=0.7, max_w=0.8,
-                 camera_height=0.15, backed_modes=("goto",), clock=time.monotonic):
+                 camera_height=0.15, backed_modes=NAV_MODES, standoff=0.8, clock=time.monotonic):
         for name, value in (("speed_mps", speed_mps), ("turn_radps", turn_radps), ("max_v", max_v),
                             ("max_w", max_w), ("camera_height", camera_height)):
             if not math.isfinite(value) or value <= 0:
@@ -151,6 +151,12 @@ class NavService:
         self.max_v, self.max_w = min(max_v, 1.0), min(max_w, 1.0)
         self.camera_height = camera_height
         self.backed_modes = frozenset(backed_modes)
+        self.standoff = standoff
+        # Seek: the tracked person's floor position from LiDAR depth, and the standoff goal
+        # that follows it. seek_goal_id is a string ("seek-N") so it never matches goto ids.
+        self.seek = None            # dict(target_id, person, seen_at, goal, goal_id, state, distance)
+        self.seek_seq = 0
+        self.seek_checked = 0.0
         self.control = None
         self.lock = threading.RLock()
         self.bridge = None
@@ -231,6 +237,8 @@ class NavService:
                 self.goal = None  # selecting another autonomy mode disarms go-to-point
             # A release keeps the goal armed; the next held "goto" heartbeat resumes it.
             active = bool(active and mode)
+            if mode != "seek" or not active or (self.seek and self.seek["target_id"] != target_id):
+                self.seek = None
             if active and not self.active:
                 self.cmd = None  # never resume on a command computed before this press
             self.mode, self.target_id, self.active = mode, target_id, active
@@ -261,6 +269,9 @@ class NavService:
                 return None
             if self.mode == "goto" and (self.goal is None or self._remote_state() == "arrived"):
                 return 0.0, 0.0
+            if self.mode == "seek" and (self.seek is None or self.seek["state"] in ("arrived", "failed")
+                                        or self.seek["goal"] is None):
+                return 0.0, 0.0  # no located person yet, already at the standoff, or the target is lost
             if self.cmd is None or self.clock() - self.cmd[2] > self.CMD_TTL:
                 return None
             return self.cmd[3:5] if si else self.cmd[0:2]
@@ -295,10 +306,21 @@ class NavService:
                     state = self._remote_state()
                     message = str(self.remote.get("message") or "")[:200]
                     path = self._world_points(self.remote.get("path") or [], 200, 0.03)
+                    seek = self.seek if mode == "seek" else None
+                    if mode == "seek" and (seek is None or (seek["goal"] is None and seek["state"] == "planning")):
+                        state, message, path = "planning", "Locating the person in LiDAR depth", None
+                    elif seek and seek["state"] == "arrived":
+                        state, message, path = "arrived", f"At the person, {seek['distance']:.1f} m away", None
+                    elif seek and seek["state"] == "failed":
+                        state, message, path = "failed", "Target lost", None
+                    elif seek:
+                        message = f"Following the person, {seek['distance']:.1f} m away"
                 if fault:  # Nav2 is up but cannot be trusted to drive: say why
                     state, message, path = "unavailable", SENSOR_MESSAGES[fault], None
                 if self.goal is not None:
                     goal = dict(x=round(self.goal[0], 3), z=round(self.goal[1], 3))
+                if mode == "seek" and self.seek and self.seek["goal"] is not None:
+                    goal = dict(x=round(self.seek["goal"][0], 3), z=round(self.seek["goal"][1], 3))
                 frontiers = self._world_points(self.remote.get("frontiers") or [], 50, 0)
             elif mode in ("explore", "seek"):
                 mapped = {"arrived": "arrived", "target_lost": "failed"}
@@ -373,13 +395,76 @@ class NavService:
 
     def intent(self):
         with self.lock:
-            goal = None
+            goal, goal_id = None, self.goal_id
             if self.mode == "goto" and self.goal is not None:
                 X, Y = world_to_odom(*self.goal)
                 goal = dict(x=X, y=Y, yaw=None)
+            elif self.mode == "seek" and self.seek and self.seek["goal"] is not None and self.seek["state"] == "driving":
+                X, Y = world_to_odom(*self.seek["goal"])
+                goal, goal_id = dict(x=X, y=Y, yaw=None), self.seek["goal_id"]
             return dict(type="intent", generation=self.generation, active=self.active and self.mode in self.backed_modes,
                         mode=self.mode if self.mode in self.backed_modes else None,
-                        goal=goal, goal_id=self.goal_id, target_id=self.target_id)
+                        goal=goal, goal_id=goal_id, target_id=self.target_id)
+
+    # -- Seek ---------------------------------------------------------------------------
+
+    SEEK_LOST_S = 3.0      # target unseen this long: Seek fails and stops
+    SEEK_MOVE_M = 0.3      # re-send the standoff goal when the person moved this far
+
+    def locate(self, box, frame):
+        """Floor (x, z) of a detected person from the LiDAR depth inside their box, or None."""
+        depth = np.asarray(frame.depth, np.float32)
+        height, width = depth.shape
+        u0, u1 = int((box["x"] + 0.3 * box["w"]) * width), int(math.ceil((box["x"] + 0.7 * box["w"]) * width))
+        v0, v1 = int((box["y"] + 0.25 * box["h"]) * height), int(math.ceil((box["y"] + 0.6 * box["h"]) * height))
+        patch = depth[max(0, v0):min(height, v1), max(0, u0):min(width, u1)]
+        confidence = getattr(frame, "confidence", None)
+        valid = np.isfinite(patch) & (patch > 0.15) & (patch <= 8)
+        if confidence is not None:
+            valid &= np.asarray(confidence)[max(0, v0):min(height, v1), max(0, u0):min(width, u1)] >= 1
+        if valid.sum() < 3:
+            return None
+        d = float(np.median(patch[valid]))
+        k = frame.calibration
+        u, v = (u0 + u1) / 2, (v0 + v1) / 2
+        point = np.asarray(frame.transform, float) @ np.array([(u - k.cx) / k.fx * d, -(v - k.cy) / k.fy * d, -d, 1.0])
+        return float(point[0]), float(point[2])
+
+    def update_seek(self, detections):
+        """ControlState calls this each tick in a Nav2-backed Seek with its detection snapshot."""
+        now = time.monotonic()
+        with self.lock:
+            if self.mode != "seek" or not self.active or now - self.seek_checked < 0.2:
+                return
+            self.seek_checked = now
+            frame, target_id = self.frame, self.target_id
+            seek = self.seek or dict(target_id=target_id, person=None, seen_at=now, goal=None, goal_id=None,
+                                     state="planning", distance=None)
+        boxes = (detections.get("boxes", []) if detections and detections.get("fresh")
+                 and not detections.get("error") else [])
+        box = next((b for b in boxes if b.get("id") == target_id and b.get("cls") == "person"), None)
+        person = self.locate(box, frame) if box is not None and frame is not None else None
+        transform = self.pose_snapshot()[0]
+        if person is not None and transform is not None:
+            rover = (float(transform[0, 3]), float(transform[2, 3]))
+            dx, dz = person[0] - rover[0], person[1] - rover[1]
+            distance = math.hypot(dx, dz)
+            seek.update(person=person, seen_at=now, distance=distance)
+            if distance <= self.standoff + 0.15:
+                seek["state"] = "arrived"
+            else:
+                goal = (person[0] - self.standoff * dx / distance, person[1] - self.standoff * dz / distance)
+                if seek["goal"] is None or seek["state"] != "driving" or math.dist(goal, seek["goal"]) > self.SEEK_MOVE_M:
+                    with self.lock:
+                        self.seek_seq += 1
+                        seek["goal_id"] = f"seek-{self.seek_seq}"
+                    seek["goal"] = goal
+                seek["state"] = "driving"
+        elif now - seek["seen_at"] >= self.SEEK_LOST_S:
+            seek["state"] = "failed"
+        with self.lock:
+            if self.mode == "seek" and self.active and self.target_id == seek["target_id"]:
+                self.seek = seek
 
     def receive(self, message):
         """Apply one bridge message (cmd_vel or status)."""
