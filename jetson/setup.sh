@@ -132,7 +132,7 @@ fi
 if [ "$CORE" = 0 ]; then
 step "Models that can be downloaded (Piper English + Spanish voices, face model, whisper base.en)"
 groups=piper,face,whisper
-[ "$VLM" = 0 ] || groups="$groups,vlm"
+[ "$VLM" = 0 ] || groups="$groups,vlm-qwen3"
 fetch_flags=(); [ "$DRY" = 0 ] || fetch_flags=(--dry-run)
 (cd "$REPO" && python3 -m tools.fetch_models --groups "$groups" ${fetch_flags[@]+"${fetch_flags[@]}"}) \
   || warn "some downloads failed (offline?). Push them from a laptop instead: tools/push_models.sh --fetch $USER@farsight.local"

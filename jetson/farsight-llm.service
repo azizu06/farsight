@@ -13,7 +13,7 @@ Environment="FARSIGHT_SELECTED_LLM_MMPROJ=@LLM_MMPROJ@"
 EnvironmentFile=@ENV_FILE@
 ExecStartPre=/usr/bin/test -s "${FARSIGHT_SELECTED_LLM_MODEL}"
 ExecStartPre=/usr/bin/test -s "${FARSIGHT_SELECTED_LLM_MMPROJ}"
-ExecStart=@SRC@/llama.cpp/build/bin/llama-server -m "${FARSIGHT_SELECTED_LLM_MODEL}" --mmproj "${FARSIGHT_SELECTED_LLM_MMPROJ}" --alias local --host 127.0.0.1 --port 8092 -c 2048 -ngl 99 --parallel 1 --threads 2 --threads-batch 2
+ExecStart=@SRC@/llama.cpp/build/bin/llama-server -m "${FARSIGHT_SELECTED_LLM_MODEL}" --mmproj "${FARSIGHT_SELECTED_LLM_MMPROJ}" --alias local --host 127.0.0.1 --port 8092 -c 2048 -ngl 99 --parallel 1 --image-max-tokens 256 --threads 2 --threads-batch 2
 Restart=on-failure
 RestartSec=3
 StandardOutput=journal

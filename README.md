@@ -66,7 +66,7 @@ First-time Jetson setup, from the laptop to a green `/health`, is the ordered ru
 ```sh
 python3 -m tools.export_detector --weights yolo11n.pt
 python3 -m tools.export_detector --weights yolo11n-pose.pt
-python3 -m tools.fetch_models                  # Piper English + Spanish voices, face model, whisper (--groups vlm for Qwen2.5-VL)
+python3 -m tools.fetch_models                  # Piper English + Spanish voices, face model, whisper (--groups vlm-qwen3 for the Qwen3-VL-2B assistant model)
 bash tools/push_models.sh USER@JETSON
 ```
 
