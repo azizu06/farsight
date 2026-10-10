@@ -747,6 +747,29 @@ assembled packets must stay inside Quest decoder limits (600,000 vertices,
 160,000 triangles). Geometry traffic has bounded bulk pacing and never shares
 or delays the control permit lane. Network recovery grants no motion intent.
 
+### Dense chunked delta feed: `GET /geometry/chunks` (Mac accumulator)
+
+The standalone assembler also serves the retained cloud as an incremental
+delta for the Mac dense-reconstruction lane, which accumulates millions of
+points beyond the Quest-packet budget. `after=<seq>` pages the journal as
+concatenated v1 wire records (op codes only: replace, remove, reset —
+snapshot-end stays a staging signal, never replayed); `limit=<n>` caps the
+page at 512 records. Records use coding 0 (raw) and identity transforms —
+positions are already baked into ARSession world coordinates at ingest.
+
+Consumers page until the response is empty, then track the cursor in the
+`X-Geometry-Next-Seq` header. `X-Geometry-Remaining` reports journaled ops
+still to read. The journal is bounded at 8192 ops; a consumer whose `after`
+precedes the oldest entry (or sends `after=0`) gets a bootstrap — a
+synthetic reset record then every retained chunk, then the journaled tail —
+with `X-Geometry-Truncated: 1` when coverage was lost. Budget evictions are
+journalled as remove tombstones keyed to the evicted anchor so a delta
+consumer drops the same geometry the Quest snapshot drops.
+
+`GET /geometry/status` additionally reports `retained` with the actual
+published counts `{anchors, vertices, triangles, points, bytes}` for the
+density audit, alongside the existing caps/limits fields.
+
 ## Local Mac render transport (opt-in)
 
 `tools.demo` and `tools.operator_relay` accept `--render-upstream` with a

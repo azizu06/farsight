@@ -12,6 +12,7 @@ use rustc_hash::FxBuildHasher;
 
 /// One measured mesh chunk keyed by its producer anchor id. Same layout as
 /// farsight-server's `phone::Mesh`.
+#[derive(Clone)]
 pub struct ChunkMesh {
     pub positions: Vec<[f32; 3]>,
     pub colors: Vec<[u8; 3]>,
@@ -33,6 +34,14 @@ pub const MAX_PUBLISHED_VERTICES: usize = 600 * 1024;
 pub const MAX_PUBLISHED_TRIANGLES: usize = 160 * 1024;
 /// Bound on anchors buffered between Reset and SnapshotEnd.
 pub const MAX_PENDING_ANCHORS: usize = 4096;
+/// Bounded delta journal for /geometry/chunks — one entry per published op
+/// (or budget eviction tombstone); consumers replay from seq.
+pub const JOURNAL_CAP: usize = 8192;
+/// Identity 4x4 — delta records carry it because positions are already
+/// world-baked at ingest (bake-once contract, never re-apply).
+const IDENTITY: [f32; 16] = [
+    1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Op {
@@ -269,10 +278,14 @@ pub struct AnchorGeometry {
     epoch: u64,
     last_seq: u64,
     /// Buffered ops between Reset and SnapshotEnd — published atomically.
-    /// Bounded so a hostile/buggy snapshot can't grow unboundedly.
-    pending: Option<IndexMap<[u8; 16], ChunkMesh, FxBuildHasher>>,
+    /// Bounded so a hostile/buggy snapshot can't grow unboundedly. Each
+    /// staged chunk keeps its producer seq for the delta journal.
+    pending: Option<IndexMap<[u8; 16], (u64, ChunkMesh), FxBuildHasher>>,
     pending_tri: usize,
     pending_vert: usize,
+    /// Bounded record of published ops for /geometry/chunks delta replay:
+    /// (producer seq, anchor, op). Cleared on session/epoch change.
+    journal: std::collections::VecDeque<(u64, [u8; 16], Op)>,
     /// Revision seen by consumers (bumps only on publishable changes).
     pub_lane: LaneStats,
 }
@@ -300,6 +313,7 @@ impl AnchorGeometry {
             pending: None,
             pending_tri: 0,
             pending_vert: 0,
+            journal: std::collections::VecDeque::new(),
             pub_lane: LaneStats::default(),
         }
     }
@@ -314,6 +328,10 @@ impl AnchorGeometry {
 
     pub fn triangles(&self) -> usize {
         self.count
+    }
+
+    pub fn vertices(&self) -> usize {
+        self.verts
     }
 
     pub fn anchors(&self) -> usize {
@@ -338,6 +356,23 @@ impl AnchorGeometry {
 
     pub fn lane_mut(&mut self) -> &mut LaneStats {
         &mut self.pub_lane
+    }
+
+    fn jpush(&mut self, seq: u64, anchor: [u8; 16], op: Op) {
+        self.journal.push_back((seq, anchor, op));
+        while self.journal.len() > JOURNAL_CAP {
+            self.journal.pop_front();
+        }
+    }
+
+    /// Published ops journal (oldest first) for the /geometry/chunks delta.
+    pub fn journal(&self) -> &std::collections::VecDeque<(u64, [u8; 16], Op)> {
+        &self.journal
+    }
+
+    /// Published chunks in insertion order for bootstrap delta responses.
+    pub fn chunks(&self) -> &IndexMap<[u8; 16], ChunkMesh, FxBuildHasher> {
+        &self.chunks
     }
 
     /// Apply with ownership of the mesh payload (avoids cloning chunk data).
@@ -370,6 +405,7 @@ impl AnchorGeometry {
             self.pending = Some(IndexMap::with_hasher(FxBuildHasher));
             self.pending_tri = 0;
             self.pending_vert = 0;
+            self.journal.clear();
             self.snapshot_complete = false;
             self.pub_lane.reconnects += 1;
             self.revision += 1;
@@ -389,20 +425,23 @@ impl AnchorGeometry {
                 self.pending_vert = 0;
                 self.snapshot_complete = false;
                 self.revision += 1;
+                self.jpush(u.seq, u.anchor, Op::Reset);
             }
             Op::SnapshotEnd => {
                 if let Some(pending) = self.pending.take() {
                     self.pending_tri = 0;
                     self.pending_vert = 0;
-                    for (id, mesh) in pending {
+                    for (id, (seq, mesh)) in pending {
                         self.count += mesh.indices.len();
                         self.verts += mesh.positions.len();
                         self.chunks.insert(id, mesh);
+                        self.jpush(seq, id, Op::Replace);
                     }
                     while self.count > self.budget || self.verts > MAX_PUBLISHED_VERTICES {
-                        if let Some((_, evicted)) = self.chunks.shift_remove_index(0) {
+                        if let Some((id, evicted)) = self.chunks.shift_remove_index(0) {
                             self.count -= evicted.indices.len();
                             self.verts -= evicted.positions.len();
+                            self.jpush(self.last_seq, id, Op::Remove);
                         } else {
                             break;
                         }
@@ -431,21 +470,23 @@ impl AnchorGeometry {
                         return false;
                     }
                     if let Some(old) = pending.get(&u.anchor) {
-                        self.pending_tri -= old.indices.len();
-                        self.pending_vert -= old.positions.len();
+                        self.pending_tri -= old.1.indices.len();
+                        self.pending_vert -= old.1.positions.len();
                     }
                     self.pending_tri += tri;
                     self.pending_vert += vert;
-                    pending.insert(u.anchor, mesh);
+                    pending.insert(u.anchor, (u.seq, mesh));
                 } else {
-                    self.upsert(u.anchor, mesh);
+                    if self.upsert(u.anchor, mesh) {
+                        self.jpush(u.seq, u.anchor, Op::Replace);
+                    }
                 }
             }
             Op::Remove => {
                 if let Some(pending) = &mut self.pending {
                     pending.shift_remove(&u.anchor);
-                } else {
-                    self.remove(u.anchor);
+                } else if self.remove(u.anchor) {
+                    self.jpush(u.seq, u.anchor, Op::Remove);
                 }
             }
         }
@@ -468,9 +509,10 @@ impl AnchorGeometry {
         self.verts += mesh.positions.len();
         self.chunks.insert(anchor_id, mesh);
         while self.count > self.budget || self.verts > MAX_PUBLISHED_VERTICES {
-            if let Some((_, evicted)) = self.chunks.shift_remove_index(0) {
+            if let Some((id, evicted)) = self.chunks.shift_remove_index(0) {
                 self.count -= evicted.indices.len();
                 self.verts -= evicted.positions.len();
+                self.jpush(self.last_seq, id, Op::Remove);
             } else {
                 break;
             }
@@ -940,6 +982,15 @@ async fn status(State(s): State<Arc<Shared>>) -> Json<Value> {
         "epoch": geo.epoch(),
         "anchors": geo.anchors(),
         "triangles": geo.triangles(),
+        // Dense-reconstruction audit (6102570158): actual retained counts,
+        // not configured caps.
+        "retained": {
+            "anchors": geo.anchors(),
+            "vertices": geo.vertices(),
+            "triangles": geo.triangles(),
+            "points": geo.vertices(),
+            "bytes": geo.vertices() * 16 + geo.triangles() * 12,
+        },
         "last_seq": geo.last_seq(),
         "lane": {
             "upstream": connected,
@@ -961,6 +1012,104 @@ fn hex_uuid(b: &[u8; 16]) -> String {
     )
 }
 
+#[derive(serde::Deserialize)]
+pub struct DeltaQuery {
+    after: Option<u64>,
+    limit: Option<u64>,
+}
+
+/// Mac-specific dense/chunked path (6102570158): incremental deltas of the
+/// published retained cloud as concatenated v1 wire records — the same
+/// format the phone lane produces, coding=0, transform=identity because
+/// positions are already world-baked at ingest. A Mac accumulator replays
+/// `after=<seq>` pages and retains millions of points without ever
+/// re-pulling a whole snapshot; the bounded Quest mesh.bin is untouched.
+async fn chunks_delta(
+    State(s): State<Arc<Shared>>,
+    axum::extract::Query(q): axum::extract::Query<DeltaQuery>,
+) -> Response {
+    let after = q.after.unwrap_or(0);
+    let limit = q.limit.unwrap_or(64).min(512) as usize;
+    let geo = s.geo.lock().unwrap();
+    let session = geo.session();
+    let epoch = geo.epoch();
+    let oldest_journaled = geo.journal().front().map(|e| e.0);
+    // Bootstrap when the consumer cannot prove continuity: fresh cursor, or
+    // its seq fell behind the bounded journal. Synthetic Reset then every
+    // retained chunk, then journal tail — all in seq order.
+    let bootstrap = after == 0
+        || match oldest_journaled {
+            Some(o) => after < o,
+            None => geo.anchors() > 0,
+        };
+    let truncated = bootstrap && after > 0;
+    let mut entries: Vec<(u64, Op, [u8; 16], Option<ChunkMesh>)> = Vec::new();
+    if bootstrap {
+        entries.push((after, Op::Reset, [0; 16], None));
+        for (id, mesh) in geo.chunks() {
+            // chunk seq: its last published write, recoverable from journal
+            // (fallback last_seq for anything that predates journaling).
+            let seq = geo
+                .journal()
+                .iter()
+                .filter(|e| e.1 == *id && e.2 == Op::Replace)
+                .map(|e| e.0)
+                .max()
+                .unwrap_or_else(|| geo.last_seq());
+            entries.push((seq, Op::Replace, *id, Some(mesh.clone())));
+        }
+        for &(seq, id, op) in geo.journal().iter() {
+            if seq > after && op != Op::Replace {
+                entries.push((seq, op, id, None));
+            }
+        }
+        entries.sort_by_key(|e| e.0);
+    } else {
+        for &(seq, id, op) in geo.journal().iter() {
+            if seq <= after {
+                continue;
+            }
+            let entry = match op {
+                Op::Replace => match geo.chunks().get(&id) {
+                    Some(mesh) => (seq, op, id, Some(mesh.clone())),
+                    // Evicted between the journal entry and now: degrade to a
+                    // tombstone so consumers drop the ghost anchor.
+                    None => (seq, Op::Remove, id, None),
+                },
+                _ => (seq, op, id, None),
+            };
+            entries.push(entry);
+        }
+    }
+    entries.truncate(limit);
+    let next_seq = entries.last().map(|e| e.0).unwrap_or(after);
+    let remaining = geo.journal().iter().filter(|e| e.0 > next_seq).count() as u64;
+    let mut body = Vec::new();
+    for (seq, op, id, mesh) in &entries {
+        let update = Update {
+            session,
+            epoch,
+            seq: *seq,
+            op: *op,
+            anchor: *id,
+            transform: IDENTITY,
+            mesh: mesh.clone(),
+        };
+        body.extend_from_slice(&encode(&update, RecordCoding::Raw));
+    }
+    (
+        [
+            (header::CONTENT_TYPE, "application/octet-stream".to_string()),
+            (header::CACHE_CONTROL, "no-store".to_string()),
+            (header::HeaderName::from_static("x-geometry-next-seq"), next_seq.to_string()),
+            (header::HeaderName::from_static("x-geometry-remaining"), remaining.to_string()),
+            (header::HeaderName::from_static("x-geometry-truncated"), if truncated { "1".into() } else { "0".into() }),
+        ],
+        body,
+    )
+        .into_response()
+}
+
 /// Quest keeps the existing same-origin shape: the assembled mesh answers
 /// under both /geometry/* and the /map/* aliases so a relay or the headset
 /// can consume this service drop-in next to the Python stack.
@@ -968,6 +1117,7 @@ pub fn router(shared: Arc<Shared>) -> Router {
     Router::new()
         .route("/geometry/mesh.bin", get(mesh_bin))
         .route("/geometry/status", get(status))
+        .route("/geometry/chunks", get(chunks_delta))
         .route("/map/mesh.bin", get(mesh_bin))
         .route("/map/status", get(status))
         .with_state(shared)
