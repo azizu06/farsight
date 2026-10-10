@@ -10,6 +10,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from .tracker import Tracker
+
 
 def yolo_boxes(prediction, original_shape, side=640, confidence=.35, labels=None):
     """Decode standard YOLOv8/11 detection exports (xywh plus class scores)."""
@@ -58,14 +60,6 @@ def yolo_boxes(prediction, original_shape, side=640, confidence=.35, labels=None
     return result
 
 
-def iou(a, b):
-    x1, y1 = max(a["x"], b["x"]), max(a["y"], b["y"])
-    x2 = min(a["x"] + a["w"], b["x"] + b["w"])
-    y2 = min(a["y"] + a["h"], b["y"] + b["h"])
-    intersection = max(0, x2 - x1) * max(0, y2 - y1)
-    return intersection / max(a["w"] * a["h"] + b["w"] * b["h"] - intersection, 1e-9)
-
-
 class PerceptionService:
     def __init__(self, camera, model=None, mode="hog", fps=3, on_detection=None):
         self.camera, self.mode, self.model, self.fps = camera, mode, model, fps
@@ -77,8 +71,7 @@ class PerceptionService:
         self.pose = None
         self.error = None
         self.packet = dict(ts=0, frame=-1, fps=0, boxes=[], detector="disabled", source="WAITING")
-        self.tracks = {}
-        self.next_id = 1
+        self.tracker = Tracker()
         self.last_inference = None
         self.labels = None
 
@@ -142,20 +135,7 @@ class PerceptionService:
         return []
 
     def track(self, boxes, now):
-        self.tracks = {key: value for key, value in self.tracks.items() if now - value[1] < 2}
-        available = set(self.tracks)
-        for box in boxes:
-            candidates = [(iou(box, self.tracks[key][0]), key) for key in available
-                          if self.tracks[key][0]["cls"] == box["cls"]]
-            overlap, identifier = max(candidates, default=(0, None))
-            if overlap < .25:
-                identifier = self.next_id
-                self.next_id += 1
-            else:
-                available.remove(identifier)
-            box["id"] = identifier
-            self.tracks[identifier] = (box.copy(), now)
-        return boxes
+        return self.tracker.update(boxes, now)
 
     async def start(self):
         if self.mode == "none" and not self.model:
