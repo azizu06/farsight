@@ -4,12 +4,14 @@ import asyncio
 from contextlib import suppress
 import math
 import time
+import json
+from pathlib import Path
 
 import cv2
 import numpy as np
 
 
-def yolo_boxes(prediction, original_shape, side=640, confidence=.35):
+def yolo_boxes(prediction, original_shape, side=640, confidence=.35, labels=None):
     """Decode standard YOLOv8/11 detection exports (xywh plus class scores)."""
     rows = np.asarray(prediction)
     if rows.ndim == 3:
@@ -49,7 +51,8 @@ def yolo_boxes(prediction, original_shape, side=640, confidence=.35):
         for local in np.asarray(keep).ravel():
             i = indices[int(local)]
             x, y, w, h = boxes[i]
-            result.append(dict(cls="person" if cls == 0 else f"class_{cls}", class_id=cls,
+            name = labels[cls] if labels and cls < len(labels) else "person" if cls == 0 else f"class_{cls}"
+            result.append(dict(cls=name, class_id=cls,
                                conf=round(scores[i], 3), x=x / width, y=y / height,
                                w=w / width, h=h / height))
     return result
@@ -69,17 +72,31 @@ class PerceptionService:
         self.on_detection = on_detection
         self.task = None
         self.net = None
+        self.engine = None
         self.hog = None
         self.error = None
         self.packet = dict(ts=0, frame=-1, fps=0, boxes=[], detector="disabled", source="WAITING")
         self.tracks = {}
         self.next_id = 1
         self.last_inference = None
+        self.labels = None
 
     def _setup(self):
         if self.model:
-            self.net = cv2.dnn.readNetFromONNX(self.model)
-            self.mode = "onnx"
+            label_path = Path(self.model).with_suffix(".labels.json")
+            if label_path.exists():
+                labels = json.loads(label_path.read_text())
+                if not isinstance(labels, list) or len(labels) > 256 or not all(isinstance(x, str) and len(x) <= 100 for x in labels):
+                    raise ValueError("Detector labels must be a bounded string list")
+                self.labels = labels
+            if Path(self.model).suffix.lower() in (".engine", ".plan"):
+                from .tensorrt_detector import TensorRTDetector
+                self.engine = TensorRTDetector(self.model)
+                self.mode = "tensorrt"
+                self.fps = 15
+            else:
+                self.net = cv2.dnn.readNetFromONNX(self.model)
+                self.mode = "onnx"
         elif self.mode == "hog":
             self.hog = cv2.HOGDescriptor()
             self.hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
@@ -88,15 +105,20 @@ class PerceptionService:
         image = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
         if image is None:
             raise ValueError("Invalid detector camera image")
-        if self.net is not None:
+        if self.net is not None or self.engine is not None:
             h, w = image.shape[:2]
             scale = min(640 / w, 640 / h)
             resized = cv2.resize(image, (round(w * scale), round(h * scale)))
             canvas = np.full((640, 640, 3), 114, np.uint8)
             y, x = (640 - resized.shape[0]) // 2, (640 - resized.shape[1]) // 2
             canvas[y:y + resized.shape[0], x:x + resized.shape[1]] = resized
-            self.net.setInput(cv2.dnn.blobFromImage(canvas, 1 / 255, (640, 640), swapRB=True))
-            return yolo_boxes(self.net.forward(), image.shape)
+            blob = cv2.dnn.blobFromImage(canvas, 1 / 255, (640, 640), swapRB=True)
+            if self.engine is not None:
+                prediction = self.engine.predict(blob)
+            else:
+                self.net.setInput(blob)
+                prediction = self.net.forward()
+            return yolo_boxes(prediction, image.shape, labels=self.labels)
         if self.hog is not None:
             h, w = image.shape[:2]
             resized = cv2.resize(image, (320, max(128, round(h * 320 / w))))
@@ -124,6 +146,8 @@ class PerceptionService:
         return boxes
 
     async def start(self):
+        if self.mode == "none" and not self.model:
+            return
         try:
             await asyncio.to_thread(self._setup)
             self.task = asyncio.create_task(self._run())
@@ -170,3 +194,5 @@ class PerceptionService:
             self.task.cancel()
             with suppress(asyncio.CancelledError):
                 await self.task
+        if self.engine:
+            await asyncio.to_thread(self.engine.close)
