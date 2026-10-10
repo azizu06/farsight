@@ -20,6 +20,8 @@ import wave
 
 import httpx
 
+from .ask_intent import guard_answer, propose_action, summarize_boxes
+
 
 class AssistantError(Exception):
     status_code = 503
@@ -39,25 +41,35 @@ class SceneAssistant:
     MODEL_TIMEOUT = 12
     TRANSCRIBE_TIMEOUT = 35
     SPEECH_TIMEOUT = 20
+    # Biases whisper toward the rover vocabulary ("hurt", not "heard").
+    WHISPER_PROMPT = "Questions to a rescue rover: What do you see? Is that person hurt? Scan the room. Go to that person."
     SOURCES = {"PHONE RGB", "IPHONE LIDAR", "USB CAMERA", "SIMULATED", "WAITING"}
 
     def __init__(self, camera, perception, control, server_url=None,
                  whisper_bin=None, whisper_model=None, piper_bin=None,
-                 piper_model=None, output_dir=None):
+                 piper_model=None, output_dir=None, whisper_url=None):
         self.camera, self.perception, self.control = camera, perception, control
         self.server_url = self._local_url(server_url) if server_url else None
+        # A running whisper-server keeps the model loaded; whisper-cli reloads it per question.
+        self.whisper_url = self._loopback(whisper_url).rstrip("/") + "/inference" if whisper_url else None
         self.whisper_bin, self.whisper_model = whisper_bin, whisper_model
         self.piper_bin, self.piper_model = piper_bin, piper_model
         self.output_dir = Path(output_dir).resolve() if output_dir else None
         self._processes = set()
+        self._voice, self._voice_path = None, None
         self._lock = asyncio.Lock()
 
     @staticmethod
-    def _local_url(url):
+    def _loopback(url):
         parts = urlsplit(url)
         if (parts.scheme not in ("http", "https") or parts.hostname not in ("localhost", "127.0.0.1", "::1")
                 or parts.username or parts.password or parts.query or parts.fragment):
-            raise ValueError("Scene model URL must be HTTP(S) on localhost/127.0.0.1/::1")
+            raise ValueError("Local model URLs must be HTTP(S) on localhost/127.0.0.1/::1")
+        return urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+
+    @classmethod
+    def _local_url(cls, url):
+        parts = urlsplit(cls._loopback(url))
         path = parts.path.rstrip("/")
         if path == "/v1":
             path += "/chat/completions"
@@ -93,8 +105,8 @@ class SceneAssistant:
         fresh = bool(frame and frame.age_ms < 500 and camera.get("camera"))
         matches = detection.get("source") == raw_source
         detector_fresh = bool(detection.get("fresh") and not detection.get("error") and matches)
-        people = sum(box.get("cls") == "person" for box in detection.get("boxes", [])
-                     if isinstance(box, dict)) if detector_fresh else None
+        boxes = [box for box in detection.get("boxes", []) if isinstance(box, dict)] if detector_fresh else []
+        people = sum(box.get("cls") == "person" for box in boxes) if detector_fresh else None
         range_cm = rover.get("range_cm")
         if (type(range_cm) not in (int, float) or not math.isfinite(range_cm)
                 or not 0 < range_cm <= 500):
@@ -103,11 +115,12 @@ class SceneAssistant:
                      camera_frame=frame.frame_id if frame else None, person_detections=people,
                      detector=str(detection.get("detector", "disabled"))[:80],
                      detector_fresh=detector_fresh, range_cm=range_cm,
+                     detections=summarize_boxes(boxes) if detector_fresh else "no fresh detections",
                      forward_blocked=bool(rover.get("estop", True)),
                      rover_connected=bool(rover.get("rover")),
                      simulated=source == "SIMULATED" or bool(rover.get("simulated")),
                      observation_time=time.time())
-        return facts, frame if fresh else None
+        return facts, frame if fresh else None, boxes
 
     @staticmethod
     def summary(facts):
@@ -132,38 +145,52 @@ class SceneAssistant:
             raise AssistantUnavailable("Assistant is busy; try again after the current answer")
         async with self._lock:
             started = time.monotonic()
-            question = await self.transcribe(audio) if audio is not None else text
+            timings = dict(stt=None, vlm=None, tts=None)
+            question = text
+            if audio is not None:
+                question = await self.transcribe(audio)
+                timings["stt"] = round((time.monotonic() - started) * 1000)
             if not isinstance(question, str) or not question.strip() or len(question) > 2000:
                 raise AssistantInputError("Ask a nonempty question of at most 2000 characters")
             question = question.strip()
-            facts, frame = self.observations()
+            facts, frame, boxes = self.observations()
+            action = propose_action(question, boxes)
             answer, model, warning = self.summary(facts), "local-observation-summary", None
             if self.server_url and frame is not None:
+                stage = time.monotonic()
                 try:
                     answer = await asyncio.wait_for(self._vision(question, facts, frame.jpeg), self.MODEL_TIMEOUT)
                     model = "local-vision-model"
                 except (httpx.HTTPError, asyncio.TimeoutError, ValueError, KeyError, TypeError, IndexError):
                     warning = "Local vision model unavailable; showing the observation summary"
-            result = dict(question=question, answer=answer, action=None, model=model,
+                timings["vlm"] = round((time.monotonic() - stage) * 1000)
+            answer = guard_answer(answer, action, 2 if model == "local-vision-model" else None)
+            result = dict(question=question, answer=answer, action=action, model=model,
                           source=facts["source"], simulated=facts["simulated"],
                           observation=facts)
             if warning:
                 result["assistant_warning"] = warning
+            stage = time.monotonic()
             try:
                 filename = await self.speak(answer)
                 if filename:
                     result["audio_url"] = f"/tts/{filename}"
             except (AssistantError, OSError, asyncio.TimeoutError, wave.Error):
                 result["speech_warning"] = "Local speech unavailable; use browser speech synthesis"
+            if self.piper_bin or self.piper_model:
+                timings["tts"] = round((time.monotonic() - stage) * 1000)
+            result["timings"] = timings
             result["ms"] = round((time.monotonic() - started) * 1000)
             return result
 
     async def _vision(self, question, facts, jpeg):
         if not isinstance(jpeg, bytes) or not jpeg.startswith(b"\xff\xd8") or not 0 < len(jpeg) <= 2 * 1024 * 1024:
             raise ValueError("No bounded camera JPEG is available")
-        payload = dict(model="local", temperature=0, max_tokens=220, stream=False,
+        payload = dict(model="local", temperature=0, max_tokens=120, stream=False,
             messages=[dict(role="system", content=(
-                "Answer briefly using only the supplied camera image and observed facts. "
+                "You assist a first responder searching a room through a rover camera. "
+                "Answer in one or two short plain sentences using only the supplied camera image and observed facts. "
+                "Never claim that you moved, are moving, or will move the rover. "
                 "The image is a snapshot at question time, not a guarantee of current safety. "
                 "Say when evidence is uncertain, missing, stale, or simulated. "
                 "Do not invent measured depth, identities, detections, or obstacle clearance. "
@@ -210,10 +237,14 @@ class SceneAssistant:
             format_name = "wav"
         elif audio.startswith(b"\x1a\x45\xdf\xa3"):
             format_name = "matroska"
+        elif audio.startswith(b"OggS"):
+            format_name = "ogg"
+        elif audio[4:8] == b"ftyp":
+            format_name = "mov"  # ffmpeg's mp4/m4a demuxer
         else:
-            raise AssistantInputError("Audio must be WAV or WebM")
+            raise AssistantInputError("Audio must be WAV, WebM, Ogg, or MP4")
         whisper, model, ffmpeg = self._program(self.whisper_bin), self._model(self.whisper_model), shutil.which("ffmpeg")
-        if not whisper or not model or not ffmpeg:
+        if not ffmpeg or not (self.whisper_url or (whisper and model)):
             raise AssistantUnavailable("Audio questions require local ffmpeg, whisper-cli, and an installed Whisper model")
         try:
             with tempfile.TemporaryDirectory(prefix="farsight-ask-") as directory:
@@ -226,6 +257,8 @@ class SceneAssistant:
                 with wave.open(str(wav_path), "rb") as recording:
                     if recording.getnchannels() != 1 or recording.getframerate() != 16000:
                         raise AssistantUnavailable("Audio conversion did not produce 16 kHz mono WAV")
+                if self.whisper_url:
+                    return await self._transcribe_server(wav_path.read_bytes())
                 await self._run([whisper, "-m", model, "-f", str(wav_path),
                                  "-otxt", "-of", str(transcript), "-np"], self.TRANSCRIBE_TIMEOUT)
                 text_path = transcript.with_suffix(".txt")
@@ -240,11 +273,29 @@ class SceneAssistant:
         except (OSError, wave.Error, UnicodeError) as exc:
             raise AssistantUnavailable("Local audio processing failed") from exc
 
+    async def _transcribe_server(self, wav):
+        try:
+            async with httpx.AsyncClient(timeout=self.TRANSCRIBE_TIMEOUT, follow_redirects=False,
+                                         trust_env=False) as client:
+                response = await client.post(self.whisper_url, files={"file": ("audio.wav", wav, "audio/wav")},
+                                             data={"response_format": "json", "temperature": "0",
+                                                   "prompt": self.WHISPER_PROMPT})
+                response.raise_for_status()
+                text = response.json().get("text")
+        except (httpx.HTTPError, ValueError, AttributeError) as exc:
+            raise AssistantUnavailable("Local whisper-server failed; check that it is running") from exc
+        if not isinstance(text, str) or len(text) > 8192:
+            raise AssistantUnavailable("Whisper did not produce a bounded transcript")
+        if not text.strip():
+            raise AssistantInputError("No speech was recognized in the recording")
+        return text.strip()
+
     async def speak(self, text):
         if not self.piper_bin and not self.piper_model:
             return None
-        program, model = self._program(self.piper_bin), self._model(self.piper_model)
-        if not program or not model or self.output_dir is None:
+        # Without a Piper executable, the piper-tts package keeps the voice loaded in-process.
+        program, model = self._program(self.piper_bin) if self.piper_bin else None, self._model(self.piper_model)
+        if (self.piper_bin and not program) or not model or self.output_dir is None:
             raise AssistantUnavailable("Local speech requires Piper, a voice model, and an output directory")
         self.output_dir.mkdir(parents=True, exist_ok=True)
         # Keep only the most recent 30 replies; filenames are generated here,
@@ -255,8 +306,12 @@ class SceneAssistant:
         filename = f"reply-{uuid.uuid4().hex}.wav"
         path = self.output_dir / filename
         try:
-            await self._run([program, "--model", model, "--output_file", str(path)],
-                            self.SPEECH_TIMEOUT, input_bytes=(text[:4000] + "\n").encode("utf-8"))
+            if program:
+                await self._run([program, "--model", model, "--output_file", str(path)],
+                                self.SPEECH_TIMEOUT, input_bytes=(text[:4000] + "\n").encode("utf-8"))
+            else:
+                await asyncio.wait_for(asyncio.to_thread(self._synthesize, model, text[:4000], path),
+                                       self.SPEECH_TIMEOUT)
             if not path.is_file() or not 44 < path.stat().st_size <= 8 * 1024 * 1024:
                 raise AssistantUnavailable("Piper did not produce a bounded WAV reply")
             with wave.open(str(path), "rb") as recording:
@@ -266,6 +321,20 @@ class SceneAssistant:
         except BaseException:
             path.unlink(missing_ok=True)
             raise
+
+    @staticmethod
+    def _load_voice(model):
+        try:
+            from piper import PiperVoice
+        except ImportError as exc:
+            raise AssistantUnavailable("Local speech requires pip install piper-tts or --piper-bin") from exc
+        return PiperVoice.load(model)
+
+    def _synthesize(self, model, text, path):
+        if self._voice is None or self._voice_path != model:
+            self._voice, self._voice_path = self._load_voice(model), model
+        with wave.open(str(path), "wb") as output:
+            self._voice.synthesize_wav(text, output)
 
     async def close(self):
         for process in tuple(self._processes):
