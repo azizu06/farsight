@@ -10,7 +10,7 @@ from .geometry import encode_points, export_ply
 from .phone import reconstruct
 from .surfaces import SurfaceMap
 from .voxel import VoxelMap
-from jetson.camera import adjusted_receipt
+from jetson.camera import adjusted_receipt, capture_diagnostics
 
 
 class MapState:
@@ -37,6 +37,7 @@ class MapState:
         self.fps = self.processing_ms = 0.0
         self.reason = "Waiting for iPhone RGB-D stream"
         self.jpeg = self.depth_jpeg = None
+        self.capture_diagnostics = {}
         self.latest_camera = (None, 0.0, -1, "SIMULATED" if demo else "IPHONE LIDAR")
         self.depth_range = None
         self.pose_history = OrderedDict()
@@ -49,6 +50,7 @@ class MapState:
                 self.identity = identity
                 self.pose = np.eye(4)
                 self.jpeg = self.depth_jpeg = None
+                self.capture_diagnostics = {}
                 self.latest_camera = (None, 0.0, -1, "SIMULATED" if self.demo else "IPHONE LIDAR")
                 self.depth_range = None
                 self.last_received = 0.0
@@ -111,6 +113,7 @@ class MapState:
             generation = self.processing_generation
             self.observe_pose(frame.header, frame.transform)
             self.jpeg = frame.jpeg
+            self.capture_diagnostics = capture_diagnostics(frame.header)
             self.last_frame_received = camera_receipt
             self.frame_id = frame.header["frame_id"]
             # Publish one immutable value. Safety/video readers must never wait

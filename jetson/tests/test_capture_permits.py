@@ -12,7 +12,7 @@ import cv2
 import numpy as np
 from starlette.websockets import WebSocketDisconnect
 
-from jetson.camera import CameraFrame, CameraService
+from jetson.camera import CameraFrame, CameraService, capture_diagnostics
 from jetson.capture_permits import CapturePermits
 from jetson.mapping.phone import Hello
 from jetson.mapping.server import create_app
@@ -37,6 +37,13 @@ def bound_header(token):
 
 
 class CapturePermitPolicyTests(unittest.TestCase):
+    def test_clock_diagnostics_are_bounded_observations_not_qualification(self):
+        observed = capture_diagnostics(dict(capture_clock="arkit_unverified", t_capture=12,
+                                           callback_host_t=12.03, sensor_age_ms=float("nan"),
+                                           sensor_timestamp_host_t=True, capture_permit="private-token"))
+        self.assertEqual(observed, dict(clock="arkit_unverified", t_capture=12, callback_host_t=12.03))
+        self.assertFalse(CameraService(MapState()).status()["camera_capture_verified"])
+
     def setUp(self):
         self.now = 10.0
         self.permits = CapturePermits("test", 1, True, clock=lambda: self.now)

@@ -20,6 +20,20 @@ def adjusted_receipt(header, received_at=None):
     return (time.monotonic() if received_at is None else received_at) - delay / 1000
 
 
+def capture_diagnostics(header):
+    """Bounded producer clock observations, never a server qualification decision."""
+    result = {}
+    clock = header.get("capture_clock")
+    if clock in ("avcapture_sync_to_host", "arkit_unverified"):
+        result["clock"] = clock
+    for key in ("t_capture", "callback_host_t", "sensor_timestamp_raw_t",
+                "sensor_timestamp_host_t", "sensor_host_delta_ms", "sensor_age_ms"):
+        value = header.get(key)
+        if type(value) in (int, float) and math.isfinite(value):
+            result[key] = value
+    return result
+
+
 def open_capture(device, width, height, fps, platform=sys.platform):
     """Open a UVC camera. On Linux pin the V4L2 backend (the pip OpenCV wheel has no GStreamer) and request the
     camera's own MJPG stream first: uncompressed YUYV caps many webcams below 30 fps and loads USB."""
@@ -61,6 +75,7 @@ class CameraService:
         self.lock = threading.Lock()
         self.task = None
         self.phone_rgb = None
+        self.phone_capture_diagnostics = {}
 
     def snapshot(self):
         if self.device is None:
@@ -97,6 +112,7 @@ class CameraService:
         if origin is not None:
             received = min(origin, received)
         self.phone_rgb = CameraFrame(jpeg, received, frame_id, "PHONE RGB", origin is not None, permits)
+        self.phone_capture_diagnostics = capture_diagnostics(header)
         return frame_id
 
     def status(self):
@@ -108,6 +124,8 @@ class CameraService:
                                  or frame.source == "SIMULATED" or frame.source.startswith("REPLAY"))
         return dict(camera=fresh, camera_drive_ready=bool(drive_ready),
                     camera_capture_verified=bound,
+                    camera_capture_diagnostics=(self.phone_capture_diagnostics if self.phone_rgb is not None
+                                                else getattr(self.mapping, "capture_diagnostics", {})),
                     camera_age_ms=frame.age_ms if frame else None,
                     camera_frame=frame.frame_id if frame else None,
                     camera_source=frame.source if frame else "USB CAMERA" if self.device is not None else "WAITING",

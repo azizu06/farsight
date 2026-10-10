@@ -88,6 +88,12 @@ these fields are not authentication or sensor attestation.
 
 Optional health fields `camera_capture_verified` and `camera_drive_ready`
 separate verified physical-driving eligibility from `camera` viewing freshness.
+Optional `camera_capture_diagnostics` contains bounded producer observations:
+`clock`, `t_capture`, `callback_host_t`, `sensor_timestamp_raw_t`,
+`sensor_timestamp_host_t`, `sensor_host_delta_ms`, and `sensor_age_ms` when
+provided as finite numbers. It excludes tokens and device identifiers. These
+observations support on-device qualification; numerical clock alignment alone
+does not prove a documented shared clock or change drive eligibility.
 Physical serial control requires drive eligibility. Legacy/unverified RGB and
 ARKit RGB-D remain viewable and mappable, but do not qualify physical driving.
 ARKit exposure-clock qualification remains a hardware task; measured LiDAR plus
