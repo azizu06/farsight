@@ -31,6 +31,10 @@ indexmap = "2"
 async-stream = "0.3"
 ort = { version = "2.0.0-rc.10", optional = true, features = ["load-dynamic"] }
 
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "json", "multipart", "stream"] }
+tempfile = "3"
+url = "2"
+which = "7"
+
 [dev-dependencies]
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "json"] }

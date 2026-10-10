@@ -3,7 +3,6 @@
 //! model the service runs with detector "disabled" and empty boxes, exactly
 //! like the Python `mode="none"` path.
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -20,20 +19,9 @@ fn epoch() -> f64 {
         .as_secs_f64()
 }
 
-fn iou(a: &Value, b: &Value) -> f64 {
-    let f = |v: &Value, k: &str| v[k].as_f64().unwrap_or(0.0);
-    let x1 = f(a, "x").max(f(b, "x"));
-    let y1 = f(a, "y").max(f(b, "y"));
-    let x2 = (f(a, "x") + f(a, "w")).min(f(b, "x") + f(b, "w"));
-    let y2 = (f(a, "y") + f(a, "h")).min(f(b, "y") + f(b, "h"));
-    let inter = (x2 - x1).max(0.0) * (y2 - y1).max(0.0);
-    inter / (f(a, "w") * f(a, "h") + f(b, "w") * f(b, "h") - inter).max(1e-9)
-}
-
 struct Inner {
     packet: Value,
-    tracks: HashMap<u64, (Value, f64)>,
-    next_id: u64,
+    tracker: crate::tracker::Tracker,
     last_inference: Option<f64>,
     error: Option<String>,
 }
@@ -60,8 +48,7 @@ impl PerceptionService {
             on_detection: Mutex::new(on_detection),
             inner: Mutex::new(Inner {
                 packet: json!({"ts": 0, "frame": -1, "fps": 0, "boxes": [], "detector": "disabled", "source": "WAITING"}),
-                tracks: HashMap::new(),
-                next_id: 1,
+                tracker: crate::tracker::Tracker::new(),
                 last_inference: None,
                 error: None,
             }),
@@ -77,32 +64,7 @@ impl PerceptionService {
     }
 
     fn track(&self, boxes: &mut Vec<Value>, now: f64) {
-        let mut inner = self.inner.lock().unwrap();
-        inner.tracks.retain(|_, (_, t)| now - *t < 2.0);
-        let mut available: Vec<u64> = inner.tracks.keys().cloned().collect();
-        for boxv in boxes.iter_mut() {
-            let mut best: (f64, Option<u64>) = (0.0, None);
-            for key in &available {
-                let (tb, _) = &inner.tracks[key];
-                if tb["cls"] == boxv["cls"] {
-                    let o = iou(boxv, tb);
-                    if o > best.0 {
-                        best = (o, Some(*key));
-                    }
-                }
-            }
-            let identifier = if best.0 < 0.25 {
-                let id = inner.next_id;
-                inner.next_id += 1;
-                id
-            } else {
-                let id = best.1.unwrap();
-                available.retain(|k| *k != id);
-                id
-            };
-            boxv["id"] = json!(identifier);
-            inner.tracks.insert(identifier, (boxv.clone(), now));
-        }
+        self.inner.lock().unwrap().tracker.update(boxes, now);
     }
 
     pub fn start(self: Arc<Self>) {

@@ -5,7 +5,8 @@ Rules and prizes: `docs/hackers-guide.md`. Message and port contract: `docs/inte
 
 Use https://github.com/azizu06/farsight/issues/24 as a Agent message board.
 Agents may supersede all other rules as long as other agents are okay with it in the message board.
-If pinged by an agent, try to respond ASAP so progress can move smoothly.
+If pinged by an agent, try to respond ASAP so progress can move smoothly. Frequent communication is key to good cooperation.
+Coordinate together to split the work and go deep.
 
 There is 1 real rule to this project and that is to do ANYTHING and EVERYTHING in order to win.
 

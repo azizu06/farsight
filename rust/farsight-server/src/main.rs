@@ -43,6 +43,20 @@ struct Args {
     /// Persist detection evidence beneath this directory
     #[arg(long)]
     mission_dir: Option<PathBuf>,
+    /// Local llama-server origin, e.g. http://127.0.0.1:8082
+    #[arg(long)]
+    assistant_url: Option<String>,
+    #[arg(long)]
+    whisper_bin: Option<String>,
+    #[arg(long)]
+    whisper_model: Option<String>,
+    #[arg(long)]
+    piper_bin: Option<String>,
+    #[arg(long)]
+    piper_model: Option<String>,
+    /// Directory for generated reply-*.wav speech
+    #[arg(long)]
+    tts_dir: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -68,6 +82,12 @@ async fn main() {
         args.h264,
         args.mission_dir,
         args.max_pwm,
+        args.assistant_url,
+        args.whisper_bin,
+        args.whisper_model,
+        args.piper_bin,
+        args.piper_model,
+        args.tts_dir,
     );
     server::start_services(&state);
     let dist = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../quest/dist");

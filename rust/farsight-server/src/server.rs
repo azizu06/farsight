@@ -6,10 +6,10 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use axum::body::Body;
+use axum::body::{Body, Bytes};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
-use axum::http::{header, StatusCode};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -22,6 +22,7 @@ use crate::control::{ControlState, SerialPump};
 use crate::mission::Mission;
 use crate::perception::PerceptionService;
 use crate::phone::{self, Hello};
+use crate::assistant::SceneAssistant;
 use crate::state::{now_monotonic, MapState};
 use crate::video::VideoService;
 
@@ -36,6 +37,7 @@ pub struct AppState {
     pub demo: bool,
     pub h264: bool,
     pub phone_owner: Mutex<bool>,
+    pub assistant: Option<Arc<SceneAssistant>>,
 }
 
 pub fn build_state(
@@ -47,6 +49,12 @@ pub fn build_state(
     h264: bool,
     mission_dir: Option<PathBuf>,
     max_pwm: i64,
+    assistant_url: Option<String>,
+    whisper_bin: Option<String>,
+    whisper_model: Option<String>,
+    piper_bin: Option<String>,
+    piper_model: Option<String>,
+    tts_dir: Option<PathBuf>,
 ) -> Arc<AppState> {
     if (demo || simulate_rover) && serial_port.is_some() {
         panic!("Simulated sources cannot be combined with a physical motor serial port");
@@ -77,6 +85,18 @@ pub fn build_state(
         .expect("PWM bounds"),
     );
     let pump = Arc::new(SerialPump::new(control.clone(), serial_port, simulate_rover));
+    let assistant = SceneAssistant::new(
+        camera.clone(),
+        perception.clone(),
+        control.clone(),
+        assistant_url,
+        whisper_bin,
+        whisper_model,
+        piper_bin,
+        piper_model,
+        tts_dir,
+    )
+    .ok();
     Arc::new(AppState {
         mapping,
         camera,
@@ -88,6 +108,7 @@ pub fn build_state(
         demo,
         h264,
         phone_owner: Mutex::new(false),
+        assistant: assistant.map(Arc::new),
     })
 }
 
@@ -135,6 +156,13 @@ async fn health(State(s): State<Arc<AppState>>) -> Json<Value> {
     obj.insert("detector".into(), json!(s.perception.mode));
     obj.insert("detector_error".into(), s.perception.snapshot()["error"].clone());
     obj.insert("detector_fps".into(), s.perception.snapshot()["fps"].clone());
+    obj.insert(
+        "assistant".into(),
+        json!({
+            "vision_model": s.assistant.as_ref().map(|a| a.server_url.is_some()).unwrap_or(false),
+            "tts": s.assistant.as_ref().map(|a| a.output_dir.is_some()).unwrap_or(false),
+        }),
+    );
     obj.insert(
         "video".into(),
         json!({"enabled": s.h264, "ready": init_ready, "error": video_err}),
@@ -261,45 +289,76 @@ async fn mission_drill_status(State(s): State<Arc<AppState>>) -> Json<Value> {
     Json(s.mission.drill())
 }
 
-async fn ask(State(s): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
-    let text = body["text"].as_str().unwrap_or("");
-    if text.trim().is_empty() || text.len() > 2000 {
-        return (StatusCode::UNPROCESSABLE_ENTITY, "Ask a question of at most 2000 characters").into_response();
+async fn ask(State(s): State<Arc<AppState>>, headers: HeaderMap, body: Bytes) -> Response {
+    let content_type = headers
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim();
+    let Some(assistant) = s.assistant.as_ref() else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "Assistant is not configured").into_response();
+    };
+    let result = if content_type == "application/json" {
+        let body: Value = match serde_json::from_slice::<Value>(&body) {
+            Ok(v) if v.is_object() => v,
+            _ => return (StatusCode::BAD_REQUEST, "Expected a text question object").into_response(),
+        };
+        assistant.ask(body["text"].as_str().map(String::from), None).await
+    } else if content_type == "multipart/form-data" {
+        let ct = headers.get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("");
+        let boundary = ct.rsplit("boundary=").next().unwrap_or("");
+        // minimal multipart parse: last file part named "audio"
+        let audio = extract_audio(&body[..], boundary);
+        match audio {
+            Some(a) => assistant.ask(None, Some(a)).await,
+            None => return (StatusCode::BAD_REQUEST, "Expected an audio file").into_response(),
+        }
+    } else {
+        return (StatusCode::UNSUPPORTED_MEDIA_TYPE, "Use JSON text or multipart audio").into_response();
+    };
+    match result {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (StatusCode::from_u16(e.status_code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR), e.message).into_response(),
     }
-    let detected = s.perception.snapshot();
-    let live = s.camera.status();
-    let rover = s.control.status(false);
-    let people = detected["boxes"]
-        .as_array()
-        .map(|b| b.iter().filter(|x| x["cls"] == "person").count())
-        .unwrap_or(0);
-    let answer = format!(
-        "The {} view is {}. {}{}{}",
-        live["camera_source"].as_str().unwrap_or("").to_lowercase(),
-        if live["camera"].as_bool().unwrap_or(false) { "live" } else { "stale or unavailable" },
-        if detected["fresh"].as_bool().unwrap_or(false) && detected["error"].is_null() {
-            format!("The {} detector currently reports {} person detections. ",
-                detected["detector"].as_str().unwrap_or(""), people)
-        } else {
-            "No fresh person detection result is available. ".to_string()
-        },
-        if rover["range_cm"].is_null() {
-            "Ultrasonic range is unavailable. ".to_string()
-        } else {
-            format!("The ultrasonic range is {} centimetres. ", rover["range_cm"])
-        },
-        "Motion is controlled only by the held deadman; this answer does not move the rover."
-    );
-    Json(json!({
-        "question": text,
-        "answer": answer,
-        "action": null,
-        "model": "local-observation-summary",
-        "ms": 0,
-        "source": live["camera_source"],
-        "simulated": s.demo || s.control.simulated,
-    }))
-    .into_response()
+}
+
+fn extract_audio(body: &[u8], boundary: &str) -> Option<Vec<u8>> {
+    let marker = format!("--{boundary}").into_bytes();
+    let mut start = 0;
+    while let Some(pos) = find_subslice(&body[start..], &marker).map(|p| p + start) {
+        let mut p = pos + marker.len();
+        if body.get(p..p+2) == Some(b"\r\n") { p += 2; }
+        let hdr_end = find_subslice(&body[p..], b"\r\n\r\n").map(|e| e + p)?;
+        let headers = String::from_utf8_lossy(&body[p..hdr_end]);
+        let data_start = hdr_end + 4;
+        let next = find_subslice(&body[data_start..], &marker).map(|e| e + data_start);
+        let data_end = next.map(|e| e.saturating_sub(2)).unwrap_or(body.len());
+        if headers.contains("name=\"audio\"") {
+            return Some(body[data_start..data_end].to_vec());
+        }
+        start = data_start;
+    }
+    None
+}
+
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+async fn tts(State(s): State<Arc<AppState>>, Path(name): Path<String>) -> Response {
+    let dir = s.assistant.as_ref().and_then(|a| a.output_dir.clone());
+    if !(name.starts_with("reply-") && name.ends_with(".wav") && !name.contains('/') && !name.contains('\\')) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let Some(dir) = dir else { return StatusCode::NOT_FOUND.into_response(); };
+    let path = dir.join(&name);
+    match std::fs::read(&path) {
+        Ok(bytes) => ([("content-type", "audio/wav")], bytes).into_response(),
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
 }
 
 async fn control_status(State(s): State<Arc<AppState>>) -> Json<Value> {
@@ -656,7 +715,8 @@ pub fn router(state: Arc<AppState>, dist: Option<PathBuf>) -> Router {
         .route("/mission/snapshots/{name}", get(mission_snapshot))
         .route("/mission/drill", post(mission_drill_start))
         .route("/mission/drill", get(mission_drill_status))
-        .route("/ask", post(ask));
+        .route("/ask", post(ask))
+        .route("/tts/{name}", get(tts));
     let app = if let Some(dist) = dist {
         if dist.is_dir() {
             app.fallback_service(ServeDir::new(dist).append_index_html_on_directories(true))
