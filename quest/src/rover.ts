@@ -11,6 +11,7 @@ import { PHRASE_LABELS, sbarLines, speakPhrase } from "./survivor-phrases.js";
 import { DRILL_TRAINS, DrillHud, endLines } from "./drill-hud.js";
 import { DetectionCache, PACKET_FRESH_MS } from "./detection-match.js";
 import { defaultMount, loadSettings, pageStorage, saveSettings } from "./viewer-settings.js";
+import { PanSmoother } from "./pan-smoothing.js";
 
 type Box = { id?: number; cls: string; conf: number; x: number; y: number; w: number; h: number; kpts?: number[][]; down?: boolean };
 type Detections = { frame: number | string; boxes: Box[]; fps?: number; source?: string; simulated?: boolean };
@@ -77,6 +78,9 @@ export class RoverExperience {
   private suspended = false;
   private recenter = true;
   private baseYaw = 0;
+  private panSmoother = new PanSmoother();
+  private lastPanAt = 0;
+  private panDt() { const now = performance.now(), dt = this.lastPanAt ? (now - this.lastPanAt) / 1000 : 0; this.lastPanAt = now; return Math.min(dt, 0.1); }
   private toggleDown = false;
   private recenterDown = false;
   private xrLive = true;
@@ -444,13 +448,13 @@ export class RoverExperience {
       if (center && !this.recenterDown) this.recenter = true;
       this.toggleDown = toggle; this.exploreDown = explore; this.recenterDown = center;
       this.euler.setFromQuaternion(this.quat, "YXZ");
-      if (this.recenter && pose) { this.baseYaw = this.euler.y; this.recenter = false; }
+      if (this.recenter && pose) { this.baseYaw = this.euler.y; this.recenter = false; this.panSmoother.reset(); }
       const yaw = Math.atan2(Math.sin(this.euler.y - this.baseYaw), Math.cos(this.euler.y - this.baseYaw));
       this.inputValid = true;
       this.input = { held,
         v: -stick(axes.length >= 4 ? axes[3] : axes[1]) * 0.45,
         w: stick(axes.length >= 4 ? axes[2] : axes[0]) * 0.55,
-        pan: THREE.MathUtils.clamp(-THREE.MathUtils.radToDeg(yaw), -80, 80) };
+        pan: this.panSmoother.step(-THREE.MathUtils.radToDeg(yaw), this.panDt()) };
       if (scan && !this.scanDown) void this.startScan();
       this.scanDown = scan;
       this.cockpit.position.copy(this.position); this.cockpit.quaternion.copy(this.quat);
