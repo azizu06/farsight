@@ -260,8 +260,8 @@ new ResizeObserver(() => {
   camera.updateProjectionMatrix();
 }).observe($("scene"));
 let rover: RoverExperience | undefined;
-renderer.setAnimationLoop(() => {
-  rover?.update(performance.now());
+renderer.setAnimationLoop((_time, frame) => {
+  rover?.update(performance.now(), frame);
   root.visible = !rover?.vrCameraView;
   if (!renderer.xr.isPresenting) controls.update();
   renderer.render(scene, camera);

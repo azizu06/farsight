@@ -59,6 +59,33 @@ class FreshnessTests(unittest.TestCase):
 
 
 class VideoTests(unittest.IsolatedAsyncioTestCase):
+    @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg required for actual encoder crash recovery")
+    async def test_actual_encoder_crash_restarts_and_clears_old_readiness(self):
+        jpeg = simulated_frame(0, 0).jpeg
+        class Camera:
+            def snapshot(self):
+                return CameraFrame(jpeg, time.monotonic(), 0, "SIMULATED")
+        service = VideoService(Camera(), enabled=True, width=160, height=120, fps=5, bitrate=100000)
+        await service.start()
+        try:
+            for _ in range(300):
+                if service.ready:
+                    break
+                await asyncio.sleep(.01)
+            self.assertTrue(service.ready)
+            previous = service.process.pid
+            service.process.kill()
+            await service.process.wait()
+            self.assertFalse(service.ready)
+            for _ in range(500):
+                if service.ready and service.process.pid != previous:
+                    break
+                await asyncio.sleep(.01)
+            self.assertTrue(service.ready)
+            self.assertNotEqual(service.process.pid, previous)
+            self.assertIsNone(service.error)
+        finally:
+            await service.close()
     async def test_slow_consumer_is_reset_instead_of_corrupted(self):
         service = VideoService(None)
         queue = service.subscribe()

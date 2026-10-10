@@ -265,7 +265,7 @@ export class RoverExperience {
     }
   }
 
-  update(now: number) {
+  update(now: number, frame?: XRFrame) {
     const xr = this.renderer.xr.isPresenting;
     const session = this.renderer.xr.getSession();
     if (xr && session) {
@@ -280,12 +280,21 @@ export class RoverExperience {
       if (toggle && !this.toggleDown) { this.xrLive = !this.xrLive; this.stop("View changed: release trigger"); this.setView(this.xrLive ? "camera" : "3d"); }
       if (center && !this.recenterDown) this.recenter = true;
       this.toggleDown = toggle; this.recenterDown = center;
-      const xrCamera = this.renderer.xr.getCamera();
-      xrCamera.getWorldQuaternion(this.quat); xrCamera.getWorldPosition(this.position);
+      const reference = this.renderer.xr.getReferenceSpace();
+      let pose: XRViewerPose | null = null;
+      try { if (frame && reference) pose = frame.getViewerPose(reference) ?? null; } catch { /* Tracking loss stops controls below. */ }
+      if (pose) {
+        const orientation = pose.transform.orientation, position = pose.transform.position;
+        this.quat.set(orientation.x, orientation.y, orientation.z, orientation.w);
+        this.position.set(position.x, position.y, position.z);
+      } else {
+        const xrCamera = this.renderer.xr.getCamera();
+        xrCamera.getWorldQuaternion(this.quat); xrCamera.getWorldPosition(this.position);
+      }
       this.euler.setFromQuaternion(this.quat, "YXZ");
-      if (this.recenter) { this.baseYaw = this.euler.y; this.recenter = false; }
+      if (this.recenter && pose) { this.baseYaw = this.euler.y; this.recenter = false; }
       const yaw = Math.atan2(Math.sin(this.euler.y - this.baseYaw), Math.cos(this.euler.y - this.baseYaw));
-      this.inputValid = !!right?.gamepad;
+      this.inputValid = !!right?.gamepad && !!pose;
       this.input = { held,
         v: -stick(axes.length >= 4 ? axes[3] : axes[1]) * 0.45,
         w: stick(axes.length >= 4 ? axes[2] : axes[0]) * 0.55,

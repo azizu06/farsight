@@ -52,7 +52,22 @@ class VideoService:
             if not shutil.which("ffmpeg"):
                 self.error = "ffmpeg unavailable; use camera.jpg until installed"
                 return
-            self.task = asyncio.create_task(self._run())
+            self.task = asyncio.create_task(self._supervise())
+
+    @property
+    def ready(self):
+        return bool(self.init and self.task and not self.task.done() and self.process
+                    and self.process.returncode is None and not self.error)
+
+    async def _supervise(self):
+        while True:
+            self.init = self.mime = None
+            self.samples.clear()
+            self.sample_id = 0
+            self.error = None
+            await self._run()
+            self.init = self.mime = None
+            await asyncio.sleep(.5)
 
     def subscribe(self):
         queue = asyncio.Queue(maxsize=8)
@@ -148,7 +163,8 @@ class VideoService:
                 with suppress(asyncio.CancelledError, Exception):
                     await task
             if self.process and self.process.returncode is None:
-                self.process.terminate()
+                with suppress(ProcessLookupError):
+                    self.process.terminate()
                 with suppress(asyncio.TimeoutError):
                     await asyncio.wait_for(self.process.wait(), 2)
                 if self.process.returncode is None:

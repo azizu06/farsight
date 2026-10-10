@@ -23,12 +23,29 @@ def percentile(values, fraction):
     return sorted(values)[max(0, math.ceil(len(values) * fraction) - 1)] if values else None
 
 
+def capture_receipt_bound(age_ms, elapsed_ms, server_wait_ms=None):
+    """Capture receipt-to-arrival upper bound without synchronizing clocks.
+
+    Subtract only the server's measured wait for a fragment, which is already
+    represented in capture age when appropriate. Uplink and downlink time stay
+    in the bound. Invalid/missing wait metadata keeps the conservative full RTT.
+    """
+    if any(type(value) not in (int, float) or not math.isfinite(value) or value < 0
+           for value in (age_ms, elapsed_ms)):
+        raise ValueError("Invalid capture age or request elapsed time")
+    wait = server_wait_ms if (type(server_wait_ms) in (int, float)
+            and math.isfinite(server_wait_ms) and 0 <= server_wait_ms <= elapsed_ms) else 0
+    return age_ms + elapsed_ms - wait
+
+
 async def measure(origin, seconds=30, video=True, ca_file=None, max_rtt_ms=200, video_mode="auto"):
     start = time.monotonic()
     errors, samples, health = [], [], {}
     stream_bytes = 0
     video_ages = []
+    receipt_bounds = []
     selected_video = "none"
+    measuring_done = False
     tls = ssl.create_default_context(cafile=ca_file)
     async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=tls),
             timeout=aiohttp.ClientTimeout(total=None, connect=5, sock_read=2)) as client:
@@ -42,23 +59,34 @@ async def measure(origin, seconds=30, video=True, ca_file=None, max_rtt_ms=200, 
                         if first.get("type") != "video_init":
                             raise ValueError(str(first))
                         stream_bytes += len(await asyncio.wait_for(ws.receive_bytes(), 2))
-                        request_id = 1
-                        while True:
+                        request_id, requested = 0, {}
+                        async def request_next():
+                            nonlocal request_id
+                            request_id += 1
+                            requested[request_id] = time.monotonic()
                             await ws.send_json({"type": "next", "request_id": request_id})
+                        await request_next()
+                        await request_next()
+                        while True:
                             metadata = await asyncio.wait_for(ws.receive_json(), 2)
-                            if metadata.get("type") != "video_segment" or metadata.get("request_id") != request_id:
+                            identifier = metadata.get("request_id")
+                            if (metadata.get("type") != "video_segment"
+                                    or type(identifier) is not int or identifier not in requested):
                                 raise ValueError("Unexpected video segment metadata")
                             stream_bytes += len(await asyncio.wait_for(ws.receive_bytes(), 2))
-                            if isinstance(metadata.get("age_ms"), (int, float)):
-                                video_ages.append(metadata["age_ms"])
-                            request_id += 1
+                            elapsed_ms = (time.monotonic() - requested.pop(identifier)) * 1000
+                            receipt_bounds.append(capture_receipt_bound(
+                                metadata.get("age_ms"), elapsed_ms, metadata.get("server_wait_ms")))
+                            video_ages.append(metadata["age_ms"])
+                            await request_next()
                 else:
                     async with client.get(str(origin) + "/stream.mjpg") as response:
                         response.raise_for_status()
                         async for chunk in response.content.iter_chunked(65536):
                             stream_bytes += len(chunk)
             except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, TypeError) as exc:
-                errors.append("video: " + type(exc).__name__)
+                if not measuring_done:
+                    errors.append("video: " + type(exc).__name__)
 
         stream_task = None
         try:
@@ -94,13 +122,19 @@ async def measure(origin, seconds=30, video=True, ca_file=None, max_rtt_ms=200, 
             errors.append("control/health: " + type(exc).__name__ + ": " + str(exc))
         finally:
             if stream_task:
+                measuring_done = True
                 stream_task.cancel()
+                # Abort its underlying sockets too: cancellation racing a
+                # completed wait_for receive must not leave a producer running.
+                await client.close()
                 with suppress(asyncio.CancelledError):
                     await stream_task
     elapsed = time.monotonic() - start
     p95 = percentile(samples, 0.95)
+    capture_p95 = percentile(receipt_bounds, 0.95)
+    capture_check = selected_video != "h264" or (capture_p95 is not None and capture_p95 <= 500)
     checks_passed = (not errors and bool(samples) and p95 <= max_rtt_ms
-                     and (not video or stream_bytes > 0))
+                     and (not video or stream_bytes > 0) and capture_check)
     return {
         "measurement_only": True,
         "motion_requested": False,
@@ -114,6 +148,9 @@ async def measure(origin, seconds=30, video=True, ca_file=None, max_rtt_ms=200, 
         "video_mode": selected_video,
         "observed_video_mbps": round(stream_bytes * 8 / elapsed / 1e6, 3),
         "server_reported_fragment_age_p95_ms": percentile(video_ages, 0.95),
+        "capture_receipt_bound_p95_ms": capture_p95,
+        "capture_receipt_check_passed": capture_check if selected_video == "h264" else None,
+        "h264_request_window": 2 if selected_video == "h264" else None,
         "health": health,
         "errors": errors,
         "transport_checks_passed": checks_passed,

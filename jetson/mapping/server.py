@@ -109,7 +109,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
         status.update(rover=rover["rover"], estop=rover["estop"], control=rover,
                       detector=perception.mode, detector_error=perception.error,
                       detector_fps=perception.snapshot()["fps"] if perception.snapshot()["fresh"] else 0,
-                      video=dict(enabled=h264, ready=video_service.init is not None, error=video_service.error,
+                      video=dict(enabled=h264, ready=video_service.ready, error=video_service.error,
                                  fps=video_fps, bitrate=video_bitrate),
                       assistant=dict(vision_model=bool(assistant_url), whisper=bool(whisper_bin and whisper_model),
                                      piper=bool(piper_bin and piper_model)))
@@ -181,42 +181,57 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
             await ws.close(code=1008)
             return
         for _ in range(100):
-            if video_service.init is not None or video_service.error:
+            if video_service.ready or video_service.error:
                 break
             await asyncio.sleep(.05)
-        if video_service.init is None:
+        if not video_service.ready:
             await ws.send_json({"type": "video_error", "reason": video_service.error or "Waiting for camera"})
             await ws.close(code=1013)
             return
         queue = video_service.subscribe()
+        tasks = []
         try:
             frame = camera_service.snapshot()
             await ws.send_json(dict(type="video_init", mime=video_service.mime, source=frame.source if frame else "WAITING"))
             await ws.send_bytes(video_service.init)
-            while True:
-                request = await asyncio.wait_for(ws.receive_json(), 10)
-                request_id = request.get("request_id") if isinstance(request, dict) else None
-                if (not isinstance(request, dict) or request.get("type") != "next"
-                        or type(request_id) is not int or not 0 <= request_id <= 2**53 - 1):
-                    await ws.close(code=1008, reason="Expected next video fragment request")
-                    return
-                waiting_at = time.monotonic()
-                fragment = await asyncio.wait_for(queue.get(), 2)
-                wait_ms = (time.monotonic() - waiting_at) * 1000
-                if fragment is None:
-                    await ws.close(code=1013, reason="Video consumer fell behind; reconnect for fresh video")
-                    return
-                metadata = {key: value for key, value in fragment.items() if key not in ("payload", "received")}
-                metadata.update(type="video_segment", request_id=request_id,
-                                server_wait_ms=wait_ms,
-                                age_ms=max(0, round((time.monotonic() - fragment["received"]) * 1000)))
-                await asyncio.wait_for(ws.send_json(metadata), .5)
-                await asyncio.wait_for(ws.send_bytes(fragment["payload"]), .5)
+            requests = asyncio.Queue(maxsize=4)
+            async def receive_requests():
+                while True:
+                    request = await asyncio.wait_for(ws.receive_json(), 10)
+                    request_id = request.get("request_id") if isinstance(request, dict) else None
+                    if (not isinstance(request, dict) or request.get("type") != "next"
+                            or type(request_id) is not int or not 0 <= request_id <= 2**53 - 1 or requests.full()):
+                        raise ValueError("Invalid or excessive video request window")
+                    requests.put_nowait((request_id, time.monotonic()))
+
+            async def send_fragments():
+                while True:
+                    request_id, waiting_at = await requests.get()
+                    fragment = await asyncio.wait_for(queue.get(), 2)
+                    wait_ms = (time.monotonic() - waiting_at) * 1000
+                    if fragment is None:
+                        return
+                    metadata = {key: value for key, value in fragment.items() if key not in ("payload", "received")}
+                    metadata.update(type="video_segment", request_id=request_id,
+                                    server_wait_ms=wait_ms,
+                                    age_ms=max(0, round((time.monotonic() - fragment["received"]) * 1000)))
+                    await asyncio.wait_for(ws.send_json(metadata), .5)
+                    await asyncio.wait_for(ws.send_bytes(fragment["payload"]), .5)
+
+            tasks = [asyncio.create_task(receive_requests()), asyncio.create_task(send_fragments())]
+            done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                task.result()
         except (WebSocketDisconnect, RuntimeError, OSError, asyncio.TimeoutError, ValueError):
             with suppress(RuntimeError, WebSocketDisconnect):
                 await ws.close(code=1013)
         finally:
             video_service.subscribers.discard(queue)
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            with suppress(RuntimeError, WebSocketDisconnect):
+                await ws.close(code=1013)
 
     @app.websocket("/ws/detections")
     async def detections(ws: WebSocket):

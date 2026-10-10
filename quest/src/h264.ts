@@ -19,6 +19,7 @@ export class H264Viewer {
   private stopped = true;
   private retry = 0;
   private mime = "";
+  private problem: string | null = null;
   private connecting = false;
   private initReceived = false;
   private requests = new VideoRequests(2);
@@ -34,7 +35,7 @@ export class H264Viewer {
     this.video.muted = true; this.video.autoplay = true; this.video.playsInline = true;
     this.video.onerror = () => this.reset("Decoder error: restarting H.264");
   }
-  start() { this.stopped = false; this.connect(); this.watchDecodedFrame(); }
+  start() { this.stopped = false; this.problem = null; this.connect(); this.watchDecodedFrame(); }
   private watchDecodedFrame() {
     if (this.stopped || !this.callbackSupported) return;
     this.frameCallback = this.video.requestVideoFrameCallback((_now, metadata) => {
@@ -78,7 +79,8 @@ export class H264Viewer {
             }
             this.pending = message;
           } else if (message.type === "video_error") {
-            this.state = `H.264 unavailable: ${String(message.reason ?? message.error ?? "encoder disabled")}`;
+            this.problem = `H.264 unavailable: ${String(message.reason ?? message.error ?? "encoder disabled")}. Use JPEG until recovered.`;
+            this.state = this.problem;
           }
         } catch { this.reset("Invalid H.264 metadata"); }
       } else {
@@ -97,9 +99,10 @@ export class H264Viewer {
         this.queue.push(event.data); this.append();
       }
     };
-    socket.onerror = () => socket.close();
+    socket.onerror = () => { this.problem = "H.264 connection failed; retrying, or select JPEG."; socket.close(); };
     socket.onclose = () => {
       this.connecting = false; this.onReset();
+      this.problem ??= "H.264 link ended; retrying, or select JPEG.";
       if (!this.stopped) this.retry = window.setTimeout(() => { this.cleanMedia(); this.connect(); }, 1000);
     };
   }
@@ -148,11 +151,12 @@ export class H264Viewer {
     if (this.requests.expired(performance.now())) {
       this.reset("H.264 segment stalled: restarting");
     }
-    this.state = this.displayedFrame ? `${this.source} · H.264 decoded frame verified` : `${this.source} · waiting for verified decoded frame (motion disabled)`;
+    if (this.displayedFrame) { this.problem = null; this.state = `${this.source} · H.264 decoded frame verified`; }
+    else this.state = this.problem ?? `${this.source} · waiting for verified decoded frame (motion disabled)`;
   }
   private reset(reason: string) {
     if (this.stopped) return;
-    this.state = reason; this.onReset(); this.socket?.close(); this.cleanMedia();
+    this.problem = reason; this.state = reason; this.onReset(); this.socket?.close(); this.cleanMedia();
   }
   private cleanMedia() {
     this.queue = []; this.buffer = null; this.media = null; this.segments = [];
