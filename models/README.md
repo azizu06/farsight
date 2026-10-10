@@ -19,3 +19,49 @@ CPU rehearsal: `--detector-model models/yolo11n.onnx`. With no model, the server
 uses the bundled HOG CPU person detector. HOG is a fallback and does not establish
 that TensorRT or GPU inference is working. Ultralytics export dependencies are
 needed on the laptop only; the Jetson inference path does not require PyTorch.
+
+## Optional rescue-drill face detector (Hugging Face Hub)
+
+- Hub repo: [`onnxmodelzoo/version-RFB-320`](https://huggingface.co/onnxmodelzoo/version-RFB-320).
+- File: `version-RFB-320.onnx`, revision `6fd293d22b523ec88959f104b8eef5395e3adfbc` (1.27 MB).
+- License: the model card's License section and SPDX header say **MIT**;
+  Hub metadata says **Apache-2.0**. Both are permissive; preserve this provenance
+  discrepancy rather than claiming a single unambiguous label.
+- SHA-256: `34cd7e60aeff28744c657de7a3dc64e872d506741de66987f3426f2b79f88017`.
+
+Download from the Hub into a **new** file (the exclusive create refuses overwrite):
+
+```bash
+python - <<'PY'
+from urllib.request import urlopen
+url = 'https://huggingface.co/onnxmodelzoo/version-RFB-320/resolve/6fd293d22b523ec88959f104b8eef5395e3adfbc/version-RFB-320.onnx'
+with open('models/version-RFB-320.onnx', 'xb') as target:
+    target.write(urlopen(url).read())
+PY
+python -m jetson.server --face-model models/version-RFB-320.onnx
+```
+
+`--face-model PATH` enables an extra pass alongside HOG, YOLO detection or pose;
+with `--detector none` it runs face-only. Omit the flag to keep it off (default).
+The model path is configurable; no runtime download or shared-model-folder writes.
+Normalized `cls: "face"` boxes join the existing detection packet and receive
+stable, class-separated track IDs. No new packet fields or interface changes.
+
+UltraFace directly resizes RGB to 320x240, normalizes `(pixel - 127) / 128`,
+and outputs `[1,N,2]` scores and `[1,N,4]` normalized xyxy boxes. It reuses pose
+NMS, but deliberately does not use YOLO letterboxing/decoding. Default face
+confidence is 0.7 and NMS IoU is 0.3. CPU uses onnxruntime when installed, otherwise
+OpenCV DNN. The ONNX is suitable for a later TensorRT build; this face module
+currently runs ONNX CPU only and does not load `.engine` files.
+
+Mac rehearsal (arm64, macOS 27.0.1, OpenCV 4.14.0 CPU): 10 warmup + 100 seeded
+random 640x480 frames, face preprocessing/inference/decode included: mean **3.09 ms**,
+median **3.07 ms**, p95 **3.40 ms** added per frame. This is synthetic local input,
+not Jetson throughput or face accuracy evidence. Validate faces and build/measure
+TensorRT on the Jetson before claiming GPU or rescue-drill performance.
+
+```bash
+FARSIGHT_FACE_MODEL=models/version-RFB-320.onnx python -m pytest jetson/tests/test_face.py -q
+```
+
+The real-model smoke test skips if the configured file is absent.

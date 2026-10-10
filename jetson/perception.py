@@ -63,7 +63,7 @@ def yolo_boxes(prediction, original_shape, side=640, confidence=.35, labels=None
 
 
 class PerceptionService:
-    def __init__(self, camera, model=None, mode="hog", fps=3, on_detection=None):
+    def __init__(self, camera, model=None, mode="hog", fps=3, on_detection=None, face_model=None):
         self.camera, self.mode, self.model, self.fps = camera, mode, model, fps
         self.on_detection = on_detection
         self.task = None
@@ -71,6 +71,8 @@ class PerceptionService:
         self.engine = None
         self.hog = None
         self.pose = None
+        self.face_model = face_model
+        self.face = None
         self.error = None
         self.packet = dict(ts=0, frame=-1, fps=0, boxes=[], detector="disabled", source="WAITING")
         self.tracker = Tracker()
@@ -78,6 +80,9 @@ class PerceptionService:
         self.labels = None
 
     def _setup(self):
+        if self.face_model:
+            from .face import FaceDetector
+            self.face = FaceDetector(self.face_model)
         if self.mode == "pose":
             if not self.model:
                 raise ValueError("pose mode needs --detector-model (YOLO11-pose .onnx, or .engine on the Jetson)")
@@ -108,6 +113,12 @@ class PerceptionService:
         image = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
         if image is None:
             raise ValueError("Invalid detector camera image")
+        boxes = self._detect_primary(image)
+        if self.face is not None:
+            boxes.extend(self.face.detect(image))
+        return boxes
+
+    def _detect_primary(self, image):
         if self.pose is not None:
             from .pose.boxes import detection_to_box
             h, w = image.shape[:2]
@@ -140,7 +151,7 @@ class PerceptionService:
         return self.tracker.update(boxes, now)
 
     async def start(self):
-        if self.mode == "none" and not self.model:
+        if self.mode == "none" and not self.model and not self.face_model:
             return
         try:
             await asyncio.to_thread(self._setup)

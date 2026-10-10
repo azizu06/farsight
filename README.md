@@ -53,3 +53,13 @@ an explicit serial port or `--simulate-rover` is supplied. See
 Pose detection uses Ultralytics YOLO11n-pose (`models/yolo11n-pose.onnx`, not committed), licensed AGPL-3.0. Run it with
 `python -m jetson.mapping.server --detector pose --detector-model models/yolo11n-pose.onnx` (`pip install onnxruntime` is
 optional; OpenCV DNN is the fallback). Detection boxes then carry `kpts` and `down`. The TensorRT pose backend is a stub until the engine is built on the Jetson.
+
+For the **Hugging Face challenge**, the optional rescue-drill face pass pulls
+`version-RFB-320.onnx` from the Hub repo
+[`onnxmodelzoo/version-RFB-320`](https://huggingface.co/onnxmodelzoo/version-RFB-320),
+revision `6fd293d22b523ec88959f104b8eef5395e3adfbc`. Its model card says MIT;
+Hub metadata says Apache-2.0 (both permissive). Download/provenance and Mac CPU
+latency are in [models/README.md](models/README.md).
+Enable with `python -m jetson.server --face-model models/version-RFB-320.onnx`;
+it is off by default and adds normalized `cls: "face"` boxes to the same packets,
+alongside the selected person detector. Face TensorRT execution remains future work.
