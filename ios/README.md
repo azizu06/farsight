@@ -219,3 +219,34 @@ These checks compile the production Swift packet builder and send its output
 through the actual Python decoder/app. Real sensor alignment, physical device
 installation, phone-to-Jetson USB routing, and live floor operation still need
 the real devices.
+
+
+## Phone-built 3D mesh
+
+On the rover LiDAR phone, choose **Rover**, enter its Tailscale IPv4 and the
+Jetson USB IPv4, turn **Send RGB only** off, leave **Build 3D on this phone**
+on, then Start capture. The same ARSession constructs native mesh anchors and
+sends camera/depth/pose to the Jetson. A separate `:8083` listener serves
+`/geometry/status` and `/geometry/stream`. Compression runs off the capture
+queue; v1 uses native Brotli with latest-anchor coalescing and bounded memory.
+
+On the operator phone, choose **Operator**, enter the rover phone Tailscale
+IPv4, enable **Forward phone 3D over USB**, then Start bridge. It forwards
+loopback `:8083` to the rover's geometry port separately from `:8081` control
+and optional `:8082` bonded fallback. Both roles remain explicitly started;
+background and Stop close their sessions. Role/settings are saved, not capture
+or motion intent.
+
+On the Mac, `python -m tools.phone_usb --geometry --check` checks control and
+geometry separately; keep `python -m tools.phone_usb --geometry` running.
+Start `farsight-geometry --upstream ws://127.0.0.1:18445/geometry/stream` on
+loopback `:8484`, then use the operator launcher with
+`--geometry-upstream http://127.0.0.1:8484`. Direct tailnet geometry pull is an
+optional fallback. Enable Jetson fusion bypass only after the assembled map is
+visible. Geometry reconstruction does not replace fresh local Nav2 depth.
+
+Native build and Mac socket/codec fixtures verify the implementation, not
+phone VPN/cellular accessibility or ARKit capture on the rig. The installed
+phone-to-Mac-to-Quest check remains required. Scene resets create a fresh
+capture UUID/world; old geometry is discarded. Geometry-only reconnect sends a
+complete bounded retained-anchor snapshot with increasing wire sequence.

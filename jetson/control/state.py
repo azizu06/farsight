@@ -50,9 +50,10 @@ class ControlState:
         if pan_mount not in self.PAN_MOUNTS:
             raise ValueError(f"pan_mount must be one of {self.PAN_MOUNTS}")
         self.pan_mount = pan_mount
-        # Optional navigation stack (jetson.nav.NavService). When it is
-        # available, autonomy modes apply its velocity commands; otherwise the
-        # reactive jetson.autonomy policy runs as before.
+        # Optional navigation stack (jetson.nav.NavService). When configured it is
+        # the only navigation: autonomy modes apply its velocity commands and hold
+        # still while it is unavailable. Without it the reactive jetson.autonomy
+        # policy runs as before.
         self.navigator = navigator
         self.autonomy = (Autonomy(proximity_stop=proximity_stop)
                          if detections is not None or navigator is not None else None)
@@ -400,6 +401,8 @@ class ControlState:
                                               max_pwm=self.autonomy_max_pwm)
                 command = self.navigator.command()
                 v, w = command if command is not None else (0.0, 0.0)
+            elif engaged and self.navigator is not None:
+                v = w = 0.0  # Nav2 down: hold, never drive the reactive policy blind
             elif engaged:
                 cm = self.range_cm if self.clock() - self.range_at < self.RANGE_TTL else None
                 try:
@@ -456,6 +459,5 @@ class ControlState:
                     "drive_mode": self.drive[0] if self.drive else "normalized",
                     **({"nav": self.navigator.nav_object(
                         self.autonomy.mode if self.autonomy else None,
-                        self.autonomy.phase if self.autonomy else None,
                         bool(self.autonomy and self.autonomy.mode != "teleop" and self.deadline))}
                        if self.navigator is not None else {})}

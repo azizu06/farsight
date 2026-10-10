@@ -129,8 +129,11 @@ http://localhost:8080/?mount=fixed&h264=1&voice=1&diag=1
 
 Press **Enter VR**. With the car lifted or otherwise unable to travel:
 
-1. Both controllers must be on and tracked. With either missing, the stop
-   panel names the cause and the right trigger must be released and pressed again.
+1. Only the right controller is required: it carries the deadman, the drive stick
+   and every mode button. With it missing or untracked, the stop panel names the
+   cause and the right trigger must be released and pressed again. The left
+   controller is optional (X recenter, Y actions, grip drill, voice trigger); losing
+   it never stops driving.
 2. Hold the right trigger: the HUD headline should become ready/driving once
    camera and control are fresh. Release: it stops.
 3. Hold the trigger and move the right stick: check the wheel direction for
@@ -138,7 +141,7 @@ Press **Enter VR**. With the car lifted or otherwise unable to travel:
    ([rover/README.md](../rover/README.md)).
 4. Turn your head: the screen stays anchored. Servo pan follows only in servo
    mode; fixed mode retains the whole frame. Left X recenters. Check A switches
-   camera/map, B stops, and Y opens the actions menu. Point and squeeze right
+   camera/map, B stops, and holding A (or left Y) opens the actions menu. Point and squeeze right
    grip to select a highlighted action; the menu must block driving.
 5. Hold the left trigger to ask by voice; release to send.
 6. Take the headset off for a few seconds: motion stops and requires a release

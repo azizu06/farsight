@@ -1,5 +1,6 @@
 import unittest
 import shlex
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -229,6 +230,18 @@ class RenderTests(unittest.TestCase):
             path.write_text(rendered)
             actual = launch.read_env_file(path)
         self.assertEqual(actual["FARSIGHT_LLM_MODEL"], selection["FARSIGHT_LLM_MODEL"])
+
+    def test_nav_unit_waits_for_a_live_pose_before_launching_nav2(self):
+        # Nav2's lifecycle bringup aborts without base_link TF for ~60 s; a boot before the phone connects
+        # would strand it until a manual restart.
+        text = EXAMPLE.with_name("farsight-nav.service").read_text()
+        pre = next(line for line in text.splitlines() if line.startswith("ExecStartPre="))
+        argv = shlex.split(pre.partition("=")[2])
+        self.assertEqual(argv[:2], ["/bin/bash", "-c"])
+        self.assertIn("/nav/status", argv[2])
+        self.assertIn("pose_source.:.arkit", argv[2])
+        subprocess.run(["bash", "-n", "-c", argv[2]], check=True)
+        self.assertIn("TimeoutStartSec=infinity", text.splitlines())
 
     def test_rendered_example_passes_launch_validation(self):
         env = render(present=(f"{MODELS}/yolo11n-pose.engine",), assistant=True, whisper=True)

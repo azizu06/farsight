@@ -113,9 +113,10 @@ the exact phone setup, health checks, fallback behavior and acceptance gates,
 follow [phone-relay.md](docs/phone-relay.md) and
 [demo-connectivity.md](docs/demo-connectivity.md). The optional direct Jetson
 tailnet route is not the default and must not be called a qualified fallback
-without the full Quest/rover test. Right trigger is the deadman and the
-right stick drives. Right A switches camera/map, right B stops, left X recenters,
-left Y opens the actions menu (point and right grip to select),
+without the full Quest/rover test. Driving is right-hand only: right trigger
+is the deadman and the right stick drives. Tap right A to switch camera/map, hold
+right A (or press left Y) to open the actions menu (point and right grip to select),
+right B stops, left X recenters,
 left grip starts the rescue drill, and the left trigger confirms a pending
 assistant proposal (it asks by voice only when the rover has a Whisper model). The [Quest controls](quest/README.md#controls) are
 authoritative. Choose full-frame fixed mode for a fixed camera; servo pan requires

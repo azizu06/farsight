@@ -35,12 +35,15 @@ qualification. The scoped redesign measurement is saved in
 
 ## Controls
 
-- Quest: hold the right trigger, then use the right thumbstick to drive. The
-  left controller is optional for driving and handles the extra actions. Release the
-  trigger to stop. Forward speed is capped at 45% of the server's PWM ceiling;
+- Quest: everything is on the right controller. Hold the right trigger, then use
+  the right thumbstick to drive; release the trigger to stop. The left stick is
+  ignored, and the left controller may be idle, asleep or missing without stopping
+  the rover. Right-stick input inside a 0.25 deadzone counts as centered, so slight
+  drift does not cancel Explore, Seek or go-to. Forward speed is capped at 45% of the server's PWM ceiling;
   calibrate that ceiling on the actual car so motor stiction does not prevent motion.
-- Right A always switches camera/map. Right B stops and cancels navigation.
-  Left X recenters the anchored view. Left Y opens the actions menu; point the
+- Tap right A to switch camera/map (on release). Hold right A for 0.6 s to open
+  the actions menu instead (left Y also opens it). Right B stops and cancels
+  navigation. Left X recenters the anchored view. In the actions menu, point the
   right controller and squeeze its grip to select Explore, Scan or Drill. The
   menu stops driving. In camera view, right grip selects a pointed person for
   Seek. Release and press the trigger after changing views or selecting an action.

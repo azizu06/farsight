@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { MAX_FRONTIERS, MAX_PATH, floorHit, goalBody, navActive, navColor, navLabel, parseNav, pathLength, postNav, ribbon } from "../src/nav-view.js";
+import { readFileSync } from "node:fs";
+import ts from "typescript";
+import { MAX_FRONTIERS, MAX_PATH, floorHit, goalBody, mergeNav, navActive, navColor, navLabel, parseNav, pathLength, postNav, ribbon } from "../src/nav-view.js";
 
 const close = (actual, expected, message) => assert.ok(Math.abs(actual - expected) < 1e-5, `${message}: ${actual} != ${expected}`);
 const vertex = (geometry, index) => [...geometry.positions.slice(index * 3, index * 3 + 3)];
@@ -24,6 +26,131 @@ test("parseNav drops a path with any bad point instead of bridging the gap, and 
   const frontiers = Array.from({ length: MAX_FRONTIERS + 9 }, (_, i) => [i, i]);
   frontiers.splice(3, 0, [null, 1]);
   assert.equal(parseNav({ state: "planning", frontiers }).frontiers.length, MAX_FRONTIERS - 1);
+});
+
+const previousNav = () => parseNav({ state: "driving", mode: "goto", backend: "nav2", revision: 9,
+  goal: { x: 3, z: 4 }, path: [[0, 0], [3, 4]], frontiers: [[2, 2]] });
+
+test("revision lane retains omitted arrays while replacing scalar metadata", () => {
+  const before = previousNav();
+  const next = mergeNav({ state: "recovering", mode: "explore", backend: "nav2", revision: 10,
+    message: "replanning", goal: null }, before);
+  assert.deepEqual(next.path, before.path);
+  assert.deepEqual(next.frontiers, before.frontiers);
+  assert.equal(next.state, "recovering");
+  assert.equal(next.mode, "explore");
+  assert.equal(next.revision, 10);
+  assert.equal(next.goal, null);
+  assert.equal(next.message, "replanning");
+  assert.match(navLabel(next), /5\.0 m path · 1 frontier/);
+  // Normalized copies cannot mutate the prior status or share raw inputs.
+  next.path[0][0] = 99;
+  assert.equal(before.path[0][0], 0);
+});
+
+test("full arrays replace independently and explicit empty arrays clear", () => {
+  const before = previousNav();
+  const full = mergeNav({ state: "driving", path: [[4, 4], [5, 5]], frontiers: [[6, 6]], revision: 11 }, before);
+  assert.deepEqual(full.path, [[4, 4], [5, 5]]);
+  assert.deepEqual(full.frontiers, [[6, 6]]);
+  const pathOnly = mergeNav({ state: "driving", path: [] }, before);
+  assert.deepEqual(pathOnly.path, []);
+  assert.deepEqual(pathOnly.frontiers, before.frontiers);
+  const cleared = mergeNav({ state: "idle", path: [], frontiers: [] }, before);
+  assert.deepEqual(cleared.path, []);
+  assert.deepEqual(cleared.frontiers, []);
+});
+
+test("a new controller session never inherits old paths/frontiers", () => {
+  const reset = mergeNav({ state: "planning", revision: 0 }, previousNav(), false);
+  assert.deepEqual(reset.path, []);
+  assert.deepEqual(reset.frontiers, []);
+  assert.equal(reset.revision, 0);
+  assert.deepEqual(mergeNav({ state: "planning" }).path, []);
+  const fresh = mergeNav({ state: "driving", path: [[1, 1], [2, 2]], frontiers: [[3, 3]] }, previousNav(), false);
+  assert.deepEqual(fresh.path, [[1, 1], [2, 2]]);
+});
+
+test("malformed or absent nav hides it; malformed present arrays never retain old routes", () => {
+  for (const raw of [null, undefined, {}, { state: "teleporting" }]) {
+    assert.equal(mergeNav(raw, previousNav()), null);
+  }
+  for (const path of [null, "unchanged", [[0, 0], [NaN, 1], [2, 2]]]) {
+    assert.deepEqual(mergeNav({ state: "driving", path }, previousNav()).path, []);
+  }
+  for (const frontiers of [null, "unchanged", [[NaN, 1]]]) {
+    assert.deepEqual(mergeNav({ state: "driving", frontiers }, previousNav()).frontiers, []);
+  }
+  assert.deepEqual(mergeNav({ state: "driving" }, { state: "driving", path: [[Infinity, 0]] }).path, []);
+});
+
+test("legacy full nav remains compatible and invalid revisions are not published", () => {
+  const raw = { state: "driving", path: [[0, 0], [1, 1]], frontiers: [], backend: "nav2" };
+  assert.deepEqual(mergeNav(raw, previousNav()), parseNav(raw));
+  for (const revision of [-1, NaN, 1.5, "10", Number.MAX_SAFE_INTEGER + 1]) {
+    assert.equal(Object.hasOwn(mergeNav({ state: "idle", revision }, previousNav()), "revision"), false);
+  }
+});
+
+// Compile the actual production HTTP methods, so these regressions cannot pass
+// merely because a test copied a session check absent from RoverExperience.
+function navHttpFixture(post) {
+  const source = ts.createSourceFile("rover.ts", readFileSync(new URL("../src/rover.ts", import.meta.url), "utf8"), ts.ScriptTarget.Latest, true);
+  const klass = source.statements.find(node => ts.isClassDeclaration(node) && node.name.text === "RoverExperience");
+  const methods = ["setGoal", "cancelNav", "send"].map(name => klass.members.find(node => ts.isMethodDeclaration(node) && node.name.getText(source) === name).getText(source));
+  const js = ts.transpileModule(`class Fixture { ${methods.join('\n')} }`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  const Fixture = new Function("postNav", "goalBody", "WebSocket", `${js}; return Fixture;`)(post, goalBody, { OPEN: 1 });
+  const fixture = new Fixture();
+  Object.assign(fixture, { stopped: false, status: { session_id: "old-controller" }, socket: {}, navBusy: false,
+    nav: previousNav(), scanning: false, scanPending: false, dirty: false, renderer: { xr: { isPresenting: false } },
+    noteNav() {}, stop() {}, autonomy: { mode: "goto", clears: 0, gotos: 0,
+      clear() { this.clears++; this.mode = "teleop"; }, goto() { this.gotos++; this.mode = "goto"; } } });
+  return fixture;
+}
+
+test("late POST responses from an old controller cannot replace new nav or action mode", async () => {
+  for (const method of ["setGoal", "cancelNav"]) {
+    let finish;
+    const fixture = navHttpFixture(() => new Promise(resolve => { finish = resolve; }));
+    const pending = method === "setGoal" ? fixture.setGoal({ x: 1, z: 2 }) : fixture.cancelNav();
+    const newNav = parseNav({ state: "planning", path: [[7, 7], [8, 8]], frontiers: [[9, 9]] });
+    fixture.status = { session_id: "new-controller" }; fixture.socket = {}; fixture.nav = newNav;
+    fixture.autonomy.mode = "explore";
+    finish({ ok: true, nav: previousNav(), error: null });
+    await pending;
+    assert.equal(fixture.nav, newNav);
+    assert.equal(fixture.autonomy.mode, "explore");
+    assert.equal(fixture.autonomy.gotos, 0);
+  }
+});
+
+test("same-session POST updates still work, but replacing its socket rejects old responses", async () => {
+  const nav = parseNav({ state: "planning", path: [[0, 0], [2, 2]] });
+  const current = navHttpFixture(async () => ({ ok: true, nav, error: null }));
+  await current.setGoal({ x: 1, z: 2 });
+  assert.equal(current.nav, nav); assert.equal(current.autonomy.gotos, 1);
+  let finish;
+  const changed = navHttpFixture(() => new Promise(resolve => { finish = resolve; }));
+  const original = changed.nav, pending = changed.setGoal({ x: 1, z: 2 });
+  changed.socket = {}; // Same textual session cannot authorize another socket's late result.
+  finish({ ok: true, nav, error: null }); await pending;
+  assert.equal(changed.nav, original); assert.equal(changed.autonomy.gotos, 0);
+});
+
+test("production heartbeat and release opt into revision nav without changing permit or sequence", () => {
+  const fixture = navHttpFixture(async () => null), commands = [];
+  Object.assign(fixture, { seq: 10, sent: new Map(), digitalPan: false,
+    status: { session_id: "controller", permit: "server-issued" },
+    gate: { session: "controller", videoAge: () => 80.2 }, input: { v: .35, w: -.2, pan: 5 },
+    socket: { readyState: 1, bufferedAmount: 0, send: text => commands.push(JSON.parse(text)) } });
+  fixture.autonomy.fields = () => ({ mode: "teleop" });
+  fixture.send(true); fixture.send(false);
+  assert.deepEqual(commands, [
+    { seq: 10, session_id: "controller", permit: "server-issued", nav_lane: "revision",
+      deadman: true, v: .35, w: -.2, pan: 5, video_fresh: true, mode: "teleop", video_age_ms: 81 },
+    { seq: 11, session_id: "controller", permit: "server-issued", nav_lane: "revision",
+      deadman: false, v: 0, w: 0, pan: 5, video_fresh: true, mode: "teleop", video_age_ms: 81 },
+  ]);
 });
 
 test("ribbon lays a straight path flat on the floor at the requested width", () => {

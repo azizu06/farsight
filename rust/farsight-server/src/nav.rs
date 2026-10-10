@@ -541,7 +541,6 @@ impl NavService {
     pub fn nav_object(
         &self,
         mode: Option<&str>,
-        phase: Option<&str>,
         active: Option<bool>,
     ) -> Value {
         let fault = if self.available() {
@@ -562,10 +561,12 @@ impl NavService {
         let mut frontiers: Vec<Value> = Vec::new();
         let state: &str;
         let message: String;
+        // #115: backend is "nav2" while Nav2 drives and null when nothing can;
+        // the reactive policy no longer reports a "fallback" backend.
         let mut backend: Option<&'static str> = if available && (mode.is_none() || backed) {
             Some("nav2")
         } else {
-            Some("fallback")
+            None
         };
         if backend == Some("nav2") {
             let mut st: String;
@@ -665,30 +666,17 @@ impl NavService {
                 "message": msg,
                 "revision": s.revision,
             });
-        } else if matches!(mode.as_deref(), Some("explore") | Some("seek")) {
-            state = match phase {
-                Some("arrived") => "arrived",
-                Some("target_lost") => "failed",
-                _ => {
-                    if active {
-                        "driving"
-                    } else {
-                        "idle"
-                    }
-                }
-            };
-            message = if !available {
-                "Nav2 bridge not connected; reactive fallback".into()
-            } else {
-                format!("{} uses the reactive policy", mode.as_deref().unwrap())
-            };
         } else {
+            // #115: with --nav2, Nav2 is the only navigation — Explore and
+            // Seek hold still rather than run the reactive policy blind.
             state = "unavailable";
             backend = None;
             message = if s.bridge.is_none() {
-                "Nav2 bridge not connected".into()
+                "Nav2 bridge not connected; holding still".into()
+            } else if !available {
+                "Nav2 bridge silent; holding still".into()
             } else {
-                "Nav2 bridge silent; commands stopped".into()
+                format!("Nav2 does not run {}; holding still", mode.as_deref().unwrap_or("this mode"))
             };
             if mode.as_deref() == Some("goto") {
                 if let Some(g) = s.goal {
@@ -1351,7 +1339,7 @@ impl NavService {
 
     pub fn status_object(&self) -> Value {
         match self.control() {
-            None => self.nav_object(None, None, None),
+            None => self.nav_object(None, None),
             Some(control) => control.status(false)["nav"].clone(),
         }
     }
@@ -1370,7 +1358,7 @@ impl NavService {
         }
         let Some(control) = self.control() else {
             return Err(GoalError::Refused {
-                nav: self.nav_object(None, None, None),
+                nav: self.nav_object(None, None),
                 message: "No rover control on this server".into(),
             });
         };
@@ -1447,7 +1435,7 @@ impl NavService {
         drop(s);
         Ok(match staged_nav {
             Some(nav) => nav,
-            None => self.nav_object(Some("goto"), Some("goto"), Some(true)),
+            None => self.nav_object(Some("goto"), Some(true)),
         })
     }
 
@@ -1465,7 +1453,7 @@ impl NavService {
             return control.status_locked(&mut s, false)["nav"].clone();
         }
         self.disarm();
-        self.nav_object(None, None, None)
+        self.nav_object(None, None)
     }
 }
 

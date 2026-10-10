@@ -64,11 +64,14 @@ def forward_headers(headers):
             if key.lower() not in HOP_HEADERS | extra}
 
 
-def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5, bonded_upstream=None):
+def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5, bonded_upstream=None, geometry_upstream=None):
     origin = upstream_origin(upstream)
     second = upstream_origin(bonded_upstream) if bonded_upstream is not None else None
     if second == origin:
         raise ValueError("Bonded upstreams must be distinct routes to the same Jetson")
+    if geometry_upstream is not None:
+        from .geometry_relay import geometry_origin
+        geometry_upstream = geometry_origin(geometry_upstream)
     dist = Path(dist).resolve()
     tls = ssl.create_default_context(cafile=ca_file)
 
@@ -100,9 +103,17 @@ def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5, bonded_upstr
         if second is not None:
             from .bonded_relay import BondedRelay
             app["bonded"] = BondedRelay((origin, second), app["control"], app["http"])
+        if geometry_upstream is not None:
+            from .geometry_relay import GeometryRelay
+            app["geometry"] = GeometryRelay(
+                lambda: app["bonded"].preferred_origin() if second is not None else origin,
+                geometry_upstream)
+            await app["geometry"].start()
         try:
             yield
         finally:
+            if geometry_upstream is not None:
+                await app["geometry"].close()
             if second is not None:
                 await app["bonded"].close()
             await app["http"].close()
@@ -115,6 +126,8 @@ def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5, bonded_upstr
                   "quest_built": (dist / "index.html").is_file()}
         if second is not None:
             packet["transport"] = app["bonded"].status()
+        if geometry_upstream is not None:
+            packet["geometry"] = app["geometry"].status()["geometry"]
         return web.json_response(packet,
                                  headers={"Cache-Control": "no-store"})
 
@@ -259,6 +272,10 @@ def create_app(upstream, dist=DIST, ca_file=None, send_timeout=0.5, bonded_upstr
     async def dispatch(request):
         if request.path == "/ws/control/bonded":
             raise web.HTTPForbidden(text="Private upstream attachment endpoint")
+        if geometry_upstream is not None and request.path in (
+                "/ws/map", "/map/status", "/map/mesh.bin", "/map/points.bin",
+                "/map/export.ply", "/geometry/status", "/geometry/mesh.bin", "/map/reset", "/map/pause"):
+            return await app["geometry"].handle(request)
         if is_proxied(request.path):
             return await proxy(request)
         if request.method not in ("GET", "HEAD"):
@@ -281,12 +298,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--upstream", required=True, help="Jetson http(s) origin on Tailscale")
     parser.add_argument("--bonded-upstream", help="Opt-in second route to the same --bonded-control Jetson; JPEG only")
+    parser.add_argument("--geometry-upstream", help="Opt-in loopback Mac geometry assembler origin, e.g. http://127.0.0.1:8484")
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--dist", type=Path, default=DIST)
     parser.add_argument("--ca-file", help="Trusted CA PEM for a private upstream certificate")
     args = parser.parse_args()
     try:
-        app = create_app(args.upstream, args.dist, args.ca_file, bonded_upstream=args.bonded_upstream)
+        app = create_app(args.upstream, args.dist, args.ca_file, bonded_upstream=args.bonded_upstream,
+                         geometry_upstream=args.geometry_upstream)
     except (ValueError, OSError) as exc:
         parser.error(str(exc))
     web.run_app(app, host="127.0.0.1", port=args.port, access_log=None,

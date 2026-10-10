@@ -332,7 +332,25 @@ impl AnchorGeometry {
     }
 
     /// Apply with ownership of the mesh payload (avoids cloning chunk data).
-    pub fn apply_owned(&mut self, u: Update) -> bool {
+    pub fn apply_owned(&mut self, mut u: Update) -> bool {
+        // ARKit anchor vertices are local. Transform each replacement once,
+        // before any session/sequence/cache mutation, into sensor-world metres.
+        if let Some(mesh) = &mut u.mesh {
+            let m = u.transform;
+            for point in &mut mesh.positions {
+                let [x, y, z] = point.map(f64::from);
+                let world = [
+                    f64::from(m[0]) * x + f64::from(m[4]) * y + f64::from(m[8]) * z + f64::from(m[12]),
+                    f64::from(m[1]) * x + f64::from(m[5]) * y + f64::from(m[9]) * z + f64::from(m[13]),
+                    f64::from(m[2]) * x + f64::from(m[6]) * y + f64::from(m[10]) * z + f64::from(m[14]),
+                ].map(|v| v as f32);
+                if !world.iter().all(|v| v.is_finite()) {
+                    self.pub_lane.dropped_malformed += 1;
+                    return false;
+                }
+                *point = world;
+            }
+        }
         if u.session != self.session || u.epoch != self.epoch {
             self.session = u.session;
             self.epoch = u.epoch;
@@ -389,6 +407,7 @@ impl AnchorGeometry {
                 if let Some(pending) = &mut self.pending {
                     let tri = mesh.indices.len();
                     let vert = mesh.positions.len();
+
                     // Pending snapshot is bounded before insert — anchors,
                     // triangles, vertices each capped so a bad producer can't
                     // grow the buffer unboundedly.
@@ -712,6 +731,24 @@ mod tests {
     }
 
     #[test]
+    fn anchor_rotation_and_translation_are_applied_once_before_export() {
+        let mut g = AnchorGeometry::new(100);
+        g.apply_owned(upd(1, Op::SnapshotEnd, None));
+        let mut update = upd(2, Op::Replace, Some(mesh(1)));
+        // Rotate +90 degrees around Z, then translate (1, 2, 3).
+        update.transform = [0., 1., 0., 0., -1., 0., 0., 0., 0., 0., 1., 0., 1., 2., 3., 1.];
+        assert!(g.apply_owned(update));
+        let bytes = g.encode();
+        let point = |index: usize| {
+            let offset = 8 + index * 16;
+            [0, 4, 8].map(|axis| f32::from_le_bytes(bytes[offset + axis..offset + axis + 4].try_into().unwrap()))
+        };
+        assert_eq!(point(0), [1., 2., 3.]);
+        assert_eq!(point(1), [0., 3., 4.]);
+        assert_eq!(point(2), [0., 2., 3.]);
+    }
+
+    #[test]
     fn stale_seq_drops_and_remove_works() {
         let mut g = AnchorGeometry::new(100);
         g.apply_owned(upd(1, Op::SnapshotEnd, None)); // publish first snapshot
@@ -732,6 +769,51 @@ mod tests {
         assert_eq!(u32::from_le_bytes(buf[0..4].try_into().unwrap()), 6);
         assert_eq!(u32::from_le_bytes(buf[4..8].try_into().unwrap()), 6);
         assert_eq!(buf.len(), 8 + 6 * 16 + 6 * 4);
+    }
+
+    #[test]
+    fn encode_applies_anchor_transform() {
+        // Regression (Codex e2e catch): vertices are anchor-local; mesh.bin
+        // must bake the record's column-major transform or every anchor
+        // piles at its local origin.
+        let mut g = AnchorGeometry::new(1 << 20);
+        let mut u = upd(1, Op::Replace, Some(mesh(1)));
+        // Column-major translation (1,2,3).
+        u.transform[12] = 1.0;
+        u.transform[13] = 2.0;
+        u.transform[14] = 3.0;
+        assert!(g.apply_owned(u));
+        // First update of a session lands in the pending snapshot; publish it.
+        assert!(g.apply_owned(upd(2, Op::SnapshotEnd, None)));
+        let bin = g.encode();
+        let vx = f32::from_le_bytes(bin[8..12].try_into().unwrap());
+        let vy = f32::from_le_bytes(bin[12..16].try_into().unwrap());
+        let vz = f32::from_le_bytes(bin[16..20].try_into().unwrap());
+        let local = mesh(1).positions[0];
+        assert!((vx - (local[0] + 1.0)).abs() < 1e-6);
+        assert!((vy - (local[1] + 2.0)).abs() < 1e-6);
+        assert!((vz - (local[2] + 3.0)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn encode_applies_anchor_rotation() {
+        let mut g = AnchorGeometry::new(1 << 20);
+        let mut u = upd(1, Op::Replace, Some(mesh(1)));
+        // 90-degree rotation about Z (column-major): x' = -y, y' = x, z' = z.
+        u.transform[0] = 0.0;
+        u.transform[4] = -1.0;
+        u.transform[1] = 1.0;
+        u.transform[5] = 0.0;
+        assert!(g.apply_owned(u));
+        assert!(g.apply_owned(upd(2, Op::SnapshotEnd, None)));
+        let bin = g.encode();
+        let vx = f32::from_le_bytes(bin[8..12].try_into().unwrap());
+        let vy = f32::from_le_bytes(bin[12..16].try_into().unwrap());
+        let vz = f32::from_le_bytes(bin[16..20].try_into().unwrap());
+        let local = mesh(1).positions[0];
+        assert!((vx - (-local[1])).abs() < 1e-6);
+        assert!((vy - local[0]).abs() < 1e-6);
+        assert!((vz - local[2]).abs() < 1e-6);
     }
 }
 

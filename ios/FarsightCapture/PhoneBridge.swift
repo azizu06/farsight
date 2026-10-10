@@ -465,6 +465,8 @@ final class PhoneBridge: ObservableObject {
     @Published private(set) var secondaryListeningPort: UInt16 = 0
     @Published private(set) var primaryRouteStatus = "Primary listener off"
     @Published private(set) var secondaryRouteStatus = "Fallback listener off"
+    @Published private(set) var geometryListeningPort: UInt16 = 0
+    @Published private(set) var geometryStatus = "Geometry forwarding disabled"
     @Published private(set) var dualRoutesActive = false
     private let server: PhoneBridgeServer, secondaryServer: PhoneBridgeServer
     private let configuration: (PhoneBridgeRole, String, String, String, String?) throws -> PhoneBridgeConfig
@@ -479,12 +481,22 @@ final class PhoneBridge: ObservableObject {
     private var foregroundActive = true
     private var listenerRetry: DispatchWorkItem?
     private var listenerFailures = 0
+    private let geometryForwarder: PhoneBridgeServer
+    private let geometryConfiguration: (PhoneBridgeConfig) -> PhoneBridgeConfig
+    private var geometryWanted = false
+    private var geometryGeneration = UUID()
+    private var geometryRetry: DispatchWorkItem?
 
     init(server: PhoneBridgeServer = PhoneBridgeServer(), secondaryServer: PhoneBridgeServer = PhoneBridgeServer(),
+         geometryForwarder: PhoneBridgeServer = PhoneBridgeServer(maxPairs: 2, sendTimeout: 8),
+         geometryConfiguration: @escaping (PhoneBridgeConfig) -> PhoneBridgeConfig = {
+            PhoneBridgeConfig(local: $0.local, upstream: $0.upstream, localPort: 8083, upstreamPort: 8083)
+         },
          configuration: @escaping (PhoneBridgeRole, String, String, String, String?) throws -> PhoneBridgeConfig = {
         try PhoneBridgeConfig.make(role: $0, localTailIP: $1, roverPeerIP: $2, jetsonUSBIP: $3, fallbackPeerIP: $4)
     }) {
         self.server = server; self.secondaryServer = secondaryServer; self.configuration = configuration
+        self.geometryForwarder = geometryForwarder; self.geometryConfiguration = geometryConfiguration
     }
 
     private func enqueue(_ snapshot: PhoneBridgeSnapshot, token: UUID, route: Int = 0) {
@@ -535,7 +547,7 @@ final class PhoneBridge: ObservableObject {
     }
 
     func start(role: PhoneBridgeRole, localTailIP: String, roverPeerIP: String, jetsonUSBIP: String,
-               fallbackPeerIP: String? = nil, dualRoutes: Bool = false) {
+               fallbackPeerIP: String? = nil, dualRoutes: Bool = false, geometry: Bool = false) {
         guard !running else { return }
         do {
             var config = try configuration(role, localTailIP, roverPeerIP, jetsonUSBIP, fallbackPeerIP)
@@ -543,7 +555,7 @@ final class PhoneBridge: ObservableObject {
                 throw BridgeError("Operator dual routes require both validated tailnet addresses")
             }
             config.dualRoutes = dualRoutes
-            listenerFailures = 0
+            listenerFailures = 0; geometryWanted = role == .operator && geometry
             foregroundIntent.explicitStart(role: role); operatorRecoveryWanted = foregroundIntent.operatorWanted
             operatorConfig = role == .operator ? config : nil
             startConfigured(config)
@@ -551,6 +563,7 @@ final class PhoneBridge: ObservableObject {
     }
 
     func stop() {
+        geometryWanted = false
         foregroundIntent.manualStopOrRoleChange(); operatorRecoveryWanted = false; operatorConfig = nil
         closeTransport("Bridge stopped")
     }
@@ -573,10 +586,36 @@ final class PhoneBridge: ObservableObject {
             server.start(primary, accepting: false); secondaryServer.start(secondary, accepting: false)
         } else { secondaryServer.stop(); server.start(config) }
         snapshotLock.unlock()
+        if geometryWanted { startGeometryForwarder(config, token: token) }
+    }
+
+    private func startGeometryForwarder(_ config: PhoneBridgeConfig, token: UUID) {
+        geometryRetry?.cancel(); geometryRetry = nil
+        let geometryToken = UUID(); geometryGeneration = geometryToken
+        geometryStatus = "Starting USB geometry port 8083"
+        geometryForwarder.setSnapshotHandler { [weak self] snapshot in
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.generation == token, self.geometryGeneration == geometryToken, self.geometryWanted, self.foregroundActive else { return }
+                self.geometryListeningPort = snapshot.ready ? snapshot.port : 0
+                self.geometryStatus = "Geometry: \(snapshot.status)"
+                if snapshot.ready { self.geometryRetry?.cancel(); self.geometryRetry = nil }
+                if snapshot.listenerFailed && self.geometryRetry == nil {
+                    let work = DispatchWorkItem { [weak self] in
+                        guard let self, self.generation == token, self.geometryGeneration == geometryToken, self.geometryListeningPort == 0, self.operatorRecoveryWanted, self.geometryWanted, self.foregroundActive else { return }
+                        self.startGeometryForwarder(config, token: token)
+                    }
+                    self.geometryRetry = work; DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: work)
+                }
+            }
+        }
+        let geometry = geometryConfiguration(config)
+        geometryForwarder.start(geometry)
     }
 
     private func closeTransport(_ reason: String) {
         listenerRetry?.cancel(); listenerRetry = nil
+        geometryGeneration = UUID(); geometryRetry?.cancel(); geometryRetry = nil; geometryForwarder.stop()
+        geometryListeningPort = 0; geometryStatus = "Geometry forwarding stopped"
         generation = UUID(); running = false; status = reason; listeningPort = 0; secondaryListeningPort = 0
         snapshotLock.lock(); snapshotToken = generation; pendingSnapshots.removeAll(); snapshotLock.unlock()
         dualRoutesActive = false; dualArmed = false; routeSnapshots.removeAll()

@@ -15,8 +15,13 @@ import { DetectionCache, PACKET_FRESH_MS } from "./detection-match.js";
 import { defaultMount, loadSettings, pageStorage, saveSettings } from "./viewer-settings.js";
 import { PanSmoother } from "./pan-smoothing.js";
 import { encounterLine, summaryLines, timelineLines } from "./mission-report.js";
-import { floorHit, goalBody, navActive, navLabel, parseNav, postNav } from "./nav-view.js";
+import { floorHit, goalBody, mergeNav, navActive, navLabel, parseNav, postNav } from "./nav-view.js";
 import { NavOverlay, type Nav } from "./nav-overlay";
+
+/** Quest sticks drift; a slightly off-center right stick must not override Explore/Seek/go-to. */
+const XR_STICK_DEADZONE = 0.25;
+/** Holding right A this long opens Actions instead of toggling camera/map on release. */
+const A_HOLD_MS = 600;
 
 type Box = { id?: number; cls: string; conf: number; x: number; y: number; w: number; h: number; kpts?: number[][]; down?: boolean };
 type Detections = { frame: number | string; boxes: Box[]; fps?: number; source?: string; simulated?: boolean };
@@ -100,6 +105,8 @@ export class RoverExperience {
   private lastPanAt = 0;
   private panDt() { const now = performance.now(), dt = this.lastPanAt ? (now - this.lastPanAt) / 1000 : 0; this.lastPanAt = now; return Math.min(dt, 0.1); }
   private toggleDown = false;
+  /** When an observed (unlatched) A press began: a tap toggles the view, a long hold opens Actions. */
+  private aPressedAt: number | null = null;
   private recenterDown = false;
   private xrLive = true;
   private scanPending = false;
@@ -110,7 +117,7 @@ export class RoverExperience {
   private scanning = false;
   private scanCompleting = false;
   private scanDown = false;
-  private scanMessage = "Y opens actions; select Scan, then center sticks and hold trigger";
+  private scanMessage = "Hold A (or Y) for actions; pick Scan, then hold the trigger";
   private scanPollAt = 0;
   private lastXRAt = -Infinity;
   private rightSource: XRInputSource | null = null;
@@ -170,7 +177,7 @@ export class RoverExperience {
       <button id="rover-explore" aria-pressed="false">Explore (E)</button>
       <button id="rover-nav-cancel">Cancel nav (C)</button>
       <p id="rover-nav" class="rover-nav" role="status" hidden></p>
-      <p class="rover-help">Quest: hold right trigger + right stick. A: camera/map. B: stop. X: recenter view. Y: actions menu. Point with the right controller and squeeze right grip to select an action or a person. Left grip: start rescue drill. Map view: point at the floor, right grip sets a go-to goal; right stick click cancels nav.<span id="rover-voice-help" hidden> Hold left trigger: ask by voice (enable in Settings first).</span><br>Desktop: hold Space + WASD in camera view; click a person to seek; E explores; double-click the map floor for go-to, C cancels. Stick/WASD takes back control.</p>`;
+      <p class="rover-help">Quest (right hand only): hold the trigger to go, right stick steers. B: stop. Tap A: camera/map. Hold A: actions menu (or Y). Point and squeeze grip to pick an action, a person, or a floor goal in the map. Click the stick to cancel go-to. Optional left hand: X recenter, grip rescue drill.<span id="rover-voice-help" hidden> Hold left trigger: ask by voice (enable in Settings first).</span><br>Desktop: hold Space + WASD in camera view; click a person to seek; E explores; double-click the map floor for go-to, C cancels. Stick/WASD takes back control.</p>`;
     document.querySelector("main")!.append(panel);
     this.sourceBanner = document.createElement("div");
     this.sourceBanner.className = "source-banner"; this.sourceBanner.setAttribute("role", "status");
@@ -384,7 +391,7 @@ export class RoverExperience {
         if (this.gate.acceptStatus(next, performance.now())) {
           this.status = next;
           if (newSession) this.resetSessionView();
-          this.nav = parseNav(next.nav);
+          this.nav = mergeNav(next.nav, this.nav, !newSession);
           // The next held heartbeat after end_scan reports release_required before most status ticks; pollScan decides complete vs aborted.
           this.observeScanStatus(next);
           if (typeof next.seq === "number" && this.sent.has(next.seq)) this.ackMs = performance.now() - this.sent.get(next.seq)!;
@@ -606,10 +613,17 @@ export class RoverExperience {
       if (center && !this.recenterDown && this.voice?.pendingAction) this.voice.dismissAction();
       if (drill && !this.drillDown) void this.startDrill();
       if (leftTracked) this.drillDown = drill;
-      if (toggle && !this.toggleDown) {
-        this.actionMenu.visible = false;
-        this.xrLive = !this.xrLive; this.stop("View changed: release trigger");
-        this.setView(this.xrLive ? "camera" : "3d");
+      // A: tap toggles camera/map; hold opens Actions so the right hand alone reaches every mode.
+      if (toggle && !this.toggleDown) this.aPressedAt = now;
+      let aHold = false;
+      if (this.aPressedAt !== null) {
+        if (toggle && now - this.aPressedAt >= A_HOLD_MS) { aHold = true; this.aPressedAt = null; }
+        else if (!toggle) {
+          this.aPressedAt = null;
+          this.actionMenu.visible = false;
+          this.xrLive = !this.xrLive; this.stop("View changed: release trigger");
+          this.setView(this.xrLive ? "camera" : "3d");
+        }
       }
       if (explore && !this.exploreDown) {
         this.actionMenu.visible = false; this.autonomy.clear();
@@ -624,10 +638,10 @@ export class RoverExperience {
       const yaw = Math.atan2(Math.sin(this.euler.y - this.baseYaw), Math.cos(this.euler.y - this.baseYaw));
       this.inputValid = !this.actionMenu.visible;
       this.input = { held,
-        v: -stick(axes.length >= 4 ? axes[3] : axes[1]) * 0.45,
-        w: stick(axes.length >= 4 ? axes[2] : axes[0]) * 0.55,
+        v: -stick(axes.length >= 4 ? axes[3] : axes[1], XR_STICK_DEADZONE) * 0.45,
+        w: stick(axes.length >= 4 ? axes[2] : axes[0], XR_STICK_DEADZONE) * 0.55,
         pan: this.digitalPan ? 0 : this.panSmoother.step(-THREE.MathUtils.radToDeg(yaw), this.panDt()) };
-      if (scan && !this.scanDown) {
+      if ((scan && !this.scanDown) || aHold) {
         this.stop("Actions open: release trigger");
         this.actionMenu.visible = !this.actionMenu.visible;
         this.inputValid = !this.actionMenu.visible;
@@ -746,11 +760,12 @@ export class RoverExperience {
   private async setGoal(point: { x: number; z: number }) {
     if (this.navBusy) return;
     this.navBusy = true;
+    const controllerSession = this.status?.session_id, controllerSocket = this.socket;
     const body = goalBody(point);
     this.noteNav(`Sending go-to (${body.x.toFixed(2)}, ${body.z.toFixed(2)})…`);
     try {
       const result = await postNav("/nav/goal", body);
-      if (this.stopped) return;
+      if (this.stopped || this.status?.session_id !== controllerSession || this.socket !== controllerSocket) return;
       if (result.nav) this.nav = result.nav;
       if (!result.ok) { this.noteNav(`Go-to rejected: ${result.error}`); return; }
       if (this.scanning || this.scanPending) this.stop("Scan cancelled: go-to selected");
@@ -760,10 +775,11 @@ export class RoverExperience {
   }
   /** Disarm go-to locally first (fail toward teleop), then POST /nav/cancel. */
   private async cancelNav(reason = "Navigation cancelled") {
+    const controllerSession = this.status?.session_id, controllerSocket = this.socket;
     if (this.autonomy.mode === "goto") this.autonomy.clear();
     this.dirty = true;
     const result = await postNav("/nav/cancel");
-    if (this.stopped) return;
+    if (this.stopped || this.status?.session_id !== controllerSession || this.socket !== controllerSocket) return;
     if (result.nav) this.nav = result.nav;
     this.noteNav(result.ok ? reason : `${reason} locally; server: ${result.error}`);
   }
@@ -861,6 +877,7 @@ export class RoverExperience {
     if (this.sent.size > 100) this.sent.delete(this.sent.keys().next().value!);
     this.socket.send(JSON.stringify({
       seq, session_id: this.status?.session_id ?? null, permit: this.status?.permit ?? null,
+      nav_lane: "revision",
       deadman, v: deadman ? this.input.v : 0, w: deadman ? this.input.w : 0,
       pan: this.digitalPan ? 0 : this.input.pan, video_fresh: age < 500,
       ...((this.scanning || (this.scanPending && this.status?.mode === "scan")) ? { mode: "scan" } : this.autonomy.fields(deadman)),
@@ -1001,6 +1018,7 @@ export class RoverExperience {
   }
   /** Held buttons from a lost or replaced controller act only after an observed release. */
   private latchButtons() {
+    this.aPressedAt = null;
     this.toggleDown = this.exploreDown = this.goalDown = this.cancelDown = true;
     this.latchLeftButtons();
   }
