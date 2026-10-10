@@ -21,7 +21,7 @@ class ControlState:
 
     def __init__(self, simulated=False, max_pwm=100, clock=time.monotonic, camera_ready=None, min_pwm=0,
                  detections=None, proximity_stop=True, navigator=None, drive_profile=None,
-                 allow_calibration=False, pan_mount="servo", autonomy_max_pwm=None):
+                 allow_calibration=False, pan_mount="servo", autonomy_max_pwm=None, demo_mode=False):
         if (type(min_pwm) is not int or type(max_pwm) is not int
                 or not 0 <= min_pwm < max_pwm <= 255):
             raise ValueError("PWM bounds must satisfy 0 <= min_pwm < max_pwm <= 255")
@@ -57,6 +57,9 @@ class ControlState:
         self.navigator = navigator
         self.autonomy = (Autonomy(proximity_stop=proximity_stop)
                          if detections is not None or navigator is not None else None)
+        # Demo mode (server --demo-mode): transient stops still stop the motors but do not
+        # latch requires_release, and teleop is not gated on camera freshness. See DEMO_TRANSIENT.
+        self.demo_mode = bool(demo_mode)
         # Both default off: without them the wire protocol and PWM mixing are unchanged.
         self.profile = drive_profile
         self.allow_calibration = bool(allow_calibration)
@@ -118,6 +121,14 @@ class ControlState:
             if token is self.scan_token:
                 self.stop("scan_finished")
 
+    # Stops that demo mode does not latch: the next fresh deadman=true heartbeat resumes.
+    # Lease expiry still stops (link loss), and the Nav2 sensor gate still holds motion at
+    # zero until pose and depth are fresh; they just need no new press afterwards.
+    DEMO_TRANSIENT = frozenset({"serial_disconnected", "release_required", "controller_disconnected",
+                                "camera_stale", "video_stale", "lease_expired", "expired_permit",
+                                "stale_sequence", "nav_pose_lost", "nav_tracking_limited",
+                                "nav_depth_lost", "nav_sensor_reset"})
+
     def stop(self, reason, require_release=True):
         with self.lock:
             self.v = self.w = 0.0
@@ -130,7 +141,7 @@ class ControlState:
             if self.autonomy:
                 self.autonomy.reset()
             self.stick_override = False
-            if require_release:
+            if require_release and not (self.demo_mode and reason in self.DEMO_TRANSIENT):
                 self.requires_release = True
 
     def set_connected(self, value, reason=None):
@@ -221,10 +232,11 @@ class ControlState:
             if not self.connected or self.requires_release:
                 self.stop("release_required" if self.connected else "serial_disconnected")
                 return False
-            if not self.camera_is_ready():
+            mode = message.get("mode", "teleop")
+            teleop_ungated = self.demo_mode and mode == "teleop"  # demo: no camera gate on driving by hand
+            if not teleop_ungated and not self.camera_is_ready():
                 self.stop("camera_stale")
                 return False
-            mode = message.get("mode", "teleop")
             if mode == "scan":
                 if self.scan_token is None:
                     self.stop("scan_not_active")
@@ -245,8 +257,8 @@ class ControlState:
                 self.stop("invalid_target")
                 return False
             video_age = message.get("video_age_ms")
-            if (message.get("video_fresh") is not True or type(video_age) not in (int, float)
-                    or not math.isfinite(video_age) or not 0 <= video_age <= 500):
+            if not teleop_ungated and (message.get("video_fresh") is not True or type(video_age) not in (int, float)
+                                       or not math.isfinite(video_age) or not 0 <= video_age <= 500):
                 self.stop("video_stale")
                 return False
             if mode in ("calibrate", "velocity"):
@@ -358,8 +370,9 @@ class ControlState:
             if self.deadline and self.clock() >= self.deadline:
                 self.stop("lease_expired")
             autonomous = self.autonomy is not None and self.autonomy.mode != "teleop"
-            if ((self.v or self.w or autonomous or self.drive is not None or self.scan_token is not None)
-                    and not self.camera_is_ready()):
+            gated = (autonomous or self.drive is not None or self.scan_token is not None
+                     or ((self.v or self.w) and not self.demo_mode))  # demo: teleop drives without the camera gate
+            if gated and not self.camera_is_ready():
                 self.stop("camera_stale")
             if self.drive is not None and self.deadline:
                 return self._drive_output()

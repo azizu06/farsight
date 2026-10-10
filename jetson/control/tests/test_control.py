@@ -457,3 +457,78 @@ class SocketTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DemoModeTests(unittest.TestCase):
+    """--demo-mode: transient stops still stop, but the next fresh held heartbeat resumes."""
+
+    def setUp(self):
+        self.clock = Clock()
+        self.camera = [True]
+        self.state = ControlState(clock=self.clock, proximity_stop=False, demo_mode=True,
+                                  camera_ready=lambda: self.camera[0])
+        self.state.set_connected(True)
+        self.session = self.state.begin()
+        self.seq = 0
+        self.send(deadman=False)  # the first press after start still needs one release
+
+    def send(self, session=None, **values):
+        self.seq += 1
+        status = self.state.status(issue_permit=True)
+        message = {"session_id": session or self.session, "permit": status["permit"],
+                   "seq": self.seq, "deadman": True, "v": 0.5, "w": 0,
+                   "pan": 0, "mode": "teleop", "video_fresh": True, "video_age_ms": 0}
+        message.update(values)
+        return self.state.accept(message, session or self.session)
+
+    def assert_resumes(self):
+        self.assertFalse(self.state.status()["requires_release"])
+        self.assertTrue(self.send())
+        self.assertEqual(self.state.output()[:2], (50, 50))
+
+    def test_serial_blip_stops_then_resumes_without_a_new_press(self):
+        self.assertTrue(self.send())
+        self.state.set_connected(False, "serial_disconnected")
+        self.assertEqual(self.state.output()[:2], (0, 0))
+        self.state.set_connected(True)
+        self.assert_resumes()
+
+    def test_controller_reconnect_resumes_without_a_release(self):
+        self.assertTrue(self.send())
+        self.state.end(self.session)
+        self.assertEqual(self.state.output()[:2], (0, 0))
+        self.session = self.state.begin()
+        self.seq = 0
+        self.assert_resumes()
+
+    def test_lease_expiry_still_stops_then_a_fresh_heartbeat_resumes(self):
+        self.assertTrue(self.send())
+        self.clock.now += self.state.LEASE + 0.01
+        self.assertEqual(self.state.output()[:2], (0, 0))
+        self.assertEqual(self.state.status()["reason"], "lease_expired")
+        self.assert_resumes()
+
+    def test_teleop_ignores_camera_freshness_but_autonomy_does_not(self):
+        self.camera[0] = False
+        self.assertTrue(self.send(video_fresh=False, video_age_ms=2000))
+        self.assertEqual(self.state.output()[:2], (50, 50))
+        self.assertFalse(self.send(mode="explore", v=0))
+        self.assertEqual(self.state.status()["reason"], "camera_stale")
+        self.assertFalse(self.state.status()["requires_release"])
+
+    def test_protocol_faults_and_releases_still_latch(self):
+        self.assertTrue(self.send())
+        self.assertFalse(self.send(v=5))
+        self.assertEqual(self.state.status()["reason"], "invalid_command")
+        self.assertTrue(self.state.status()["requires_release"])
+        self.assertFalse(self.send())
+        self.send(deadman=False)
+        self.assertTrue(self.send())
+
+    def test_off_by_default_keeps_latching(self):
+        state = ControlState(clock=self.clock, proximity_stop=False)
+        state.set_connected(True)
+        state.begin()
+        state.set_connected(False, "serial_disconnected")
+        state.set_connected(True)
+        self.assertTrue(state.status()["requires_release"])
