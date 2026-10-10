@@ -190,3 +190,57 @@ fn camera_guard() {
     f.send(json!({"deadman": false}));
     assert!(f.send(json!({})));
 }
+
+// Port of ScanStartRaceTests (#72): a zero-stick teleop heartbeat carrying a
+// permit issued before begin_scan races POST /scan and must renew the scan.
+#[test]
+fn scan_race_zero_teleop_heartbeat_keeps_scan() {
+    let f = fixture();
+    assert!(f.send(json!({"v": 0.0, "w": 0.0})));
+    let permit = f.state.status(true)["permit"].as_str().unwrap().to_string();
+    let token = f.state.begin_scan(Some(&f.session), Some(&permit)).unwrap();
+    // The pre-POST heartbeat arriving late: teleop, zero sticks, same permit.
+    assert!(f.send(json!({"v": 0.0, "w": 0.0, "permit": permit.clone(), "pan": 40})));
+    assert!(f.state.scan_command(Some(token), 0.3, 0.0).is_ok());
+    assert_eq!(f.state.status(true)["mode"], "scan");
+    // pan is ignored on the racing heartbeat — scan keeps its own pan.
+    assert_eq!(f.state.inner.lock().unwrap().pan, 0);
+}
+
+#[test]
+fn scan_race_stick_input_still_cancels() {
+    let f = fixture();
+    assert!(f.send(json!({"v": 0.0, "w": 0.0})));
+    let permit = f.state.status(true)["permit"].as_str().unwrap().to_string();
+    let token = f.state.begin_scan(Some(&f.session), Some(&permit)).unwrap();
+    f.send(json!({"v": 0.2, "permit": permit.clone()}));
+    assert!(f.state.scan_command(Some(token), 0.3, 0.0).is_err());
+    assert_ne!(f.state.status(true)["mode"], "scan");
+}
+
+#[test]
+fn scan_race_release_or_stale_view_still_cancels() {
+    for values in [json!({"deadman": false}), json!({"video_age_ms": 501}), json!({"video_fresh": false})] {
+        let f = fixture();
+        assert!(f.send(json!({"v": 0.0, "w": 0.0})));
+        let permit = f.state.status(true)["permit"].as_str().unwrap().to_string();
+        let token = f.state.begin_scan(Some(&f.session), Some(&permit)).unwrap();
+        f.send({ let mut v = values.clone(); v["permit"] = json!(permit.clone()); v });
+        assert!(f.state.scan_command(Some(token), 0.3, 0.0).is_err());
+        assert!(!f.send(json!({"mode": "scan", "permit": permit.clone()})));
+    }
+}
+
+#[test]
+fn scan_race_teleop_heartbeat_after_scan_mode_still_cancels() {
+    let f = fixture();
+    assert!(f.send(json!({"v": 0.0, "w": 0.0})));
+    let permit = f.state.status(true)["permit"].as_str().unwrap().to_string();
+    let token = f.state.begin_scan(Some(&f.session), Some(&permit)).unwrap();
+    // Client properly enters scan mode...
+    assert!(f.send(json!({"mode": "scan", "v": 0.0, "w": 0.0, "permit": permit.clone()})));
+    assert_eq!(f.state.status(true)["mode"], "scan");
+    // ...then a teleop heartbeat is a real override again.
+    f.send(json!({"v": 0.0, "w": 0.0, "permit": permit.clone()}));
+    assert!(f.state.scan_command(Some(token), 0.3, 0.0).is_err());
+}

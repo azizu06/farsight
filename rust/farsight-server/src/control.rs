@@ -38,6 +38,9 @@ pub struct ControlInner {
     pub stick_override: bool,
     pub autonomy: Option<Autonomy>,
     pub scan_token: Option<u64>,
+    /// Permits already issued when the scan began: a zero-stick teleop
+    /// heartbeat carrying one was sent before POST /scan and may race it (#72).
+    pub scan_race_permits: std::collections::HashSet<String>,
     pub scan_serial: u64,
     pub scan_w: f64,
 }
@@ -103,6 +106,7 @@ impl ControlState {
                 stick_override: false,
                 autonomy: if detections.is_some() { Some(Autonomy::new()) } else { None },
                 scan_token: None,
+                scan_race_permits: std::collections::HashSet::new(),
                 scan_serial: 0,
                 scan_w: 0.0,
             }),
@@ -123,6 +127,7 @@ impl ControlState {
         s.w = 0.0;
         s.deadline = 0.0;
         s.scan_token = None;
+        s.scan_race_permits.clear();
         s.scan_w = 0.0;
         s.reason = reason.into();
         if let Some(a) = s.autonomy.as_mut() {
@@ -198,6 +203,7 @@ impl ControlState {
         }
         s.scan_serial += 1;
         s.scan_token = Some(s.scan_serial);
+        s.scan_race_permits = s.permits.iter().map(|(k, _)| k.clone()).collect();
         s.scan_w = 0.0;
         Ok(s.scan_serial)
     }
@@ -347,6 +353,19 @@ impl ControlState {
             return false;
         }
         let mut pan = pan;
+        if s.scan_token.is_some()
+            && mode == "teleop"
+            && v == 0.0
+            && w == 0.0
+            && token.is_some_and(|t| s.scan_race_permits.contains(t))
+        {
+            // Pre-POST heartbeat racing POST /scan: renews like a scan
+            // heartbeat, within its own permit (#72).
+            mode = "scan";
+        } else if mode == "scan" {
+            // Client is in scan mode; a later teleop heartbeat overrides.
+            s.scan_race_permits.clear();
+        }
         if s.scan_token.is_some() {
             if mode != "scan" || v != 0.0 || w != 0.0 {
                 Self::stop_locked(&mut s, "scan_override", false);
