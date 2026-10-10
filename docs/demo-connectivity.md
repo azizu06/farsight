@@ -5,7 +5,7 @@ MacBook, and plug the Quest into the MacBook. Both phones supply cellular data
 over short USB cables. This removes venue Wi-Fi from the live demo and leaves
 the rover free to move.
 
-**Status: implementation plan, pending hardware and venue testing.** Perception,
+**Status: design record. The relay, expiring permits and `/ws/video` are implemented; hardware and venue testing are still pending.** Perception,
 obstacle checks, motor control, and recording stay on the Jetson. Cellular
 operation needs internet access; the perception models do not. Remote viewing
 and driving require a working cellular or private local connection.
@@ -68,7 +68,7 @@ the motor-control server off the public internet.
 
 ## MacBook relay and Quest USB connection
 
-Build a small operator relay listening on `127.0.0.1:8080`. It serves the built
+The operator relay (`tools/operator_relay.py`) listens on `127.0.0.1:8080`. It serves the built
 Quest app and proxies HTTP and WebSockets to the Jetson service on port 8443
 through Tailscale. Configure the upstream address and scheme on the MacBook.
 Preserve certificate verification when the upstream uses HTTPS.
@@ -183,8 +183,8 @@ the question and spoken answer to Quest still requires the remote connection.
 3. Measure reduced MJPEG, implement and qualify H.264 playback, and establish
    a bandwidth budget with inference running.
 4. Add expiring control permits, stale-video handling, and stopped reconnection.
-   Specify additions to `interfaces.md` when implementing them. The new video
-   route and permit fields above are proposals, not existing endpoints.
+   Specify additions to `interfaces.md` when implementing them. The video
+   route and permit fields above are implemented and documented in `interfaces.md`.
 5. Rehearse the complete demo at the venue under load and deliberate failures.
 
 ## Demo qualification and fallback

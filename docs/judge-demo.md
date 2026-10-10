@@ -5,9 +5,10 @@ judging + Q&A, 2 min teardown). The 90 s sequence is the core; the rest of the s
 the optional beats at the bottom. Failures: [fallback-playbook.md](fallback-playbook.md). What may
 be claimed: [devpost-checklist.md](devpost-checklist.md). Design: [architecture.md](architecture.md).
 
-**Hardware status when this was written (2026-10-10 morning):** the Jetson does not yet accept SSH
-([jetson-setup-handoff.md](jetson-setup-handoff.md)), and no Quest, rover, phone or motor run has
-been qualified. Everything below is the plan for the *qualified* rig. If a gate has not passed on
+**Hardware status (updated 2026-10-10):** the Jetson boots and accepts SSH as `ubuntu`, runs the service on plain HTTP
+`:8443`, and target-built TensorRT pose measured median 15.29 ms / p95 18.83 ms
+([jetson-runtime-results.md](jetson-runtime-results.md); engine execution only). No Quest, rover, phone-capture or
+motor run has been qualified end to end. Everything below is the plan for the *qualified* rig. If a gate has not passed on
 the day, use the matching fallback tier and say so. Never narrate simulation or replay as live.
 
 ## Automated smoke test (simulator + replay, #57)
@@ -139,6 +140,6 @@ Cue the spotter, not the clock: if Seek is slow, extend that beat and drop 1:05-
 ## UI polish proposals (for the Quest owner, after P0 integration)
 
 No Quest source is edited by this task. Candidates for the #40 owner, in priority order:
-1. In-headset hint line for the A/B/X/Y/grip bindings (docs disagree today).
-2. Persistent `SIMULATED` / `REPLAY` banner large enough to read from judges' distance on the mirrored view.
+1. ~~In-headset hint line for the A/B/X/Y/grip bindings~~ — exists (`quest/src/rover.ts` HUD).
+2. ~~Persistent `SIMULATED` / `REPLAY` banner~~ — exists (PR #51).
 3. Show the Seek `arrived` state as a distinct HUD colour.

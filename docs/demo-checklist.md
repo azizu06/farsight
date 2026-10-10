@@ -4,20 +4,21 @@ Goal: under 2 minutes from power-on to video in the headset. Network design: [de
 
 ## Before the 2 minutes (venue, once)
 
-- [ ] `/etc/farsight.env` has the real camera, serial, detector model, cert paths (`jetson/farsight.env.example`).
-- [ ] MacBook: `python -m tools.demo --upstream https://<jetson-tailnet-name>:8443 --check` passes.
+- [ ] `/etc/farsight.env` has the real serial, detector model and (HTTPS profile only) cert paths (`jetson/farsight.env.example`). `FARSIGHT_CAMERA` stays blank for the rover iPhone.
+- [ ] Board profile today is plain HTTP on `192.168.55.1:8443` (USB) or the Tailscale IP, TLS omitted ([jetson-runtime-results.md](jetson-runtime-results.md)); `https://` + `--ca-file` applies only if the service was installed with TLS.
+- [ ] MacBook: `python -m tools.demo --upstream http://<jetson-tailnet-ip>:8443 --check` passes (HTTPS profile: `https://<jetson-tailnet-name>:8443`, plus `--ca-file` for a private CA).
 - [ ] Wi-Fi off on Jetson and MacBook. Both phones have Personal Hotspot allowed and the USB trust prompt accepted.
 
 ## Power on, in this order
 
 | # | Do | Check |
 |---|---|---|
-| 1 | Rover: battery on, Uno USB to Jetson, camera USB to Jetson | Uno LED on |
+| 1 | Rover: battery on, Uno USB to Jetson (the rover camera is the mounted iPhone, step 2; a UVC webcam only as fallback) | Uno LED on |
 | 2 | Rover phone: USB to Jetson, Personal Hotspot on | Phone shows "1 connection" |
 | 3 | Jetson: power on. Start a stopwatch. `farsight` unit starts itself | Nothing to type |
 | 4 | MacBook: second phone USB, hotspot on, Wi-Fi off | `tailscale ping <jetson>` replies (note direct vs relayed) |
-| 5 | MacBook: `python -m tools.ready --url https://<jetson>:8443` | Ends `READY`: server, camera, detector, rover, video all OK or SKIP. Stop the stopwatch on this line. |
-| 6 | MacBook: `python -m tools.demo --upstream https://<jetson>:8443 --quest` | Prints "Open http://localhost:8080"; `adb reverse --list` shows 8080 |
+| 5 | MacBook: `python -m tools.ready --url http://<jetson>:8443` (HTTPS profile: `https://<jetson>:8443 --ca-file ...`) | Ends `READY`: server, camera, detector, rover, video all OK or SKIP. Stop the stopwatch on this line. |
+| 6 | MacBook: `python -m tools.demo --upstream http://<jetson>:8443 --quest` (HTTPS profile: `https://<jetson>:8443 --ca-file ...`) | Prints "Open http://localhost:8080"; `adb reverse --list` shows 8080 |
 | 7 | Quest: USB to MacBook, open `http://localhost:8080`, press Enter VR | Video live, HUD shows video age and link; rover estop clear |
 | 8 | Release and press the deadman once | Motors respond; releasing stops within 250 ms |
 
@@ -25,7 +26,7 @@ Step 5 prints seconds since boot when run on the Jetson (`ssh farsight.local`); 
 
 ## If something is not READY
 
-- `camera WAIT`: replug the webcam; `journalctl -u farsight -n 50` on the Jetson.
+- `camera WAIT`: reopen the Farsight Capture app on the rover iPhone and recheck the Jetson USB-network IP (UVC fallback: replug the webcam); `journalctl -u farsight -n 50` on the Jetson.
 - `rover WAIT`: Uno cable, then `ls /dev/ttyACM*`; the unit starts degraded without it. Fix and `sudo systemctl restart farsight`.
 - `server WAIT` over Tailscale: `tailscale status` on both; try the 5 GHz hotspot path in demo-connectivity.md.
 - Quest blank: re-run `adb reverse tcp:8080 tcp:8080`; `window.isSecureContext` must be true.
@@ -77,7 +78,7 @@ time and loop. H.264 is re-encoded from the archived JPEGs and needs FFmpeg.
 permit, zero motor output and a read-only reason. Replay never constructs a
 serial pump and rejects serial ports, other camera sources and recording flags.
 Controls are ignored. This is retained evidence, not a live rescue or a new drill.
-The Python implementation is the fallback; Rust replay parity is not implemented.
+Rust implements `--record`/`--replay` (`rust/farsight-server/src/replay.rs`); Python remains the demo runtime until parity is checked.
 
 Software rehearsal only (does **not** satisfy the real-run acceptance):
 

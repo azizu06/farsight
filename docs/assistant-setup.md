@@ -89,8 +89,8 @@ command, using the actual executable paths on the Jetson:
 
 These are additional flags, not a standalone shell command. Install
 `piper-tts` in the chosen environment when using its Python executable. FFmpeg
-converts microphone WebM/WAV to 16 kHz mono WAV; only local whisper-cli performs
-transcription. No browser cloud speech-recognition API is used.
+converts microphone WebM/WAV to 16 kHz mono WAV; transcription is local only: the
+whisper-server at `--whisper-url` (`FARSIGHT_WHISPER_URL`, the installed default) or, without it, whisper-cli. No browser cloud speech-recognition API is used.
 
 In Quest settings, type a question or explicitly select Ask by voice. Recording
 stops after ten seconds or when cancelled/dismissed. Camera controls remain

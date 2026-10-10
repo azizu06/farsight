@@ -110,7 +110,7 @@ flowchart TB
 - Geometry has three labelled kinds: **measured** (LiDAR iPhone, ARKit pose), **estimated**
   (monocular Depth Anything V2, five-view stationary scan, optical-axis metres) and **none** (ordinary
   iPhone or webcam: RGB only). The viewer and docs never present estimated depth as measured.
-- Rust (`rust/`) is a parallel port with the same wire contract. It lacks replay and may lag the
+- Rust (`rust/`) is a parallel port with the same wire contract. It implements replay (`--record`/`--replay`) but may lag the
   newest Python routes; the Python server is the demo runtime until parity is checked.
 
 ## Pointers

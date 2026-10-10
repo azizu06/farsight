@@ -7,37 +7,40 @@ by a human; no script stores one. `--dry-run` on `tools/bootstrap_jetson.sh`, `t
 
 Issues covered: #1 camera stream (steps 4, 7), #9 detector (step 10), #11 one command boot (steps 5, 12),
 #19 assistant (step 11), #14 depth engine (step 11b). Start this provisioning pass
-only after Ubuntu boots and SSH works. The latest [setup handoff](jetson-setup-handoff.md)
-reports failed flash prechecks and **no completed storage flash**; the older
-[flash handoff](jetson-flash-handoff.md) is history, not proof of a booted board.
-`USER` below is the account actually created on the board (`farsight` is intended).
+only after Ubuntu boots and SSH works. The board now boots (R39.2.1, Ubuntu 24.04) and SSH works as
+`ubuntu` ([jetson-recovery-results.md](jetson-recovery-results.md)); the older
+[setup handoff](jetson-setup-handoff.md) and [flash handoff](jetson-flash-handoff.md) are history.
+`USER` below is the account on the board: `ubuntu`.
 
-For the intended JetPack 7.2.1 installation, follow NVIDIA's
-[current Orin Nano quick start](https://docs.nvidia.com/jetson/orin-nano-devkit/user-guide/quick_start.html):
-confirm the required JetPack 6.x-generation UEFI/QSPI firmware first, write the
-installer ISO to a USB stick, and install onto the separate microSD/NVMe target.
-The ISO is not an SD-card image. The guide also requires confirming the capsule
-update prompt when it appears. These prerequisites do not diagnose our reported
-USB transfer timeout; finish the physical recovery/boot checks in the handoff.
+**Board profile (what is installed today, [jetson-runtime-results.md](jetson-runtime-results.md)):** plain HTTP on
+`http://192.168.55.1:8443` over USB (or the Tailscale IP), TLS omitted (`install_service.sh --no-tls`); the operator
+relay supplies the Quest-facing origin. Every command from step 6 on is shown as `http://` first. The `https://farsight.local:8443`
++ `--ca-file` form is the alternative for a service installed with TLS (step 5); do not mix them: a plain-HTTP service
+rejects `https://`, and a TLS service rejects `http://`.
 
-Needs: Jetson booted to Ubuntu with an SSH-capable user, USB-C data cable to the Mac, UVC webcam on a
-Jetson USB-A port, internet for the Jetson during setup (venue Wi-Fi, a phone hotspot, or macOS
-Internet Sharing over the USB-C link), the 30 W power bank or the barrel supply.
+The board runs Jetson Linux R39.2.1 (JetPack 7 generation) on the SD card. If it ever needs reinstalling, follow NVIDIA's
+[Orin Nano quick start](https://docs.nvidia.com/jetson/orin-nano-devkit/user-guide/quick_start.html) and the recovery notes in
+[jetson-recovery-results.md](jetson-recovery-results.md) (saved UEFI OS-chain state was the boot blocker last time).
+
+Needs: Jetson booted to Ubuntu with an SSH-capable user, USB-C data cable to the Mac, the rover iPhone (or a UVC webcam
+on a Jetson USB-A port), a route for downloads (the board has no internet of its own: venue Wi-Fi, a phone hotspot,
+macOS Internet Sharing over the USB-C link, or the temporary SOCKS tunnel in
+[jetson-runtime-results.md](jetson-runtime-results.md)), the 30 W power bank or the barrel supply.
 
 ## 1. Reach the Jetson (Mac)
 
 ```sh
 ssh-copy-id USER@192.168.55.1          # once; type the Jetson login password yourself
 ssh USER@192.168.55.1 'hostname; uname -m; cat /etc/nv_tegra_release | head -1'
-ssh USER@192.168.55.1 'curl -sI https://github.com | head -1'      # internet for apt/git/pip
+ssh USER@192.168.55.1 'curl -sI https://github.com | head -1'      # only if the board has a route out (optional)
 ```
 
-**Check:** `aarch64`, an `R39` line, and `HTTP/2 200`.
+**Check:** `aarch64` and an `R39` line. `HTTP/2 200` only if you gave the board internet; it has none by default.
 **If it fails:**
 - *No route to 192.168.55.1*: that address is the dev kit's USB-C device-mode link (data cable required, not
   charge-only). Look for a new `en*` interface in macOS Network settings. Otherwise join Wi-Fi on the Jetson's screen
   (`nmcli device wifi connect "SSID" --ask`) and use `USER@farsight.local` after step 3, or the IP from `ip -br a`.
-- *No internet*: macOS System Settings, General, Sharing, Internet Sharing, from Wi-Fi to the Jetson's USB interface.
+- *No internet* (expected by default): use the SOCKS tunnel from [jetson-runtime-results.md](jetson-runtime-results.md), or macOS System Settings, General, Sharing, Internet Sharing, from Wi-Fi to the Jetson's USB interface.
 
 ## 2. Prepare models (Mac, internet)
 
@@ -152,12 +155,13 @@ curl -s -o /tmp/f.jpg -w '%{http_code} %{size_download}\n' localhost:8000/camera
 - `Camera capture failed; retrying` forever: the camera does not offer 640x480 MJPG. Look at the
   `--list-formats-ext` output for `MJPG` at 640x480; pick that camera mode or another `/dev/videoN`.
 
-## 5. Install the service and TLS (Jetson)
+## 5. Install the service, with or without TLS (Jetson)
 
 ```sh
 cd ~/farsight
 bash jetson/install_service.sh --dry-run --camera-source phone --serial-port ''  # review this profile
-bash jetson/install_service.sh --camera-source phone --serial-port ''
+bash jetson/install_service.sh --camera-source phone --serial-port '' --no-tls   # board profile today: plain HTTP :8443
+bash jetson/install_service.sh --camera-source phone --serial-port ''            # alternative: private CA + HTTPS
 ```
 
 For a UVC webcam, substitute `--camera-source usb`. The initial empty serial
@@ -166,7 +170,7 @@ requested camera/serial mismatches are refused before service changes; edit the
 file or add `--reset-env` to back it up and apply the chosen profile. Do not
 interpret an unchanged existing configuration as a successful profile switch.
 
-It generates a private CA and a server certificate in `/etc/farsight/tls` (names: `farsight.local`, the hostname,
+Without `--no-tls` it generates a private CA and a server certificate in `/etc/farsight/tls` (names: `farsight.local`, the hostname,
 `192.168.55.1`, current LAN IPs, the Tailscale name), renders `/etc/farsight.env` from what exists (pose engine,
 else ONNX, else HOG; face model; Piper voices; llama/whisper URLs only if their units can run), installs
 `farsight.service` (plus `farsight-llm.service` and `farsight-whisper.service` when built), runs
@@ -185,7 +189,14 @@ jetson/.venv/bin/python -m jetson.launch --check --env-file /etc/farsight.env   
 `sudo systemctl restart farsight`. `status=203/EXEC` means `jetson/.venv` is missing: re-run `setup.sh`. The server
 still starts without the Uno or a camera and reports it on `/health`.
 
-## 6. `/health` from the Mac (HTTPS, private CA) (#1)
+## 6. `/health` from the Mac (plain HTTP; HTTPS alternative) (#1)
+
+```sh
+python -m tools.ready --url http://192.168.55.1:8443 --skip rover,video --timeout 60
+curl http://192.168.55.1:8443/health | python3 -m json.tool | head -20
+```
+
+HTTPS alternative (service installed with TLS):
 
 ```sh
 scp USER@192.168.55.1:/etc/farsight/tls/ca.pem ~/farsight-ca.pem
@@ -196,20 +207,21 @@ curl --cacert ~/farsight-ca.pem https://farsight.local:8443/health | python3 -m 
 `--skip rover,video` is for a camera-only pass (no Uno yet, H.264 off); drop it once the rover is wired.
 
 **Check:** `camera OK`, `detector OK pose-tensorrt ... fps` (or `hog`), final `READY`.
-**If it fails:** `server WAIT ... unreachable`: `ping farsight.local` (use `https://192.168.55.1:8443` over USB-C; the
-certificate covers it); `SSLCertVerificationError` means the name is not in the certificate (re-run
+**If it fails:** `server WAIT ... unreachable`: `ping 192.168.55.1` (HTTPS profile: `ping farsight.local`, or use
+`https://192.168.55.1:8443`, which the certificate covers); `SSLCertVerificationError` (HTTPS profile only) means the name is not in the certificate (re-run
 `bash jetson/make_cert.sh --renew EXTRA_NAME` on the Jetson, then `sudo systemctl restart farsight`). `--insecure`
 skips verification for a quick look only.
 
 ## 7. Measure the camera stream: issue #1 (Mac)
 
 ```sh
-python -m tools.measure stream --url https://farsight.local:8443 --ca-file ~/farsight-ca.pem --seconds 20
+python -m tools.measure stream --url http://192.168.55.1:8443 --seconds 20
+# HTTPS alternative: --url https://farsight.local:8443 --ca-file ~/farsight-ca.pem
 ```
 
 **Check / record in the PR:** the `fps` and `gap median/p95/max` line and the `RESULT {...}` JSON. Stream rate follows the
 camera capture rate (15 fps by default, `jetson/camera.py`); expect 13 to 15 fps at about 10 to 25 kB per frame over the
-LAN. Opening `https://farsight.local:8443/stream.mjpg` in a browser also works once `ca.pem` is trusted in Keychain.
+LAN. Opening `http://192.168.55.1:8443/stream.mjpg` in a browser also works (HTTPS profile: `https://farsight.local:8443/stream.mjpg` once `ca.pem` is trusted in Keychain).
 
 **Hardware JPEG (`nvjpegenc`):** `gst-inspect-1.0 nvjpegenc` (apt `gstreamer1.0-tools`) tells you if the encoder
 exists. The server does not use it: the pip OpenCV wheel has no GStreamer, and a UVC webcam already delivers MJPG
@@ -232,14 +244,15 @@ Identify the Uno port manually and keep `FARSIGHT_CAMERA` blank for the phone.
 Wheels raised first ([rover/README.md](../rover/README.md), [transport-setup.md](transport-setup.md)).
 Complete direction, range, deadman, watchdog and disconnect checks before floor
 driving; a connected serial port alone does not pass these checks.
-**Check (Mac):** `python -m tools.ready --url https://farsight.local:8443 --ca-file ~/farsight-ca.pem` reaches `READY` with
-`rover OK Uno connected`. **If it fails:** `rover WAIT`: cable, `groups` shows `dialout`, `dmesg | grep tty`.
+**Check (Mac):** `python -m tools.ready --url http://192.168.55.1:8443` (HTTPS alternative: `--url https://farsight.local:8443 --ca-file ~/farsight-ca.pem`)
+reaches `READY` with `rover OK Uno connected`. **If it fails:** `rover WAIT`: cable, `groups` shows `dialout`, `dmesg | grep tty`.
 
 ## 9. The Quest page (Mac)
 
 ```sh
 npm --prefix quest ci && npm --prefix quest run build
-python -m tools.demo --upstream https://farsight.local:8443 --ca-file ~/farsight-ca.pem --quest
+python -m tools.demo --upstream http://192.168.55.1:8443 --quest
+# HTTPS alternative: --upstream https://farsight.local:8443 --ca-file ~/farsight-ca.pem
 ```
 
 Open `http://localhost:8080` in the Quest Browser (USB-C to the Mac, approve USB debugging; `adb devices`).
@@ -265,10 +278,13 @@ FARSIGHT_POSE_ENGINE=models/yolo11n-pose.engine jetson/.venv/bin/python -m pytes
 With a person in view (Mac):
 
 ```sh
-python -m tools.ready --url https://farsight.local:8443 --ca-file ~/farsight-ca.pem --require-tensorrt --skip rover,video
-python -m tools.measure detector --url https://farsight.local:8443 --ca-file ~/farsight-ca.pem --seconds 30
+python -m tools.ready --url http://192.168.55.1:8443 --require-tensorrt --skip rover,video
+python -m tools.measure detector --url http://192.168.55.1:8443 --seconds 30
+# HTTPS alternative: --url https://farsight.local:8443 --ca-file ~/farsight-ca.pem on both commands
 ```
 
+Reference: target-built FP16 pose engine, 20 zero-input runs, median 15.29 ms / p95 18.83 ms
+([jetson-runtime-results.md](jetson-runtime-results.md); engine execution only, taken under native-build load).
 **Pass:** `detector pose-tensorrt: median >= 15 fps`, `ms/frame` well under 66, `errors []`. Repeat while asking
 questions (step 11) to see the fps under VLM load; record both.
 **If it fails:** `backend pose-onnx` or `hog` means the engine path is wrong or it did not load: read
@@ -284,16 +300,17 @@ curl -s 127.0.0.1:8092/health; curl -s -o /dev/null -w '%{http_code}\n' 127.0.0.
 (Mac) text path, then speech path (Piper makes the question audio on the Jetson):
 
 ```sh
-python -m tools.measure ask --url https://farsight.local:8443 --ca-file ~/farsight-ca.pem --runs 6
+python -m tools.measure ask --url http://192.168.55.1:8443 --runs 6
 ssh USER@192.168.55.1 'cd farsight && echo "What do you see?" | jetson/.venv/bin/python -m piper -m models/piper/en_US-lessac-medium.onnx -f /tmp/q.wav'
 scp USER@192.168.55.1:/tmp/q.wav /tmp/q.wav
-python -m tools.measure ask --url https://farsight.local:8443 --ca-file ~/farsight-ca.pem --runs 6 --audio /tmp/q.wav
+python -m tools.measure ask --url http://192.168.55.1:8443 --runs 6 --audio /tmp/q.wav
+# HTTPS alternative: --url https://farsight.local:8443 --ca-file ~/farsight-ca.pem on both commands
 ```
 
 **Record:** `cold` (model load) and `warm median/p95` totals plus the `stt`/`vlm`/`tts` stage medians. Reference: Mac
 Metal warm total 0.7 to 0.9 s with Qwen2.5-VL-3B.
-Spanish speaker check: `curl -s --cacert ~/farsight-ca.pem -H 'content-type: application/json' -d '{"phrase":"help_coming","lang":"es"}' https://farsight.local:8443/speak`
-returns `"played": true` with a USB speaker (`aplay -l` lists it), else the headset plays `audio_url`.
+Spanish speaker check: `curl -s -H 'content-type: application/json' -d '{"phrase":"help_coming","lang":"es"}' http://192.168.55.1:8443/speak`
+(HTTPS profile: add `--cacert ~/farsight-ca.pem` and use `https://farsight.local:8443/speak`) returns `"played": true` with a USB speaker (`aplay -l` lists it), else the headset plays `audio_url`.
 **If it fails:** `FARSIGHT_ASSISTANT_URL` blank means the units were not installed: build and models first
 (`journalctl -u farsight-llm -n 30`; `ls ~/src/llama.cpp/build/bin/llama-server models/*.gguf`), then
 `bash jetson/install_service.sh`. `/health` `assistant` shows what the server actually found.
@@ -317,12 +334,13 @@ The physical sweep and Quest controls are the rig test in `docs/scan.md`.
 
 ```sh
 ssh USER@192.168.55.1 sudo reboot            # then, on the Mac, immediately:
-python -m tools.ready --url https://farsight.local:8443 --ca-file ~/farsight-ca.pem --timeout 180
+python -m tools.ready --url http://192.168.55.1:8443 --timeout 180
+# HTTPS alternative: --url https://farsight.local:8443 --ca-file ~/farsight-ca.pem
 ```
 
 Repeat three times and fill the table in [demo-checklist.md](demo-checklist.md). For the "seconds since boot" line, run
-the probe on the Jetson instead: `cd ~/farsight && python3 -m tools.ready --url https://127.0.0.1:8443 --insecure --timeout 180`
-(`--insecure` only skips certificate checks for the loopback address). Pass: `READY` within 2 minutes.
+the probe on the Jetson instead: `cd ~/farsight && python3 -m tools.ready --url http://127.0.0.1:8443 --timeout 180`
+(HTTPS profile: `--url https://127.0.0.1:8443 --insecure`, which only skips certificate checks for the loopback address). Pass: `READY` within 2 minutes.
 
 ## Quick reference
 
@@ -331,6 +349,6 @@ the probe on the Jetson instead: `cd ~/farsight && python3 -m tools.ready --url 
 | What would the server run? | `jetson/.venv/bin/python -m jetson.launch --check --env-file /etc/farsight.env` |
 | Logs | `journalctl -u farsight -f` (also `-u farsight-llm`, `-u farsight-whisper`) |
 | Re-render env from scratch | `bash jetson/install_service.sh --reset-env` |
-| Renew TLS after an IP/name change | `bash jetson/make_cert.sh --renew NEWNAME && sudo systemctl restart farsight` |
+| Renew TLS after an IP/name change (HTTPS profile only) | `bash jetson/make_cert.sh --renew NEWNAME && sudo systemctl restart farsight` |
 | Rebuild an engine | `jetson/.venv/bin/python -m jetson.build_engine --force models/yolo11n-pose.onnx` |
 | Load, temperature, power | `tegrastats --interval 1000`, `sudo nvpmodel -q` |

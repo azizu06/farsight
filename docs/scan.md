@@ -85,7 +85,9 @@ Mac arm64, macOS 27.0.1, ONNX Runtime 1.31.0 CPU (two inference threads):
 latencies: **87.15, 73.17, 71.08, 73.78, 75.69 ms**. Input is synthetic stationary
 room RGB at 160×120, resized to the fixed model input. This excludes physical
 turn/settle/camera timing and does not establish depth accuracy on a real room.
-Prepared ONNX SHA-256: `616a4fa7838f424e60e62a51d7ae4423e2d85360cb0722b9a20ca38e831ba4a2`.
+These figures come from the first export, made before the model was pinned. The pinned export is
+`7ba4679f646ac5af720a565727cc8352ccb58a52dfc65fceb5874f8ed880190e` ([models/README.md](../models/README.md));
+re-measure before comparing against it.
 
 Reproduce through the real HTTP scan and binary map delivery path:
 

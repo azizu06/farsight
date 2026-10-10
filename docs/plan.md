@@ -24,7 +24,7 @@ collapse, hazardous plant areas), and trainees who need to practice that search 
 | On the Jetson | Why it can't be the headset or an Arduino |
 |---|---|
 | TensorRT YOLO + face detection, real time | GPU inference on the robot, no laptop |
-| Hardware JPEG/H.264 encode | Streams video with little CPU |
+| H.264 encode (software libx264; the Orin Nano has no NVENC) | Streams video; CPU cost is measured, not free |
 | 20 Hz control pump, 250 ms lease, ultrasonic e-stop | Safety holds even if Wi-Fi drops |
 | Mission logger | Data captured where the sensors are |
 | Depth Anything V2 3D scan (#14) | Metric 3D from one camera, stitched by servo angle |
@@ -71,7 +71,7 @@ Fetch.ai agents, Unity splat build.
 
 ## Scope rules
 - P0 first, end to end, before anything else. Teleop must be boringly reliable.
-- No 3D mapping or SLAM: without phone pose tracking it will not be ready in time.
+- Original scope rule: no 3D mapping or SLAM. Superseded: LiDAR/phone mapping and camera-only scans now exist ([mapping.md](mapping.md), [scan.md](scan.md)).
 - Feature freeze Sun 4 AM.
 
 ## Owners

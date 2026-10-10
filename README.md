@@ -16,7 +16,7 @@ pan, person/pose/optional face detection, rescue drills, mission reports, and an
 optional local voice/vision assistant. A LiDAR-capable iPhone supplies measured
 RGB-D for 3D reconstruction and VR inspection. An ordinary iPhone supplies RGB
 without fabricated depth. The real Quest, Jetson, phones, and motor hardware
-still need the 6 AM qualification checks.
+still need the on-rig qualification checks ([docs/hardware-preflight.md](docs/hardware-preflight.md)).
 
 ## Rehearse on the MacBook
 
