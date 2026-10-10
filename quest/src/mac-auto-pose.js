@@ -78,6 +78,8 @@ export function mapPoseMessage(input) {
     head: { position: mapPoint(walk, head.position), quaternion: mapQuaternion(walk, head.quaternion) },
     ray,
     pose_id: input.id,
+    // Alias for renderers that name the view counter frame_id (tools/mac_render/protocol.py accepts both).
+    frame_id: input.id,
     space: "ar_map",
     session_id: input.session,
     map_revision: Number.isFinite(input.mapRevision) ? input.mapRevision : null,

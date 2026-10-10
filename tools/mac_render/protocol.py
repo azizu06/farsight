@@ -10,6 +10,13 @@
   {"type":"pose","version":1,"sent_mono_ms":12.5,"sent_wall_ms":1710000000000,
    "head":{"position":[x,y,z],"quaternion":[x,y,z,w]},
    "ray":{"origin":[x,y,z],"direction":[x,y,z]} | null}
+  Optional (the Quest AUTO view, quest/src/mac-auto-pose.js, sends all of them):
+   "pose_id" (alias "frame_id"): non-negative integer, echoed with every picture drawn from it
+   "session_id": renderer view identity, string up to 64 chars (UUID from the Quest)
+   "space": "ar_map" (head is in AR-map coordinates), "map_revision", "viewer"
+   "fov_y_deg" 20..120 and "aspect" 0.5..3: the frustum the viewer wants drawn
+   "eyes": [{"position","quaternion","projection"[16]}] per XR eye, map coordinates
+  The renderer view identity (session_id, pose_id) is not the capture/map identity.
 """
 
 import math
@@ -64,8 +71,38 @@ def parse_pose(message, now_mono_ms):
     head = message.get("head")
     if not isinstance(head, dict):
         raise ValueError("head required")
+    pose_id = message.get("pose_id", message.get("frame_id"))
+    if pose_id is not None and (not isinstance(pose_id, int) or isinstance(pose_id, bool) or pose_id < 0):
+        raise ValueError("pose_id must be a non-negative integer")
+    session = message.get("session_id")
+    if session is not None and (not isinstance(session, str) or not 0 < len(session) <= 64):
+        raise ValueError("session_id must be a string of 1..64 characters")
+    space = message.get("space")
+    if space is not None and space != "ar_map":
+        raise ValueError("unsupported pose space")
+    fov = message.get("fov_y_deg")
+    if fov is not None and (not finite(fov) or not 20 <= fov <= 120):
+        raise ValueError("fov_y_deg must be 20..120")
+    aspect = message.get("aspect")
+    if aspect is not None and (not finite(aspect) or not 0.5 <= aspect <= 3):
+        raise ValueError("aspect must be 0.5..3")
+    revision = message.get("map_revision")
+    eyes = message.get("eyes") or []
+    if not isinstance(eyes, list) or len(eyes) > 2:
+        raise ValueError("eyes must be a list of at most two views")
     pose = {
         "version": VERSION,
+        "pose_id": pose_id,
+        "session_id": session,
+        "space": space,
+        "map_revision": revision if finite(revision) else None,
+        "fov_y_deg": float(fov) if fov is not None else None,
+        "aspect": float(aspect) if aspect is not None else None,
+        "eyes": [{
+            "position": vec(eye.get("position"), 3),
+            "quaternion": quaternion(eye.get("quaternion")),
+            "projection": vec(eye.get("projection"), 16),
+        } for eye in eyes if isinstance(eye, dict)],
         "sent_mono_ms": float(sent),
         "sent_wall_ms": float(wall),
         "received_mono_ms": float(now_mono_ms),
@@ -98,6 +135,10 @@ def segment_sidecar(frame_id, pose, capture_mono_ms, capture_wall_ms, media_star
         "sent_mono_ms": pose["sent_mono_ms"],
         "sent_wall_ms": pose["sent_wall_ms"],
         "received_mono_ms": pose["received_mono_ms"],
+        "pose_id": pose.get("pose_id"),
+        "session_id": pose.get("session_id"),
+        "fov_y_deg": pose.get("fov_y_deg"),
+        "aspect": pose.get("aspect"),
     }
     return {
         # video_init/video_segment names match quest/src/h264.ts so the existing
@@ -115,6 +156,8 @@ def segment_sidecar(frame_id, pose, capture_mono_ms, capture_wall_ms, media_star
         "capture_mono_ms": capture_mono_ms,
         "capture_wall_ms": capture_wall_ms,
         "pose": echoed,
+        # The frustum the picture was drawn with, so the viewer can size it.
+        "fov_y_deg": None if echoed is None else echoed["fov_y_deg"],
         "encode_ms": encode_ms,
         "render_ms": render_ms,
         "capture_ms": capture_ms,

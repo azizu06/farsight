@@ -31,8 +31,9 @@ ROOT = HERE.parents[1]
 
 
 class RenderEncoder:
-    def __init__(self, page, width, height, fps, bitrate, hardware):
+    def __init__(self, page, width, height, fps, bitrate, hardware, fragment_ms=None):
         self.page = page
+        self.fragment_ms = fragment_ms
         self.width, self.height, self.fps, self.bitrate = width, height, fps, bitrate
         self.hardware = hardware
         self.process = None
@@ -56,7 +57,7 @@ class RenderEncoder:
             self.error = "ffmpeg unavailable"
             return
         args, self.encoder = screencast_to_ffmpeg(
-            self.width, self.height, self.fps, self.bitrate, self.hardware)
+            self.width, self.height, self.fps, self.bitrate, self.hardware, self.fragment_ms)
         self.process = await asyncio.create_subprocess_exec(
             *args, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE)
@@ -183,17 +184,9 @@ class RenderEncoder:
                 self._publish(item)
 
     def _publish(self, item):
-        """One copy per viewer, plus a short replay for a viewer that joins late.
-
-        Dropping the oldest fragment would drop a frame later pictures depend
-        on, so a full queue drops the whole viewer rather than a fragment.
-        """
-        stale = [viewer for viewer in self.viewers if viewer.full()]
-        for viewer in stale:
-            self.viewers.discard(viewer)
+        """One copy per viewer. Each viewer starts, and restarts, on a keyframe."""
         for viewer in list(self.viewers):
-            with suppress(asyncio.QueueFull):
-                viewer.put_nowait(item)
+            viewer.offer(item)
         if self.fragments.full():
             with suppress(asyncio.QueueEmpty):
                 self.fragments.get_nowait()
@@ -225,7 +218,8 @@ class App:
             return
         self.encoder = RenderEncoder(
             self.page, self.args.width, self.args.height, self.args.fps,
-            self.args.bitrate, None if self.args.hardware == "auto" else self.args.hardware == "videotoolbox")
+            self.args.bitrate, None if self.args.hardware == "auto" else self.args.hardware == "videotoolbox",
+            getattr(self.args, "fragment_ms", None))
         await self.encoder.start()
 
     async def health(self, _request):
@@ -242,7 +236,20 @@ class App:
             "width": self.args.width,
             "height": self.args.height,
             "fps": self.args.fps,
+            # What the render page actually holds; dense points come from the relay's /dense lane.
+            "page": await self._page_state(),
         })
+
+    async def _page_state(self):
+        if self.page is None:
+            return None
+        try:
+            state = await asyncio.wait_for(self.page.evaluate(
+                "() => window.__mac && { source: window.__mac.source, points: window.__mac.points,"
+                " draws: window.__mac.draws, dense: window.__mac.dense || null }"), timeout=1)
+        except Exception as exc:  # a busy or crashed page is reported, not hidden
+            return {"error": str(exc)[:200]}
+        return state
 
     async def macview(self, request):
         socket = web.WebSocketResponse()
@@ -260,11 +267,7 @@ class App:
             "encoder": encoder.encoder,
         })
         await socket.send_bytes(encoder.init)
-        queue = asyncio.Queue(maxsize=8)
-        # Start on a keyframe so a late join is not handed a fragment whose
-        # earlier frames it never saw.
-        if encoder.keyframe is not None:
-            queue.put_nowait(encoder.keyframe)
+        queue = ViewerQueue()
         encoder.viewers.add(queue)
         async for message in socket:
             if message.type != WSMsgType.TEXT:
@@ -276,7 +279,7 @@ class App:
             if body.get("type") != "next":
                 continue
             try:
-                item = await asyncio.wait_for(queue.get(), timeout=2)
+                item = await asyncio.wait_for(queue.latest(), timeout=2)
             except asyncio.TimeoutError:
                 await socket.send_json({"type": "macview_error", "reason": "no fragment"})
                 continue
@@ -304,6 +307,8 @@ class App:
                       position: pose.position, quaternion: pose.quaternion, ray: pose.ray,
                       sentMonoMs: pose.sent_mono_ms, sentWallMs: pose.sent_wall_ms,
                       receivedMonoMs: pose.received_mono_ms,
+                      poseId: pose.pose_id, sessionId: pose.session_id,
+                      fovY: pose.fov_y_deg, aspect: pose.aspect,
                       pageMonoMs: performance.now() }; }""",
                     pose)
         return socket
@@ -335,6 +340,7 @@ def create_app(args, browser=None, page=None):
     if args.upstream:
         web_app.router.add_get("/map/{tail:.*}", proxy(args.upstream))
         web_app.router.add_get("/health/map", proxy_one(args.upstream, "/health"))
+        web_app.router.add_get("/dense/{tail:.*}", dense_proxy(args.upstream))
     return web_app
 
 
@@ -347,6 +353,55 @@ def viewer_index(dist):
     return send
 
 
+class ViewerQueue:
+    """Latest-only fragments for one viewer.
+
+    A viewer is handed nothing until a keyframe, so it never decodes a fragment
+    whose reference frames it missed. When the viewer asks for the next fragment
+    and a backlog has built up (a slow start, a stall), everything before the
+    newest queued keyframe is dropped: the picture jumps forward instead of the
+    backlog becoming standing latency. A full queue waits for the next keyframe.
+    """
+
+    def __init__(self, limit=12):
+        self.items = []
+        self.limit = limit
+        self.synced = False
+        self.skipped = 0
+        self._ready = asyncio.Event()
+
+    def offer(self, item):
+        if item["keyframe"]:
+            self.synced = True
+        if not self.synced:
+            return
+        if len(self.items) >= self.limit:
+            self.skipped += len(self.items)
+            self.items.clear()
+            self.synced = bool(item["keyframe"])
+            if not self.synced:
+                return
+        self.items.append(item)
+        self._ready.set()
+
+    def take(self):
+        """The next decodable fragment, skipping any backlog to its newest keyframe."""
+        keys = [index for index, item in enumerate(self.items) if item["keyframe"]]
+        if keys and keys[-1] > 0:
+            self.skipped += keys[-1]
+            del self.items[:keys[-1]]
+        item = self.items.pop(0)
+        if not self.items:
+            self._ready.clear()
+        return item
+
+    async def latest(self):
+        while not self.items:
+            self._ready.clear()
+            await self._ready.wait()
+        return self.take()
+
+
 def _is_keyframe(data):
     """A fragment that carries an IDR, so a late viewer can start on it."""
     offset = data.find(b"tfhd")
@@ -355,6 +410,28 @@ def _is_keyframe(data):
         if flags & 0x020000:
             return True
     return b"\x00\x00\x00\x01\x65" in data or b"\x00\x00\x01\x65" in data
+
+
+def dense_proxy(upstream):
+    """Relay /dense/* for the render page, keeping the query and the upstream status."""
+    async def send(request):
+        import urllib.error
+        import urllib.request
+        url = f"{upstream}/dense/{request.match_info['tail']}"
+        if request.query_string:
+            url += "?" + request.query_string
+
+        def read():
+            try:
+                with urllib.request.urlopen(url, timeout=5) as response:
+                    return response.status, response.read(), response.headers.get_content_type()
+            except urllib.error.HTTPError as exc:
+                return exc.code, exc.read(), "text/plain"
+            except OSError as exc:
+                return 503, str(exc).encode(), "text/plain"
+        status, body, content_type = await asyncio.to_thread(read)
+        return web.Response(status=status, body=body, content_type=content_type)
+    return send
 
 
 def proxy(upstream):
@@ -387,7 +464,7 @@ async def open_page(args):
     page = await browser.new_page(viewport={"width": args.width, "height": args.height})
     query = (
         f"upstream=http://127.0.0.1:{args.port}&width={args.width}&height={args.height}"
-        f"&style={args.style}"
+        f"&style={args.style}&dense={0 if getattr(args, 'no_dense', False) else 1}"
     )
     page.on("pageerror", lambda error: print(f"render page: {error}", flush=True))
     page.on("console", lambda message: print(f"render console: {message.text}", flush=True))
@@ -413,9 +490,13 @@ def parse_args(argv=None):
     parser.add_argument("--height", type=int, default=720)
     parser.add_argument("--fps", type=int, default=30)
     parser.add_argument("--bitrate", type=int, default=4_000_000)
+    parser.add_argument("--fragment-ms", type=int, default=None,
+                        help="fMP4 fragment length; default one frame, the lowest added delay")
     parser.add_argument("--hardware", choices=("auto", "videotoolbox", "libx264"), default="auto")
     parser.add_argument("--no-browser", action="store_true", help="Serve sockets only; tests use this")
     parser.add_argument("--headed", action="store_true")
+    parser.add_argument("--no-dense", action="store_true",
+                        help="Ignore the relay /dense lane and draw only the coarse preview (the before shot)")
     parser.add_argument("--browser", help="Chromium binary, if Playwright has not downloaded its own")
     parser.add_argument("--style", choices=("lit", "unlit"), default="lit",
                         help="lit is the Mac render look. unlit is the old flat look, for the before shot")

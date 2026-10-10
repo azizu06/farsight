@@ -80,7 +80,8 @@ export class MacAutoView {
 
   private start() {
     this.active = true;
-    this.session = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    // Renderer view identity (not capture/map identity); a UUID where the page is a secure context.
+    this.session = globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     this.lastFrameAt = -Infinity; this.lastPoseAt = -Infinity; this.ring.clear();
     this.connectPose(); this.viewer.start();
   }

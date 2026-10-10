@@ -9,6 +9,7 @@ window.addEventListener("error", (event) => {
 });
 import * as THREE from "/quest/node_modules/three/build/three.module.js";
 import { decodeMesh, decodePoints } from "/quest/src/protocol.js";
+import { DenseLayer, shadePass, splatMaterial } from "./dense-splats.mjs";
 
 const params = new URLSearchParams(location.search);
 const upstream = (params.get("upstream") || "").replace(/\/$/, "");
@@ -16,6 +17,10 @@ const width = Number(params.get("width") || 1280);
 const height = Number(params.get("height") || 720);
 
 const style = params.get("style") === "unlit" ? "unlit" : "lit";
+// World splat diameter for dense 1 cm cells: large enough to close sampling gaps.
+const splatSize = Number(params.get("splat") || 0.03);
+// The widest vertical FOV drawn on request; beyond this the picture gets too coarse.
+const MAX_FOV = 90;
 const GRAPHITE = 0x1c2228;
 const FOG = 0x242b31;
 const ACCENT = 0xc4a574;
@@ -34,7 +39,7 @@ document.body.prepend(renderer.domElement);
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(GRAPHITE);
 scene.fog = new THREE.Fog(FOG, 12, 42);
-const camera = new THREE.PerspectiveCamera(50, width / height, 0.01, 2000);
+const camera = new THREE.PerspectiveCamera(50, width / height, 0.05, 300);
 camera.position.set(9, 6, 9);
 camera.lookAt(0, 0, 0);
 
@@ -85,6 +90,43 @@ if (style === "lit") {
   };
 }
 root.add(surfaces);
+
+// Dense measured map (relay /dense/delta.bin): RGB-D first, gray native ARKit only when RGB-D is empty.
+const dense = new DenseLayer("rgbd");
+const denseGray = new DenseLayer("geometry", 2_000_000, true);
+const denseSplats = new THREE.Points(dense.geometry, splatMaterial(splatSize));
+const graySplats = new THREE.Points(denseGray.geometry, splatMaterial(splatSize * 1.4));
+denseSplats.frustumCulled = graySplats.frustumCulled = false;
+root.add(denseSplats, graySplats);
+const target = new THREE.WebGLRenderTarget(width, height, {
+  depthTexture: new THREE.DepthTexture(width, height, THREE.FloatType),
+});
+const shade = shadePass(target, camera, new THREE.Color(GRAPHITE).convertSRGBToLinear().convertLinearToSRGB());
+let denseAvailable = true;
+function splatScale() {
+  const scale = height / (2 * Math.tan((camera.fov * Math.PI) / 360));
+  denseSplats.material.uniforms.scale.value = graySplats.material.uniforms.scale.value = scale;
+}
+splatScale();
+async function fetchDense(query) {
+  const response = await fetch(`${upstream}/dense/delta.bin?${query}`, { cache: "no-store" });
+  if (response.status === 404 || response.status === 503) { const error = new Error("dense lane off"); error.off = true; throw error; }
+  if (!response.ok) throw new Error(`dense ${response.status}`);
+  return response.arrayBuffer();
+}
+async function pollDense() {
+  if (params.get("dense") === "0") { denseAvailable = false; return; }
+  try {
+    await dense.poll(fetchDense);
+    if (!dense.count) await denseGray.poll(fetchDense);
+    denseAvailable = true;
+  } catch (error) {
+    denseAvailable = !error.off;
+    if (!error.off) console.warn(String(error));
+  }
+  setTimeout(pollDense, denseAvailable ? 250 : 5000);
+}
+function denseShown() { return dense.count > 0 || denseGray.count > 0; }
 
 const rayLine = new THREE.Line(
   new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3(0, 0, -1)]),
@@ -189,7 +231,8 @@ async function refresh() {
   window.__mac.style = style;
   window.__mac.points = cloud.geometry.getAttribute("position")?.count || 0;
   window.__mac.source = status?.source || "WAITING";
-  banner.textContent = `MAC RENDER · FLAT · ${window.__mac.source} · ${window.__mac.points} pts · NOT STEREO`;
+  const solid = dense.count ? `DENSE RGB-D ${dense.count.toLocaleString()} cells` : denseGray.count ? `NATIVE MESH (gray) ${denseGray.count.toLocaleString()} pts` : `${window.__mac.points} pts`;
+  banner.textContent = `MAC RENDER · FLAT · ${window.__mac.source} · ${solid} · NOT STEREO`;
 }
 
 function applyPose() {
@@ -200,6 +243,8 @@ function applyPose() {
   const heldMs = performance.now() - (next.pageMonoMs ?? performance.now());
   if (heldMs > 250) return;
   pose = next;
+  const fov = Number.isFinite(next.fovY) ? Math.min(MAX_FOV, Math.max(20, next.fovY)) : camera.fov;
+  if (fov !== camera.fov) { camera.fov = fov; camera.updateProjectionMatrix(); splatScale(); }
   camera.position.set(...next.position);
   tmp.set(...next.quaternion);
   camera.quaternion.copy(tmp);
@@ -215,7 +260,16 @@ window.__mac = { ready: true, stereo: false, renderMs: 0, draws: 0, points: 0, s
 renderer.setAnimationLoop(() => {
   const started = performance.now();
   applyPose();
-  renderer.render(scene, camera);
+  const solid = denseShown();
+  denseSplats.visible = dense.count > 0;
+  graySplats.visible = !dense.count && denseGray.count > 0;
+  // Dense cells replace the coarse preview cloud/mesh; the grid stays as a floor cue.
+  cloud.visible = surfaces.visible = !solid;
+  if (solid) {
+    renderer.setRenderTarget(target);
+    renderer.render(scene, camera);
+    shade.render(renderer);
+  } else renderer.render(scene, camera);
   // Echo only the pose this draw used, so a sidecar cannot stamp a pose that
   // was received but not yet in a picture.
   if (pose) {
@@ -223,10 +277,17 @@ renderer.setAnimationLoop(() => {
       sent_mono_ms: pose.sentMonoMs,
       sent_wall_ms: pose.sentWallMs,
       received_mono_ms: pose.receivedMonoMs,
+      pose_id: pose.poseId ?? null,
+      session_id: pose.sessionId ?? null,
+      // The frustum this picture was actually drawn with, not just the one requested.
+      fov_y_deg: camera.fov,
+      aspect: camera.aspect,
     };
   }
   window.__mac.renderMs = performance.now() - started;
   window.__mac.draws = (window.__mac.draws || 0) + 1;
+  window.__mac.dense = { points: dense.count, gray: denseGray.count, shown: solid, available: denseAvailable };
 });
+pollDense();
 refresh();
 setInterval(refresh, 2000);

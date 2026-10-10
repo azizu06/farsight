@@ -1,7 +1,11 @@
 """Mac visual-offload message shapes. No browser, no ffmpeg, no motion."""
 
+import json
+import shutil
 import struct
+import subprocess
 import unittest
+from pathlib import Path
 
 from tools.mac_render.encode import encoder_args
 from tools.mac_render.mp4 import Mp4Reader, codec_from_init, fragment_timing
@@ -9,6 +13,7 @@ from tools.mac_render.protocol import (
     frame_age_ms, oldest_of, parse_pose, percentile, pose_is_stale,
     pose_to_frame_ms, segment_sidecar,
 )
+from tools.mac_render.server import ViewerQueue
 from tools.mac_render.stats import summarize
 
 
@@ -90,9 +95,86 @@ class EncodeTest(unittest.TestCase):
         self.assertIn("-bf", args)
         self.assertEqual(args[args.index("-bf") + 1], "0")
         self.assertIn("-g", args)
+        self.assertEqual(args[args.index("-g") + 1], "10", "a keyframe every 1/3 s at 30 fps")
+        self.assertEqual(args[args.index("-frag_duration") + 1], "33333", "one frame per fragment")
         fallback, fallback_name = encoder_args(1920, 1080, 30, 4_000_000, hardware=False)
         self.assertEqual(fallback_name, "libx264")
         self.assertIn("bframes=0", " ".join(fallback))
+
+
+QUEST = Path(__file__).resolve().parents[2] / "quest"
+PRODUCER = """
+import { MapWalk } from "./src/map-walk.js";
+import { mapPoseMessage } from "./src/mac-auto-pose.js";
+const walk = new MapWalk(); walk.setMode("walk"); walk.setFloor(-0.3); walk.observeHead(0, 0, 0.4); walk.moveViewer(1, 0.5, 0, 0.6);
+const projection = [1.2, 0, 0, 0, 0, 1.1917535925942102, 0, 0, 0, 0, -1.002, -1, 0, 0, -0.2002, 0];
+const message = mapPoseMessage({ id: 41, mono: 1234.5, wall: 1.7e12, walk,
+  head: { position: [0.1, 1.6, -0.2], quaternion: [0, 0.2, 0, 0.98] }, ray: null,
+  eyes: [0, 1].map(i => ({ position: [i ? 0.032 : -0.032, 1.6, 0], quaternion: [0, 0, 0, 1], projection })),
+  session: "6f1c2a9e-3b4d-4c5e-8f60-718293a4b5c6", mapRevision: 29 });
+process.stdout.write(JSON.stringify(message));
+"""
+
+
+@unittest.skipUnless(shutil.which("node") and (QUEST / "node_modules" / "three").is_dir(), "node + quest deps")
+class QuestPoseContractTest(unittest.TestCase):
+    """The real #144 Quest producer, through this parser, back out as the frame echo."""
+
+    def produce(self):
+        result = subprocess.run(["node", "--input-type=module", "-e", PRODUCER], cwd=QUEST,
+                                capture_output=True, text=True, timeout=30, check=True)
+        return json.loads(result.stdout)
+
+    def test_auto_pose_parses_and_echoes_identity_and_frustum(self):
+        message = self.produce()
+        pose = parse_pose(message, now_mono_ms=5000)
+        self.assertEqual(pose["pose_id"], 41)
+        self.assertEqual(pose["session_id"], message["session_id"])
+        self.assertEqual(pose["space"], "ar_map")
+        self.assertEqual(pose["map_revision"], 29)
+        self.assertAlmostEqual(pose["fov_y_deg"], message["fov_y_deg"])
+        self.assertEqual(len(pose["eyes"]), 2)
+        # Map-frame head, not the raw headset pose: virtual locomotion survives the trip.
+        self.assertEqual(pose["position"], message["head"]["position"])
+        self.assertNotEqual(pose["position"], [0.1, 1.6, -0.2])
+        drawn = dict(pose, fov_y_deg=min(pose["fov_y_deg"], 90.0))  # what render.mjs echoes
+        side = segment_sidecar(9, drawn, 10, 1000, 0.0, 0.033, 3, "SIMULATED", 1, 2, 1)
+        self.assertEqual(side["pose"]["pose_id"], 41)
+        self.assertEqual(side["pose"]["sent_mono_ms"], 1234.5)
+        self.assertEqual(side["pose"]["session_id"], message["session_id"])
+        self.assertAlmostEqual(side["fov_y_deg"], drawn["fov_y_deg"])
+
+    def test_frame_id_alias_and_rejections(self):
+        message = self.produce()
+        del message["pose_id"]
+        self.assertEqual(parse_pose(message, 0)["pose_id"], 41)
+        for bad in ({"pose_id": -1}, {"pose_id": 1.5}, {"session_id": ""}, {"session_id": "x" * 65},
+                    {"space": "world"}, {"fov_y_deg": 170}, {"aspect": 0}, {"eyes": [{}]}):
+            with self.assertRaises(ValueError, msg=bad):
+                parse_pose(dict(self.produce(), **bad), 0)
+
+
+class ViewerQueueTest(unittest.TestCase):
+    def test_late_join_waits_for_a_keyframe_and_backlog_skips_forward(self):
+        queue = ViewerQueue(limit=12)
+        item = lambda n, key=False: {"n": n, "keyframe": key}
+        queue.offer(item(1)); queue.offer(item(2))
+        self.assertEqual(queue.items, [], "no fragment before a keyframe")
+        for n, key in ((3, True), (4, False), (5, False), (6, True), (7, False)):
+            queue.offer(item(n, key))
+        self.assertEqual(queue.take()["n"], 6, "a backlog jumps to its newest keyframe")
+        self.assertEqual(queue.take()["n"], 7)
+
+    def test_full_queue_resyncs_on_the_next_keyframe(self):
+        queue = ViewerQueue(limit=3)
+        queue.offer({"n": 0, "keyframe": True})
+        for n in range(1, 4):
+            queue.offer({"n": n, "keyframe": False})
+        self.assertEqual(queue.items, [], "overflow drops the backlog")
+        queue.offer({"n": 4, "keyframe": False})
+        self.assertEqual(queue.items, [])
+        queue.offer({"n": 5, "keyframe": True})
+        self.assertEqual(queue.take()["n"], 5)
 
 
 class StatsTest(unittest.TestCase):
