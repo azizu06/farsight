@@ -35,6 +35,9 @@ explicit ray-cast camera/map and virtual rover sources. See
 | `GET /control/status` | Read-only control status; no usable permit |
 | `GET /mission/report` | Evidence, persistence/source labels, drill results |
 | `POST /mission/drill` | `{"duration_s":90}`, person-track encounters, not distinct identities |
+| `POST /mission/triage/{key}` | Regenerate one person's SBAR now (`key` from the report, URL-encoded); 404 unknown, 503 busy |
+| `GET /speak` | `{"phrases": [{"id","en","es"}], "speaker": bool, "speaker_cmd", "voices": ["en","es"]}` |
+| `POST /speak` | `{"phrase": "help_coming", "lang": "en"\|"es"}`; see below |
 
 Camera age is receiver receipt age adjusted by reported producer encoding time
 and server queue/decode delay. It does not measure pre-callback sensor exposure
@@ -198,6 +201,40 @@ Optional additive fields (clients ignore unknown fields):
 Accepted `audio`: WAV, WebM/Opus, Ogg/Opus, or MP4/AAC (whatever the browser's MediaRecorder gives), at most 8 MiB.
 Headset (`quest/src/assistant-voice.ts`): a proposal shows "Seek person #3?" with Confirm / Dismiss for
 20 seconds; a new question, cancel, or expiry clears it.
+
+## SBAR triage (additive fields on `GET /mission/report`)
+
+Every new person track gets an SBAR note at once: a deterministic template, then (with
+`--assistant-url`) a local VLM rewrite from that track's cropped snapshot, one model call at a
+time, at least `--triage-interval` (3 s) apart, off the detector loop. If the model fails, the
+template stays with a `warning`. `report.triage` maps encounter key (`"<source>:<track id>"`) to:
+
+```json
+{"situation": "...", "background": "...", "assessment": "...", "recommendation": "...",
+ "model": "local-vision-model" | "template", "note": "not a medical assessment",
+ "track_id": 3, "source": "USB CAMERA", "conf": 0.9, "down": true, "range_cm": 120,
+ "snapshot_url": "/mission/snapshots/detection-0-41.jpg", "generated_at": 1791626868.0, "ms": 1166}
+```
+
+Each `encounters[]` entry also gains `key` and `sbar` (the same object or `null`). With
+`--mission-dir`, notes append to `triage.jsonl` and `report.json` is rewritten on every note.
+`/health` gains `triage: {"enabled", "pending", "generated", "last_ms", "min_interval_s"}`.
+
+## `POST /speak` (Quest -> Jetson), survivor phrases
+
+Fixed phrase ids only (`help_coming`, `found_you`, `can_you_hear`, `call_out`, `stay_calm`), English or
+Spanish, rendered once by Piper into the TTS directory. Response:
+
+```json
+{"phrase": "help_coming", "lang": "es", "text": "La ayuda viene en camino, no se mueva.",
+ "audio_url": "/tts/phrase-help_coming-es.wav", "played": true}
+```
+
+`played` is true when the rover's own speaker started it (`--speaker-cmd`, default `auto`: `aplay -q`
+with an ALSA card, else `paplay` with a Pulse sink; `none` disables). When false, the headset plays
+`audio_url`; `speaker_warning` explains a failed player. Errors: 404 unknown phrase, 400 language,
+503 missing voice (`FARSIGHT_PIPER_MODEL_ES` for Spanish). `/health` gains
+`speech: {"speaker", "speaker_cmd", "voices"}`.
 
 ## WebSocket `/ws/points` (Jetson -> Quest), binary, 3D scan
 

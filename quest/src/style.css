@@ -394,6 +394,9 @@ canvas:focus-visible {
 .mission-content p { color: #bdcbd9; line-height: 1.7; }
 .mission-content .mission-simulated { color: #ffc779; }
 .mission-tracks { padding-left: 18px; color: #c9d6e4; font-size: 11px; line-height: 1.9; }
+.mission-sbar { white-space: pre-line; margin: 2px 0 8px; font-size: 11px; }
+.survivor-phrases { display: flex; gap: 5px; margin-top: 10px; }
+.survivor-phrases select { min-width: 0; flex: 1; border: 1px solid #555; background: #242424; color: #eee; padding: 6px; border-radius: 3px; }
 .mission-images { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; margin: 14px 0; }
 .mission-images img { width: 100%; object-fit: contain; }
 .voice-assistant { margin-top: 12px; border-top: 1px solid #47576a; padding-top: 8px; }

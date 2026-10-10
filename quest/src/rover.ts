@@ -4,6 +4,7 @@ import { H264Viewer } from "./h264";
 import { cameraCrop, croppedBox } from "./camera-view.js";
 import { AssistantVoice } from "./assistant-voice";
 import { AutonomyIntent, autonomyLabel, containPoint, pickTarget, rayPanelPoint } from "./autonomy.js";
+import { PHRASE_LABELS, sbarLines, speakPhrase } from "./survivor-phrases.js";
 
 type Box = { id?: number; cls: string; conf: number; x: number; y: number; w: number; h: number };
 type Detections = { frame: number | string; boxes: Box[]; fps?: number; source?: string; simulated?: boolean };
@@ -501,7 +502,7 @@ export class RoverExperience {
     const parent = document.querySelector("#settings")!;
     const block = document.createElement("section");
     block.className = "local-assistant";
-    block.innerHTML = `<h2>Local scene assistant</h2><form><input aria-label="Question for rover" placeholder="What do you see?" maxlength="500"/><button>Ask</button></form><p role="status">Uses observed detections; runs on rover.</p><button type="button" id="start-drill">Start 90-second rescue drill</button><p id="drill-status">Counts observed person tracks as encounters.</p><button type="button" id="open-mission-report">Open mission report</button>`;
+    block.innerHTML = `<h2>Local scene assistant</h2><form><input aria-label="Question for rover" placeholder="What do you see?" maxlength="500"/><button>Ask</button></form><p role="status">Uses observed detections; runs on rover.</p><button type="button" id="start-drill">Start 90-second rescue drill</button><p id="drill-status">Counts observed person tracks as encounters.</p><button type="button" id="open-mission-report">Open mission report</button><div class="survivor-phrases"><select aria-label="Survivor phrase">${Object.entries(PHRASE_LABELS).map(([id, label]) => `<option value="${id}">${label}</option>`).join("")}</select><button type="button" data-lang="en">Say EN</button><button type="button" data-lang="es">Say ES</button></div><p id="phrase-status">Speaks on the rover speaker, or here if it has none.</p>`;
     parent.append(block);
     const form = block.querySelector("form")!, input = block.querySelector("input")!, result = block.querySelector("p")!, button = form.querySelector("button")!;
     block.querySelector<HTMLButtonElement>("#open-mission-report")!.onclick = () => void this.showReport();
@@ -515,6 +516,14 @@ export class RoverExperience {
         this.autonomy.select(action.target_id);
         result.textContent = `Seek person #${action.target_id} armed: hold the deadman to approach; move the stick to cancel.`;
       });
+    const phrase = block.querySelector<HTMLSelectElement>(".survivor-phrases select")!, phraseStatus = block.querySelector<HTMLElement>("#phrase-status")!;
+    for (const say of block.querySelectorAll<HTMLButtonElement>(".survivor-phrases button")) {
+      say.onclick = async () => {
+        say.disabled = true; phraseStatus.textContent = "Speaking…";
+        phraseStatus.textContent = await speakPhrase(phrase.value, say.dataset.lang!);
+        say.disabled = false;
+      };
+    }
     const drillButton = block.querySelector<HTMLButtonElement>("#start-drill")!;
     drillButton.onclick = () => void this.updateDrill(true);
     this.timers.push(window.setInterval(() => {
@@ -564,6 +573,12 @@ export class RoverExperience {
       for (const entry of encounters.slice(-20).reverse()) {
         const item = document.createElement("li");
         item.textContent = `${String(entry.cls ?? "object")} · track ${entry.id ?? "?"} · ${Math.round((Number(entry.conf) || 0) * 100)}% · ${entry.source ?? "unknown source"}`;
+        const sbar = sbarLines(entry.sbar);
+        if (sbar.length) {
+          const note = document.createElement("p"); note.className = "mission-sbar";
+          note.textContent = `${sbar.join("\n")}\n(${entry.sbar.model === "template" ? "template" : "local vision model"}; not a medical assessment)`;
+          item.append(note);
+        }
         list.append(item);
       }
       if (!encounters.length) { const empty = document.createElement("p"); empty.textContent = "No detection encounters recorded."; content.append(empty); }
