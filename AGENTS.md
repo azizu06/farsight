@@ -52,6 +52,7 @@ must follow the final implementation, not an earlier plan.
 | Mapping and scan | `docs/mapping.md`, `docs/scan.md`; distinguish measured and estimated geometry |
 | ROS 2 navigation and SLAM | `docs/navigation.md`; Nav2 is opt-in (`--nav2`, `ros2/farsight_nav`, Docker tests `ros2/docker/run-tests.sh`); SLAM is optional (`ros2/farsight_slam`, its `test/run_docker.sh`); simulation only so far |
 | Rust services | `rust/README.md`; verify feature and wire parity before changing the demo runtime |
+| Printed mounts (phone cradle, Jetson + bank deck) | `hardware/print/README.md`; CadQuery source, STLs, slicer time estimates; not yet fitted to the rig |
 
 ## What counts as ready
 
