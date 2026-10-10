@@ -452,23 +452,27 @@ function mapNeeded() {
 function syncMapConnection() {
   if (mapNeeded()) {
     if (!socket || socket.readyState === WebSocket.CLOSED) connect();
-  } else if (socket) {
-    socket.onclose = null; socket.close(); socket = null;
+  } else {
+    if (socket) { socket.onclose = null; socket.close(); socket = null; }
     serverOnline = false;
     text("cloud-status", "Map retained · transfers paused during live camera view");
+    $("cloud-status").dataset.live = "false";
   }
 }
 function connect() {
-  if (!mapNeeded()) return;
-  socket = new WebSocket(api("/ws/map").replace(/^http/, "ws"));
-  socket.binaryType = "arraybuffer";
-  socket.onopen = () => {
+  if (!mapNeeded() || (socket && socket.readyState !== WebSocket.CLOSED)) return;
+  const nextSocket = new WebSocket(api("/ws/map").replace(/^http/, "ws"));
+  socket = nextSocket;
+  nextSocket.binaryType = "arraybuffer";
+  nextSocket.onopen = () => {
+    if (socket !== nextSocket) return;
     serverOnline = true;
     connectionVersion += 1;
     generation = -1;
     appliedMesh = -1;
   };
-  socket.onmessage = (event) => {
+  nextSocket.onmessage = (event) => {
+    if (socket !== nextSocket) return;
     try {
       if (typeof event.data === "string") {
         const next = JSON.parse(event.data) as Status;
@@ -476,14 +480,15 @@ function connect() {
       } else {
         const first = !cloud.geometry.getAttribute("position")?.count;
         replaceGeometry(cloud, decodePoints(event.data));
-        if (first && cloud.geometry.getAttribute("position").count) frameMap();
+        if (first && cloud.geometry.getAttribute("position").count && !renderer.xr.isPresenting) frameMap();
       }
     } catch (error) {
       notify(`Map packet rejected: ${String(error)}`);
     }
   };
-  socket.onerror = () => socket?.close();
-  socket.onclose = () => {
+  nextSocket.onerror = () => nextSocket.close();
+  nextSocket.onclose = () => {
+    if (socket !== nextSocket) return;
     serverOnline = false;
     marker.visible = false;
     text("connection", "Mapper disconnected");

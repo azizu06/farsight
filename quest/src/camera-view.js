@@ -24,3 +24,23 @@ export function croppedBox(box, crop, sourceWidth, sourceHeight) {
   return { x: (left - crop.x) / crop.width, y: (top - crop.y) / crop.height,
     w: (right - left) / crop.width, h: (bottom - top) / crop.height };
 }
+
+/** Match actual decoder PTS to a capture identity, allowing only clock quantization. */
+export function sampleFrame(samples, mediaTime, segmentStart, segmentEnd) {
+  if (!Array.isArray(samples) || !samples.length || samples.length > 60 ||
+      ![mediaTime, segmentStart, segmentEnd].every(Number.isFinite)) return null;
+  const epsilon = 0.000002; // The transport uses an integer microsecond timescale.
+  let previousEnd = segmentStart;
+  for (const sample of samples) {
+    if (![sample.media_start_s, sample.media_end_s, sample.frame].every(Number.isFinite) ||
+        !Number.isSafeInteger(sample.frame) || sample.frame < 0 ||
+        sample.media_start_s < segmentStart - epsilon || sample.media_end_s > segmentEnd + epsilon ||
+        sample.media_end_s <= sample.media_start_s || sample.media_start_s < previousEnd - epsilon) return null;
+    previousEnd = sample.media_end_s;
+  }
+  const starts = samples.filter(sample => Math.abs(mediaTime - sample.media_start_s) <= epsilon);
+  if (starts.length === 1) return starts[0].frame;
+  if (starts.length > 1) return null;
+  const matching = samples.filter(sample => mediaTime >= sample.media_start_s && mediaTime < sample.media_end_s);
+  return matching.length === 1 ? matching[0].frame : null;
+}

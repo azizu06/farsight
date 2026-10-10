@@ -388,3 +388,16 @@ canvas:focus-visible {
 .camera-mount-option { display: grid; gap: 7px; margin: 18px 0; color: #becbda; }
 .camera-mount-option select { width: 100%; padding: 8px; border: 1px solid #566478; border-radius: 3px; background: #263343; color: #e0e8f1; }
 .camera-mount-option small { font-size: 10px; line-height: 1.5; color: #a6b3c2; }
+.mission-report { width: min(720px, calc(100vw - 30px)); max-height: calc(100dvh - 30px); overflow-y: auto; }
+.mission-report header { display: flex; justify-content: space-between; align-items: center; gap: 15px; }
+.mission-report h2 { margin: 0; }
+.mission-content p { color: #bdcbd9; line-height: 1.7; }
+.mission-content .mission-simulated { color: #ffc779; }
+.mission-tracks { padding-left: 18px; color: #c9d6e4; font-size: 11px; line-height: 1.9; }
+.mission-images { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; margin: 14px 0; }
+.mission-images img { width: 100%; object-fit: contain; }
+.voice-assistant { margin-top: 12px; border-top: 1px solid #47576a; padding-top: 8px; }
+.voice-assistant .button-row { gap: 5px; }
+.voice-assistant .button-row button { padding: 8px 6px; }
+.voice-assistant p { color: #afbdcc; font-size: 10px; }
+.local-assistant > p[role="status"] { white-space: pre-line; }

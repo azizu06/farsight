@@ -1,9 +1,12 @@
+import { sampleFrame } from "./camera-view.js";
+import { VideoRequests } from "./video-requests.js";
 type Segment = {
   request_id: number; media_start_s: number; media_end_s: number;
-  frame: number | string; age_ms: number; source: string;
+  frame: number | string; age_ms: number; source: string; server_wait_ms?: number;
   receivedAt: number; boundedAge: number;
+  samples?: { media_start_s: number; media_end_s: number; frame: number }[];
 };
-/** TCP fMP4 with one requested segment in flight and capture-to-decoder freshness. */
+/** TCP fMP4 with two bounded requests in flight and capture-to-decoder freshness. */
 export class H264Viewer {
   readonly video = document.createElement("video");
   source = "H.264 camera";
@@ -18,8 +21,7 @@ export class H264Viewer {
   private mime = "";
   private connecting = false;
   private initReceived = false;
-  private requestId = 0;
-  private requestedAt = -Infinity;
+  private requests = new VideoRequests(2);
   private pending: Omit<Segment, "receivedAt" | "boundedAge"> | null = null;
   private segments: Segment[] = [];
   private decodedMediaTime = -1;
@@ -50,7 +52,7 @@ export class H264Viewer {
       id: `h264:${segment.request_id}:${this.decodedFrames}`,
       age: segment.boundedAge + performance.now() - segment.receivedAt,
       source: segment.source,
-      frame: segment.frame,
+      frame: sampleFrame(segment.samples, this.decodedMediaTime, segment.media_start_s, segment.media_end_s),
     };
   }
   private connect() {
@@ -69,7 +71,7 @@ export class H264Viewer {
             }
             this.source = String(message.source ?? "H.264 camera"); this.initialize(message.mime);
           } else if (message.type === "video_segment") {
-            if (message.request_id !== this.requestId || this.requestedAt === -Infinity ||
+            if (!this.requests.has(message.request_id) || this.pending !== null ||
                 ![message.age_ms, message.media_start_s, message.media_end_s].every(Number.isFinite) ||
                 message.age_ms < 0 || message.media_end_s <= message.media_start_s) {
               this.reset("H.264 freshness metadata rejected"); return;
@@ -87,10 +89,10 @@ export class H264Viewer {
         if (this.initReceived) {
           if (!this.pending) { this.reset("H.264 fragment missing freshness metadata"); return; }
           this.source = this.pending.source;
-          this.segments.push({ ...this.pending, receivedAt: now,
-            boundedAge: this.pending.age_ms + now - this.requestedAt });
+          const boundedAge = this.requests.complete(this.pending.request_id, this.pending.age_ms, now, this.pending.server_wait_ms);
+          this.segments.push({ ...this.pending, receivedAt: now, boundedAge });
           this.segments = this.segments.slice(-64);
-          this.pending = null; this.requestedAt = -Infinity;
+          this.pending = null;
         } else this.initReceived = true;
         this.queue.push(event.data); this.append();
       }
@@ -133,15 +135,17 @@ export class H264Viewer {
     } catch { this.reset("H.264 append failed: restarting stream"); }
   }
   private requestNext() {
-    if (!this.initReceived || this.requestedAt !== -Infinity || this.socket?.readyState !== WebSocket.OPEN) return;
-    if (this.socket.bufferedAmount > 0) { this.reset("H.264 request queue stalled"); return; }
-    this.requestId++; this.requestedAt = performance.now();
-    this.socket.send(JSON.stringify({ type: "next", request_id: this.requestId }));
+    if (!this.initReceived || this.socket?.readyState !== WebSocket.OPEN || this.queue.length > 4) return;
+    // Two requests hide normal cellular RTT without creating an unbounded queue.
+    if (this.socket.bufferedAmount > 4096) { this.reset("H.264 request queue stalled"); return; }
+    for (const requestId of this.requests.reserve(performance.now())) {
+      this.socket.send(JSON.stringify({ type: "next", request_id: requestId }));
+    }
   }
   update() {
     if (this.stopped) return;
     if (!this.callbackSupported && this.video.readyState >= 2) this.onFrame();
-    if (this.requestedAt !== -Infinity && performance.now() - this.requestedAt > 1000) {
+    if (this.requests.expired(performance.now())) {
       this.reset("H.264 segment stalled: restarting");
     }
     this.state = this.displayedFrame ? `${this.source} · H.264 decoded frame verified` : `${this.source} · waiting for verified decoded frame (motion disabled)`;
@@ -152,7 +156,7 @@ export class H264Viewer {
   }
   private cleanMedia() {
     this.queue = []; this.buffer = null; this.media = null; this.segments = [];
-    this.initReceived = false; this.pending = null; this.requestedAt = -Infinity;
+    this.initReceived = false; this.pending = null; this.requests.clear();
     this.decodedMediaTime = -1; this.decodedAt = -Infinity;
     this.video.pause(); this.video.removeAttribute("src"); this.video.load();
     if (this.objectURL) URL.revokeObjectURL(this.objectURL);

@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { ControlSafety, stick } from "./control-safety.js";
 import { H264Viewer } from "./h264";
 import { cameraCrop, croppedBox } from "./camera-view.js";
+import { AssistantVoice } from "./assistant-voice";
 
 type Box = { id?: number; cls: string; conf: number; x: number; y: number; w: number; h: number };
 type Detections = { frame: number | string; boxes: Box[]; fps?: number; source?: string; simulated?: boolean };
@@ -29,6 +30,7 @@ export class RoverExperience {
   private frame: HTMLImageElement | null = null;
   private detections: Detections | null = null;
   private detectionsAt = -Infinity;
+  private detectionFrames = new Map<string, { packet: Detections; at: number }>();
   private status: ControlStatus | null = null;
   private seq = 0;
   private sent = new Map<number, number>();
@@ -36,6 +38,7 @@ export class RoverExperience {
   private drill: { active: boolean; remaining_s: number | null; person_encounters: number } | null = null;
   private drillAt = -Infinity;
   private drillBusy = false;
+  private voice: AssistantVoice | null = null;
   private lastSendAt = 0;
   private input = { held: false, v: 0, w: 0, pan: 0 };
   private keys = new Set<string>();
@@ -212,7 +215,12 @@ export class RoverExperience {
         if (!Array.isArray(next.boxes) || next.boxes.length > 100) return;
         next.boxes = next.boxes.filter(box => typeof box.cls === "string" &&
           [box.conf, box.x, box.y, box.w, box.h].every(Number.isFinite) && box.w > 0 && box.h > 0 && box.conf >= 0 && box.conf <= 1);
-        this.detections = next; this.detectionsAt = performance.now(); this.dirty = true;
+        if (!this.detections || next.frame !== this.detections.frame || next.source !== this.detections.source) {
+          this.detectionsAt = performance.now();
+          this.detectionFrames.set(`${next.source ?? ""}:${next.frame}`, { packet: next, at: this.detectionsAt });
+          if (this.detectionFrames.size > 40) this.detectionFrames.delete(this.detectionFrames.keys().next().value!);
+        }
+        this.detections = next; this.dirty = true;
       } catch { /* Malformed detections are omitted from HUD; never synthesize boxes. */ }
     };
     socket.onerror = () => socket.close();
@@ -342,8 +350,9 @@ export class RoverExperience {
       const decoded = this.h264.displayedFrame;
       if (decoded) {
         this.gate.acceptFrame(decoded.id, decoded.age, now);
-        this.frameSource = decoded.source; this.frameId = String(decoded.frame);
+        this.frameSource = decoded.source; this.frameId = decoded.frame === null ? "" : String(decoded.frame);
         this.lastCanvasDraw = now;
+        this.drawDetections(crop, video.videoWidth, video.videoHeight, now);
       }
     } else if (!this.h264Enabled && this.frame) {
       if (this.canvas.width !== this.frame.naturalWidth || this.canvas.height !== this.frame.naturalHeight) {
@@ -359,19 +368,7 @@ export class RoverExperience {
       // Repainting a retained frame proves display-loop liveness, while its
       // original capture age continues growing; duplicate IDs never renew it.
       if (this.gate.frameId === this.frameId) this.lastCanvasDraw = now;
-      const matching = this.detections && String(this.detections.frame) === this.frameId && now - this.detectionsAt < 500;
-      if (matching) {
-        context.strokeStyle = "#8dffa9"; context.fillStyle = "#8dffa9";
-        context.lineWidth = Math.max(2, this.canvas.width / 320);
-        context.font = `${Math.max(14, this.canvas.width / 40)}px system-ui`;
-        for (const box of this.detections!.boxes) {
-          const visibleBox = croppedBox(box, crop, this.frame.naturalWidth, this.frame.naturalHeight);
-          if (!visibleBox) continue;
-          const x = visibleBox.x * this.canvas.width, y = visibleBox.y * this.canvas.height;
-          context.strokeRect(x, y, visibleBox.w * this.canvas.width, visibleBox.h * this.canvas.height);
-          context.fillText(`${box.cls.slice(0, 30)} ${Math.round(box.conf * 100)}%`, x + 4, Math.max(18, y - 5));
-        }
-      }
+      this.drawDetections(crop, this.frame.naturalWidth, this.frame.naturalHeight, now);
     } else {
       context.fillStyle = "#141c22"; context.fillRect(0, 0, this.canvas.width, this.canvas.height);
       context.fillStyle = "#dce5ee"; context.font = "22px system-ui"; context.textAlign = "center";
@@ -382,6 +379,26 @@ export class RoverExperience {
     this.cameraScreen.scale.y = (this.canvas.height / this.canvas.width) / 0.75;
     this.cameraTexture.needsUpdate = true; this.dirty = false;
   }
+  private matchingDetections(now: number) {
+    if (!this.frameId) return null;
+    const cached = this.detectionFrames.get(`${this.frameSource}:${this.frameId}`) ?? this.detectionFrames.get(`:${this.frameId}`);
+    return cached && now - cached.at < 500 ? cached.packet : null;
+  }
+  private drawDetections(crop: ReturnType<typeof cameraCrop>, width: number, height: number, now: number) {
+    const packet = this.matchingDetections(now);
+    if (!packet) return;
+    const context = this.ctx;
+    context.strokeStyle = "#8dffa9"; context.fillStyle = "#8dffa9";
+    context.lineWidth = Math.max(2, this.canvas.width / 320);
+    context.font = `${Math.max(14, this.canvas.width / 40)}px system-ui`;
+    for (const box of packet.boxes) {
+      const visibleBox = croppedBox(box, crop, width, height);
+      if (!visibleBox) continue;
+      const x = visibleBox.x * this.canvas.width, y = visibleBox.y * this.canvas.height;
+      context.strokeRect(x, y, visibleBox.w * this.canvas.width, visibleBox.h * this.canvas.height);
+      context.fillText(`${box.cls.slice(0, 30)} ${Math.round(box.conf * 100)}%`, x + 4, Math.max(18, y - 5));
+    }
+  }
   private drawHUD(now: number) {
     const ready = this.gate.readiness(now, this.socket?.readyState === WebSocket.OPEN);
     const videoAge = this.gate.videoAge(now);
@@ -391,7 +408,8 @@ export class RoverExperience {
     const headline = `${simulation ? "SIMULATED · " : ""}${ready ?? this.gate.reason}`;
     const ack = this.ackMs === null ? "ack pending" : `control ack ${Math.round(this.ackMs)} ms`;
     const range = this.status?.range_cm == null ? "range unknown" : `${Math.round(this.status.range_cm)} cm`;
-    const detection = !this.detections ? "detector unavailable" : now - this.detectionsAt > 500 ? "detections stale" : String(this.detections.frame) !== this.frameId ? "detections awaiting matching frame" : `${this.detections.boxes.length} detections`;
+    const matching = this.matchingDetections(now);
+    const detection = matching ? `${matching.boxes.length} detections` : !this.detections ? "detector unavailable" : now - this.detectionsAt > 500 ? "detections stale" : "detections awaiting matching frame";
     const drill = this.drillLine(now);
     const panMode = `${this.digitalPan ? "Digital pan (fixed camera)" : "Servo pan"} ${Math.round(this.input.pan)}°`;
     const detail = `${this.frameSource} · ${panMode} · ${this.h264Enabled ? "H.264" : "JPEG"} video ${age} · ${ack} · ${range} · ${detection}${drill ? " · " + drill : ""}${this.h264Enabled && !this.h264.displayedFrame ? " · " + this.h264.state : ""}`;
@@ -417,9 +435,13 @@ export class RoverExperience {
     const parent = document.querySelector("#settings")!;
     const block = document.createElement("section");
     block.className = "local-assistant";
-    block.innerHTML = `<h2>Local scene assistant</h2><form><input aria-label="Question for rover" placeholder="What do you see?" maxlength="500"/><button>Ask</button></form><p role="status">Uses observed detections; runs on rover.</p><button type="button" id="start-drill">Start 90-second rescue drill</button><p id="drill-status">Counts observed person tracks as encounters.</p><a href="/mission/report" target="_blank" rel="noopener">Open mission report</a>`;
+    block.innerHTML = `<h2>Local scene assistant</h2><form><input aria-label="Question for rover" placeholder="What do you see?" maxlength="500"/><button>Ask</button></form><p role="status">Uses observed detections; runs on rover.</p><button type="button" id="start-drill">Start 90-second rescue drill</button><p id="drill-status">Counts observed person tracks as encounters.</p><button type="button" id="open-mission-report">Open mission report</button>`;
     parent.append(block);
     const form = block.querySelector("form")!, input = block.querySelector("input")!, result = block.querySelector("p")!, button = form.querySelector("button")!;
+    block.querySelector<HTMLButtonElement>("#open-mission-report")!.onclick = () => void this.showReport();
+    this.voice = new AssistantVoice(block, document.querySelector<HTMLDialogElement>("#settings")!, button,
+      () => this.stop("Assistant active: release deadman"),
+      reply => { result.textContent = `${reply.question ? "Heard: " + reply.question + "\n" : ""}${String(reply.answer ?? "No answer returned")}`; });
     const drillButton = block.querySelector<HTMLButtonElement>("#start-drill")!;
     drillButton.onclick = () => void this.updateDrill(true);
     this.timers.push(window.setInterval(() => {
@@ -427,15 +449,67 @@ export class RoverExperience {
     }, 1000));
     form.onsubmit = async event => {
       event.preventDefault(); if (!input.value.trim() || button.disabled) return;
-      this.stop("Assistant open: release deadman"); button.disabled = true; result.textContent = "Asking rover…";
+      this.voice?.cancelCapture(); this.stop("Assistant open: release deadman"); button.disabled = true; result.textContent = "Asking rover…";
       const abort = new AbortController(), timer = window.setTimeout(() => abort.abort(), 15000);
       try {
         const response = await fetch("/ask", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: input.value.trim() }), signal: abort.signal });
         if (!response.ok) throw new Error(`Rover returned ${response.status}`);
-        const answer = await response.json(); result.textContent = String(answer.answer ?? "No answer returned");
+        const answer = await response.json(); result.textContent = String(answer.answer ?? "No answer returned"); this.voice?.setReply(answer);
       } catch (error) { result.textContent = `Assistant unavailable: ${String(error)}`; }
       finally { window.clearTimeout(timer); button.disabled = false; }
     };
+  }
+  private async showReport() {
+    this.voice?.cancelCapture(); this.stop("Mission report open: release deadman");
+    const dialog = document.createElement("dialog"); dialog.className = "mission-report confirm";
+    dialog.innerHTML = '<header><h2>Mission report</h2><button aria-label="Close mission report">Close</button></header><div class="mission-content" role="status">Loading rover evidence…</div>';
+    document.body.append(dialog); dialog.showModal();
+    const content = dialog.querySelector<HTMLElement>(".mission-content")!;
+    dialog.querySelector("button")!.onclick = () => dialog.close();
+    dialog.onclose = () => dialog.remove();
+    const abort = new AbortController(), timer = window.setTimeout(() => abort.abort(), 5000);
+    try {
+      const response = await fetch("/mission/report", { cache: "no-store", signal: abort.signal });
+      if (!response.ok) throw new Error(`Report HTTP ${response.status}`);
+      const report = await response.json();
+      const encounters = Array.isArray(report.encounters) ? report.encounters.slice(-500) : [];
+      const events = Array.isArray(report.events) ? report.events.slice(-500) : [];
+      const sources = [...new Set(encounters.map((entry: { source?: string }) => String(entry.source ?? "unknown")))];
+      const summary = document.createElement("p");
+      summary.textContent = `${report.mission_id ?? "Mission"} · ${Number(report.duration_s) || 0}s · ${encounters.length} observed tracks · ${Number(report.saved_snapshots) || 0} saved snapshots · ${report.persisted ? "Saved on rover" : "In-memory evidence only"}`;
+      const source = document.createElement("p"); source.textContent = `Sources: ${sources.length ? sources.join(", ") : this.frameSource}. Tracks are encounters, not verified distinct people.`;
+      content.replaceChildren(summary, source);
+      if (sources.includes("SIMULATED") || this.status?.simulated) {
+        const label = document.createElement("p"); label.className = "mission-simulated"; label.textContent = "SIMULATED: these observations do not prove a physical rescue."; content.append(label);
+      }
+      if (report.drill) {
+        const drill = document.createElement("p");
+        drill.textContent = `Rescue drill: ${report.drill.active ? "running" : report.drill.remaining_s === null ? "not started" : "complete"} · ${Number(report.drill.person_encounters) || 0} person encounters`;
+        content.append(drill);
+      }
+      const list = document.createElement("ul"); list.className = "mission-tracks";
+      for (const entry of encounters.slice(-20).reverse()) {
+        const item = document.createElement("li");
+        item.textContent = `${String(entry.cls ?? "object")} · track ${entry.id ?? "?"} · ${Math.round((Number(entry.conf) || 0) * 100)}% · ${entry.source ?? "unknown source"}`;
+        list.append(item);
+      }
+      if (!encounters.length) { const empty = document.createElement("p"); empty.textContent = "No detection encounters recorded."; content.append(empty); }
+      else content.append(list);
+      const evidence = document.createElement("div"); evidence.className = "mission-images";
+      for (const event of events.filter((entry: { snapshot_url?: string }) => typeof entry.snapshot_url === "string" && /^\/mission\/snapshots\/detection-[A-Za-z0-9._-]+\.jpg$/.test(entry.snapshot_url)).slice(-6)) {
+        const image = document.createElement("img"); image.src = event.snapshot_url; image.loading = "lazy";
+        image.alt = `${event.box?.cls ?? "Detection"} evidence, frame ${event.frame}, ${event.source}`; evidence.append(image);
+      }
+      content.append(evidence);
+      const download = document.createElement("button"); download.textContent = "Download report JSON";
+      download.onclick = () => {
+        const url = URL.createObjectURL(new Blob([JSON.stringify(report, null, 2)], { type: "application/json" }));
+        const link = document.createElement("a"); link.href = url; link.download = "farsight-mission-report.json"; link.click();
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      };
+      content.append(download);
+    } catch (error) { content.textContent = `Mission report unavailable: ${String(error)}`; }
+    finally { window.clearTimeout(timer); }
   }
   private drillLine(now: number) {
     if (!this.drill || this.drill.remaining_s === null) return "";
@@ -466,7 +540,7 @@ export class RoverExperience {
   dispose() {
     this.stop("Viewer closed"); this.stopped = true;
     this.timers.forEach(timer => { window.clearInterval(timer); window.clearTimeout(timer); });
-    this.socket?.close(); this.detectionsSocket?.close(); this.request?.abort(); this.h264.stop();
+    this.socket?.close(); this.detectionsSocket?.close(); this.request?.abort(); this.h264.stop(); this.voice?.dispose();
     window.removeEventListener("keydown", this.keyDown); window.removeEventListener("keyup", this.keyUp);
     window.removeEventListener("blur", this.blur); document.removeEventListener("visibilitychange", this.visibility);
     document.removeEventListener("keydown", this.escapeStop);

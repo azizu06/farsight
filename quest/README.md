@@ -1,0 +1,92 @@
+# Quest operator app
+
+The default page opens the live rover camera. `?view=map` opens the retained 3D
+map. All requests use the page origin, so the headset stays on the MacBook's USB
+relay instead of trying to reach the Jetson directly.
+
+Build with `npm ci && npm run build` from `quest/`. Run `npm test` for protocol,
+crop geometry, and control safety checks. Use the [operator launcher](../tools/demo.py)
+for the integrated app; Vite development mode uses port 8443 as its upstream.
+Do not confuse an old server already on that port with a freshly launched demo.
+
+## Controls
+
+- Quest: hold the right trigger, then use the left thumbstick to drive. If only
+  the right controller is present, its thumbstick works instead. Release the
+  trigger to stop. Forward speed is capped at 45% of the server's PWM ceiling;
+  calibrate that ceiling on the actual car so motor stiction does not prevent motion.
+- Turn your head to pan. Right A toggles live camera / map; B centers the pan.
+  A view change stops driving and requires a release before another press.
+- Desktop: select Live rover, hold Space, then use WASD. The on-screen hold button
+  can replace Space. STOP, Escape, opening settings, losing focus, or a connection
+  failure stop driving.
+- In settings, select the camera mounting. Servo mode shows the full frame and
+  sends head yaw as physical pan. Fixed-camera mode keeps physical pan at zero
+  and moves a 70% crop inside the measured image. It cannot see beyond that image.
+  The HUD explicitly labels digital pan. A mode change requires a new deadman press.
+
+## Freshness and bandwidth
+
+The client echoes the rover's opaque, expiring permit at 20 Hz. The server remains
+responsible for permit expiry, obstacle checks, and the motor lease. The client
+requires a new press after faults; a hidden headset or missing controller never
+counts as a physical trigger release.
+
+JPEG freshness is accepted only after decoding and drawing the image to the
+camera canvas. Its bound includes server capture age, the complete request and
+decode time, and the delay before drawing. Duplicate frame IDs cannot renew it.
+
+Optional H.264 pipelines two bounded TCP fragment requests, checked codec support,
+bounded buffers, and restarts after congestion. The decoder's
+`requestVideoFrameCallback` media timestamp selects the matching fragment capture
+metadata. The freshness bound adds the fragment request duration and elapsed local time.
+Only an explicitly measured server queue wait can be subtracted from that duration;
+missing or invalid wait metadata uses the full duration. Network time stays included. Without a matched decoder timestamp, motion stays disabled. Quest 2
+codec playback still requires a physical headset check.
+
+Capture age at least 500 ms stops movement. A display loop that does not draw for
+250 ms also stops movement. Repainting a retained frame keeps the display loop
+alive but never renews capture freshness. Switching video formats clears freshness.
+
+Map snapshots and surface downloads pause in live camera view. They resume when
+opening the map or settings. Detections are drawn only on matching JPEG frame IDs;
+boxes are clipped and transformed in digital-crop mode. H.264 boxes require per-sample capture IDs matching the decoder timestamp; older
+servers without those IDs still play video but omit uncertain overlays.
+
+The local scene assistant accepts text in settings. Optional voice starts only
+when clicking Ask by voice, records at most 10 seconds, and sends audio to the rover
+for offline transcription. Closing settings or hiding the app cancels capture and
+stops all microphone tracks. Missing permission or models leaves text available.
+Play answer uses same-origin rover audio, or an explicitly labelled local browser
+speech voice; no cloud speech recognition is used. The rescue drill counts
+observed person tracks as encounters, rather than claiming distinct people. The
+mission report and any saved snapshots come from the rover.
+
+## First headset rehearsal
+
+These are required physical checks; desktop tests do not prove them.
+
+1. Use the MacBook relay and ADB reverse described in the
+   [connectivity plan](../docs/demo-connectivity.md). Open `http://localhost:8080`
+   in Quest Browser and confirm that immersive VR is available.
+2. Confirm a real camera source and physical serial connection in the HUD. A
+   simulated source is labelled conspicuously and must not be presented as hardware.
+3. With the car lifted or otherwise prevented from travelling, confirm trigger,
+   thumbstick direction, stop release, pan direction, and PWM calibration. Start
+   with centered pan and verify a fresh ultrasonic range before forward driving.
+4. While holding the trigger, disconnect video, control, and Quest USB in separate
+   tests. Restore each connection while continuing to hold it. Motion must remain
+   stopped until releasing and pressing again.
+5. Open the Quest system menu while holding the trigger. Return with it still held;
+   the rover must remain stopped. Test controller loss and reacquisition too.
+6. Test camera/map switching and both mounting modes. In fixed-camera mode, the
+   physical pan must remain centered and detections must follow the cropped image.
+7. Test H.264 on the actual headset under the actual cellular path. Observe video
+   age and control acknowledgment delay; do not increase the freshness limits to
+   hide stalls. Retain JPEG as the compatibility fallback.
+8. Run a rescue drill with a real person in view, then inspect the mission report.
+   Finally rehearse with venue Wi-Fi disabled on both computers.
+9. Click Ask by voice and approve microphone access yourself on the headset.
+   Record a short question, select Stop and ask, and check the actual Heard text.
+   Confirm closing settings mid-recording stops the microphone. Test Play answer
+   with local rover audio; if unavailable, text remains the supported fallback.
