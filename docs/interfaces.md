@@ -61,8 +61,12 @@ Response:
 
 ```json
 {"question": "what do you see?", "answer": "One person sitting near the door, no obstacles ahead.",
- "action": null, "model": "moondream", "ms": 2140}
+ "action": null, "model": "moondream", "ms": 2140, "audio_url": "/tts/1042.wav"}
 ```
+
+`audio_url` (optional) is the answer spoken by Piper TTS on the Jetson, for the Quest to play; if absent,
+the Quest falls back to browser speechSynthesis. Mic and speaker are the Quest's own: the rover
+needs no audio hardware for this.
 
 `action` is `null` or a proposal like `{"type": "seek", "target_id": 3}` that the Quest shows as a
 confirmation prompt. The Jetson never executes it without that confirmation.
