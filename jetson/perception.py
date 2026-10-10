@@ -88,7 +88,8 @@ class PerceptionService:
                 raise ValueError("pose mode needs --detector-model (YOLO11-pose .onnx, or .engine on the Jetson)")
             from .pose import make_pose_detector
             self.pose = make_pose_detector(self.model)
-            self.fps = max(self.fps, 10)  # CPU pose is ~25 ms/frame; the 3 fps HOG default would waste it
+            # CPU pose is ~25 ms/frame; the 3 fps HOG default would waste it. TensorRT matches the COCO engine rate.
+            self.fps = max(self.fps, 15 if self.pose.name == "pose-tensorrt" else 10)
             return
         if self.model:
             label_path = Path(self.model).with_suffix(".labels.json")
@@ -183,6 +184,13 @@ class PerceptionService:
                 except Exception as exc:
                     self.error = str(exc)
             await asyncio.sleep(max(.01, 1 / self.fps - (time.monotonic() - started)))
+
+    def health(self):
+        """Detector fields for GET /health: mode, concrete backend, error, and live fps/latency."""
+        packet = self.snapshot()
+        return dict(detector=self.mode, detector_backend=self.pose.name if self.pose is not None else self.mode,
+                    detector_error=self.error, detector_fps=packet["fps"] if packet["fresh"] else 0,
+                    detector_inference_ms=packet.get("inference_ms") if packet["fresh"] else None)
 
     def snapshot(self):
         packet = dict(self.packet)

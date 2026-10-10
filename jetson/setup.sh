@@ -39,13 +39,13 @@ build llama.cpp https://github.com/ggml-org/llama.cpp
 step "whisper.cpp with CUDA (speech to text)"
 build whisper.cpp https://github.com/ggml-org/whisper.cpp
 
-step "TensorRT engines from ONNX in $MODELS"
-TRTEXEC=/usr/src/tensorrt/bin/trtexec
-for onnx in "$MODELS"/*.onnx; do
-  [ -e "$onnx" ] || { echo "No ONNX models yet: run tools/push_models.sh from a laptop"; break; }
-  engine="${onnx%.onnx}.engine"
-  [ -f "$engine" ] || "$TRTEXEC" --onnx="$onnx" --saveEngine="$engine" --fp16 | tail -n 5
-done
+step "TensorRT FP16 engines from ONNX in $MODELS (cached by ONNX hash; reruns are instant)"
+if compgen -G "$MODELS/*.onnx" >/dev/null; then
+  (cd "$REPO" && jetson/.venv/bin/python -m jetson.build_engine "$MODELS"/*.onnx) \
+    || echo "WARN: an engine build failed (see above); pass the .onnx to --detector-model meanwhile"
+else
+  echo "No ONNX models yet: run tools/push_models.sh from a laptop"
+fi
 
 step "Checks"
 cat /etc/nv_tegra_release || true

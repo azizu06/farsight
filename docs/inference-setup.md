@@ -68,7 +68,10 @@ before going offline. A serialized engine depends on its build environment and
 device; build it on the Jetson that will run the demo. This runner expects a raw
 TensorRT plan, such as one produced by `trtexec`.
 
-For a static 640x640 ONNX model on TensorRT 10:
+`python -m jetson.build_engine models/*.onnx` (also run by `jetson/setup.sh`)
+wraps the command below, caches by ONNX sha256 and TensorRT version in a
+`.engine.json` stamp so reruns are instant, and takes `--shapes images:1x3x640x640`
+for dynamic models. The manual equivalent for a static 640x640 ONNX model on TensorRT 10:
 
 ```sh
 /usr/src/tensorrt/bin/trtexec \
@@ -101,6 +104,37 @@ and [trtexec reference](https://github.com/NVIDIA/TensorRT/blob/main/samples/trt
 document these flags. If the installed TensorRT is 11 or later, inspect its
 `trtexec --help` before building: newer strongly typed export workflows differ
 from TensorRT 10's `--fp16` workflow.
+
+## YOLO11-pose on TensorRT (issue #9): Jetson checklist
+
+Untested on hardware: CPU tests fake `tensorrt` and CUDA. On the Jetson, from the
+repo root, with `models/yolo11n-pose.onnx` pushed:
+
+```sh
+# 1. FP16 engine, 1x3x640x640 in, 1x56x8400 out. Reruns are instant (hash cache).
+jetson/.venv/bin/python -m jetson.build_engine models/yolo11n-pose.onnx
+
+# 2. Engine smoke test: shapes, I/O dtype, median/p95 GPU latency on zero input.
+jetson/.venv/bin/python -m jetson.tensorrt_detector models/yolo11n-pose.engine --pose --runs 50
+
+# 3. Hardware test (skipped everywhere else).
+FARSIGHT_POSE_ENGINE=models/yolo11n-pose.engine jetson/.venv/bin/python -m pytest -q jetson/tests/test_pose_tensorrt.py
+
+# 4. Server on the camera with the pose engine, motors simulated, plain HTTP on 8000.
+#    (Service instead: FARSIGHT_DETECTOR=pose + FARSIGHT_DETECTOR_MODEL in /etc/farsight.env.)
+jetson/.venv/bin/python -m jetson.server --camera /dev/video0 --simulate-rover \
+  --detector pose --detector-model models/yolo11n-pose.engine --port 8000
+
+# 5. With someone in view: detector fps and per-frame latency (decode, letterbox, GPU, NMS).
+curl -s localhost:8000/health | python3 -c 'import json,sys; h=json.load(sys.stdin); print({k: v for k, v in h.items() if k.startswith("detector")})'
+```
+
+Pass: `detector_backend` is `pose-tensorrt`, `detector_error` is `null`,
+`detector_fps` near 15 (the pose loop's TensorRT cap), and
+`detector_inference_ms` well under 66 ms. A `detector_error` names the failure
+(missing bindings, wrong output shape, engine built by another TensorRT). The
+`.onnx` model still runs on CPU as the fallback. Then compare boxes, keypoints,
+and `down` in the HUD with the ONNX model on the same scene.
 
 ## Smoke test, then validate real camera detections
 

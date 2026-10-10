@@ -25,7 +25,7 @@ All servers run on the Jetson, port `8443` (HTTPS). The mock server
 |---|---|
 | `GET /` | Quest WebXR app (built `quest/dist`) |
 | `GET /stream.mjpg` | Camera, MJPEG, 640x480, target 30 fps |
-| `GET /health` | `{"camera": bool, "detector_fps": float, "rover": bool, "estop": bool}` |
+| `GET /health` | `{"camera": bool, "detector_fps": float, "rover": bool, "estop": bool}`; optional `detector_backend` (e.g. `"pose-tensorrt"`), `detector_inference_ms` (float or null) |
 
 ## WebSocket `/ws/detections` (Jetson -> Quest), JSON, every inference
 
