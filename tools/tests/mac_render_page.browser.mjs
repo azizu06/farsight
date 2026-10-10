@@ -135,6 +135,21 @@ try {
     assert.equal(captured.meta.poseEcho, null); assert.equal(captured.meta.rayVisible, false);
     assert.deepEqual(captured.meta.viewPosition, [1, 2, 3]);
   }
+  // Ray expiry under the normal RAF loop must repaint, not just flip metadata:
+  // the layer post hook only runs inside a real draw, so the last recorded
+  // rayVisible must be false after the 250ms pose TTL elapses while idle.
+  const rayPosts = await page.evaluate(async freshPose => {
+    const seen = [];
+    // post() runs before __mac.rayVisible refreshes, so read the line itself.
+    const unregister = window.__macRegisterLayer({ post: ctx => seen.push(ctx.scene.children.find(o => o.isLine)?.visible) });
+    window.__macCaptureDriven = false; // hand drawing back to the animation loop
+    window.__macPose = freshPose;
+    await new Promise(resolve => setTimeout(resolve, 450));
+    unregister(); window.__macCaptureDriven = true;
+    return seen;
+  }, { ...pose });
+  assert.ok(rayPosts.includes(true), 'ray rendered while pose valid');
+  assert.equal(rayPosts.at(-1), false, 'expiry transition repainted without the ray');
   assert.equal(errors.length, 0, errors.join('\n'));
   // One actual positive-map JPEG through FFmpeg -> H.264 fMP4; a functional
   // format check, not an encoder throughput or headset qualification.

@@ -524,7 +524,11 @@ let statusReceivedAt = -Infinity;
 let incomingPose = null;
 const textDecoder = new TextDecoder();
 
-function clearPose() { rayLine.visible = false; window.__mac.poseEcho = null; window.__mac.poseValid = false; }
+function clearPose() {
+  // Only the visible->hidden transition dirties a frame; repeated idle clears stay free.
+  if (rayLine.visible || window.__mac.poseValid) frameDirty = true;
+  rayLine.visible = false; window.__mac.poseEcho = null; window.__mac.poseValid = false;
+}
 function finiteVector(value, count) {
   return Array.isArray(value) && value.length === count && value.every(item => typeof item === "number" && Number.isFinite(item));
 }
@@ -617,7 +621,7 @@ function drawScene(measure) {
   for (const layer of layers) {
     if (layer.poll?.(layerContext, now)) frameDirty = true;
   }
-  if (frameDirty) {
+  if (frameDirty || measure === "capture") {
     denseGpu.beginFrame();
     for (const layer of layers) layer.pre?.(layerContext);
     renderer.render(scene, camera);
@@ -650,6 +654,7 @@ function drawScene(measure) {
 // Pixels and provenance are read in one JavaScript turn, without an intervening
 // screenshot/RAF. Geometry callbacks cannot replace buffers during this call.
 window.__macCapture = () => {
+  // "capture" forces a draw in this same task, so toDataURL never reads a cleared buffer.
   drawScene("capture");
   const captureStarted = performance.now();
   const data = renderer.domElement.toDataURL("image/jpeg", 0.8).split(",")[1];
