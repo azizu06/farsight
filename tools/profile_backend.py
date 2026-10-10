@@ -1,6 +1,6 @@
 """Isolated software profiling with real FFmpeg, detector and delayed relay.
 
-Optional psutil supplies CPU/thread samples. No camera or physical serial opens.
+psutil supplies required CPU/thread samples. No camera or physical serial opens.
 Scan bursts exercise production scan kernels, not a physical/control sweep.
 """
 
@@ -49,8 +49,13 @@ def profile_app(args):
     timings = Timings()
     if args.cv_threads is not None:
         cv2.setNumThreads(args.cv_threads)
-    import onnxruntime as ort
-    original_session = ort.InferenceSession
+    try:
+        import onnxruntime as ort
+    except ImportError:
+        ort = None
+        if args.ort_threads is not None:
+            raise ValueError("--ort-threads needs onnxruntime")
+    original_session = ort.InferenceSession if ort else None
     class Session:
         def __init__(self, *positional, **kwargs):
             if args.ort_threads is not None:
@@ -67,7 +72,6 @@ def profile_app(args):
                 return self.session.run(*positional, **kwargs)
             finally:
                 timings.add("onnx.run_ms", (time.monotonic() - start) * 1000)
-    ort.InferenceSession = Session
     app = fixture_app(args.serve_fixture, scene_path=args.scene,
                       server_options=dict(detector=args.detector, detector_model=args.model))
     video = app.state.video
@@ -102,10 +106,7 @@ def profile_app(args):
         return await original_thread(work)
 
     async def resources():
-        try:
-            import psutil
-        except ImportError:
-            return
+        import psutil
         process = psutil.Process()
         previous = {}
         while True:
@@ -127,6 +128,8 @@ def profile_app(args):
     original_lifespan = app.router.lifespan_context
     @asynccontextmanager
     async def lifespan(app):
+        if ort:
+            ort.InferenceSession = Session
         asyncio.to_thread = measured_thread
         monitor = asyncio.create_task(resources())
         try:
@@ -136,7 +139,8 @@ def profile_app(args):
             monitor.cancel()
             await asyncio.gather(monitor, return_exceptions=True)
             asyncio.to_thread = original_thread
-            ort.InferenceSession = original_session
+            if ort:
+                ort.InferenceSession = original_session
     app.router.lifespan_context = lifespan
 
     def guard(request):
@@ -185,9 +189,13 @@ async def bursts(rig, events):
 
 async def run(args):
     import cv2
-    import onnxruntime as ort
+    from importlib.metadata import PackageNotFoundError, version
+    try:
+        ort_version = version("onnxruntime")
+    except PackageNotFoundError:
+        ort_version = None
     report = dict(host=platform.platform(), python=platform.python_version(),
-        opencv_version=cv2.__version__, onnxruntime_version=ort.__version__, hardware_verified=False,
+        opencv_version=cv2.__version__, onnxruntime_version=ort_version, hardware_verified=False,
         settings=dict(detector=args.detector, model_sha256=hashlib.sha256(Path(args.model).read_bytes()).hexdigest()
                       if args.model else None,
                       scene_sha256=hashlib.sha256(args.scene.read_bytes()).hexdigest()
@@ -211,7 +219,11 @@ async def run(args):
                 try:
                     result = await motion_trial(rig, duration=args.duration)
                 finally:
+                    burst_error = None
                     if burst:
+                        if burst.done() and not burst.cancelled():
+                            error = burst.exception()
+                            burst_error = str(error) if error else "Burst task ended unexpectedly"
                         burst.cancel()
                         await asyncio.gather(burst, return_exceptions=True)
                 async with rig.client.get(rig.direct + "/__profile") as response:
@@ -219,11 +231,14 @@ async def run(args):
                     profile = await response.json()
                 valid = (args.detector == "none" or (not profile["perception"]["detector_error"]
                          and profile["perception"]["detector_fps"] > 0))
+                if load == "combined":
+                    completed = {event["path"] for event in events if event["status"] == 200}
+                    valid = valid and not burst_error and completed == {"/__profile/scan-kernels", "/ask"}
                 report["trials"].append(dict(repeat=repeat + 1, load=load, workload_valid=valid, motion=result,
-                                             profile=profile, bursts=events))
+                                             profile=profile, bursts=events, burst_error=burst_error))
                 args.report.write_text(json.dumps(report, indent=2) + "\n")
                 if not valid:
-                    raise RuntimeError("Detector workload failed; invalid trial retained in report")
+                    raise RuntimeError("Detector/burst workload failed; invalid trial retained in report")
                 print(f"{load} repeat {repeat + 1}: moving={result['stable_moving_fraction']:.3f}, "
                       f"lag={result['server_event_loop_lag_max_ms']:.1f} ms", flush=True)
     return report
@@ -238,15 +253,20 @@ def main():
     parser.add_argument("--model")
     parser.add_argument("--scene", type=Path)
     parser.add_argument("--cv-threads", type=int)
-    parser.add_argument("--ort-threads", type=int)
+    parser.add_argument("--ort-threads", type=int, help="Experiment override; 0 reproduces the unrestricted ONNX default")
     parser.add_argument("--duration", type=float, default=20)
     parser.add_argument("--repeats", type=int, default=2)
     parser.add_argument("--loads", nargs="+", choices=("quiet", "combined"), default=["quiet", "combined"])
     parser.add_argument("--report", type=Path, default=Path("backend-profile.json"))
     args = parser.parse_args()
     if (not 2 <= args.duration <= 300 or not 1 <= args.repeats <= 10
-            or any(value is not None and not 1 <= value <= 32 for value in (args.cv_threads, args.ort_threads))):
-        parser.error("Use duration 2..300, repeats 1..10, threads 1..32")
+            or (args.cv_threads is not None and not 1 <= args.cv_threads <= 32)
+            or (args.ort_threads is not None and not 0 <= args.ort_threads <= 32)):
+        parser.error("Use duration 2..300, repeats 1..10, OpenCV threads 1..32, ONNX threads 0..32")
+    try:
+        import psutil  # noqa: F401: required evidence, never silently omitted
+    except ImportError:
+        parser.error("Install the profiling dependency: python -m pip install psutil")
     if args.serve_fixture:
         import uvicorn
         uvicorn.run(profile_app(args), host="127.0.0.1", port=args.port,
