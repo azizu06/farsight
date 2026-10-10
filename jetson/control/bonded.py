@@ -12,6 +12,8 @@ import hmac
 import json
 import secrets
 
+from jetson.nav import NavLane
+
 
 @dataclass
 class Attachment:
@@ -36,6 +38,7 @@ class BondedControlHub:
         self._publisher = self._recorder = None
         self._recorded_at = -float("inf")
         self._closed = False
+        self.lane = None  # nav revision lane, once the controller opts in
 
     async def attach(self, secret=None):
         if self._closed:
@@ -47,6 +50,7 @@ class BondedControlHub:
             if session is None:
                 raise ValueError("Another controller owns the rover")
             self.session_id, self.secret = session, secrets.token_hex(32)
+            self.lane = None
             self._cache.clear()
             self._recorded_at = -float("inf")
         elif not isinstance(secret, str) or not hmac.compare_digest(
@@ -56,6 +60,8 @@ class BondedControlHub:
             raise ValueError("Two bonded paths are already attached")
         path = Attachment(secrets.token_hex(16), self.session_id, self.secret, asyncio.Queue(maxsize=1))
         self.paths[path.path_id] = path
+        if self.lane is not None:
+            self.lane = NavLane()  # a new path gets the nav arrays in its first status
         if self._publisher is None:
             self._publisher = asyncio.create_task(self._publish())
         return path
@@ -97,6 +103,8 @@ class BondedControlHub:
         if message.get("session_id") != self.session_id:
             self.state.stop("wrong_session")
             return False
+        if self.lane is None and message.get("nav_lane") == "revision":
+            self.lane = NavLane()
         seq = message.get("seq")
         if type(seq) is not int or not 0 <= seq <= 2**53 - 1:
             self.state.stop("invalid_sequence")
@@ -152,11 +160,13 @@ class BondedControlHub:
                 # Attachment credentials are never status or recorded data.
                 for name in ("secret", "attach_secret"):
                     status.pop(name, None)
+                # One lane decision per status_seq, so both paths carry identical copies.
+                sent = self.lane.apply(status) if self.lane is not None else status
                 for path in tuple(self.paths.values()):
                     if path.queue.full():
                         self._detach(path.path_id)
                     else:
-                        path.queue.put_nowait(status)
+                        path.queue.put_nowait(sent)
                 if (self.paths and self.on_status is not None
                         and started - self._recorded_at >= self.RECORD_INTERVAL
                         and (self._recorder is None or self._recorder.done())):

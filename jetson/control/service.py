@@ -6,6 +6,8 @@ import json
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from jetson.nav import NavLane
+
 from .serial_link import SerialPump
 from .state import ControlState
 
@@ -126,6 +128,8 @@ class ControlService:
             await ws.close(code=1008, reason="Another controller owns the rover")
             return
 
+        lane = None  # set once the client opts in to the nav revision lane
+
         async def send_status():
             recorded = -float("inf")
             while True:
@@ -133,7 +137,7 @@ class ControlService:
                 # A congested downstream status path makes continued control
                 # unsafe; closing causes a stop instead of queued status tokens.
                 status = self.state.status(issue_permit=True)
-                await asyncio.wait_for(ws.send_json(status), 0.1)
+                await asyncio.wait_for(ws.send_json(lane.apply(status) if lane else status), 0.1)
                 if self.on_status and started - recorded >= self.RECORD_INTERVAL - 0.005:
                     recorded = started
                     await asyncio.to_thread(self.on_status, status)
@@ -141,6 +145,7 @@ class ControlService:
                 await asyncio.sleep(max(0, self.STATUS_INTERVAL - (asyncio.get_running_loop().time() - started)))
 
         async def receive_commands():
+            nonlocal lane
             while True:
                 envelope = await ws.receive()
                 if envelope["type"] == "websocket.disconnect":
@@ -156,6 +161,8 @@ class ControlService:
                     return
                 try:
                     message = json.loads(text)
+                    if lane is None and isinstance(message, dict) and message.get("nav_lane") == "revision":
+                        lane = NavLane()
                     self.state.accept(message, session_id)
                 except (ValueError, TypeError):
                     self.state.stop("invalid_json")
