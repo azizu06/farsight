@@ -6,6 +6,7 @@ import { cameraCrop, croppedBox } from "./camera-view.js";
 import { AssistantVoice } from "./assistant-voice";
 import { AutonomyIntent, autonomyLabel, containPoint, pickTarget, rayPanelPoint } from "./autonomy.js";
 import { PHRASE_LABELS, sbarLines, speakPhrase } from "./survivor-phrases.js";
+import { DRILL_TRAINS, DrillHud, endLines } from "./drill-hud.js";
 
 type Box = { id?: number; cls: string; conf: number; x: number; y: number; w: number; h: number };
 type Detections = { frame: number | string; boxes: Box[]; fps?: number; source?: string; simulated?: boolean };
@@ -40,9 +41,10 @@ export class RoverExperience {
   private seq = 0;
   private sent = new Map<number, number>();
   private ackMs: number | null = null;
-  private drill: { active: boolean; remaining_s: number | null; person_encounters: number } | null = null;
-  private drillAt = -Infinity;
-  private drillBusy = false;
+  private drillHud = new DrillHud();
+  private drillTexture = new THREE.CanvasTexture(this.drillHud.canvas);
+  private drillPanel = new THREE.Mesh(new THREE.PlaneGeometry(1.2, 1.2), new THREE.MeshBasicMaterial({ map: this.drillTexture, transparent: true, toneMapped: false, depthTest: false }));
+  private drillDown = false;
   private voice: AssistantVoice | null = null;
   private autonomy = new AutonomyIntent();
   private drawnBoxes: Box[] = [];
@@ -106,7 +108,7 @@ export class RoverExperience {
       <p id="rover-details">Motion disabled until camera and control are fresh.</p>
       <button id="rover-hold" class="hold-button">Hold to enable · WASD to drive</button>
       <button id="rover-explore" aria-pressed="false">Explore (E)</button>
-      <p class="rover-help">Quest: hold right trigger + left stick. A: seek pointed person (else camera/map). B: explore. X: center pan. Y: scan.<br>Desktop: hold Space + WASD in camera view; click a person to seek; E explores. Stick/WASD takes back control.</p>`;
+      <p class="rover-help">Quest: hold right trigger + left stick. A: seek pointed person (else camera/map). B: explore. X: center pan. Y: scan. Left grip: start rescue drill.<br>Desktop: hold Space + WASD in camera view; click a person to seek; E explores. Stick/WASD takes back control.</p>`;
     document.querySelector("main")!.append(panel);
     this.message = panel.querySelector("#rover-message")!;
     this.details = panel.querySelector("#rover-details")!;
@@ -139,7 +141,10 @@ export class RoverExperience {
     screen.position.set(0, 0.15, -2.35); screen.renderOrder = 10;
     const hud = new THREE.Mesh(new THREE.PlaneGeometry(2.8, 0.60), new THREE.MeshBasicMaterial({ map: this.hudTexture, transparent: true, toneMapped: false, depthTest: false }));
     hud.position.set(0, -1.10, -2.30); hud.renderOrder = 11;
-    this.cockpit.add(screen, hud); this.cockpit.visible = false;
+    this.drillTexture.colorSpace = THREE.SRGBColorSpace;
+    this.drillPanel.position.set(2.15, 0.15, -2.1); this.drillPanel.rotation.y = -0.35; this.drillPanel.renderOrder = 12; this.drillPanel.visible = false;
+    document.querySelector("#full-camera")!.append(this.drillHud.canvas); this.drillHud.canvas.hidden = true;
+    this.cockpit.add(screen, hud, this.drillPanel); this.cockpit.visible = false;
     this.cameraScreen = screen;
     this.scene.add(this.cockpit);
     this.h264 = new H264Viewer(() => {
@@ -313,6 +318,9 @@ export class RoverExperience {
       const toggle = !!right?.gamepad?.buttons[4]?.pressed;
       const explore = !!right?.gamepad?.buttons[5]?.pressed;
       const center = !!left?.gamepad?.buttons[4]?.pressed;
+      const drill = !!left?.gamepad?.buttons[1]?.pressed;
+      if (drill && !this.drillDown) void this.startDrill();
+      this.drillDown = drill;
       const reference = this.renderer.xr.getReferenceSpace();
       let pose: XRViewerPose | null = null;
       try { if (frame && reference) pose = frame.getViewerPose(reference) ?? null; } catch { /* Tracking loss stops controls below. */ }
@@ -573,13 +581,16 @@ export class RoverExperience {
     c.fillText("Trigger: deadman · Stick: drive · A: seek/map · B: explore · X: center · Y: scan", 28, 170);
     c.fillText(this.scanMessage.slice(0, 84), 28, 202);
     this.hudTexture.needsUpdate = true;
+    const drawn = this.drillHud.draw(now);
+    this.drillPanel.visible = drawn; this.drillHud.canvas.hidden = !drawn;
+    if (drawn) this.drillTexture.needsUpdate = true;
   }
 
   private addAssistant() {
     const parent = document.querySelector("#settings")!;
     const block = document.createElement("section");
     block.className = "local-assistant";
-    block.innerHTML = `<h2>Local scene assistant</h2><form><input aria-label="Question for rover" placeholder="What do you see?" maxlength="500"/><button>Ask</button></form><p role="status">Uses observed detections; runs on rover.</p><button type="button" id="start-drill">Start 90-second rescue drill</button><p id="drill-status">Counts observed person tracks as encounters.</p><button type="button" id="open-mission-report">Open mission report</button><div class="survivor-phrases"><select aria-label="Survivor phrase">${Object.entries(PHRASE_LABELS).map(([id, label]) => `<option value="${id}">${label}</option>`).join("")}</select><button type="button" data-lang="en">Say EN</button><button type="button" data-lang="es">Say ES</button></div><p id="phrase-status">Speaks on the rover speaker, or here if it has none.</p>`;
+    block.innerHTML = `<h2>Local scene assistant</h2><form><input aria-label="Question for rover" placeholder="What do you see?" maxlength="500"/><button>Ask</button></form><p role="status">Uses observed detections; runs on rover.</p><button type="button" id="start-drill">Start 90-second rescue drill (left grip in VR)</button><p id="drill-status">${DRILL_TRAINS} A victim is a face held in view for 1 s.</p><button type="button" id="open-mission-report">Open mission report</button><div class="survivor-phrases"><select aria-label="Survivor phrase">${Object.entries(PHRASE_LABELS).map(([id, label]) => `<option value="${id}">${label}</option>`).join("")}</select><button type="button" data-lang="en">Say EN</button><button type="button" data-lang="es">Say ES</button></div><p id="phrase-status">Speaks on the rover speaker, or here if it has none.</p>`;
     parent.append(block);
     const form = block.querySelector("form")!, input = block.querySelector("input")!, result = block.querySelector("p")!, button = form.querySelector("button")!;
     block.querySelector<HTMLButtonElement>("#open-mission-report")!.onclick = () => void this.showReport();
@@ -607,9 +618,12 @@ export class RoverExperience {
       };
     }
     const drillButton = block.querySelector<HTMLButtonElement>("#start-drill")!;
-    drillButton.onclick = () => void this.updateDrill(true);
-    this.timers.push(window.setInterval(() => {
-      if (document.querySelector<HTMLDialogElement>("#settings")!.open || this.drill?.active) void this.updateDrill(false);
+    drillButton.onclick = () => void this.startDrill();
+    this.timers.push(window.setInterval(async () => {
+      if (this.stopped || !(document.querySelector<HTMLDialogElement>("#settings")!.open || this.drillHud.drill?.active)) return;
+      const line = await this.drillHud.refresh();
+      const label = document.querySelector("#drill-status");
+      if (label && document.querySelector<HTMLDialogElement>("#settings")!.open) label.textContent = line;
     }, 1000));
     form.onsubmit = async event => {
       event.preventDefault(); if (!input.value.trim() || button.disabled) return;
@@ -648,7 +662,8 @@ export class RoverExperience {
       }
       if (report.drill) {
         const drill = document.createElement("p");
-        drill.textContent = `Rescue drill: ${report.drill.active ? "running" : report.drill.remaining_s === null ? "not started" : "complete"} · ${Number(report.drill.person_encounters) || 0} person encounters`;
+        const end = report.drill.summary ? endLines({ summary: report.drill.summary }) : null;
+        drill.textContent = `Rescue drill: ${report.drill.active ? "running" : report.drill.remaining_s === null ? "not started" : "complete"}${end ? " · " + end.join(" · ") : ""} · ${Number(report.drill.person_encounters) || 0} person tracks`;
         content.append(drill);
       }
       const list = document.createElement("ul"); list.className = "mission-tracks";
@@ -681,31 +696,13 @@ export class RoverExperience {
     } catch (error) { content.textContent = `Mission report unavailable: ${String(error)}`; }
     finally { window.clearTimeout(timer); }
   }
-  private drillLine(now: number) {
-    if (!this.drill || this.drill.remaining_s === null) return "";
-    if (now - this.drillAt > 3000) return "Rescue drill status stale";
-    const left = Math.max(0, this.drill.remaining_s - (now - this.drillAt) / 1000);
-    return `${left > 0 ? "Rescue drill " + Math.ceil(left) + "s" : "Rescue drill complete"} · ${this.drill.person_encounters} person encounters`;
-  }
-  private async updateDrill(start: boolean) {
-    if (this.drillBusy || this.stopped) return;
-    this.drillBusy = true;
+  private drillLine(now: number) { return this.drillHud.line(now); }
+  private async startDrill() {
+    if (this.stopped) return;
+    this.stop("Drill started: release deadman");
+    const line = await this.drillHud.start();
     const label = document.querySelector("#drill-status");
-    const abort = new AbortController(), timer = window.setTimeout(() => abort.abort(), 2000);
-    try {
-      if (start) this.stop("Drill started: release deadman");
-      const response = await fetch("/mission/drill", start ? {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ duration_s: 90 }), signal: abort.signal,
-      } : { cache: "no-store", signal: abort.signal });
-      if (!response.ok) throw new Error(`Drill HTTP ${response.status}`);
-      const drill = await response.json();
-      if (typeof drill.active !== "boolean" || !Number.isFinite(drill.person_encounters) ||
-          !(drill.remaining_s === null || Number.isFinite(drill.remaining_s))) throw new Error("Invalid drill status");
-      this.drill = drill; this.drillAt = performance.now();
-      if (label) label.textContent = `${this.drillLine(this.drillAt) || "Ready to start"}. Tracks are encounters, not verified distinct people.`;
-    } catch (error) { if (label) label.textContent = `Drill unavailable: ${String(error)}`; }
-    finally { window.clearTimeout(timer); this.drillBusy = false; }
+    if (label) label.textContent = line;
   }
   dispose() {
     this.stop("Viewer closed"); this.stopped = true;
@@ -714,6 +711,6 @@ export class RoverExperience {
     window.removeEventListener("keydown", this.keyDown); window.removeEventListener("keyup", this.keyUp);
     window.removeEventListener("blur", this.blur); window.removeEventListener("click", this.click); document.removeEventListener("visibilitychange", this.visibility);
     document.removeEventListener("keydown", this.escapeStop);
-    this.cameraTexture.dispose(); this.hudTexture.dispose();
+    this.cameraTexture.dispose(); this.hudTexture.dispose(); this.drillTexture.dispose(); this.drillHud.canvas.remove();
   }
 }

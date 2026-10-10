@@ -404,3 +404,6 @@ canvas:focus-visible {
 .voice-assistant .button-row button { padding: 8px 6px; }
 .voice-assistant p { color: #afbdcc; font-size: 10px; }
 .local-assistant > p[role="status"] { white-space: pre-line; }
+/* Desktop fallback for the rescue drill panel (the headset shows it beside the camera). */
+#full-camera > canvas.drill-hud { position: absolute; top: 12px; right: 12px; width: min(300px, 42vw); height: auto; border-radius: 8px; pointer-events: none; }
+#full-camera > canvas.drill-hud[hidden] { display: none; }
