@@ -72,9 +72,9 @@ python -m tools.calibrate_drive --simulate       # fit against a virtual rover, 
 - **Camera prerequisite.** With `--serial-port`, every motion heartbeat needs
   `camera_drive_ready`: a USB camera on the Jetson, or the phone's capture-bound RGB
   stream. The tool also needs the ARKit pose, which only the phone's LiDAR stream
-  (`/phone`) provides. Those LiDAR frames are not drive-ready until the `/phone`
-  capture binding lands, so for now run calibration with a USB drive camera
-  (`FARSIGHT_CAMERA`) while the phone streams ARKit.
+  (`/phone`) provides. Those LiDAR frames are view-only by default; set
+  `FARSIGHT_LIDAR_DRIVE=1` (`--lidar-drive`) so fresh LiDAR frames with normal
+  ARKit tracking count as `camera_drive_ready`, then calibrate on the LiDAR stream.
 - The test ceiling is the server's `--max-pwm` (or lower `--max-pwm` on the tool).
   The measured curves only cover up to that ceiling.
 - Pose time is `now - age_ms` of a polled `/health` (about 20 Hz, 50 ms jitter);

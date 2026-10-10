@@ -49,7 +49,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                depth_model=None, scan_pan=False, scan_fov=70, scan_intrinsics=None, scan_turn_dps=90,
                record=False, replay=None, proximity_stop=True, pan_mount="servo", autonomy_max_pwm=None, nav2=False, nav_speed_mps=0.45,
                nav_turn_radps=3.0, nav_max_v=0.7, nav_max_w=0.8, nav_camera_height=0.15, bulk_limit_mbps=0, drive_profile=None,
-               allow_calibration=False, sim_world=None, bonded_control=False):
+               allow_calibration=False, sim_world=None, bonded_control=False, lidar_drive=False):
     if sim_world is not None:  # closed-loop simulator: a moving ray-cast rover in a test floor plan
         if serial_port or camera_device is not None or replay is not None:
             raise ValueError("--sim-world is simulated; it cannot drive real motors, cameras or replays")
@@ -72,7 +72,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
     state = MapState(demo)
     sim = (SimFeed(RoverSim(load_world(sim_world), speed_mps=nav_speed_mps, turn_radps=nav_turn_radps))
            if sim_world is not None else None)
-    camera_service = CameraService(state, device=camera_device)
+    camera_service = CameraService(state, device=camera_device, lidar_drive=lidar_drive)
     video_service = VideoService(camera_service, enabled=h264, fps=video_fps, bitrate=video_bitrate)
     mission = Mission(mission_dir, record=record)
     # Opt-in ROS 2 Nav2 backend (ros2/farsight_nav); without --nav2 autonomy is unchanged.
@@ -728,6 +728,9 @@ def main():
     parser.add_argument("--drive-profile", help="Opt-in measured drive profile (tools.calibrate_drive output); enables mode \"velocity\" in m/s, rad/s")
     parser.add_argument("--allow-calibration", action="store_true",
                         help="Accept raw-PWM mode \"calibrate\" from a held-deadman controller; for tools.calibrate_drive on a cleared floor only")
+    parser.add_argument("--lidar-drive", action="store_true",
+                        help="Let fresh /phone LiDAR frames with normal ARKit tracking count as camera_drive_ready "
+                             "without a verified capture clock; default off (view only)")
     parser.add_argument("--nav2", action="store_true",
                         help="Opt in to the ROS 2 Nav2 backend (ros2/farsight_nav bridge on /ws/nav); default off")
     parser.add_argument("--nav-speed-mps", type=float, default=0.45, help="Measured forward speed at v=1 (m/s)")
@@ -805,7 +808,7 @@ def main():
                 nav2=args.nav2, nav_speed_mps=args.nav_speed_mps, nav_turn_radps=args.nav_turn_radps,
                 nav_max_v=args.nav_max_v, nav_max_w=args.nav_max_w,
                 nav_camera_height=args.nav_camera_height, sim_world=args.sim_world,
-                bonded_control=args.bonded_control), host=args.host, port=args.port,
+                bonded_control=args.bonded_control, lidar_drive=args.lidar_drive), host=args.host, port=args.port,
                 ssl_certfile=args.ssl_certfile, ssl_keyfile=args.ssl_keyfile,
                 ws_max_size=8 * 1024 * 1024, access_log=False,
                 timeout_graceful_shutdown=5)
