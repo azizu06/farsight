@@ -558,6 +558,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "farsight-geometry"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "brotli",
+ "bytes",
+ "clap",
+ "flate2",
+ "futures-util",
+ "indexmap",
+ "mimalloc",
+ "reqwest",
+ "rustc-hash",
+ "rustls",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite 0.26.2",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "zstd",
+]
+
+[[package]]
 name = "farsight-relay"
 version = "0.1.0"
 dependencies = [
