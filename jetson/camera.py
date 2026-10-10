@@ -79,6 +79,11 @@ class CameraService:
         self.task = None
         self.phone_rgb = None
         self.phone_capture_diagnostics = {}
+        # One bounded preview, shared by overlapping JPEG/MJPEG requests.
+        # This lock never protects capture or map fusion work.
+        self.preview_lock = threading.Lock()
+        self.preview_key = None
+        self.preview_jpeg = None
 
     def snapshot(self):
         if self.device is None:
@@ -187,14 +192,25 @@ class CameraService:
             self.capture.release()
 
     def preview(self, max_width=640, quality=50):
-        frame = self.snapshot()
-        if not frame:
-            return None
-        image = cv2.imdecode(np.frombuffer(frame.jpeg, np.uint8), cv2.IMREAD_COLOR)
-        if image is None:
-            return None
-        if image.shape[1] > max_width:
-            image = cv2.resize(image, (max_width, round(image.shape[0] * max_width / image.shape[1])))
-        okay, jpeg = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, quality])
-        return CameraFrame(jpeg.tobytes(), frame.received, frame.frame_id, frame.source,
-                           frame.capture_verified, frame.capture_binding) if okay else None
+        with self.preview_lock:
+            # Snapshot after waiting: another request may have encoded while a
+            # newer capture arrived. Counter/source alone can repeat on restart.
+            frame = self.snapshot()
+            if not frame:
+                return None
+            key = (frame.source, frame.frame_id, frame.received, max_width, quality, frame.jpeg)
+            if key != self.preview_key:
+                image = cv2.imdecode(np.frombuffer(frame.jpeg, np.uint8), cv2.IMREAD_COLOR)
+                if image is None:
+                    return None
+                if image.shape[1] > max_width:
+                    image = cv2.resize(image, (max_width, round(image.shape[0] * max_width / image.shape[1])))
+                okay, jpeg = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, quality])
+                if not okay:
+                    return None
+                self.preview_jpeg = jpeg.tobytes()
+                self.preview_key = key
+            # Only pixels are cached. Receipt and permit state always come
+            # from this snapshot; a cache hit never renews capture freshness.
+            return CameraFrame(self.preview_jpeg, frame.received, frame.frame_id, frame.source,
+                               frame.capture_verified, frame.capture_binding)

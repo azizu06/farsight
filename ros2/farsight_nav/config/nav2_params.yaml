@@ -58,10 +58,10 @@ controller_server:
       vx_std: 0.15
       vy_std: 0.0
       wz_std: 0.5
-      vx_max: 0.30
+      vx_max: 0.50                   # AUTONOMY_MAX_PWM 150 on the 2026-10-10 drive profile: 0.55 m/s, 3.5 rad/s
       vx_min: -0.12
       vy_max: 0.0
-      wz_max: 1.6
+      wz_max: 2.0                    # faster spins smear ARKit tracking; the profile allows 3.5
       iteration_count: 1
       prune_distance: 1.5
       transform_tolerance: 0.3
@@ -128,12 +128,12 @@ controller_server:
         mode: 0
     RPP:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-      desired_linear_vel: 0.28
+      desired_linear_vel: 0.50        # under the profile's 0.55 m/s at AUTONOMY_MAX_PWM 150
       lookahead_dist: 0.35            # short: pure pursuit cuts corners by about the lookahead
       min_lookahead_dist: 0.2
       max_lookahead_dist: 0.6
       lookahead_time: 1.0
-      rotate_to_heading_angular_vel: 1.4
+      rotate_to_heading_angular_vel: 1.8
       transform_tolerance: 0.3
       use_velocity_scaled_lookahead_dist: true
       min_approach_linear_velocity: 0.06
@@ -160,7 +160,7 @@ local_costmap:
   local_costmap:
     ros__parameters:
       update_frequency: 15.0         # at least the depth frame rate: a popped-up obstacle lands next cycle
-      publish_frequency: 5.0
+      publish_frequency: 10.0
       global_frame: odom
       robot_base_frame: base_link
       transform_tolerance: 0.3
@@ -216,7 +216,7 @@ local_costmap:
 global_costmap:
   global_costmap:
     ros__parameters:
-      update_frequency: 5.0
+      update_frequency: 10.0         # IsPathValid checks this map: a person stepping in invalidates the path within 0.1 s
       publish_frequency: 2.0
       global_frame: map
       robot_base_frame: base_link
@@ -332,7 +332,7 @@ farsight_bridge:
     explore_commitment_s: 4.0
     explore_switch_margin: 0.8
     explore_transition_distance: 0.6
-    explore_creep_mps: 0.2
+    explore_creep_mps: 0.25          # above both wheel floors (PWM 70/40) on the drive profile
     explore_scan_radps: 0.82
     explore_gap_budget_s: 4.0
     explore_scan_budget_s: 10.0

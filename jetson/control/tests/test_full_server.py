@@ -34,23 +34,27 @@ class FullServerTests(unittest.TestCase):
                 detected(.7)
                 self.motion(ws, status, 2, mode="explore", v=0)
                 status = self.wait_status(ws, lambda value: value["seq"] == 2)
+                # A seen person never switches Explore to Seek; the operator selects Seek explicitly.
+                self.assertEqual((status["mode"], status["left_pwm"], status["right_pwm"]), ("explore", 25, 25))
+                self.motion(ws, status, 3, mode="seek", target_id=7, v=0)
+                status = self.wait_status(ws, lambda value: value["seq"] == 3)
                 self.assertEqual((status["mode"], status["target_id"]), ("seek", 7))
                 self.assertGreater(status["left_pwm"], status["right_pwm"])
                 detected(.1)
-                self.motion(ws, status, 3, mode="explore", v=0)
-                status = self.wait_status(ws, lambda value: value["seq"] == 3)
+                self.motion(ws, status, 4, mode="seek", target_id=7, v=0)
+                status = self.wait_status(ws, lambda value: value["seq"] == 4)
                 self.assertLess(status["left_pwm"], status["right_pwm"])
                 detected()
-                seq = 3
+                seq = 4
                 deadline = time.monotonic() + 1.4
                 while time.monotonic() < deadline and status["autonomy_state"] != "target_lost":
                     seq += 1
-                    self.motion(ws, status, seq, mode="explore", v=0)
+                    self.motion(ws, status, seq, mode="seek", target_id=7, v=0)
                     status = self.wait_status(ws, lambda value: value["seq"] == seq)
                     self.assertEqual((status["left_pwm"], status["right_pwm"]), (0, 0))
                 self.assertEqual(status["autonomy_state"], "target_lost")
                 detected(.4)
-                self.motion(ws, status, seq + 1, mode="explore", v=-.5)
+                self.motion(ws, status, seq + 1, mode="seek", target_id=7, v=-.5)
                 status = self.wait_status(ws, lambda value: value["seq"] == seq + 1)
                 self.assertEqual((status["mode"], status["autonomy_state"], status["left_pwm"]),
                                  ("teleop", "stick_override", -50))
