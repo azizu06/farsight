@@ -277,8 +277,9 @@ every `/ws/control` status. Coordinates are voxel-map world metres: map `x, z`
   recover and the operator presses again. A new phone session or map epoch also
   disarms the goal (Nav2's goal and costmaps are reset).
 - `mode`: `explore`, `seek`, `goto` or `null`. `backend`: `nav2` when Nav2 drives the
-  current mode, `fallback` when the reactive policy does (Explore/Seek without a
-  bridge), `null` when nothing can. `message`: short human-readable detail.
+  current mode, `null` when nothing can (the Python server no longer sends
+  `fallback`: with `--nav2`, Explore/Seek hold still while Nav2 is unavailable).
+  `message`: short human-readable detail.
 - `path`: at most 200 `[x, z]` points of the current Nav2 plan (Douglas-Peucker
   reduced to 3 cm); empty when not navigating. `frontiers`: at most 50 `[x, z]`
   frontier goal points (widest first) that Explore chooses from. `goal`: the
