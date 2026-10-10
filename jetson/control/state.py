@@ -76,6 +76,8 @@ class ControlState:
         with self.lock:
             if token is self.scan_token:
                 self.stop("scan_finished")
+        # Optional on_output(v, w, forward_blocked) observer of the command actually applied.
+        self.on_output = None
 
     def stop(self, reason, require_release=True):
         with self.lock:
@@ -244,11 +246,17 @@ class ControlState:
                     v = w = 0
             if not self.connected:
                 v = w = 0
-            if v > 0 and self.forward_blocked():
+            blocked = v > 0 and self.forward_blocked()
+            if blocked:
                 v = 0
                 self.reason = "forward_blocked"
             left, right = v + w, v - w  # positive w turns right
             scale = max(1.0, abs(left), abs(right))
+            if self.on_output:
+                try:
+                    self.on_output(v / scale, w / scale, blocked)
+                except Exception:
+                    pass  # telemetry must never affect motor output
             def pwm(value):
                 if value == 0:
                     return 0
