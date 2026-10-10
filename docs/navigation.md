@@ -165,9 +165,10 @@ drives a ray-cast rover through a test floor plan from `jetson/sim/worlds.py`:
 `popup`, `doorway`, `deadend`, `floorplan`, `seek`. Applied motor commands move the
 simulated rover; its camera renders 160 x 120 depth and RGB that go through the
 same `MapState` path as a LiDAR iPhone (pose at 30 Hz, RGB-D at 10 Hz), so the
-bridge, voxel map, camera freshness and sensor gate all run unchanged. The
-ultrasonic reads the nearest surface ahead with the Uno's ~206 cm echo limit,
-and Seek gets ground-truth person boxes. Everything is labelled `SIMULATED`.
+bridge, voxel map, camera freshness and sensor gate all run unchanged. A
+simulated ultrasonic (~206 cm echo limit) feeds `/farsight/range` only; the rig
+as built has none (#91), Nav2's costmaps use depth alone, and the scenarios run
+with `--proximity-stop off`. Seek gets ground-truth person boxes. Everything is labelled `SIMULATED`.
 `GET /sim/state` (only with `--sim-world`) returns ground truth: pose, collisions,
 minimum clearance, distance driven, pop-up events, people and floor coverage.
 
