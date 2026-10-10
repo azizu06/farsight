@@ -7,6 +7,13 @@ Mac-to-Jetson commissioning USB unplugged. Physical driving, Quest playback and
 fault recovery still need the complete rig rehearsal. The optional direct
 Jetson tailnet path is a fallback; it is not required for the phone-owned path.
 
+This is the primary network contract for the production demo. Keep the Quest
+USB-C connected to the MacBook for the entire run; disable Quest, MacBook and
+Jetson Wi-Fi during qualification. The phones use cellular data for their
+Tailscale path. The rover phone's Personal Hotspot setting may be required for
+its cabled local USB network to the Jetson, but Quest and Jetson must not use
+that hotspot as a wireless app route. Venue Wi-Fi is never a demo dependency.
+
 ```text
 Quest Browser
   ↕ USB ADB reverse

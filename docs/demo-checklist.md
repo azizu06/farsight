@@ -1,25 +1,26 @@
 # Demo checklist: cold boot to live VR feed
 
-Goal: under 2 minutes from power-on to video in the headset. Network design: [demo-connectivity.md](demo-connectivity.md). Setup once ([jetson-bringup.md](jetson-bringup.md)): `jetson/setup.sh`, `jetson/install_service.sh`, Tailscale on Jetson and MacBook, Quest developer mode + USB debugging approved, `npm --prefix quest ci`.
+Goal: under 2 minutes from power-on to video in the headset. Network design: [demo-connectivity.md](demo-connectivity.md). Setup once ([jetson-bringup.md](jetson-bringup.md)): `jetson/setup.sh`, `jetson/install_service.sh`, both phones on the same tailnet with cellular enabled, Quest developer mode + USB debugging approved, `npm --prefix quest ci`, and Mac USB tools (`iproxy`, `idevice_id`). The Jetson and Mac do not need Tailscale for the primary route.
 
 ## Before the 2 minutes (venue, once)
 
 - [ ] `/etc/farsight.env` has the real serial, detector model and (HTTPS profile only) cert paths (`jetson/farsight.env.example`). `FARSIGHT_CAMERA` stays blank for the rover iPhone.
-- [ ] Board profile today is plain HTTP on `192.168.55.1:8443` (USB) or the Tailscale IP, TLS omitted ([jetson-runtime-results.md](jetson-runtime-results.md)); `https://` + `--ca-file` applies only if the service was installed with TLS.
-- [ ] MacBook: `python -m tools.demo --upstream http://<jetson-tailnet-ip>:8443 --check` passes (HTTPS profile: `https://<jetson-tailnet-name>:8443`, plus `--ca-file` for a private CA).
-- [ ] Wi-Fi off on Jetson and MacBook. Both phones have Personal Hotspot allowed and the USB trust prompt accepted.
-- [ ] MacBook-to-Jetson commissioning USB unplugged; `python -m tools.qualify_route --output /tmp/farsight-route.json` passes on the operator Mac. Keep both phone cables and Quest USB connected.
+- [ ] Board profile today is plain HTTP on Jetson port `8443`; the rover phone bridge uses the Jetson's current local USB-network address (last observed `172.20.10.3`, not fixed). TLS is omitted ([jetson-runtime-results.md](jetson-runtime-results.md)); `https://` + `--ca-file` applies only if the service was installed with TLS.
+- [ ] Disable Wi-Fi on Quest, MacBook, and Jetson. Both phones use cellular with Wi-Fi off; keep the rover phone's Personal Hotspot available for its cabled USB network to the Jetson.
+- [ ] Connect the rover phone to Jetson and operator phone to Mac by USB. Keep Quest connected to Mac by USB. Both Farsight Capture bridge roles are foreground and report connected.
+- [ ] On the Mac, `python -m tools.phone_usb --check` passes. Then keep `python -m tools.phone_usb` running in Terminal 1; this forwards only over the attached operator-phone USB cable.
+- [ ] With the phone helper running and the Mac-to-Jetson commissioning cable unplugged, `python -m tools.ready --url http://127.0.0.1:18443 --require-tensorrt --require-drive-camera` ends `READY` (HTTPS profile only: add the configured `--ca-file`). This probes the phone-owned path, not a direct Jetson IP.
 
 ## Power on, in this order
 
 | # | Do | Check |
 |---|---|---|
 | 1 | Rover: battery on, Uno USB to Jetson (the rover camera is the mounted iPhone, step 2; a UVC webcam only as fallback) | Uno LED on |
-| 2 | Rover phone: USB to Jetson, Personal Hotspot on | Phone shows "1 connection" |
+| 2 | Rover phone: USB to Jetson, Personal Hotspot allowed/on for the cabled USB network | Jetson's current USB-interface address is reachable; do not assume it is always `172.20.10.3` |
 | 3 | Jetson: power on. Start a stopwatch. `farsight` unit starts itself | Nothing to type |
-| 4 | MacBook: second phone USB, hotspot on, Wi-Fi off | `tailscale ping <jetson>` replies (note direct vs relayed) |
-| 5 | MacBook: `python -m tools.ready --url http://<jetson>:8443 --require-tensorrt --require-drive-camera` (HTTPS profile: `https://<jetson>:8443 --ca-file ...`) | Ends `READY`: server, camera, drive-camera eligibility, detector, rover and video pass. Missing/false `camera_drive_ready` blocks this check: a viewable LiDAR feed alone does not qualify physical driving. This is a component readiness check; still measure actual motion/stop behavior. Stop the stopwatch on this line. |
-| 6 | MacBook: `python -m tools.demo --upstream http://<jetson>:8443 --quest` (HTTPS profile: `https://<jetson>:8443 --ca-file ...`) | Prints "Open http://localhost:8080"; `adb reverse --list` shows 8080 |
+| 4 | MacBook: operator phone USB, Mac Wi-Fi off; both bridge apps active over cellular/Tailscale | `python -m tools.phone_usb --check` reaches the rover health response through `127.0.0.1:18443`; record direct/DERP from the phone bridge diagnostics |
+| 5 | MacBook: `python -m tools.ready --url http://127.0.0.1:18443 --require-tensorrt --require-drive-camera` | Ends `READY`: server, camera, drive-camera eligibility, detector, rover and video pass. Missing/false `camera_drive_ready` blocks this check: a viewable LiDAR feed alone does not qualify physical driving. This is a component readiness check; still measure actual motion/stop behavior. Stop the stopwatch on this line. |
+| 6 | MacBook: `python -m tools.demo --upstream http://127.0.0.1:18443 --quest` | Prints "Open http://localhost:8080"; `adb reverse --list` shows 8080 |
 | 7 | Quest: USB to MacBook, open `http://localhost:8080`, press Enter VR | Video live, HUD shows video age and link; rover estop clear |
 | 8 | Release and press the deadman once | Motors respond; releasing stops within 250 ms |
 
@@ -29,7 +30,7 @@ Step 5 prints seconds since boot when run on the Jetson (`ssh farsight.local`); 
 
 - `camera WAIT`: reopen the Farsight Capture app on the rover iPhone and recheck the Jetson USB-network IP (UVC fallback: replug the webcam); `journalctl -u farsight -n 50` on the Jetson.
 - `rover WAIT`: Uno cable, then `ls /dev/ttyACM*`; the unit starts degraded without it. Fix and `sudo systemctl restart farsight`.
-- `server WAIT` over Tailscale: `tailscale status` on both; try the 5 GHz hotspot path in demo-connectivity.md.
+- `server WAIT` through the phone relay: check both phone bridge screens, cellular/Tailscale status, rover phone USB networking, then rerun `python -m tools.phone_usb --check`. Do not switch to venue Wi-Fi.
 - Quest blank: re-run `adb reverse tcp:8080 tcp:8080`; `window.isSecureContext` must be true.
 
 ## Fallback if hardware fails

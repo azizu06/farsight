@@ -24,13 +24,16 @@ Jetson Orin Nano (on the rover)  -- the brain
 Arduino Uno (ELEGOO V4 board) -> motors, ultrasonic (pan servo optional; the phone camera is fixed, look-around is digital)
 ```
 
-The confirmed phone-owned relay is being implemented and is not yet hardware
-qualified; see [phone relay](phone-relay.md). The rover service runs on the
+The phone-owned relay is implemented, and an owner has reported a two-phone
+cellular transport run with phone Wi-Fi off and the Mac–Jetson commissioning
+USB disconnected. This is not full Quest, physical-driving, or fault-recovery
+qualification; see [phone relay](phone-relay.md). The rover service runs on the
 Jetson at port `8443`. The MacBook serves the Quest app and proxies
 HTTP/WebSockets on `localhost:8080`; Quest accesses it through USB ADB reverse.
 The iPhones own the cellular tunnel; raw rover capture stays on local USB.
 The earlier computer-side Tailscale/USB-tether path remains a fallback, whose
-operator tether has been intermittent. Neither path depends on venue Wi-Fi.
+operator tether has been intermittent. Venue Wi-Fi is not in the production
+route.
 `tools.demo --simulate` launches
 explicit ray-cast camera/map and virtual rover sources. See
 [transport setup](transport-setup.md) and [native phone capture](../ios/README.md).
@@ -274,8 +277,9 @@ every `/ws/control` status. Coordinates are voxel-map world metres: map `x, z`
   recover and the operator presses again. A new phone session or map epoch also
   disarms the goal (Nav2's goal and costmaps are reset).
 - `mode`: `explore`, `seek`, `goto` or `null`. `backend`: `nav2` when Nav2 drives the
-  current mode, `fallback` when the reactive policy does (Explore/Seek without a
-  bridge), `null` when nothing can. `message`: short human-readable detail.
+  current mode, `null` when nothing can (the Python server no longer sends
+  `fallback`: with `--nav2`, Explore/Seek hold still while Nav2 is unavailable).
+  `message`: short human-readable detail.
 - `path`: at most 200 `[x, z]` points of the current Nav2 plan (Douglas-Peucker
   reduced to 3 cm); empty when not navigating. `frontiers`: at most 50 `[x, z]`
   frontier goal points (widest first) that Explore chooses from. `goal`: the

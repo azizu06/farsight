@@ -100,8 +100,12 @@ is the only measured depth, and the only obstacle source Nav2 can use; the defau
 Seek policy never reads it. Look-around is a digital crop of the phone's wide frame: fixed mode
 keeps physical pan at zero and moves a 70% crop inside the measured image
 (`quest/src/camera-view.js`, `quest/src/viewer-settings.js`,
-[PR #76](https://github.com/azizu06/farsight/pull/76)). The phone tethers to the Jetson over USB, which gives it both a local camera link and
-a cellular uplink. Tailscale on the MacBook and the Jetson joins the two.
+[PR #76](https://github.com/azizu06/farsight/pull/76)). The rover phone sends
+camera/depth to the Jetson over local USB and uses cellular/Tailscale to link
+to the operator phone. The Mac reaches that phone over USB, and the Quest stays
+USB-connected to the Mac. Venue Wi-Fi is not in the app path. A real two-phone
+transport run is recorded; the complete Quest, physical-driving and fault
+recovery path still needs the full on-rig check.
 
 **On the Jetson** (`python -m jetson.server`, FastAPI):
 

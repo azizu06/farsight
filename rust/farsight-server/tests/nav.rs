@@ -108,13 +108,13 @@ fn constants_match_contract() {
 #[test]
 fn offline_bridge_unavailable() {
     let (service, _mapping) = nav();
-    // No bridge connected: nav_object's fallback else-branch emits
-    // state "unavailable", backend null, "Nav2 bridge not connected".
+    // No bridge connected (#115): state "unavailable", backend null,
+    // and the hold-still message — Nav2 is the only navigation.
     assert!(!service.available());
     let status = service.status_object();
     assert_eq!(status["state"], json!("unavailable"));
     assert_eq!(status["backend"], Value::Null);
-    assert_eq!(status["message"], json!("Nav2 bridge not connected"));
+    assert_eq!(status["message"], json!("Nav2 bridge not connected; holding still"));
 }
 
 #[test]

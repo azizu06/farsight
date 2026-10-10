@@ -1,15 +1,21 @@
-# Operator transport and hardware rehearsal
+# Computer-side Tailscale fallback and hardware rehearsal
 
-The confirmed [phone-owned relay](phone-relay.md) is being implemented: both
-iPhones own the cellular tunnel, and the Mac's upstream is a local USB port
-forward. The computer-side Tailscale steps below describe the fallback path,
-whose operator USB tether has been intermittent. Keep using the established
-path until the native phone bridge passes actual hardware checks.
+The production demo's primary route is the [phone-owned cellular relay](phone-relay.md):
+Quest→Mac over USB/ADB reverse, Mac→operator iPhone over USB `iproxy`,
+operator phone→rover phone over cellular/Tailscale, and rover phone→Jetson over
+local USB. See [demo-connectivity.md](demo-connectivity.md) for the network
+contract.
 
-The operator relay serves the built Quest app from the MacBook on
-`127.0.0.1:8080`. All rover HTTP and WebSocket routes travel through that origin.
-The Quest reaches the MacBook using ADB reverse over USB. The MacBook reaches
-the Jetson using Tailscale over the two phones' cellular connections.
+**The detailed computer-side Tailscale/USB-tether procedure below is a separate
+fallback only. Do not use it as the primary demo setup, and do not treat its
+qualification as evidence for the phone-owned route.** The fallback's operator
+USB tether has been intermittent. Neither route may use venue Wi-Fi as a silent
+substitute.
+
+The operator relay serves the built Quest app on `127.0.0.1:8080`; Quest reaches
+it using ADB reverse over its USB cable. No physical hardware was connected
+during the software-only validation below; USB pairing, phone routing, Quest
+display and physical stop timing remain hardware acceptance gates.
 
 No physical hardware was connected during software validation. Local simulated
 mapping, camera frames, and rover telemetry are explicitly labelled simulated.
@@ -73,7 +79,7 @@ Only one control socket can own the rover. Close the Quest/browser page before
 running the qualifier, then reopen it afterward. A second controller is rejected
 rather than taking control away from the current operator.
 
-## Fallback hardware connection: USB tethering
+## Fallback hardware connection: computer-side Tailscale over USB tethering
 
 1. Keep the rover wheels raised. Connect the Uno to the Jetson by USB and the
    camera locally. Start the documented rover service with real serial selected;
@@ -140,8 +146,9 @@ rather than taking control away from the current operator.
   expired permits; the relay never reconnects or replays commands. A slow video
   consumer gets a closed video connection instead of an ever-growing queue.
 - Reconnect. Keep the deadman released until fresh video and a new control session
-  are visible; motion must require a new press. Retry the private 5 GHz hotspot
-  fallback by changing only `--upstream`, with motors stopped during the switch.
+  are visible; motion must require a new press. Use another route only if that
+  exact route has already passed the same end-to-end and fault-recovery checks;
+  otherwise switch to labeled replay or simulation with motors disabled.
 - Cold boot and repeat with venue Wi-Fi disabled. If both radio paths fail,
   demonstrate the clearly labelled simulation or retained recording with physical
   motors disabled. Live untethered video requires a functioning wireless path.
