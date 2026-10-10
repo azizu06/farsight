@@ -27,6 +27,9 @@ const HOP_HEADERS: &[&str] = &[
 ];
 const PROXY_PREFIXES: &[&str] = &["/ws/", "/map/", "/tts/", "/video/", "/mission/", "/phone/"];
 const PROXY_PATHS: &[&str] = &["/health", "/control/status", "/camera.jpg", "/depth.jpg", "/stream.mjpg", "/ask", "/phone", "/scan"];
+/// HTTP requests on these paths are control-plane traffic: they use the
+/// dedicated upstream pool so bulk downloads can never take their slots.
+const CONTROL_PATHS: &[&str] = &["/control/status", "/scan", "/ask"];
 
 #[derive(Parser)]
 #[command(about = "Serve Quest over USB and relay the rover through a private network")]
@@ -47,7 +50,6 @@ struct AppState {
     origin: Url,
     dist: PathBuf,
     http: reqwest::Client,     // general pool (limit ~16)
-    #[allow(dead_code)]
     control: reqwest::Client,  // control pool (limit ~4)
     tls: Arc<rustls::ClientConfig>,
     send_timeout: Duration,
@@ -259,6 +261,7 @@ async fn relay_ws(local: WebSocket, s: Arc<AppState>, target: &str, control: boo
     };
 
     // Rover -> Quest. JSON telemetry may carry absolute upstream URLs; rewrite.
+    // Bulk sockets are paced so control keeps its share of the upstream link.
     let r2c = tokio::spawn(async move {
         while let Some(Ok(message)) = remote_rx.next().await {
             match message {
@@ -347,13 +350,14 @@ async fn proxy_http(s: Arc<AppState>, req: Request) -> Response {
     // passes through to the browser still encoded.
     let headers = forward_headers(req.headers());
     let method = req.method().clone();
+    let path = req.uri().path().to_string();
     let body = req.into_body();
     let body_bytes = match axum::body::to_bytes(body, 8 * 1024 * 1024).await {
         Ok(b) => b,
         Err(_) => return (StatusCode::BAD_GATEWAY, "Rover unavailable").into_response(),
     };
-    let remote = match s
-        .http
+    let client = if CONTROL_PATHS.contains(&path.as_str()) { &s.control } else { &s.http };
+    let remote = match client
         .request(method, &target)
         .headers(headers)
         .body(body_bytes)
@@ -441,21 +445,23 @@ async fn main() {
         .with_root_certificates(roots)
         .with_no_client_auth();
     let tls = Arc::new(tls);
-    let connector = move || {
+    let make_client = |certs: &Vec<reqwest::Certificate>, idle: usize| {
         let mut b = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(10))
-            .pool_max_idle_per_host(16);
-        for c in &extra_certs {
+            .pool_max_idle_per_host(idle);
+        for c in certs {
             b = b.add_root_certificate(c.clone());
         }
         b.build().unwrap()
     };
+    let http_client = make_client(&extra_certs, 16);
+    let control_client = make_client(&extra_certs, 4);
     let state = Arc::new(AppState {
         origin,
         dist,
-        http: connector(),
-        control: connector(),
+        http: http_client,
+        control: control_client,
         tls,
         send_timeout: Duration::from_millis(500),
     });

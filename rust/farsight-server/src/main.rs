@@ -98,6 +98,10 @@ struct Args {
     /// Directory for generated reply-*.wav speech
     #[arg(long)]
     tts_dir: Option<PathBuf>,
+    /// Cap bulk (non-control) egress in Mbps so control/permit frames keep
+    /// reserved headroom on a constrained link. 0 disables pacing.
+    #[arg(long, default_value_t = 0.0)]
+    bulk_limit_mbps: f64,
 }
 
 #[global_allocator]
@@ -107,6 +111,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 async fn main() {
     tracing_subscriber::fmt::init();
     let args = Args::parse();
+    farsight_server::pacer::init(args.bulk_limit_mbps);
     if args.simulate_rover && args.serial_port.is_some() {
         panic!("--simulate-rover cannot be combined with --serial-port");
     }

@@ -13,6 +13,7 @@ pub mod depth;
 pub mod detector;
 pub mod geometry;
 pub mod mission;
+pub mod pacer;
 pub mod perception;
 pub mod phone;
 pub mod phrases;

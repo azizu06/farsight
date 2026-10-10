@@ -401,11 +401,13 @@ async fn scan_start(State(s): State<Arc<AppState>>, Json(body): Json<Value>) -> 
 
 async fn map_points(State(s): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     let (body, coding) = s.mapping.point_packet(accept_encoding(&headers));
+    crate::pacer::pace(body.len()).await;
     packet_response(body, coding, false)
 }
 
 async fn map_mesh(State(s): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     let (body, coding) = s.mapping.mesh_packet(accept_encoding(&headers));
+    crate::pacer::pace(body.len()).await;
     packet_response(body, coding, true)
 }
 
@@ -453,6 +455,7 @@ async fn map_pause(State(s): State<Arc<AppState>>, Json(body): Json<Value>) -> J
 async fn camera_jpg(State(s): State<Arc<AppState>>) -> Response {
     match s.camera.preview() {
         Some(frame) => {
+            crate::pacer::pace(frame.jpeg.len()).await;
             let fid = frame.frame_id;
             let age = frame.age_ms();
             let source = frame.source.clone();
@@ -493,6 +496,7 @@ async fn stream_mjpg(State(s): State<Arc<AppState>>) -> Response {
                     let mut part = b"--frame\r\nContent-Type: image/jpeg\r\n\r\n".to_vec();
                     part.extend_from_slice(&f.jpeg);
                     part.extend_from_slice(b"\r\n");
+                    crate::pacer::pace(part.len()).await;
                     yield Ok::<_, std::io::Error>(part);
                     last = identity;
                 }
@@ -672,6 +676,7 @@ async fn handle_ws_map(socket: WebSocket, s: Arc<AppState>) {
                 if tx.send(Message::Text(status.to_string().into())).await.is_err() {
                     return;
                 }
+                crate::pacer::pace(packet.len()).await;
                 if tx.send(Message::Binary(packet.into())).await.is_err() {
                     return;
                 }
@@ -868,6 +873,7 @@ async fn handle_ws_video(socket: WebSocket, s: Arc<AppState>) {
             if tokio::time::timeout(Duration::from_millis(500), out.send(Message::Text(metadata.to_string().into()))).await.is_err() {
                 return;
             }
+            crate::pacer::pace(fragment.payload.len()).await;
             if tokio::time::timeout(Duration::from_millis(500), out.send(Message::Binary(fragment.payload.into()))).await.is_err() {
                 return;
             }
