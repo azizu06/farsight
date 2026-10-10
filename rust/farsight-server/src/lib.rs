@@ -23,6 +23,7 @@ pub mod phrases;
 pub mod replay;
 pub mod scan;
 pub mod server;
+pub mod sim;
 pub mod state;
 pub mod surfaces;
 pub mod tracker;
