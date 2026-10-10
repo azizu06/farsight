@@ -8,10 +8,12 @@ import argparse
 import asyncio
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
+from functools import wraps
 import hashlib
 import json
 from pathlib import Path
 import platform
+import sys
 import threading
 import time
 
@@ -37,6 +39,53 @@ class Timings:
             return {name: dict(count=self.counts[name], retained=len(values),
                                p50=percentile(list(values), .5), p95=percentile(list(values), .95),
                                maximum=max(values)) for name, values in self.values.items() if values}
+
+
+class TimedLock:
+    """Fixture-only outer hold/wait measurements; preserve recursive locking."""
+    def __init__(self, lock, name, timings):
+        self.lock, self.name, self.timings = lock, name, timings
+        self.local = threading.local()
+
+    def __enter__(self):
+        started = time.monotonic()
+        self.lock.acquire()
+        depth = getattr(self.local, "depth", 0)
+        if depth == 0:
+            self.timings.add(self.name + ".wait_ms", (time.monotonic() - started) * 1000)
+            self.local.started = time.monotonic()
+        self.local.depth = depth + 1
+        return self
+
+    def __exit__(self, *exc):
+        self.local.depth -= 1
+        elapsed = time.monotonic() - self.local.started if self.local.depth == 0 else None
+        self.lock.release()
+        if elapsed is not None:
+            self.timings.add(self.name + ".hold_ms", elapsed * 1000)
+
+
+class ThreadCpuProfile:
+    """Thread-local Python/native CPU accounting, excluding callback overhead.
+
+    Python CPU is a GIL-demand proxy, not GIL ownership or wait time. In
+    particular, a native call may hold or release the GIL. Use only in separate
+    intrusive diagnostic runs, never the sustained-motion comparison.
+    """
+    def __init__(self):
+        self.cpu = dict(python=0.0, native=0.0)
+        self.mode, self.stack = "python", []
+        self.last = time.thread_time()
+
+    def __call__(self, frame, event, arg):
+        now = time.thread_time()
+        self.cpu[self.mode] += now - self.last
+        if event in ("call", "c_call"):
+            self.stack.append(self.mode)
+            self.mode = "native" if event == "c_call" else "python"
+        elif event in ("return", "c_return", "c_exception"):
+            self.mode = self.stack.pop() if self.stack else "python"
+        self.last = time.thread_time()
 
 
 def profile_app(args):
@@ -74,13 +123,50 @@ def profile_app(args):
                 timings.add("onnx.run_ms", (time.monotonic() - start) * 1000)
     app = fixture_app(args.serve_fixture, scene_path=args.scene,
                       server_options=dict(detector=args.detector, detector_model=args.model))
+    state, camera = app.state.mapping, app.state.camera
+    if args.pause_fusion:
+        state.paused = True
+    for owner, name in ((state, "MapState.lock"), (camera, "CameraService.lock"),
+                        (app.state.control.state, "ControlState.lock")):
+        owner.lock = TimedLock(owner.lock, name, timings)
+
+    def measure_sync(owner, method):
+        original = getattr(owner, method)
+        name = type(owner).__name__ + "." + method
+        @wraps(original)
+        def measured(*positional, **kwargs):
+            wall, cpu = time.monotonic(), time.thread_time()
+            profiler = ThreadCpuProfile() if method == "process" and args.fusion_python_profile else None
+            if profiler:
+                previous_profiler = sys.getprofile()
+                sys.setprofile(profiler)
+            try:
+                return original(*positional, **kwargs)
+            finally:
+                if profiler:
+                    sys.setprofile(previous_profiler)
+                    for mode, seconds in profiler.cpu.items():
+                        timings.add(name + "." + mode + "_cpu_ms", seconds * 1000)
+                timings.add(name + ".wall_ms", (time.monotonic() - wall) * 1000)
+                timings.add(name + ".cpu_ms", (time.thread_time() - cpu) * 1000)
+        setattr(owner, method, measured)
+    for owner, method in ((state, "process"), (state, "camera_snapshot"), (camera, "snapshot")):
+        measure_sync(owner, method)
+
     video = app.state.video
     original_publish = video.publish
     from collections import OrderedDict
     submitted = OrderedDict()
     class Samples(OrderedDict):
+        previous = None
         def __setitem__(self, key, value):
             submitted[key] = time.monotonic()
+            timings.add("camera.age_at_encoder_ms", (time.monotonic() - value.received) * 1000)
+            identity = (value.source, value.frame_id, value.received)
+            if identity != self.previous:
+                if self.previous:
+                    timings.add("camera.capture_interval_ms", (value.received - self.previous[2]) * 1000)
+                self.previous = identity
             while len(submitted) > 600:
                 submitted.popitem(last=False)
             super().__setitem__(key, value)
@@ -150,7 +236,8 @@ def profile_app(args):
     @app.get("/__profile")
     async def profile(request: Request):
         guard(request)
-        return dict(timings=timings.summary(), opencv_threads=cv2.getNumThreads(),
+        mapping = await asyncio.to_thread(state.status)
+        return dict(timings=timings.summary(), mapping=mapping, opencv_threads=cv2.getNumThreads(),
                     perception=app.state.perception.health())
 
     # One bounded scan-kernel job; HTTP callers cannot queue overlapping bursts.
@@ -201,6 +288,8 @@ async def run(args):
                       scene_sha256=hashlib.sha256(args.scene.read_bytes()).hexdigest()
                           if args.scene and args.source == "rgb15" else None,
                       cv_threads=args.cv_threads, ort_threads=args.ort_threads, source=args.source,
+                      fusion_python_profile=args.fusion_python_profile,
+                      pause_fusion=args.pause_fusion,
                       delay_each_direction_ms=50, aggregate_mbps=2, encoder_fps=10,
                       encoder_bitrate=500000, request_window=2, permit_ms=250, command_hz=20, view_guard_ms=500),
         limitations=["Software capture receipt, not sensor/display latency", "No Quest, GPU or physical motors",
@@ -209,6 +298,10 @@ async def run(args):
     for repeat in range(args.repeats):
         for load in args.loads:
             extra = ["--detector", args.detector]
+            if args.fusion_python_profile:
+                extra.append("--fusion-python-profile")
+            if args.pause_fusion:
+                extra.append("--pause-fusion")
             for flag, value in (("--model", args.model), ("--scene", args.scene),
                                 ("--cv-threads", args.cv_threads), ("--ort-threads", args.ort_threads)):
                 if value is not None:
@@ -231,6 +324,8 @@ async def run(args):
                     profile = await response.json()
                 valid = (args.detector == "none" or (not profile["perception"]["detector_error"]
                          and profile["perception"]["detector_fps"] > 0))
+                if args.source == "map5" and not args.pause_fusion:
+                    valid = valid and profile["mapping"]["frames"] > 0
                 if load == "combined":
                     completed = {event["path"] for event in events if event["status"] == 200}
                     valid = valid and not burst_error and completed == {"/__profile/scan-kernels", "/ask"}
@@ -254,6 +349,9 @@ def main():
     parser.add_argument("--scene", type=Path)
     parser.add_argument("--cv-threads", type=int)
     parser.add_argument("--ort-threads", type=int, help="Experiment override; 0 reproduces the unrestricted ONNX default")
+    parser.add_argument("--fusion-python-profile", action="store_true",
+                        help="Intrusive per-fusion thread-CPU profile; Python CPU is only a GIL-demand proxy")
+    parser.add_argument("--pause-fusion", action="store_true", help="Diagnosis-only: freeze fusion, retain camera production")
     parser.add_argument("--duration", type=float, default=20)
     parser.add_argument("--repeats", type=int, default=2)
     parser.add_argument("--loads", nargs="+", choices=("quiet", "combined"), default=["quiet", "combined"])

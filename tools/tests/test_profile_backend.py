@@ -1,9 +1,12 @@
 """Profiling must retain bounded evidence and refuse physical motor configuration."""
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
+import sys
+import time
 import unittest
 from unittest.mock import patch
 
-from tools.profile_backend import Timings
+from tools.profile_backend import ThreadCpuProfile, Timings
 from tools.tests.test_demo_qualification import fixture_app
 
 
@@ -31,3 +34,23 @@ class ProfileTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "simulated"):
                     fixture_app("rgb15", server_options=options)
             create.assert_not_called()
+
+    def test_python_cpu_probe_stays_within_each_workers_own_cpu_budget(self):
+        def work():
+            probe = ThreadCpuProfile()
+            previous = sys.getprofile()
+            started = time.thread_time()
+            sys.setprofile(probe)
+            try:
+                for _ in range(20):
+                    sum(value * value for value in range(1000))
+            finally:
+                sys.setprofile(previous)
+            return probe.cpu, time.thread_time() - started
+
+        with ThreadPoolExecutor(2) as pool:
+            results = list(pool.map(lambda _: work(), range(2)))
+        for cpu, total in results:
+            self.assertGreater(cpu["python"], 0)
+            self.assertGreater(cpu["native"], 0)
+            self.assertLessEqual(sum(cpu.values()), total)

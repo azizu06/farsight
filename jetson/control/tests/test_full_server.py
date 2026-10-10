@@ -125,6 +125,30 @@ class FullServerTests(unittest.TestCase):
                 self.assertEqual(stopped["seq"], 1)
             self.assertEqual(app.state.control.state.output()[:2], (0, 0))
 
+    def test_demo_camera_and_permits_continue_while_fusion_is_blocked(self):
+        app = create_app(demo=True, simulate_rover=True, detector="none")
+        with TestClient(app) as client:
+            self.wait_health(client, lambda value: value["camera"] and value["rover"])
+            # Hold the actual fusion lock. Camera/control must progress without
+            # waiting for it, through the same public routes as the operator.
+            with app.state.mapping.lock:
+                first = client.get("/camera.jpg")
+                first_id = int(first.headers["x-frame-id"])
+                deadline = time.monotonic() + 1
+                while time.monotonic() < deadline:
+                    current = client.get("/camera.jpg")
+                    if int(current.headers["x-frame-id"]) >= first_id + 2:
+                        break
+                    time.sleep(.02)
+                self.assertGreaterEqual(int(current.headers["x-frame-id"]), first_id + 2)
+                self.assertEqual(current.headers["x-frame-source"], "SIMULATED")
+                self.assertLess(int(current.headers["x-frame-age-ms"]), 500)
+                with client.websocket_connect("/ws/control") as ws:
+                    status = self.release(ws, ws.receive_json(), 0)
+                    self.motion(ws, status, 1)
+                    active = self.wait_status(ws, lambda value: value["seq"] == 1)
+                    self.assertEqual((active["left_pwm"], active["right_pwm"]), (50, 50))
+
     def test_pose_heartbeat_does_not_hide_camera_outage_or_restore_motion(self):
         app = create_app(simulate_rover=True, detector="off")
         mapping = app.state.mapping
