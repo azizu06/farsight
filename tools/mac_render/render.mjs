@@ -10,6 +10,7 @@ window.addEventListener("error", (event) => {
 import * as THREE from "/quest/node_modules/three/build/three.module.js";
 import { decodeMesh, decodePoints } from "/quest/src/protocol.js";
 import { mapResponseRevision } from "/quest/src/map-response.js";
+import { DenseCloudState, DenseCloudReceiver, DenseGpuChunks } from "./dense-cloud.mjs";
 
 const params = new URLSearchParams(location.search);
 const upstream = (params.get("upstream") || "").replace(/\/$/, "");
@@ -61,6 +62,11 @@ if (style !== "lit") scene.add(new THREE.AmbientLight(0xffffff, 1));
 const pointsMaterial = new THREE.PointsMaterial({ size: style === "lit" ? 0.014 : 0.025, vertexColors: true, toneMapped: style === "lit" });
 const cloud = new THREE.Points(new THREE.BufferGeometry(), pointsMaterial);
 root.add(cloud);
+// Full measured RGB-D detail stays on the Mac. Older relays retain the bounded
+// snapshot fallback when they do not provide the incremental dense endpoint.
+const denseState = new DenseCloudState({ capacity: 5_000_000 });
+const denseReceiver = new DenseCloudReceiver({ state: denseState, endpoint: `${upstream}/dense/delta.bin` });
+const denseGpu = new DenseGpuChunks({ state: denseState, THREE, material: pointsMaterial, parent: root });
 const surfaceMaterial = style === "lit"
   ? new THREE.MeshStandardMaterial({
     color: 0xffffff, vertexColors: true, side: THREE.DoubleSide,
@@ -141,14 +147,15 @@ function sourceIdentity(next) {
     next.geometry_source ?? null]);
 }
 function exposeMap() {
-  const points = cloud.geometry.getAttribute("position")?.count || 0;
-  const triangles = (surfaces.geometry.index?.count || 0) / 3;
+  const points = denseState.size || cloud.geometry.getAttribute("position")?.count || 0;
+  const triangles = surfaces.visible ? (surfaces.geometry.index?.count || 0) / 3 : 0;
   const statusAge = status && Number.isFinite(status.age_ms) ? status.age_ms + Math.max(0, performance.now() - statusReceivedAt) : Infinity;
   const fresh = status?.fresh === true && statusAge < 2000;
   const retained = points > 0 && (mapError !== null || !fresh || status?.geometry?.retained === true);
   window.__mac.points = points;
   window.__mac.triangles = triangles;
-  window.__mac.source = status?.geometry_source || status?.source || "WAITING";
+  const sourceLabel = status?.geometry_source || status?.source || "WAITING";
+  window.__mac.source = denseState.size ? `${sourceLabel} · ${denseReceiver.sourceLabel}` : sourceLabel;
   window.__mac.retained = retained;
   window.__mac.mapError = mapError;
   window.__mac.mapStatus = status ? {
@@ -295,8 +302,16 @@ function applyPose() {
 window.__mac = { ready: true, stereo: false, renderMs: 0, draws: 0, points: 0, source: "WAITING", poseEcho: null };
 function drawScene() {
   const started = performance.now();
+  denseReceiver.update();
+  denseGpu.flush();
+  cloud.visible = denseState.size === 0;
+  const denseMatchesMap = denseReceiver.identity === `rgbd:${status?.session_id?.toLowerCase()}:${status?.map_epoch}`;
+  surfaces.visible = denseState.size === 0 || denseMatchesMap;
+  denseGpu.beginFrame();
   applyPose();
   renderer.render(scene, camera);
+  denseGpu.endFrame();
+  window.__mac.dense = { ...denseReceiver.metrics(), ...denseGpu.metrics() };
   window.__mac.renderMs = performance.now() - started;
   window.__mac.drawnPoints = renderer.info.render.points;
   window.__mac.drawnTriangles = renderer.info.render.triangles;
@@ -318,4 +333,7 @@ renderer.setAnimationLoop(() => { if (!window.__macCaptureDriven) drawScene(); }
 window.__macRefreshMap = refresh;
 refresh();
 const refreshTimer = window.setInterval(refresh, 2000);
-window.addEventListener("pagehide", () => { window.clearInterval(refreshTimer); incomingPose = null; clearPose(); });
+window.addEventListener("pagehide", () => {
+  window.clearInterval(refreshTimer); incomingPose = null; clearPose();
+  denseReceiver.dispose(); denseGpu.dispose();
+});
