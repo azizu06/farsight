@@ -95,7 +95,9 @@ transcription. No browser cloud speech-recognition API is used.
 In Quest settings, type a question or explicitly select Ask by voice. Recording
 stops after ten seconds or when cancelled/dismissed. Camera controls remain
 stopped while settings are open. A reply can be played from the rover's WAV;
-local browser speech is an explicit fallback when available.
+local browser speech is an explicit fallback when available. In VR, after
+**Enable in-VR voice** in settings, holding the left trigger records the same
+`/ask` upload; see [Quest controls](../quest/README.md#controls).
 
 Software validation on the Mac used the actual downloaded SmolVLM and Piper to
 answer a bundled test photo and produce speech in approximately 5.4 seconds.

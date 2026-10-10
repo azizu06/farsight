@@ -7,7 +7,8 @@ relay instead of trying to reach the Jetson directly.
 Build with `npm ci && npm run build` from `quest/`. Run `npm test` for protocol,
 crop geometry, and control safety checks. `npm run test:browser` runs the
 production `RoverExperience` in headless Chromium (SwiftShader, simulated XR
-poses, generated camera pixels, no backend) for resize and tracking-loss cases;
+poses, generated camera pixels, stubbed microphone, no backend) for resize,
+tracking-loss, left-trigger push-to-talk and source-banner cases;
 run `npx playwright install chromium-headless-shell` once first. Use the [operator launcher](../tools/demo.py)
 for the integrated app; Vite development mode uses port 8443 as its upstream.
 Do not confuse an old server already on that port with a freshly launched demo.
@@ -22,6 +23,16 @@ Do not confuse an old server already on that port with a freshly launched demo.
   Seek, or otherwise toggles live camera / map. Right B toggles Explore. Left X
   centers the pan, left Y (with the trigger held) starts a scan, and left grip
   starts the rescue drill. A view change stops driving and requires a release.
+- Hold the left trigger to ask the local assistant by voice; release to send.
+  First select **Enable in-VR voice** in settings before entering VR: it asks for
+  the microphone once and releases it immediately. A question stops driving,
+  scan and autonomy, and blocks motion while the microphone is requested or open;
+  the right trigger then needs a release. Recording stops at 10 seconds, and
+  tracking loss, a controller change, a hidden headset or leaving VR stop the
+  microphone. Audio goes only to the rover's `/ask` (local whisper); there is no
+  browser speech recognition. Listening, processing, the answer and errors show
+  on a panel left of the camera. A proposed Seek or scan acts only after a fresh
+  left-trigger press (X dismisses), and still needs the held deadman.
 - Both controllers must be connected with fresh grip poses each frame, and the
   newest XR sample must be under 150 ms old (`performance.now()` observation
   time, never the predicted display time). Losing tracking, a missing XR frame,
@@ -29,6 +40,13 @@ Do not confuse an old server already on that port with a freshly launched demo.
   The trigger and every button then need an observed release before acting
   again, so a button held through tracking loss never fires on recovery. The
   camera and stop reason stay visible when only controller tracking is lost.
+- A large source banner sits above the camera in the headset and at the top of
+  the desktop page. It reads LIVE only while fresh `/health` reports
+  `replay: false`, `control.simulated: false`, a connected rover, a fresh real
+  camera source and a fresh displayed frame; otherwise NOT VERIFIED LIVE with
+  the missing proof. SIMULATED and REPLAY stay shown through disconnects until
+  the server explicitly reports otherwise. Its camera source, frame and age are
+  display truth only, not sensor or display qualification.
 - Desktop: select Live rover, hold Space, then use WASD. The on-screen hold button
   can replace Space. STOP, Escape, opening settings, losing focus, or a connection
   failure stop driving.
@@ -104,3 +122,9 @@ These are required physical checks; desktop tests do not prove them.
    Record a short question, select Stop and ask, and check the actual Heard text.
    Confirm closing settings mid-recording stops the microphone. Test Play answer
    with local rover audio; if unavailable, text remains the supported fallback.
+   Then select Enable in-VR voice, enter VR, hold the left trigger, ask, and
+   release. Check the panel goes listening, processing, answer; that driving
+   stops and the right trigger needs a release; that the reply plays in the
+   headset; and that taking the headset off mid-question stops the microphone
+   indicator. Confirm the source banner reads LIVE only on the real rig and
+   SIMULATED or REPLAY otherwise.

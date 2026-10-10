@@ -21,7 +21,7 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
 function fixture(fetchResponse = null) {
   const originals = new Map(["document", "window", "navigator", "MediaRecorder", "fetch"].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
   const listeners = new Map(), closeListeners = new Map(), buttons = new Map();
-  const pendingPermissions = [], recorders = [], stopEvents = [], timers = new Map();
+  const pendingPermissions = [], pendingDenials = [], recorders = [], stopEvents = [], timers = new Map();
   let permissionCalls = 0, requests = 0, timerID = 0;
   const media = { hidden: false, addEventListener: (key, value) => listeners.set(key, value), removeEventListener: key => listeners.delete(key),
     createElement: () => ({ innerHTML: "", className: "", querySelector: selector => {
@@ -39,13 +39,13 @@ function fixture(fetchResponse = null) {
   set("document", media);
   set("window", { setTimeout: callback => { const id = ++timerID; timers.set(id, callback); return id; }, clearTimeout: id => timers.delete(id) });
   set("navigator", { mediaDevices: { getUserMedia: () => {
-    permissionCalls++; return new Promise(resolve => pendingPermissions.push(resolve));
+    permissionCalls++; return new Promise((resolve, reject) => { pendingPermissions.push(resolve); pendingDenials.push(reject); });
   } } });
   set("MediaRecorder", Recorder);
   set("fetch", () => { requests++; if (fetchResponse) return Promise.resolve(fetchResponse); throw new Error("Cancelled recordings must not submit audio"); });
   const textButton = { disabled: false };
-  const confirmed = [];
-  const voice = new AssistantVoice({ append() {} }, settings, textButton, () => {}, () => {}, action => confirmed.push(action));
+  const confirmed = [], starts = [];
+  const voice = new AssistantVoice({ append() {} }, settings, textButton, () => starts.push(Date.now()), () => {}, action => confirmed.push(action));
   const stream = () => { const track = { stops: 0, stop() { this.stops++; } }; return { track, getTracks: () => [track] }; };
   const cleanup = () => {
     voice.dispose();
@@ -53,7 +53,12 @@ function fixture(fetchResponse = null) {
       if (descriptor) Object.defineProperty(globalThis, key, descriptor); else delete globalThis[key];
     }
   };
-  return { voice, confirmed, textButton, buttons, settings, media, listeners, closeListeners, pendingPermissions, recorders, stopEvents, timers, stream,
+  const enable = async () => {
+    buttons.get("#voice-vr-enable").onclick();
+    const probe = stream(); pendingPermissions.shift()(probe); pendingDenials.shift(); await flush();
+    return probe;
+  };
+  return { voice, confirmed, starts, enable, pendingDenials, textButton, buttons, settings, media, listeners, closeListeners, pendingPermissions, recorders, stopEvents, timers, stream,
     permissionCalls: () => permissionCalls, requests: () => requests, cleanup };
 }
 
@@ -156,4 +161,98 @@ test("dismissed, malformed, superseded, and stale proposals never confirm", () =
     assert.deepEqual(f.confirmed, []);
     assert.equal(f.buttons.get("#voice-confirm").disabled, true);
   } finally { Date.now = realNow; f.cleanup(); }
+});
+
+test("push-to-talk needs the settings opt-in; the opt-in probe releases the microphone at once", async () => {
+  const f = fixture();
+  try {
+    f.settings.open = false;
+    assert.equal(f.voice.pushStart(), false);
+    assert.equal(f.permissionCalls(), 0);
+    assert.equal(f.voice.phase, "error");
+    const probe = await f.enable();
+    assert.equal(probe.track.stops, 1);
+    assert.equal(f.voice.vrEnabled, true);
+    assert.equal(f.recorders.length, 0);
+  } finally { f.cleanup(); }
+});
+
+test("held left trigger records in VR with settings closed; release sends one local question", async () => {
+  const f = fixture({ ok: true, json: async () => ({ answer: "Two people ahead", audio_url: null }) });
+  try {
+    await f.enable(); f.settings.open = false;
+    assert.equal(f.voice.pushStart(), true);
+    assert.equal(f.starts.length, 1, "starting a question stops the rover");
+    assert.equal(f.voice.capturing, true);
+    const stream = f.stream(); f.pendingPermissions.shift()(stream); await flush();
+    assert.equal(f.voice.phase, "listening");
+    assert.equal(f.voice.pushStart(), false, "a second press cannot open another microphone");
+    f.recorders[0].ondataavailable({ data: new Blob(["audio"], { type: "audio/webm" }) });
+    f.voice.pushEnd();
+    assert.equal(stream.track.stops, 1);
+    assert.equal(f.voice.capturing, false);
+    f.stopEvents.shift()(); await flush(); await flush();
+    assert.equal(f.requests(), 1);
+    assert.equal(f.voice.phase, "answer");
+    assert.equal(f.voice.answerText, "Two people ahead");
+    assert.equal(f.textButton.disabled, false);
+  } finally { f.cleanup(); }
+});
+
+test("denied microphone, early release and tracking loss stop every track and send nothing", async () => {
+  const f = fixture();
+  try {
+    await f.enable(); f.settings.open = false;
+    f.voice.pushStart();
+    f.pendingPermissions.shift(); f.pendingDenials.shift()(new Error("NotAllowedError")); await flush();
+    assert.equal(f.voice.phase, "error");
+    assert.match(f.voice.statusText, /Microphone unavailable/);
+    assert.equal(f.textButton.disabled, false);
+
+    f.voice.pushStart(); f.voice.pushEnd();
+    assert.equal(f.voice.capturing, false);
+    const late = f.stream(); f.pendingPermissions.shift()(late); f.pendingDenials.shift(); await flush();
+    assert.equal(late.track.stops, 1);
+    assert.equal(f.recorders.length, 0);
+
+    f.voice.pushStart();
+    const live = f.stream(); f.pendingPermissions.shift()(live); f.pendingDenials.shift(); await flush();
+    assert.equal(f.voice.phase, "listening");
+    f.voice.stopListening("XR tracking lost: voice question cancelled");
+    assert.equal(live.track.stops, 1);
+    assert.equal(f.recorders.at(-1).state, "inactive");
+    f.stopEvents.shift()(); await flush();
+    assert.equal(f.requests(), 0);
+    assert.match(f.voice.statusText, /tracking lost/);
+  } finally { f.cleanup(); }
+});
+
+test("push-to-talk keeps the ten-second cap", async () => {
+  const f = fixture({ ok: true, json: async () => ({ answer: "ok" }) });
+  try {
+    await f.enable(); f.settings.open = false;
+    f.voice.pushStart();
+    const stream = f.stream(); f.pendingPermissions.shift()(stream); await flush();
+    f.recorders[0].ondataavailable({ data: new Blob(["audio"], { type: "audio/webm" }) });
+    [...f.timers.values()].at(-1)();
+    assert.equal(stream.track.stops, 1);
+    f.voice.pushEnd();
+    f.stopEvents.shift()(); await flush(); await flush();
+    assert.equal(f.requests(), 1);
+  } finally { f.cleanup(); }
+});
+
+test("in-VR confirmation acts once on a fresh proposal only", () => {
+  const f = fixture();
+  try {
+    assert.equal(f.voice.confirmAction(), false);
+    f.voice.setReply({ answer: "a", action: { type: "scan" } });
+    assert.deepEqual(f.voice.pendingAction, { type: "scan" });
+    assert.equal(f.voice.confirmAction(), true);
+    assert.equal(f.voice.confirmAction(), false);
+    f.voice.setReply({ answer: "a", action: { type: "seek", target_id: 2 } });
+    f.voice.dismissAction();
+    assert.equal(f.voice.pendingAction, null);
+    assert.deepEqual(f.confirmed, [{ type: "scan" }]);
+  } finally { f.cleanup(); }
 });
