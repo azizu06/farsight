@@ -952,15 +952,31 @@ impl SerialPump {
             .timeout(Duration::from_millis(0))
             .open()
             .map_err(|e| e.to_string())?;
+        // #116: non-blocking writes like pyserial write_timeout=0 — a stalled
+        // or partial write is a serial fault, not a silent queue. The Uno
+        // watchdog and reply timeout prove liveness instead.
+        fn send(device: &mut Box<dyn serialport::SerialPort>, data: &[u8]) -> Result<(), String> {
+            if device.bytes_to_write().unwrap_or(0) > 256 {
+                return Err("Uno serial output stalled".into());
+            }
+            match device.write(data) {
+                Ok(n) if n == data.len() => Ok(()),
+                Ok(_) => Err("Uno serial write incomplete".into()),
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
+                {
+                    Err("Uno serial write incomplete".into())
+                }
+                Err(e) => Err(e.to_string()),
+            }
+        }
         // Uno's USB open can reset its bootloader; wait without blocking the server.
         if self.wait(2.0) {
             return Ok(());
         }
         let _ = device.clear(serialport::ClearBuffer::All);
         let servo = self.state.pan_mount == "servo";
-        device
-            .write_all(if servo { b"M 0 0\nP 90\nR\n" as &[u8] } else { b"M 0 0\nR\n" })
-            .map_err(|e| e.to_string())?;
+        send(&mut device, if servo { b"M 0 0\nP 90\nR\n" as &[u8] } else { b"M 0 0\nR\n" })?;
         let mut pending: Vec<u8> = Vec::new();
         let started = self.state.now();
         let mut last_response = started;
@@ -1016,7 +1032,7 @@ impl SerialPump {
                     data.push_str("R\n");
                     next_range = now + 0.1;
                 }
-                device.write_all(data.as_bytes()).map_err(|e| e.to_string())?;
+                send(&mut device, data.as_bytes())?;
                 next_tick = now + 0.05;
             }
             self.wait(0.005);
