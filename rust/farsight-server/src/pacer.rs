@@ -26,7 +26,10 @@ pub struct BulkPacer {
 
 impl BulkPacer {
     fn new(rate_mbps: f64) -> Self {
-        Self { rate: rate_mbps * 1_000_000.0 / 8.0, bucket: Mutex::new(Bucket { next: None }) }
+        // NaN/negative/infinite caps mean "no pacing"; a near-zero cap is
+        // floored so the per-chunk delay can never overflow an Instant.
+        let rate = if rate_mbps.is_finite() { rate_mbps.max(0.0) } else { 0.0 };
+        Self { rate: rate * 1_000_000.0 / 8.0, bucket: Mutex::new(Bucket { next: None }) }
     }
 
     async fn take(&self, n: usize) {
@@ -43,7 +46,9 @@ impl BulkPacer {
             Some(t) => t.max(earliest),
             None => earliest,
         };
-        let wake = start + Duration::from_secs_f64(n as f64 / self.rate);
+        // Cap the per-chunk delay: beyond an hour the request is stalled
+        // anyway, and unbounded durations can overflow Instant's add.
+        let wake = start + Duration::from_secs_f64((n as f64 / self.rate).min(3600.0));
         b.next = Some(wake);
         if wake > now {
             tokio::time::sleep(wake - now).await;
