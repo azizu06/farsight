@@ -12,10 +12,11 @@ from .state import ControlState
 
 class ControlService:
     def __init__(self, serial_port=None, simulate=False, max_pwm=100, camera_ready=None, min_pwm=0,
-                 detections=None):
+                 detections=None, drive_profile=None, allow_calibration=False):
         self.on_status = None
         self.state = ControlState(simulated=simulate, max_pwm=max_pwm, camera_ready=camera_ready,
-                                  min_pwm=min_pwm, detections=detections)
+                                  min_pwm=min_pwm, detections=detections,
+                                  drive_profile=drive_profile, allow_calibration=allow_calibration)
         self.pump = SerialPump(self.state, port=serial_port, simulate=simulate)
         self.router = APIRouter()
         self.router.add_api_websocket_route("/ws/control", self.websocket)
