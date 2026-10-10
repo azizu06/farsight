@@ -403,7 +403,20 @@ canvas:focus-visible {
 .voice-assistant .button-row { gap: 5px; }
 .voice-assistant .button-row button { padding: 8px 6px; }
 .voice-assistant p { color: #afbdcc; font-size: 10px; }
+#voice-vr-enable { width: 100%; margin-bottom: 8px; padding: 8px 6px; }
 .local-assistant > p[role="status"] { white-space: pre-line; }
 /* Desktop fallback for the rescue drill panel (the headset shows it beside the camera). */
 #full-camera > canvas.drill-hud { position: absolute; top: 48px; right: 12px; width: min(300px, 42vw); height: auto; border-radius: 8px; pointer-events: none; }
 #full-camera > canvas.drill-hud[hidden] { display: none; }
+/* Footage truth comes only from server-reported state; it never hides behind settings. */
+.source-banner {
+  position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 5;
+  width: min(560px, calc(100vw - 32px)); padding: 8px 16px; border: 3px solid currentColor; border-radius: 8px;
+  pointer-events: none; text-align: center; background: #5b1f1f; color: #ffd2ca; box-shadow: 0 6px 24px #0007;
+}
+.source-banner strong { display: block; font-size: 26px; letter-spacing: 0.06em; line-height: 1.15; }
+.source-banner span { display: block; font-size: 12px; line-height: 1.4; overflow-wrap: anywhere; }
+.source-banner[data-kind="LIVE"] { background: #14532d; color: #bbf7d0; }
+.source-banner[data-kind="SIMULATED"] { background: #7c4a03; color: #ffe3a3; }
+.source-banner[data-kind="REPLAY"] { background: #4c1d95; color: #e9d5ff; }
+@media (max-width: 760px) { .source-banner { top: 58px; } .source-banner strong { font-size: 20px; } }
