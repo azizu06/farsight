@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { ControlSafety, stick } from "./control-safety.js";
+import { H264Viewer } from "./h264";
 
 type Box = { id?: number; cls: string; conf: number; x: number; y: number; w: number; h: number };
 type Detections = { frame: number | string; boxes: Box[]; fps?: number; source?: string; simulated?: boolean };
@@ -19,12 +20,21 @@ export class RoverExperience {
   private frameBusy = false;
   private request: AbortController | null = null;
   private frameId = "";
+  private pendingFrame: { id: string | null; age: number; at: number } | null = null;
+  private lastCanvasDraw = -Infinity;
+  private inputValid = false;
+  private contextLost = false;
   private frameSource = "Waiting for camera";
   private frame: HTMLImageElement | null = null;
   private detections: Detections | null = null;
   private detectionsAt = -Infinity;
   private status: ControlStatus | null = null;
   private seq = 0;
+  private sent = new Map<number, number>();
+  private ackMs: number | null = null;
+  private drill: { active: boolean; remaining_s: number | null; person_encounters: number } | null = null;
+  private drillAt = -Infinity;
+  private drillBusy = false;
   private lastSendAt = 0;
   private input = { held: false, v: 0, w: 0, pan: 0 };
   private keys = new Set<string>();
@@ -47,6 +57,10 @@ export class RoverExperience {
   private message: HTMLElement;
   private details: HTMLElement;
   private holdButton: HTMLButtonElement;
+  private h264: H264Viewer;
+  private h264Enabled = false;
+  private cameraScreen: THREE.Mesh;
+  private lastVideoAt = 0;
   private dirty = true;
   private lastHudAt = 0;
   private quat = new THREE.Quaternion();
@@ -102,11 +116,26 @@ export class RoverExperience {
     const hud = new THREE.Mesh(new THREE.PlaneGeometry(2.8, 0.60), new THREE.MeshBasicMaterial({ map: this.hudTexture, transparent: true, toneMapped: false, depthTest: false }));
     hud.position.set(0, -1.10, -2.30); hud.renderOrder = 11;
     this.cockpit.add(screen, hud); this.cockpit.visible = false;
+    this.cameraScreen = screen;
     this.scene.add(this.cockpit);
+    this.h264 = new H264Viewer(() => {
+      if (performance.now() - this.lastVideoAt > 60) { this.dirty = true; this.lastVideoAt = performance.now(); }
+    }, () => this.stop("H.264 restarted: motion disabled"));
+    const videoOption = document.createElement("label"); videoOption.className = "check";
+    videoOption.innerHTML = '<input type="checkbox"/> H.264 video (experimental; requires decoded freshness)';
+    document.querySelector("#settings")!.append(videoOption);
+    videoOption.querySelector("input")!.onchange = event => {
+      this.h264Enabled = (event.target as HTMLInputElement).checked;
+      this.stop("Video format changed: release deadman");
+      this.gate.frameAt = -Infinity; this.gate.frameAge = Infinity; this.pendingFrame = null; this.lastCanvasDraw = -Infinity;
+      if (this.h264Enabled) this.h264.start(); else this.h264.stop();
+      this.dirty = true;
+    };
     this.renderer.xr.addEventListener("sessionstart", () => {
       this.stop("VR session started: release trigger");
       this.lastXRAt = -Infinity;
-      this.recenter = true; this.xrLive = true;
+      this.inputValid = false; this.keys.clear(); this.pointerHeld = false;
+      this.recenter = true; this.xrLive = true; this.setView("camera");
       this.renderer.xr.getSession()?.addEventListener("visibilitychange", () => {
         this.suspended = this.renderer.xr.getSession()?.visibilityState !== "visible";
         if (this.suspended) this.stop("Headset inactive: release trigger");
@@ -115,7 +144,10 @@ export class RoverExperience {
     this.renderer.xr.addEventListener("sessionend", () => {
       this.stop("VR session ended: release deadman"); this.suspended = false;
       this.lastXRAt = -Infinity;
+      this.inputValid = false; this.keys.clear(); this.pointerHeld = false;
     });
+    this.renderer.domElement.addEventListener("webglcontextlost", () => { this.contextLost = true; this.stop("Display lost: release deadman"); });
+    this.renderer.domElement.addEventListener("webglcontextrestored", () => { this.contextLost = false; this.stop("Display restored: release deadman"); });
     this.connectControl(); this.connectDetections();
     this.timers.push(window.setInterval(() => this.pump(), 50));
     this.timers.push(window.setInterval(() => void this.fetchFrame(), 160));
@@ -127,6 +159,7 @@ export class RoverExperience {
     if (/INPUT|TEXTAREA|SELECT/.test((event.target as HTMLElement)?.tagName ?? "") || event.metaKey || event.ctrlKey || event.altKey || document.querySelector("dialog[open]")) return;
     if (this.getView() !== "camera" || this.renderer.xr.isPresenting) return;
     const key = event.code;
+    if (event.repeat && !this.keys.has(key)) return;
     if (["Space", "KeyW", "KeyA", "KeyS", "KeyD"].includes(key)) {
       event.preventDefault(); this.keys.add(key);
     }
@@ -137,8 +170,7 @@ export class RoverExperience {
   private escapeStop = (event: KeyboardEvent) => { if (event.key === "Escape") this.stop("Stopped: release deadman"); };
 
   stop(reason: string) {
-    this.gate.invalidate(reason);
-    this.input.held = false;
+    this.input = this.gate.stop(this.input, reason);
     this.send(false);
   }
   private endpoint(path: string) { return new URL(path, location.origin).href.replace(/^http/, "ws"); }
@@ -152,6 +184,7 @@ export class RoverExperience {
         const next = JSON.parse(event.data) as ControlStatus;
         if (this.gate.acceptStatus(next, performance.now())) {
           this.status = next;
+          if (typeof next.seq === "number" && this.sent.has(next.seq)) this.ackMs = performance.now() - this.sent.get(next.seq)!;
           if (next.requires_release) this.gate.invalidate(next.reason ?? "Release deadman to continue");
         }
       } catch { this.stop("Invalid control status"); socket.close(); }
@@ -184,7 +217,7 @@ export class RoverExperience {
   }
 
   private async fetchFrame() {
-    if (this.frameBusy || document.hidden || this.stopped ||
+    if (this.h264Enabled || this.frameBusy || document.hidden || this.stopped ||
         (!this.renderer.xr.isPresenting && this.getView() !== "camera")) return;
     this.frameBusy = true;
     const start = performance.now();
@@ -204,11 +237,11 @@ export class RoverExperience {
       const image = new Image(); image.src = url;
       await image.decode();
       const now = performance.now();
-      if (this.stopped || controller.signal.aborted) return;
+      if (this.stopped || controller.signal.aborted || this.h264Enabled) return;
       this.frame = image; this.frameSource = source;
       this.frameId = id ?? "";
       // Server capture age + full request/decode time bounds transit age without synchronized clocks.
-      this.gate.acceptFrame(id, ageHeader === null ? Infinity : Number(ageHeader) + now - start, now);
+      this.pendingFrame = { id, age: ageHeader === null ? Infinity : Number(ageHeader) + now - start, at: now };
       this.dirty = true;
     } catch {
       // Keep the last frame visible; its monotonically growing age stops motion.
@@ -235,6 +268,7 @@ export class RoverExperience {
           frame.getPose(right.gripSpace, reference) && frame.getPose(movement.gripSpace, reference));
       } catch { /* An ended/inactive frame cannot provide current tracking. */ }
       if (!tracked) {
+        this.inputValid = false;
         if (Number.isFinite(this.lastXRAt) || this.input.held)
           this.stop("XR tracking unavailable: release trigger");
         else this.gate.invalidate("XR tracking unavailable: release trigger");
@@ -250,7 +284,7 @@ export class RoverExperience {
       const held = !!right?.gamepad?.buttons[0]?.pressed;
       const toggle = !!right?.gamepad?.buttons[4]?.pressed;
       const center = !!right?.gamepad?.buttons[5]?.pressed;
-      if (toggle && !this.toggleDown) { this.xrLive = !this.xrLive; this.stop("View changed: release trigger"); }
+      if (toggle && !this.toggleDown) { this.xrLive = !this.xrLive; this.stop("View changed: release trigger"); this.setView(this.xrLive ? "camera" : "3d"); }
       if (center && !this.recenterDown) this.recenter = true;
       this.toggleDown = toggle; this.recenterDown = center;
       const xrCamera = this.renderer.xr.getCamera();
@@ -258,20 +292,26 @@ export class RoverExperience {
       this.euler.setFromQuaternion(this.quat, "YXZ");
       if (this.recenter) { this.baseYaw = this.euler.y; this.recenter = false; }
       const yaw = Math.atan2(Math.sin(this.euler.y - this.baseYaw), Math.cos(this.euler.y - this.baseYaw));
-      this.input = { held: held && this.xrLive && !this.suspended,
+      this.inputValid = true;
+      this.input = { held,
         v: -stick(axes.length >= 4 ? axes[3] : axes[1]) * 0.45,
         w: stick(axes.length >= 4 ? axes[2] : axes[0]) * 0.55,
         pan: THREE.MathUtils.clamp(-THREE.MathUtils.radToDeg(yaw), -80, 80) };
       this.cockpit.position.copy(this.position); this.cockpit.quaternion.copy(this.quat);
     } else {
+      this.inputValid = true;
       this.input = {
-        held: (this.keys.has("Space") || this.pointerHeld) && this.getView() === "camera" && !document.querySelector("dialog[open]"),
+        held: this.keys.has("Space") || this.pointerHeld,
         v: (Number(this.keys.has("KeyW")) - Number(this.keys.has("KeyS"))) * 0.35,
         w: (Number(this.keys.has("KeyD")) - Number(this.keys.has("KeyA"))) * 0.45,
         pan: 0,
       };
     }
-    this.cockpit.visible = xr && this.xrLive;
+    this.cockpit.visible = xr;
+    this.cameraScreen.visible = this.xrLive;
+    if (this.h264Enabled) {
+      this.h264.update();
+    }
     if (this.dirty) this.drawCamera(now);
     if (now - this.lastHudAt > 100) { this.drawHUD(now); this.lastHudAt = now; }
   }
@@ -280,8 +320,9 @@ export class RoverExperience {
   private pump() {
     const now = performance.now();
     const connected = this.socket?.readyState === WebSocket.OPEN;
-    const active = this.input.held && !document.hidden && !this.suspended;
-    const moving = this.gate.decide(active, now, connected,
+    const contextActive = this.renderer.xr.isPresenting ? this.xrLive && !this.suspended : this.getView() === "camera" && !document.querySelector("dialog[open]");
+    const available = this.inputValid && contextActive && !document.hidden && !this.contextLost && now - this.lastCanvasDraw < 250;
+    const moving = this.gate.decide(this.input.held, now, connected, available,
       this.renderer.xr.isPresenting ? this.lastXRAt : undefined);
     // Never add another command behind buffered traffic. Reset the session instead.
     if (connected && this.socket!.bufferedAmount > 0) {
@@ -293,8 +334,11 @@ export class RoverExperience {
   private send(deadman: boolean) {
     if (this.socket?.readyState !== WebSocket.OPEN || this.socket.bufferedAmount > 0) return;
     const age = this.gate.videoAge(performance.now());
+    const seq = this.seq++;
+    this.sent.set(seq, performance.now());
+    if (this.sent.size > 100) this.sent.delete(this.sent.keys().next().value!);
     this.socket.send(JSON.stringify({
-      seq: this.seq++, session_id: this.status?.session_id ?? null, permit: this.status?.permit ?? null,
+      seq, session_id: this.status?.session_id ?? null, permit: this.status?.permit ?? null,
       deadman, v: deadman ? this.input.v : 0, w: deadman ? this.input.w : 0,
       pan: this.input.pan, mode: "teleop", video_fresh: age < 500,
       video_age_ms: Number.isFinite(age) ? Math.ceil(age) : 999999,
@@ -303,15 +347,24 @@ export class RoverExperience {
   }
   private drawCamera(now: number) {
     const context = this.ctx;
-    if (this.frame) {
-      if (this.canvas.width !== this.frame.naturalWidth || this.canvas.height !== this.frame.naturalHeight) {
-        this.canvas.width = this.frame.naturalWidth; this.canvas.height = this.frame.naturalHeight;
-        this.cameraTexture.dispose();
-        this.cameraTexture = this.createCameraTexture();
-        this.cameraMaterial.map = this.cameraTexture;
-        this.cameraMaterial.needsUpdate = true;
+    if (this.h264Enabled && this.h264.video.readyState >= 2) {
+      const video = this.h264.video;
+      this.resizeCameraCanvas(video.videoWidth, video.videoHeight);
+      context.drawImage(video, 0, 0, this.canvas.width, this.canvas.height);
+      const decoded = this.h264.displayedFrame;
+      if (decoded) {
+        this.gate.acceptFrame(decoded.id, decoded.age, now);
+        this.frameSource = decoded.source; this.frameId = String(decoded.frame);
+        this.lastCanvasDraw = now;
       }
+    } else if (!this.h264Enabled && this.frame) {
+      this.resizeCameraCanvas(this.frame.naturalWidth, this.frame.naturalHeight);
       context.drawImage(this.frame, 0, 0, this.canvas.width, this.canvas.height);
+      if (this.pendingFrame) {
+        const pending = this.pendingFrame;
+        if (this.gate.acceptFrame(pending.id, pending.age + now - pending.at, now)) this.lastCanvasDraw = now;
+        this.pendingFrame = null;
+      }
       const matching = this.detections && String(this.detections.frame) === this.frameId && now - this.detectionsAt < 500;
       if (matching) {
         context.strokeStyle = "#8dffa9"; context.fillStyle = "#8dffa9";
@@ -336,6 +389,15 @@ export class RoverExperience {
     texture.colorSpace = THREE.SRGBColorSpace;
     return texture;
   }
+  private resizeCameraCanvas(width: number, height: number) {
+    if (this.canvas.width === width && this.canvas.height === height) return;
+    this.canvas.width = width; this.canvas.height = height;
+    // Immutable WebGL texture storage cannot retain the previous image size.
+    this.cameraTexture.dispose();
+    this.cameraTexture = this.createCameraTexture();
+    this.cameraMaterial.map = this.cameraTexture;
+    this.cameraMaterial.needsUpdate = true;
+  }
   private drawHUD(now: number) {
     const ready = this.gate.readiness(now, this.socket?.readyState === WebSocket.OPEN,
       this.renderer.xr.isPresenting ? this.lastXRAt : undefined);
@@ -344,9 +406,11 @@ export class RoverExperience {
     const simulation = this.status?.simulated || this.frameSource === "SIMULATED";
     const moving = this.input.held && !this.gate.needsRelease && !ready;
     const headline = `${simulation ? "SIMULATED · " : ""}${ready ?? this.gate.reason}`;
+    const ack = this.ackMs === null ? "ack pending" : `control ack ${Math.round(this.ackMs)} ms`;
     const range = this.status?.range_cm == null ? "range unknown" : `${Math.round(this.status.range_cm)} cm`;
     const detection = !this.detections ? "detector unavailable" : now - this.detectionsAt > 500 ? "detections stale" : String(this.detections.frame) !== this.frameId ? "detections awaiting matching frame" : `${this.detections.boxes.length} detections`;
-    const detail = `${this.frameSource} · video ${age} · ${range} · ${detection}`;
+    const drill = this.drillLine(now);
+    const detail = `${this.frameSource} · ${this.h264Enabled ? "H.264" : "JPEG"} video ${age} · ${ack} · ${range} · ${detection}${drill ? " · " + drill : ""}${this.h264Enabled && !this.h264.displayedFrame ? " · " + this.h264.state : ""}`;
     this.message.textContent = headline;
     this.message.dataset.state = moving ? "moving" : ready ? "unsafe" : "ready";
     this.details.textContent = `${detail}${this.status?.estop ? " · FORWARD BLOCKED" : ""}`;
@@ -356,8 +420,9 @@ export class RoverExperience {
     c.fillStyle = simulation ? "#ffc779" : ready ? "#ffb3a8" : "#a6edc4";
     c.font = "bold 32px system-ui"; c.fillText(headline.slice(0, 58), 28, 46);
     c.font = "24px system-ui"; c.fillStyle = "#dce5ee";
-    c.fillText(`${this.frameSource} · Video ${age} · ${range}`, 28, 90);
-    c.fillText(`${detection}${this.status?.estop ? " · FORWARD BLOCKED" : ""}`, 28, 126);
+    c.fillText(`${this.frameSource} · ${this.h264Enabled ? "H.264" : "JPEG"} video ${age} · ${range}`, 28, 90);
+    c.fillText(`${ack} · ${detection}${this.status?.estop ? " · FORWARD BLOCKED" : ""}`, 28, 126);
+    if (drill) { c.font = "18px system-ui"; c.fillText(drill, 28, 150); }
     c.font = "22px system-ui";
     c.fillText("Right trigger: deadman · Left stick: drive · A: map · B: center pan", 28, 170);
     c.fillText("Release trigger after a stop or reconnect", 28, 202);
@@ -368,9 +433,14 @@ export class RoverExperience {
     const parent = document.querySelector("#settings")!;
     const block = document.createElement("section");
     block.className = "local-assistant";
-    block.innerHTML = `<h2>Local scene assistant</h2><form><input aria-label="Question for rover" placeholder="What do you see?" maxlength="500"/><button>Ask</button></form><p role="status">Uses observed detections; runs on rover.</p><a href="/mission/report" target="_blank" rel="noopener">Open mission report</a>`;
+    block.innerHTML = `<h2>Local scene assistant</h2><form><input aria-label="Question for rover" placeholder="What do you see?" maxlength="500"/><button>Ask</button></form><p role="status">Uses observed detections; runs on rover.</p><button type="button" id="start-drill">Start 90-second rescue drill</button><p id="drill-status">Counts observed person tracks as encounters.</p><a href="/mission/report" target="_blank" rel="noopener">Open mission report</a>`;
     parent.append(block);
-    const form = block.querySelector("form")!, input = block.querySelector("input")!, result = block.querySelector("p")!, button = block.querySelector("button")!;
+    const form = block.querySelector("form")!, input = block.querySelector("input")!, result = block.querySelector("p")!, button = form.querySelector("button")!;
+    const drillButton = block.querySelector<HTMLButtonElement>("#start-drill")!;
+    drillButton.onclick = () => void this.updateDrill(true);
+    this.timers.push(window.setInterval(() => {
+      if (document.querySelector<HTMLDialogElement>("#settings")!.open || this.drill?.active) void this.updateDrill(false);
+    }, 1000));
     form.onsubmit = async event => {
       event.preventDefault(); if (!input.value.trim() || button.disabled) return;
       this.stop("Assistant open: release deadman"); button.disabled = true; result.textContent = "Asking rover…";
@@ -383,10 +453,36 @@ export class RoverExperience {
       finally { window.clearTimeout(timer); button.disabled = false; }
     };
   }
+  private drillLine(now: number) {
+    if (!this.drill || this.drill.remaining_s === null) return "";
+    if (now - this.drillAt > 3000) return "Rescue drill status stale";
+    const left = Math.max(0, this.drill.remaining_s - (now - this.drillAt) / 1000);
+    return `${left > 0 ? "Rescue drill " + Math.ceil(left) + "s" : "Rescue drill complete"} · ${this.drill.person_encounters} person encounters`;
+  }
+  private async updateDrill(start: boolean) {
+    if (this.drillBusy || this.stopped) return;
+    this.drillBusy = true;
+    const label = document.querySelector("#drill-status");
+    const abort = new AbortController(), timer = window.setTimeout(() => abort.abort(), 2000);
+    try {
+      if (start) this.stop("Drill started: release deadman");
+      const response = await fetch("/mission/drill", start ? {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ duration_s: 90 }), signal: abort.signal,
+      } : { cache: "no-store", signal: abort.signal });
+      if (!response.ok) throw new Error(`Drill HTTP ${response.status}`);
+      const drill = await response.json();
+      if (typeof drill.active !== "boolean" || !Number.isFinite(drill.person_encounters) ||
+          !(drill.remaining_s === null || Number.isFinite(drill.remaining_s))) throw new Error("Invalid drill status");
+      this.drill = drill; this.drillAt = performance.now();
+      if (label) label.textContent = `${this.drillLine(this.drillAt) || "Ready to start"}. Tracks are encounters, not verified distinct people.`;
+    } catch (error) { if (label) label.textContent = `Drill unavailable: ${String(error)}`; }
+    finally { window.clearTimeout(timer); this.drillBusy = false; }
+  }
   dispose() {
     this.stop("Viewer closed"); this.stopped = true;
     this.timers.forEach(timer => { window.clearInterval(timer); window.clearTimeout(timer); });
-    this.socket?.close(); this.detectionsSocket?.close(); this.request?.abort();
+    this.socket?.close(); this.detectionsSocket?.close(); this.request?.abort(); this.h264.stop();
     window.removeEventListener("keydown", this.keyDown); window.removeEventListener("keyup", this.keyUp);
     window.removeEventListener("blur", this.blur); document.removeEventListener("visibilitychange", this.visibility);
     document.removeEventListener("keydown", this.escapeStop);

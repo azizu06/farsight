@@ -40,6 +40,7 @@ export interface SceneCallbacks {
   onFrame: (now: number, session: XRSession | null, yaw: number) => void;
   onAction: (action: "drill" | "stop") => void;
   onSessionEnd: () => void;
+  onRendered?: () => void;
 }
 
 export class RoverScene {
@@ -165,6 +166,7 @@ export class RoverScene {
         );
       this.callbacks.onFrame(time, session, tracked ? this.euler.y : NaN);
       this.renderer.render(this.scene, this.camera);
+      this.callbacks.onRendered?.();
     });
   }
 

@@ -20,9 +20,34 @@ const commands: {
 let cameraOn = true,
   repliesOn = true,
   estop = false;
+let snapshotMetadata = true,
+  cameraFrame = 0,
+  freezeFrameAt: number | null = null;
 const streams = new Set<ServerResponse>();
 const fixture = createServer((request, response) => {
-  if (request.url === "/stream.mjpg") {
+  if (request.url === "/camera.jpg") {
+    if (!cameraOn) {
+      response.writeHead(503);
+      response.end();
+      return;
+    }
+    response.writeHead(200, {
+      "Content-Type": "image/jpeg",
+      "Cache-Control": "no-store",
+      ...(snapshotMetadata
+        ? {
+            "X-Frame-Id": String(
+              freezeFrameAt === null ? ++cameraFrame : cameraFrame,
+            ),
+            "X-Frame-Age-Ms": String(
+              freezeFrameAt === null ? 10 : 10 + Date.now() - freezeFrameAt,
+            ),
+            "X-Frame-Source": "SIMULATED",
+          }
+        : {}),
+    });
+    response.end(jpeg);
+  } else if (request.url === "/stream.mjpg") {
     response.writeHead(200, {
       "Content-Type": "multipart/x-mixed-replace; boundary=camera",
       "Cache-Control": "no-store",
@@ -49,16 +74,38 @@ const fixture = createServer((request, response) => {
 const sockets = new WebSocketServer({ noServer: true });
 fixture.on("upgrade", (request, socket, head) =>
   sockets.handleUpgrade(request, socket, head, (ws) => {
-    let seq = 0,
+    let seq = -1,
       frame = 0;
+    const sessionId = "fixture-controller";
+    let permit = "fixture-permit",
+      requiresRelease = true;
+    let permitCounter = 0;
+    const permits = new Map<string, number>();
     ws.on("message", (message) => {
       const command = JSON.parse(String(message));
+      // The fixture enforces the fields required by the actual ControlState.
+      if (command.session_id !== sessionId) return;
+      if (command.deadman === false) requiresRelease = false;
+      else if (
+        requiresRelease ||
+        (permits.get(command.permit) ?? 0) <= Date.now() ||
+        command.video_fresh !== true ||
+        !Number.isFinite(command.video_age_ms) ||
+        command.video_age_ms < 0 ||
+        command.video_age_ms > 500
+      )
+        return;
       seq = command.seq;
       commands.push({ ...command, at: Date.now() });
     });
     const timer = setInterval(() => {
       if (ws.readyState !== 1) return;
-      if (request.url === "/ws/control" && repliesOn)
+      if (request.url === "/ws/control" && repliesOn) {
+        permit = `fixture-permit-${++permitCounter}`;
+        const now = Date.now();
+        for (const [token, expiry] of permits)
+          if (expiry <= now) permits.delete(token);
+        permits.set(permit, now + 250);
         ws.send(
           JSON.stringify({
             seq,
@@ -66,8 +113,17 @@ fixture.on("upgrade", (request, socket, head) =>
             estop,
             mode: "teleop",
             link_ms: 24,
+            type: "control_status",
+            session_id: sessionId,
+            permit,
+            permit_ms: 250,
+            rover: true,
+            simulated: snapshotMetadata,
+            requires_release: requiresRelease,
+            reason: requiresRelease ? "release_required" : "active",
           }),
         );
+      }
       if (request.url === "/ws/detections")
         ws.send(
           JSON.stringify({
@@ -108,6 +164,9 @@ test.beforeEach(() => {
   cameraOn = true;
   repliesOn = true;
   estop = false;
+  snapshotMetadata = true;
+  cameraFrame = 0;
+  freezeFrameAt = null;
   commands.length = 0;
 });
 test.afterEach(async ({ page }, info) => {
@@ -323,6 +382,42 @@ test("preserves the default mapping viewer and its link to rover VR", async ({
   await expect(page.locator("#video-status")).toHaveText("VIDEO RECEIVING");
   await expect(page.locator(".viewport")).toHaveCount(0);
   await expect(page.locator("#drive-enabled")).not.toBeChecked();
+});
+
+test("labels a simulated camera automatically without a query hint", async ({
+  page,
+}) => {
+  await page.goto("/?view=vr");
+  await expect(page.locator("#video-status")).toHaveText("VIDEO RECEIVING");
+  await expect(page.locator("#source-badge")).toHaveText("MOCK · test source");
+});
+
+test("legacy MJPEG without source freshness metadata stays view only", async ({
+  page,
+}) => {
+  snapshotMetadata = false;
+  await page.goto("/?view=vr");
+  await expect(page.locator("#video-status")).toHaveText("VIDEO RECEIVING");
+  await page.locator("#drive-enabled").check();
+  await page.locator("#view").click();
+  await page.keyboard.down("Space");
+  await page.keyboard.down("KeyW");
+  await page.waitForTimeout(400);
+  expect(commands.some((command) => command.deadman)).toBe(false);
+  await expect(page.locator("#source-badge")).toContainText("UNVERIFIED");
+});
+
+test("repeated source frame IDs cannot keep a frozen image live", async ({
+  page,
+}) => {
+  await page.goto("/?view=vr&source=mock");
+  await expect(page.locator("#video-status")).toHaveText("VIDEO RECEIVING");
+  freezeFrameAt = Date.now();
+  await expect(page.locator("#video-status")).not.toHaveText(
+    "VIDEO RECEIVING",
+    { timeout: 4000 },
+  );
+  await expect.poll(async () => (await centerPixel(page))[0]).toBeLessThan(100);
 });
 
 test("replaces the whole GPU texture when the camera resolution changes", async ({

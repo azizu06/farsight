@@ -12,9 +12,11 @@ npm ci
 FARSIGHT_JETSON_ORIGIN=https://YOUR-JETSON:8443 npm run dev
 ```
 
-Open `http://localhost:5174/?view=vr` for the rover/VR screen. The existing mapping viewer remains at `/` and links here from its settings. The app proxies the camera, control/detection WebSockets and existing mapping/phone endpoints through this origin; the headset never contacts a different host. An explicitly known self-signed upstream can be allowed with `FARSIGHT_ALLOW_SELF_SIGNED=1`. This affects the relay's upstream connection only, and does not make the browser-facing certificate trusted.
+Open `http://localhost:5174/?view=vr` for the curved rescue/VR screen. The team's live-camera/map app remains at `/` and links here from its settings. The app proxies camera, control/detection WebSockets, mapping, phone, assistant, mission and video endpoints through this origin; the headset never contacts a different host. An explicitly known self-signed upstream can be allowed with `FARSIGHT_ALLOW_SELF_SIGNED=1`. This affects the relay's upstream connection only, and does not make the browser-facing certificate trusted.
 
-For a mock, open `/?view=vr&source=mock`; recorded runs use `/?view=vr&source=replay`. These show visible badges in both the browser and headset. They do not generate images, detections or a synthetic substitute when a live feed fails.
+Simulated camera headers and control status automatically show a MOCK badge in both the browser and headset. `/?view=vr&source=mock` and `source=replay` are additional explicit labels for test/recorded sources; they do not generate a replacement for a lost live feed. Sources without metadata show UNVERIFIED.
+
+For a software-only rehearsal, install the Python requirements for mapping, control and tools, then run `python -m tools.demo --simulate --build` from the repository root. It serves the built app at `http://localhost:8080`; open `/?view=vr`. The launcher explicitly uses virtual motors and a simulated camera.
 
 ```sh
 npm run build       # outputs quest/dist for the Jetson/relay to serve
@@ -45,11 +47,12 @@ Certificate trust, ADB reverse and immersive entry must be verified on the actua
 - Driving starts disabled. Enable it deliberately, release the deadman, then hold it to move.
 - Quest: right trigger is deadman; right thumbstick drives and turns. Head yaw requests camera pan, relative to initial facing, smoothed and clamped to ±80°. Left trigger points/selects the drill and stop menu. Physical pan direction and controller behaviour still need hardware checks.
 - Desktop: click the camera preview, hold Space, and use WASD. Releasing Space sends a neutral command immediately.
-- Lost control replies after 500 ms, lost XR tracking/input, blur, hidden page or outbound backlog disarms local intent. Reconnect and release controls before trying again.
+- Commands echo the current server session and issued permit. A permit older than 200 ms (or its shorter declared lease), control silence of 300 ms, server release requirements, lost XR tracking/input, blur, hidden page or outbound backlog disarms local intent. Reconnect and release controls before trying again. The HUD's red-link threshold remains 500 ms.
 - Video is a mono curved screen, with the same image in both eyes. It does not provide stereo depth or a 360° view.
-- No new displayed camera image for two seconds clears it and disables driving. This measures local frame arrival, not camera exposure time or network queue age; the present MJPEG contract has no source capture timestamp.
+- When `/camera.jpg` supplies `X-Frame-Id`, `X-Frame-Age-Ms` and `X-Frame-Source`, the rescue screen polls bounded JPEGs with one request in flight. It adds transfer, decoding and rendering time to server receipt age; driving requires a displayed frame younger than 500 ms. Repeated IDs cannot renew freshness. This is receipt age, not a measured sensor exposure timestamp or glass-to-glass latency.
+- Older servers without these headers retain a view-only MJPEG fallback. Local image arrival alone cannot enable driving. No new source frame for two seconds clears the picture and disables driving.
 - Detection boxes use normalized image coordinates. Video and detection messages arrive independently; exact same-frame overlays cannot be guaranteed by this contract.
-- Detector fps and link milliseconds are received telemetry, not locally measured glass-to-glass latency.
+- Detector fps and link milliseconds are received telemetry, not locally measured glass-to-glass latency. Unknown range/timing stays unknown. The server's e-stop flag can mean blocked forward movement due to missing/stale range or camera pan, as well as a close obstacle.
 - The Jetson's 250 ms lease and Uno's 300 ms watchdog remain essential. Closing a browser WebSocket cannot retract bytes already queued by the network. Test real stopping separately; do not treat browser tests as motor-stop measurements.
 
 ## Rescue drill status
@@ -67,6 +70,6 @@ npx playwright install chromium
 npm run test:browser
 ```
 
-The browser suite runs a labelled external MJPEG/WebSocket fixture on 18900 and an isolated Vite relay on 5214. It checks actual rendered JPEG pixels, telemetry, keyboard release, lost link, stale image clearing, graphics loss, delayed decoding recovery, changing image resolution and a late XR grant after viewer disposal. It also checks that the default mapping screen still links to the rover view. It never connects to a real rover. The suite requires Chromium's normal system libraries.
+The browser suite runs a labelled external JPEG/MJPEG/WebSocket fixture on 18900 and an isolated Vite relay on 5214. It checks actual rendered pixels, the session/permit handshake, keyboard release, lost link, stale image clearing, frozen IDs, automatic simulation labelling, view-only legacy video, graphics loss, delayed decoding recovery, changing image resolution and a late XR grant after viewer disposal. It also checks that the default live-camera/map screen still links to the rescue view. It never connects to a real rover. The suite requires Chromium's normal system libraries.
 
 Before closing the assigned issues, check on real hardware: trusted-origin/ADB entry, legible placement, left-menu/right-drive interaction, head pan sign/range, visual latency, deadman release, Wi-Fi loss, graphics/tracking loss, and the Jetson/Uno stop lease. Record measurements rather than assuming target fps or stop times.

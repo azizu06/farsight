@@ -23,6 +23,8 @@ export interface HudSummary {
   estopText: string;
   detectorFpsText: string;
   linkMsText: string;
+  roverText: string;
+  controlReasonText: string;
   activeBoxes: DetectionBox[];
 }
 
@@ -48,6 +50,31 @@ const identifier = (value: unknown): value is number =>
   nonnegative(value) && Number.isSafeInteger(value);
 const unit = (value: unknown): value is number =>
   finite(value) && value >= 0 && value <= 1;
+const nullableMeasurement = (value: unknown): value is number | null =>
+  value === null || nonnegative(value);
+const nullableToken = (value: unknown): boolean =>
+  value === null ||
+  (typeof value === "string" && value.length > 0 && value.length <= 128);
+const integerBetween = (
+  value: unknown,
+  low: number,
+  high: number,
+): value is number =>
+  finite(value) && Number.isSafeInteger(value) && value >= low && value <= high;
+const statusValidators: Record<string, (value: unknown) => boolean> = {
+  type: (value) => value === "control_status",
+  session_id: nullableToken,
+  permit: nullableToken,
+  permit_ms: (value) => integerBetween(value, 1, 60_000),
+  rover: (value) => typeof value === "boolean",
+  simulated: (value) => typeof value === "boolean",
+  requires_release: (value) => typeof value === "boolean",
+  reason: (value) => typeof value === "string" && value.length <= 256,
+  left_pwm: (value) => integerBetween(value, -255, 255),
+  right_pwm: (value) => integerBetween(value, -255, 255),
+  pan_deg: (value) => integerBetween(value, 10, 170),
+  max_pwm: (value) => integerBetween(value, 1, 255),
+};
 
 /** Reject the whole packet if any box violates the normalized image contract. */
 export function parseDetections(value: unknown): DetectionPacket | null {
@@ -101,19 +128,28 @@ export function parseControlReply(value: unknown): ControlReply | null {
   const reply = object(value);
   if (
     !reply ||
-    !identifier(reply.seq) ||
-    !nonnegative(reply.range_cm) ||
+    !integerBetween(reply.seq, -1, Number.MAX_SAFE_INTEGER) ||
+    !nullableMeasurement(reply.range_cm) ||
     typeof reply.estop !== "boolean" ||
     (reply.mode !== "teleop" && reply.mode !== "seek") ||
-    !nonnegative(reply.link_ms)
+    !nullableMeasurement(reply.link_ms)
   )
     return null;
+  // Legacy telemetry can be displayed, but drive authorization belongs to the control module.
+  const metadata: Record<string, unknown> = {};
+  for (const [key, validate] of Object.entries(statusValidators)) {
+    if (Object.prototype.hasOwnProperty.call(reply, key)) {
+      if (!validate(reply[key])) return null;
+      metadata[key] = reply[key];
+    }
+  }
   return {
     seq: reply.seq,
     range_cm: reply.range_cm,
     estop: reply.estop,
     mode: reply.mode,
     link_ms: reply.link_ms,
+    ...metadata,
   };
 }
 
@@ -151,17 +187,29 @@ export function summarizeHud(state: HudState): HudSummary {
         : link === "stale"
           ? "LINK LOST"
           : "LINK UNKNOWN",
-    rangeText: replyFresh
-      ? `${Math.round(state.reply!.range_cm)} cm`
-      : "unknown",
+    rangeText:
+      replyFresh && state.reply!.range_cm !== null
+        ? `${Math.round(state.reply!.range_cm)} cm`
+        : "unknown",
     estop,
     estopText: `E-STOP ${estop.toUpperCase()}`,
     detectorFpsText: detectionsFresh
       ? `${state.detections!.fps.toFixed(1)} fps`
       : "unknown",
-    linkMsText: replyFresh
-      ? `${Math.round(state.reply!.link_ms)} ms`
-      : "unknown",
+    linkMsText:
+      replyFresh && state.reply!.link_ms !== null
+        ? `${Math.round(state.reply!.link_ms)} ms`
+        : "unknown",
+    roverText:
+      replyFresh && typeof state.reply!.rover === "boolean"
+        ? state.reply!.rover
+          ? "ROVER CONNECTED"
+          : "ROVER DISCONNECTED"
+        : "ROVER UNKNOWN",
+    controlReasonText:
+      replyFresh && typeof state.reply!.reason === "string"
+        ? state.reply!.reason
+        : "unknown",
     activeBoxes: detectionsFresh ? state.detections!.boxes : [],
   };
 }

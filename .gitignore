@@ -14,3 +14,7 @@ quest/playwright-report/
 *.key
 __pycache__/
 .venv/
+
+models/*
+!models/README.md
+*.egg-info/

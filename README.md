@@ -36,9 +36,9 @@ Vite serves port 5174 and proxies the mapping endpoints to Python.
 ## Rover / Quest video
 
 Open `/?view=vr` for the curved camera panel, deadman controls, detection HUD and training timer.
-The mapper remains the default view; its settings include a Rover / VR button.
+The team's live-camera/map app remains at `/`; its settings include a Rescue drill / VR button.
 See [Quest setup and current hardware checks](quest/README.md).
-The mapping server currently supplies video; detections and motor control require their separate owner integrations.
+The assembled mapping server supplies camera freshness headers, detections and the control handshake. Real motor and headset behaviour still needs hardware checks.
 
 ## Verify
 

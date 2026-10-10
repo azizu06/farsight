@@ -268,7 +268,9 @@ renderer.setAnimationLoop((_time, frame) => {
 });
 
 rover = new RoverExperience(renderer, scene, camera, () => view, setView);
-setView(new URLSearchParams(location.search).get("view") === "map" ? "3d" : "camera");
+setView(
+  new URLSearchParams(location.search).get("view") === "map" ? "3d" : "camera",
+);
 
 function replaceGeometry(
   object: THREE.Points | THREE.Mesh,
@@ -377,7 +379,7 @@ function statusLine(next: Status) {
   );
 }
 async function loadMesh(next: Status) {
-  if (pendingMesh || appliedMesh === next.mesh_revision) return;
+  if (!mapNeeded() || pendingMesh || appliedMesh === next.mesh_revision) return;
   pendingMesh = true;
   const wantedGeneration = next.generation,
     wantedRevision = next.mesh_revision,
@@ -446,7 +448,29 @@ function acceptStatus(next: Status) {
   void loadMesh(next);
   visibility();
 }
+function mapNeeded() {
+  return (
+    view !== "camera" ||
+    settings.open ||
+    (renderer.xr.isPresenting && !rover?.vrCameraView)
+  );
+}
+function syncMapConnection() {
+  if (mapNeeded()) {
+    if (!socket || socket.readyState === WebSocket.CLOSED) connect();
+  } else if (socket) {
+    socket.onclose = null;
+    socket.close();
+    socket = null;
+    serverOnline = false;
+    text(
+      "cloud-status",
+      "Map retained · transfers paused during live camera view",
+    );
+  }
+}
 function connect() {
+  if (!mapNeeded()) return;
   socket = new WebSocket(api("/ws/map").replace(/^http/, "ws"));
   socket.binaryType = "arraybuffer";
   socket.onopen = () => {
@@ -478,7 +502,8 @@ function connect() {
     reconnectTimer = window.setTimeout(connect, 2000);
   };
 }
-connect();
+syncMapConnection();
+const mapConnectionTimer = window.setInterval(syncMapConnection, 250);
 
 async function command(path: string, body?: object) {
   try {
@@ -496,7 +521,8 @@ async function command(path: string, body?: object) {
   }
 }
 $("rover-view").onclick = () => {
-  location.href = status?.source === "SIMULATED" ? "/?view=vr&source=mock" : "/?view=vr";
+  location.href =
+    status?.source === "SIMULATED" ? "/?view=vr&source=mock" : "/?view=vr";
 };
 $("settings-toggle").onclick = () => settings.showModal();
 $("close-settings").onclick = () => settings.close();
@@ -591,13 +617,7 @@ window.addEventListener("keydown", (event) => {
 
 let feedBusy = false;
 async function updateFeeds() {
-  if (
-    feedBusy ||
-    !status?.fresh ||
-    document.hidden ||
-    !settings.open
-  )
-    return;
+  if (feedBusy || !status?.fresh || document.hidden || !settings.open) return;
   feedBusy = true;
   await Promise.all(
     ["rgb", "depth"].map(async (id) => {
@@ -623,6 +643,7 @@ async function updateFeeds() {
 window.setInterval(() => void updateFeeds(), 250);
 window.addEventListener("beforeunload", () => {
   window.clearTimeout(reconnectTimer);
+  window.clearInterval(mapConnectionTimer);
   if (socket) {
     socket.onclose = null;
     socket.close();

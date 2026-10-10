@@ -4,15 +4,30 @@ import { RescueDrill } from "./drill";
 import { drawHud, parseDetections, summarizeHud, type HudState } from "./hud";
 import type { DetectionPacket } from "./roverProtocol";
 import { RoverScene } from "./scene";
-import { receiveMjpeg } from "./stream";
+import { receiveCamera, type CameraEvidence } from "./cameraFeed";
 
 const source = new URLSearchParams(location.search).get("source");
-const sourceLabel =
+let sourceLabel =
   source === "mock"
     ? "MOCK · test source"
     : source === "replay"
       ? "REPLAY · recorded source"
-      : "LIVE source · Jetson";
+      : "SOURCE UNVERIFIED · awaiting metadata";
+let cameraSource: string | undefined;
+let simulatedControl = false;
+function updateSource(frameSource?: string, simulated?: boolean) {
+  if (frameSource !== undefined) cameraSource = frameSource;
+  if (simulated !== undefined) simulatedControl = simulated;
+  sourceLabel =
+    cameraSource === "SIMULATED" || simulatedControl || source === "mock"
+      ? "MOCK · test source"
+      : source === "replay"
+        ? "REPLAY · recorded source"
+        : cameraSource
+          ? `LIVE source · ${cameraSource}`
+          : "SOURCE UNVERIFIED · awaiting metadata";
+  document.getElementById("source-badge")!.textContent = sourceLabel;
+}
 document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
   <header><a class="wordmark" href="/">FARSIGHT<span>ROVER VIEW</span></a><span id="source-badge">${sourceLabel}</span><span class="network">ON-ROBOT PERCEPTION</span></header>
   <main>
@@ -68,9 +83,12 @@ let generation = 0,
     at: number;
     generation: number;
     epoch: number;
+    evidence: CameraEvidence | null;
   } | null = null;
 let scene: RoverScene | null = null,
   control: ControlLink;
+let displayedEvidence: { evidence: CameraEvidence; receivedAt: number } | null =
+  null;
 let dirty = true,
   lastHudAt = 0,
   videoState = "Connecting",
@@ -83,6 +101,7 @@ let connectingVr = false,
 function newControl() {
   return new ControlLink(websocketUrl("/ws/control"), {
     onReply: (reply, at) => {
+      updateSource(undefined, reply.simulated);
       drill.updateReply(reply, at);
       dirty = true;
     },
@@ -184,6 +203,10 @@ async function decodePending() {
           continue;
         }
         scene.setFrame(bitmap);
+        if (next.evidence) {
+          updateSource(next.evidence.source);
+          displayedEvidence = { evidence: next.evidence, receivedAt: next.at };
+        }
         lastFrameAt = next.at;
         receivedFrames++;
         videoState = "Receiving";
@@ -205,6 +228,7 @@ async function decodePending() {
 }
 
 function loseVideo(message: string) {
+  displayedEvidence = null;
   imageEpoch++;
   pendingFrame = null;
   feedController?.abort();
@@ -224,14 +248,14 @@ function connectStream() {
   feedController = controller;
   videoState = "Connecting camera…";
   dirty = true;
-  void receiveMjpeg("/stream.mjpg", controller.signal, (blob, at) => {
+  void receiveCamera(controller.signal, (blob, at, evidence) => {
     if (
       current !== generation ||
       epoch !== imageEpoch ||
       controller.signal.aborted
     )
       return;
-    pendingFrame = { blob, at, generation: current, epoch };
+    pendingFrame = { blob, at, generation: current, epoch, evidence };
     void decodePending();
   }).catch((error) => {
     if (current !== generation || destroyed || document.hidden) return;
@@ -407,6 +431,23 @@ function refresh(_frameTime: number, session: XRSession | null, yaw: number) {
 try {
   scene = new RoverScene(element<HTMLCanvasElement>("view"), {
     onFrame: refresh,
+    onRendered: () => {
+      if (
+        !displayedEvidence ||
+        destroyed ||
+        !graphicsAvailable ||
+        document.hidden
+      )
+        return;
+      const { evidence, receivedAt } = displayedEvidence;
+      displayedEvidence = null;
+      const at = performance.now();
+      control.setVideoFrame(
+        `${evidence.source}:${evidence.frameId}`,
+        evidence.ageMs + at - receivedAt,
+        at,
+      );
+    },
     onAction: (action) => (action === "drill" ? startDrill() : endDrill()),
     onSessionEnd: () => {
       stopDrive("VR session ended", true);

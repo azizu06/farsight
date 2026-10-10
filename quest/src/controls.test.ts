@@ -5,6 +5,8 @@ import type { ControlCommand, ControlReply } from "./roverProtocol";
 class Socket extends EventTarget {
   readyState = 0;
   bufferedAmount = 0;
+  sessionId = "session-one";
+  permitIndex = 0;
   sent: ControlCommand[] = [];
   send(data: string): void {
     if (this.readyState !== 1) throw new Error("closed socket");
@@ -18,22 +20,40 @@ class Socket extends EventTarget {
     this.readyState = 3;
     this.dispatchEvent(new Event("close"));
   }
-  reply(
-    value: unknown = {
-      seq: this.sent.at(-1)?.seq ?? 0,
-      range_cm: 64,
-      estop: false,
+  status(overrides: Record<string, unknown> = {}) {
+    return {
+      type: "control_status",
+      session_id: this.sessionId,
+      permit: `permit-${++this.permitIndex}`,
+      permit_ms: 250,
+      seq: this.sent.at(-1)?.seq ?? -1,
+      range_cm: this.sent.length ? 64 : null,
+      estop: !this.sent.length,
       mode: "teleop",
-      link_ms: 38,
-    },
-  ): void {
+      link_ms: this.sent.length ? 38 : null,
+      rover: true,
+      simulated: true,
+      requires_release: !this.sent.length,
+      reason: this.sent.length ? "deadman_released" : "release_required",
+      left_pwm: 0,
+      right_pwm: 0,
+      pan_deg: 90,
+      max_pwm: 100,
+      ...overrides,
+    };
+  }
+  reply(value: unknown = this.status()): void {
     this.dispatchEvent(
       new MessageEvent("message", { data: JSON.stringify(value) }),
     );
   }
 }
 
-function setup(open = true, now: () => number = () => Date.now()) {
+function setup(
+  open = true,
+  now: () => number = () => Date.now(),
+  video = true,
+) {
   const sockets: Socket[] = [];
   const commands: { command: ControlCommand; at: number }[] = [];
   const replies: ControlReply[] = [];
@@ -53,8 +73,14 @@ function setup(open = true, now: () => number = () => Date.now()) {
     },
   );
   link.connect();
+  if (video) {
+    link.setVideoFrame("frame-initial", 0, now());
+  }
   const socket = sockets[0];
-  if (open) socket.open();
+  if (open) {
+    socket.open();
+    socket.reply();
+  }
   return { link, socket, sockets, commands, replies };
 }
 
@@ -123,15 +149,22 @@ describe("ControlLink", () => {
     vi.useRealTimers();
   });
 
-  it("sends a neutral handshake and refuses drive until replies prove the socket healthy", () => {
-    const { link, socket } = setup();
-    expect(socket.sent).toEqual([
-      { seq: 1, deadman: false, v: 0, w: 0, pan: 0, mode: "teleop" },
-    ]);
+  it("waits for an authorized server session before sending even a neutral handshake", () => {
+    const { link, socket } = setup(false);
+    socket.open();
+    expect(socket.sent).toEqual([]);
     link.setKeyboard(new Set(["Space", "KeyW"]));
     vi.advanceTimersByTime(200);
     expect(socket.sent.every((command) => !command.deadman)).toBe(true);
     expect(link.state).toBe("waiting");
+    socket.reply();
+    expect(socket.sent.at(-1)).toMatchObject({
+      seq: 1,
+      deadman: false,
+      v: 0,
+      w: 0,
+      session_id: "session-one",
+    });
   });
 
   it("pumps forward and right keyboard drive at 20 Hz with increasing sequence numbers", () => {
@@ -140,8 +173,10 @@ describe("ControlLink", () => {
     link.setKeyboard(new Set(["Space", "KeyW", "KeyD"]));
     vi.advanceTimersByTime(49);
     expect(socket.sent).toHaveLength(1);
-    vi.advanceTimersByTime(151);
-    expect(socket.sent.slice(1)).toEqual([
+    vi.advanceTimersByTime(51);
+    socket.reply();
+    vi.advanceTimersByTime(100);
+    expect(socket.sent.slice(1)).toMatchObject([
       { seq: 2, deadman: true, v: 1, w: 1, pan: 0, mode: "teleop" },
       { seq: 3, deadman: true, v: 1, w: 1, pan: 0, mode: "teleop" },
       { seq: 4, deadman: true, v: 1, w: 1, pan: 0, mode: "teleop" },
@@ -221,6 +256,8 @@ describe("ControlLink", () => {
     const next = sockets[1];
     next.open();
     next.reply();
+    next.reply();
+    link.setVideoFrame("after-backpressure", 0, Date.now());
     link.setKeyboard(new Set(["Space", "KeyW"]));
     vi.advanceTimersByTime(50);
     expect(next.sent.at(-1)?.deadman).toBe(false);
@@ -248,9 +285,10 @@ describe("ControlLink", () => {
     const { link, socket } = setup(false);
     vi.advanceTimersByTime(49);
     socket.open();
+    socket.reply();
     socket.bufferedAmount = 1;
     vi.advanceTimersByTime(1);
-    expect(link.state).toBe("waiting");
+    expect(link.state).toBe("healthy");
     expect(socket.readyState).toBe(1);
     expect(socket.sent).toHaveLength(1);
     socket.bufferedAmount = 0;
@@ -284,22 +322,23 @@ describe("ControlLink", () => {
     const { link, socket } = setup(false);
     vi.advanceTimersByTime(49);
     socket.open();
+    socket.reply();
     socket.bufferedAmount = 1;
     vi.advanceTimersByTime(51);
     expect(link.state).toBe("disconnected");
     expect(socket.sent).toHaveLength(1);
   });
 
-  it("checks reply expiry immediately even when a drive command was just sent", () => {
+  it("checks permit expiry immediately even when a drive command was just sent", () => {
     const { link, socket } = setup();
     armKeyboard(link, socket);
     link.setKeyboard(new Set(["Space", "KeyW"]));
-    vi.setSystemTime(499);
+    vi.setSystemTime(199);
     link.tick();
     expect(socket.sent.at(-1)?.deadman).toBe(true);
-    vi.setSystemTime(500);
+    vi.setSystemTime(200);
     link.tick();
-    expect(link.state).toBe("stale");
+    expect(link.inputStatus).toBe("release-to-arm");
     expect(socket.sent.at(-1)).toMatchObject({ deadman: false, v: 0, w: 0 });
   });
 
@@ -343,6 +382,7 @@ describe("ControlLink", () => {
     expect(link.state).toBe("stale");
     expect(socket.sent.at(-1)).toMatchObject({ deadman: false, v: 0, w: 0 });
     socket.reply();
+    link.setVideoFrame("after-link-loss", 0, Date.now());
     link.setKeyboard(new Set(["Space", "KeyW"]));
     vi.advanceTimersByTime(50);
     expect(socket.sent.at(-1)?.deadman).toBe(false);
@@ -429,6 +469,7 @@ describe("ControlLink", () => {
     link.connect();
     const next = sockets[1];
     next.open();
+    next.reply();
     next.reply();
     link.setKeyboard(new Set(["Space", "KeyW"]));
     vi.advanceTimersByTime(50);
@@ -606,6 +647,7 @@ describe("ControlLink", () => {
     link.sampleXR(session.session, 0);
     vi.advanceTimersByTime(200);
     expect(socket.sent.at(-1)?.deadman).toBe(false);
+    socket.reply();
     session.inputSources[0].gamepad!.axes[3] = 0;
     session.inputSources[0].gamepad!.buttons[0].pressed = false;
     session.inputSources[0].gamepad!.buttons[0].value = 0;
@@ -634,6 +676,7 @@ describe("ControlLink", () => {
     expect(firstPan).toBeLessThan(57.3);
     for (let step = 0; step < 12; step++) {
       socket.reply();
+      link.setVideoFrame(`pan-${step}`, 0, Date.now());
       link.sampleXR(session.session, -2);
       vi.advanceTimersByTime(50);
     }
@@ -667,5 +710,216 @@ describe("ControlLink", () => {
     vi.advanceTimersByTime(1000);
     link.connect();
     expect(socket.sent).toHaveLength(count);
+  });
+
+  it("accepts initial seq minus one and nullable telemetry, then echoes the latest session and permit", () => {
+    const { link, socket } = setup(false);
+    socket.open();
+    socket.reply(socket.status({ range_cm: null, link_ms: null }));
+    expect(link.reply).toMatchObject({
+      seq: -1,
+      range_cm: null,
+      link_ms: null,
+      rover: true,
+    });
+    expect(link.state).toBe("healthy");
+    armKeyboard(link, socket);
+    const next = socket.status();
+    socket.reply(next);
+    link.setKeyboard(new Set(["Space", "KeyS"]));
+    vi.advanceTimersByTime(50);
+    expect(socket.sent.at(-1)).toMatchObject({
+      session_id: "session-one",
+      permit: next.permit,
+      deadman: true,
+      v: -1,
+      video_fresh: true,
+      video_age_ms: 50,
+    });
+  });
+
+  it("does not authorize legacy replies or missing displayed-frame metadata", () => {
+    const { link, socket } = setup(false, () => Date.now(), false);
+    socket.open();
+    socket.reply({
+      seq: 1,
+      range_cm: 64,
+      estop: false,
+      mode: "teleop",
+      link_ms: 38,
+    });
+    expect(link.state).toBe("waiting");
+    expect(socket.sent).toHaveLength(0);
+    armKeyboard(link, socket);
+    socket.reply();
+    link.setKeyboard(new Set(["Space", "KeyW"]));
+    vi.advanceTimersByTime(50);
+    expect(socket.sent.every((command) => !command.deadman)).toBe(true);
+    link.setVideoFrame("displayed-first", 20, Date.now());
+    link.setKeyboard(new Set());
+    link.setKeyboard(new Set(["Space", "KeyW"]));
+    vi.advanceTimersByTime(50);
+    expect(socket.sent.at(-1)).toMatchObject({
+      deadman: true,
+      video_age_ms: 70,
+    });
+  });
+
+  it("expires permits at 200 ms and never resumes held intent when fresh permits recover", () => {
+    const { link, socket } = setup();
+    armKeyboard(link, socket);
+    link.setKeyboard(new Set(["Space", "KeyW"]));
+    vi.advanceTimersByTime(200);
+    expect(socket.sent.at(-1)).toMatchObject({ deadman: false, v: 0, w: 0 });
+    expect(link.stopReason).toContain("permit");
+    socket.reply();
+    link.setKeyboard(new Set(["Space", "KeyW"]));
+    vi.advanceTimersByTime(50);
+    expect(socket.sent.at(-1)?.deadman).toBe(false);
+    link.setKeyboard(new Set());
+    link.setKeyboard(new Set(["Space", "KeyW"]));
+    vi.advanceTimersByTime(50);
+    expect(socket.sent.at(-1)?.deadman).toBe(true);
+  });
+
+  it("accepts new permits with an unchanged acknowledgement but rejects replayed permit freshness", () => {
+    const { link, socket } = setup();
+    armKeyboard(link, socket);
+    const fresh = socket.status();
+    vi.advanceTimersByTime(150);
+    socket.reply(fresh);
+    expect(link.replyReceivedAt).toBe(150);
+    vi.advanceTimersByTime(150);
+    socket.reply(fresh);
+    expect(link.replyReceivedAt).toBe(150);
+    vi.advanceTimersByTime(150);
+    expect(link.state).toBe("stale");
+  });
+
+  it("stops when server rover readiness or release-required status changes", () => {
+    const { link, socket } = setup();
+    armKeyboard(link, socket);
+    link.setKeyboard(new Set(["Space", "KeyW"]));
+    vi.advanceTimersByTime(50);
+    socket.reply(
+      socket.status({
+        rover: false,
+        requires_release: true,
+        range_cm: null,
+        reason: "serial_disconnected",
+      }),
+    );
+    expect(socket.sent.at(-1)?.deadman).toBe(false);
+    socket.reply();
+    link.setKeyboard(new Set(["Space", "KeyW"]));
+    vi.advanceTimersByTime(50);
+    expect(socket.sent.at(-1)?.deadman).toBe(false);
+    link.setKeyboard(new Set());
+    socket.reply();
+    link.setKeyboard(new Set(["Space", "KeyW"]));
+    vi.advanceTimersByTime(50);
+    expect(socket.sent.at(-1)?.deadman).toBe(true);
+    socket.reply(
+      socket.status({ requires_release: true, reason: "lease_expired" }),
+    );
+    expect(socket.sent.at(-1)?.deadman).toBe(false);
+    expect(link.inputStatus).toBe("release-to-arm");
+  });
+
+  it("requires neutral input after a new server session and uses no previous permit", () => {
+    const { link, socket } = setup();
+    armKeyboard(link, socket);
+    link.setKeyboard(new Set(["Space", "KeyW"]));
+    vi.advanceTimersByTime(50);
+    socket.sessionId = "session-two";
+    socket.reply(
+      socket.status({
+        seq: -1,
+        requires_release: true,
+        reason: "release_required",
+      }),
+    );
+    expect(socket.sent.at(-1)).toMatchObject({
+      deadman: false,
+      session_id: "session-two",
+    });
+    socket.reply();
+    link.setKeyboard(new Set(["Space", "KeyW"]));
+    vi.advanceTimersByTime(50);
+    expect(socket.sent.at(-1)?.deadman).toBe(false);
+    link.setKeyboard(new Set());
+    link.setKeyboard(new Set(["Space", "KeyW"]));
+    vi.advanceTimersByTime(50);
+    expect(socket.sent.at(-1)).toMatchObject({
+      deadman: true,
+      session_id: "session-two",
+    });
+  });
+
+  it("counts server capture age and rejects duplicate frames as freshness renewal", () => {
+    const { link, socket } = setup();
+    armKeyboard(link, socket);
+    link.setVideoFrame("aged-displayed", 400, 0);
+    link.setKeyboard(new Set());
+    link.setKeyboard(new Set(["Space", "KeyW"]));
+    vi.advanceTimersByTime(50);
+    expect(socket.sent.at(-1)).toMatchObject({
+      deadman: true,
+      video_age_ms: 450,
+    });
+    link.setVideoFrame("aged-displayed", 0, 50);
+    vi.advanceTimersByTime(50);
+    expect(socket.sent.at(-1)).toMatchObject({
+      deadman: false,
+      v: 0,
+      w: 0,
+      video_fresh: false,
+    });
+    expect(link.stopReason).toContain("video");
+  });
+
+  it("permits neutral release after the motion permit expires", () => {
+    const { link, socket } = setup();
+    armKeyboard(link, socket);
+    link.setKeyboard(new Set(["Space", "KeyW"]));
+    vi.advanceTimersByTime(50);
+    vi.setSystemTime(250);
+    link.stop("operator release");
+    expect(socket.sent.at(-1)).toMatchObject({
+      deadman: false,
+      session_id: "session-one",
+      v: 0,
+      w: 0,
+    });
+  });
+
+  it("sends another ordered neutral after a serial reconnect even when it was already idle", () => {
+    const { link, socket } = setup();
+    armKeyboard(link, socket);
+    socket.reply(
+      socket.status({
+        rover: false,
+        requires_release: true,
+        reason: "serial_disconnected",
+      }),
+    );
+    socket.reply(
+      socket.status({
+        rover: true,
+        requires_release: true,
+        reason: "release_required",
+      }),
+    );
+    link.setKeyboard(new Set());
+    expect(socket.sent.at(-1)).toMatchObject({
+      seq: 2,
+      deadman: false,
+      session_id: "session-one",
+    });
+    socket.reply();
+    link.setKeyboard(new Set());
+    link.setKeyboard(new Set(["Space", "KeyW"]));
+    vi.advanceTimersByTime(50);
+    expect(socket.sent.at(-1)?.deadman).toBe(true);
   });
 });

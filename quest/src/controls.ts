@@ -3,6 +3,17 @@ import type { ControlCommand, ControlReply } from "./roverProtocol";
 const COMMAND_PERIOD_MS = 50;
 const CADENCE_JITTER_MS = 0.5;
 
+type AuthorizedStatus = ControlReply & {
+  type: "control_status";
+  session_id: string;
+  permit: string;
+  permit_ms: number;
+  rover: boolean;
+  simulated: boolean;
+  requires_release: boolean;
+  reason: string;
+};
+
 export type ControlState =
   "disconnected" | "connecting" | "waiting" | "healthy" | "stale" | "disposed";
 export interface ControlSocket {
@@ -30,11 +41,11 @@ export class ControlLink {
   private listeners: [string, EventListener][] = [];
   private timer: number | null = null;
   private linkState: ControlState = "disconnected";
-  private latestReply: ControlReply | null = null;
+  private latestReply: AuthorizedStatus | null = null;
   private receivedAt: number | null = null;
   private openedAt = 0;
   private sequence = 0;
-  private firstSocketSequence = 1;
+  private seenPermits = new Set<string>();
   private latestCommand: ControlCommand | null = null;
   private lastSentAt = -Infinity;
   private intent = { deadman: false, v: 0, w: 0 };
@@ -48,6 +59,9 @@ export class ControlLink {
   private initialYaw: number | null = null;
   private pan = 0;
   private panSampleAt = 0;
+  private videoFrameId: string | null = null;
+  private videoSourceAge = Infinity;
+  private videoReceivedAt = -Infinity;
   private readonly now: () => number;
   private readonly startTimer: (callback: () => void, delay: number) => number;
   private readonly clearTimer: (id: number) => void;
@@ -91,7 +105,7 @@ export class ControlLink {
     this.stop("connecting");
     this.latestReply = null;
     this.receivedAt = null;
-    this.firstSocketSequence = this.sequence + 1;
+    this.seenPermits.clear();
     this.setState("connecting");
     let socket: ControlSocket;
     try {
@@ -106,7 +120,6 @@ export class ControlLink {
     this.listen("open", () => {
       this.openedAt = this.now();
       this.setState("waiting");
-      this.send(false, this.openedAt);
     });
     this.listen("message", (event) =>
       this.receive((event as MessageEvent).data),
@@ -115,6 +128,37 @@ export class ControlLink {
     this.listen("error", () => this.disconnect("socket error"));
     if (this.timer === null)
       this.timer = this.startTimer(() => this.tick(), COMMAND_PERIOD_MS);
+  }
+
+  /** Supply metadata only after this exact JPEG has decoded and been displayed. */
+  setVideoFrame(
+    frameId: string,
+    sourceAgeMs: number,
+    receivedAt: number,
+  ): void {
+    if (this.linkState === "disposed" || frameId === this.videoFrameId) return;
+    if (
+      !frameId ||
+      frameId.length > 256 ||
+      !Number.isFinite(sourceAgeMs) ||
+      sourceAgeMs < 0 ||
+      !Number.isFinite(receivedAt) ||
+      receivedAt > this.now()
+    ) {
+      this.videoFrameId = null;
+      this.videoSourceAge = Infinity;
+      this.videoReceivedAt = -Infinity;
+      this.stop("video metadata unavailable");
+      return;
+    }
+    this.videoFrameId = frameId;
+    this.videoSourceAge = sourceAgeMs;
+    this.videoReceivedAt = receivedAt;
+    if (this.videoAge(this.now()) >= 500) this.stop("video stale");
+  }
+
+  get videoAgeMs(): number {
+    return this.videoAge(this.now());
   }
 
   dispose(): void {
@@ -233,6 +277,8 @@ export class ControlLink {
       return;
     const healthy = this.healthy(now);
     if (!this.socket) return;
+    const readiness = this.readiness(now);
+    if (readiness && (this.armed || this.intent.deadman)) this.stop(readiness);
     if (
       this.xrSession &&
       (this.lastXRAt === null || now - this.lastXRAt >= 150)
@@ -244,7 +290,7 @@ export class ControlLink {
     // Open/release can occur between interval deadlines. Let that send drain
     // for a command period before inspecting pending bytes, allowing only
     // 0.5 ms of clock jitter so an early scheduled tick cannot halve drive Hz.
-    if (!this.writable() || !healthy) return;
+    if (!this.writable() || !healthy || readiness) return;
     if (this.armed && this.intent.deadman) this.send(true, now);
     else if (
       this.armed &&
@@ -262,13 +308,22 @@ export class ControlLink {
   ): void {
     const healthy = this.healthy(now);
     this.observedNeutral = neutral;
-    if (neutral && healthy) {
+    const readiness = this.readiness(now);
+    if (readiness && this.intent.deadman) this.stop(readiness);
+    if (
+      neutral &&
+      this.latestReply?.rover &&
+      this.latestReply.requires_release &&
+      (!this.latestCommand || this.latestCommand.seq <= this.latestReply.seq)
+    )
+      this.send(false, now);
+    if (neutral && healthy && !readiness) {
       this.armed = true;
       this.reason = "";
     }
     const wasHeld = this.intent.deadman;
     this.intent =
-      this.armed && healthy && held
+      this.armed && healthy && !readiness && held
         ? { deadman: true, v, w }
         : { deadman: false, v: 0, w: 0 };
     if (wasHeld && !this.intent.deadman) this.send(false, now);
@@ -277,7 +332,7 @@ export class ControlLink {
   private healthy(now: number): boolean {
     if (!this.socket || this.socket.readyState !== 1) return false;
     const last = this.receivedAt ?? this.openedAt;
-    if (now - last >= 500) {
+    if (now - last >= 300) {
       if (this.linkState !== "stale") {
         this.stop("control replies stale");
         if (this.socket) this.setState("stale");
@@ -289,27 +344,31 @@ export class ControlLink {
 
   private receive(data: unknown): void {
     const reply = parseReply(data);
+    if (!reply || reply.seq > this.sequence) return;
+    const changedSession = reply.session_id !== this.latestReply?.session_id;
     if (
-      !reply ||
-      reply.seq < this.firstSocketSequence ||
-      reply.seq > this.sequence
-    )
-      return;
-    if (
-      this.latestReply &&
-      (reply.seq < this.latestReply.seq ||
-        (reply.seq === this.latestReply.seq &&
-          (this.latestCommand?.deadman ||
-            reply.seq !== this.latestCommand?.seq)))
+      !changedSession &&
+      (this.seenPermits.has(reply.permit) ||
+        (this.latestReply && reply.seq < this.latestReply.seq))
     )
       return;
     const now = this.now();
     this.healthy(now); // A late reply cannot preserve the old held intent.
     if (!this.socket) return; // A failed stop send may have disconnected the link.
     this.latestReply = reply;
+    if (changedSession) this.seenPermits.clear();
+    this.seenPermits.add(reply.permit);
+    if (this.seenPermits.size > 32)
+      this.seenPermits.delete(this.seenPermits.values().next().value!);
     this.receivedAt = now;
     this.setState("healthy");
-    if (this.observedNeutral) {
+    if (changedSession || !reply.rover || reply.requires_release) {
+      const beforeStop = this.sequence;
+      this.stop(changedSession ? "control session changed" : reply.reason);
+      // Ordered neutral unlocks the server. Local input must still be neutral
+      // before a new press can arm this client after a session change.
+      if (changedSession && this.sequence === beforeStop) this.send(false, now);
+    } else if (this.observedNeutral && !this.readiness(now)) {
       this.armed = true;
       this.reason = "";
     }
@@ -317,7 +376,13 @@ export class ControlLink {
   }
 
   private send(deadman: boolean, at: number): void {
-    if (!this.writable()) return;
+    if (!this.latestReply || !this.writable()) return;
+    const readiness = this.readiness(at);
+    if (deadman && readiness) {
+      this.stop(readiness);
+      return;
+    }
+    const age = this.videoAge(at);
     const command: ControlCommand = {
       seq: this.sequence + 1,
       deadman,
@@ -325,6 +390,10 @@ export class ControlLink {
       w: deadman ? this.intent.w : 0,
       pan: this.pan,
       mode: "teleop",
+      session_id: this.latestReply.session_id,
+      permit: this.latestReply.permit,
+      video_fresh: Number.isFinite(age) && age < 500,
+      video_age_ms: Number.isFinite(age) ? Math.ceil(age) : 999999,
     };
     try {
       this.socket!.send(JSON.stringify(command));
@@ -336,6 +405,25 @@ export class ControlLink {
     this.latestCommand = command;
     this.lastSentAt = at;
     this.callbacks.onCommand?.(command, at);
+  }
+
+  private readiness(now: number): string | null {
+    if (!this.latestReply) return "waiting for control session";
+    if (!this.latestReply.rover)
+      return this.latestReply.reason || "rover unavailable";
+    if (this.latestReply.requires_release)
+      return this.latestReply.reason || "server release required";
+    if (
+      this.receivedAt === null ||
+      now - this.receivedAt >= Math.min(this.latestReply.permit_ms, 200)
+    )
+      return "control permit stale";
+    if (this.videoAge(now) >= 500) return "video stale or metadata unavailable";
+    return null;
+  }
+
+  private videoAge(now: number): number {
+    return this.videoSourceAge + Math.max(0, now - this.videoReceivedAt);
   }
 
   private writable(): boolean {
@@ -405,7 +493,7 @@ function stick(value: number): number {
     ? 0
     : clamp((Math.sign(clipped) * (Math.abs(clipped) - 0.18)) / 0.82, -1, 1);
 }
-function parseReply(data: unknown): ControlReply | null {
+function parseReply(data: unknown): AuthorizedStatus | null {
   if (typeof data !== "string" || data.length > 4096) return null;
   try {
     const value: unknown = JSON.parse(data);
@@ -413,15 +501,37 @@ function parseReply(data: unknown): ControlReply | null {
     const packet = value as Partial<ControlReply>;
     if (
       !Number.isSafeInteger(packet.seq) ||
-      packet.seq! < 0 ||
-      typeof packet.range_cm !== "number" ||
-      !Number.isFinite(packet.range_cm) ||
-      packet.range_cm < 0 ||
+      packet.seq! < -1 ||
+      !(
+        packet.range_cm === null ||
+        (typeof packet.range_cm === "number" &&
+          Number.isFinite(packet.range_cm) &&
+          packet.range_cm >= 0)
+      ) ||
       typeof packet.estop !== "boolean" ||
-      (packet.mode !== "teleop" && packet.mode !== "seek") ||
-      typeof packet.link_ms !== "number" ||
-      !Number.isFinite(packet.link_ms) ||
-      packet.link_ms < 0
+      packet.mode !== "teleop" ||
+      !(
+        packet.link_ms === null ||
+        (typeof packet.link_ms === "number" &&
+          Number.isFinite(packet.link_ms) &&
+          packet.link_ms >= 0)
+      ) ||
+      packet.type !== "control_status" ||
+      typeof packet.session_id !== "string" ||
+      !packet.session_id ||
+      packet.session_id.length > 128 ||
+      typeof packet.permit !== "string" ||
+      !packet.permit ||
+      packet.permit.length > 128 ||
+      typeof packet.permit_ms !== "number" ||
+      !Number.isFinite(packet.permit_ms) ||
+      packet.permit_ms <= 0 ||
+      packet.permit_ms > 250 ||
+      typeof packet.rover !== "boolean" ||
+      typeof packet.simulated !== "boolean" ||
+      typeof packet.requires_release !== "boolean" ||
+      typeof packet.reason !== "string" ||
+      packet.reason.length > 256
     )
       return null;
     return {
@@ -430,6 +540,28 @@ function parseReply(data: unknown): ControlReply | null {
       estop: packet.estop,
       mode: packet.mode,
       link_ms: packet.link_ms,
+      type: packet.type,
+      session_id: packet.session_id,
+      permit: packet.permit,
+      permit_ms: packet.permit_ms,
+      rover: packet.rover,
+      simulated: packet.simulated,
+      requires_release: packet.requires_release,
+      reason: packet.reason,
+      ...(typeof packet.left_pwm === "number" &&
+      Number.isFinite(packet.left_pwm)
+        ? { left_pwm: packet.left_pwm }
+        : {}),
+      ...(typeof packet.right_pwm === "number" &&
+      Number.isFinite(packet.right_pwm)
+        ? { right_pwm: packet.right_pwm }
+        : {}),
+      ...(typeof packet.pan_deg === "number" && Number.isFinite(packet.pan_deg)
+        ? { pan_deg: packet.pan_deg }
+        : {}),
+      ...(typeof packet.max_pwm === "number" && Number.isFinite(packet.max_pwm)
+        ? { max_pwm: packet.max_pwm }
+        : {}),
     };
   } catch {
     return null;

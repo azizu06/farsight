@@ -24,6 +24,26 @@ const reply = {
   mode: "teleop",
   link_ms: 38,
 };
+// The server sends this before a command or range reading has been accepted.
+const idleStatus = {
+  type: "control_status" as const,
+  session_id: "controller-session",
+  permit: "server-opaque-token",
+  permit_ms: 250,
+  seq: -1,
+  range_cm: null,
+  estop: true,
+  mode: "teleop",
+  link_ms: null,
+  rover: false,
+  simulated: false,
+  requires_release: true,
+  reason: "release_required",
+  left_pwm: 0,
+  right_pwm: 0,
+  pan_deg: 90,
+  max_pwm: 100,
+};
 const liveState = (): HudState => ({
   detections,
   detectionsAt: 1000,
@@ -38,6 +58,23 @@ describe("HUD packet validation", () => {
     expect(parseDetections(detections)).toEqual(detections);
     expect(parseDetections(JSON.stringify(detections))).toEqual(detections);
     expect(parseControlReply(reply)).toEqual(reply);
+  });
+
+  it("accepts and preserves the backend's initial status with unknown measurements", () => {
+    expect(parseControlReply(JSON.stringify(idleStatus))).toEqual(idleStatus);
+  });
+
+  it.each([
+    { ...reply, session_id: [] },
+    { ...reply, permit: "x".repeat(129) },
+    { ...reply, permit_ms: Infinity },
+    { ...reply, requires_release: "false" },
+    { ...reply, rover: 1 },
+    { ...reply, reason: "x".repeat(257) },
+    { ...reply, left_pwm: 256 },
+    { ...reply, pan_deg: 171 },
+  ])("rejects malformed optional control status metadata", (packet) => {
+    expect(parseControlReply(packet)).toBeNull();
   });
 
   it.each([
@@ -78,7 +115,7 @@ describe("HUD packet validation", () => {
     { ...reply, estop: "false" },
     { ...reply, link_ms: Infinity },
     { ...reply, link_ms: -1 },
-    { ...reply, seq: -1 },
+    { ...reply, seq: -2 },
     { ...reply, mode: "x".repeat(65) },
     "not JSON",
   ])(
@@ -90,6 +127,16 @@ describe("HUD packet validation", () => {
 });
 
 describe("HUD freshness", () => {
+  it("shows a live idle socket with unknown range and link timing, without inventing zero", () => {
+    const summary = summarizeHud({ ...liveState(), reply: idleStatus });
+    expect(summary.link).toBe("live");
+    expect(summary.rangeText).toBe("unknown");
+    expect(summary.linkMsText).toBe("unknown");
+    expect(summary.estop).toBe("active");
+    expect(summary.roverText).toBe("ROVER DISCONNECTED");
+    expect(summary.controlReasonText).toBe("release_required");
+  });
+
   it("shows received measurements and boxes at the 500 ms boundary", () => {
     const summary = summarizeHud({ ...liveState(), now: 1500 });
     expect(summary.link).toBe("live");

@@ -19,6 +19,11 @@ export class ControlSafety {
     this.needsRelease = true;
     this.reason = reason;
   }
+  stop(input, reason) {
+    // Zero commands without inventing a release of the physical trigger/key.
+    this.invalidate(reason);
+    return { ...input, v: 0, w: 0 };
+  }
   acceptStatus(status, now) {
     if (!status || typeof status.session_id !== "string" ||
         typeof status.permit !== "string" || !Number.isFinite(status.permit_ms)) return false;
@@ -27,6 +32,7 @@ export class ControlSafety {
       this.session = status.session_id;
     }
     if (this.status?.rover && !status.rover) this.invalidate("Rover unavailable");
+    if (status.requires_release) this.invalidate(status.reason ?? "Release deadman to continue");
     this.status = status;
     this.receivedAt = now;
     return true;
@@ -40,6 +46,7 @@ export class ControlSafety {
     return true;
   }
   videoAge(now) { return this.frameAge + Math.max(0, now - this.frameAt); }
+  /** @param {number} [sampledAt] Most recent verified XR input sample. */
   readiness(now, connected = true, sampledAt = undefined) {
     if (!connected) return "Control disconnected";
     if (!inputFresh(now, sampledAt)) return "XR input stale: release trigger";
@@ -49,7 +56,12 @@ export class ControlSafety {
     if (now - this.receivedAt >= Math.min(this.status.permit_ms, 200)) return "Waiting for fresh control permit";
     return null;
   }
-  decide(held, now, connected = true, sampledAt = undefined) {
+  /** @param {number} [sampledAt] Most recent verified XR input sample. */
+  decide(held, now, connected = true, inputAvailable = true, sampledAt = undefined) {
+    if (!inputAvailable) {
+      this.invalidate("Input or display inactive: release deadman");
+      return false;
+    }
     const unsafe = this.readiness(now, connected, sampledAt);
     if (unsafe) this.invalidate(unsafe);
     // Missing tracking cannot prove a physical trigger release.

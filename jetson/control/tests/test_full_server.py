@@ -1,0 +1,147 @@
+"""Exercise the assembled application, not a substitute control-only router."""
+
+import time
+import unittest
+
+import cv2
+import numpy as np
+from fastapi.testclient import TestClient
+
+from jetson.mapping.demo import simulated_frame
+from jetson.mapping.server import create_app
+
+
+class FullServerTests(unittest.TestCase):
+    def wait_health(self, client, predicate, timeout=3):
+        deadline = time.monotonic() + timeout
+        while True:
+            status = client.get("/health").json()
+            if predicate(status):
+                return status
+            if time.monotonic() > deadline:
+                self.fail(f"Health condition timed out: {status}")
+            time.sleep(0.02)
+
+    def wait_status(self, ws, predicate, timeout=3):
+        deadline = time.monotonic() + timeout
+        while True:
+            status = ws.receive_json()
+            if predicate(status):
+                return status
+            if time.monotonic() > deadline:
+                self.fail(f"Control condition timed out: {status}")
+
+    def release(self, ws, status, seq):
+        ws.send_json({"session_id": status["session_id"], "seq": seq, "deadman": False})
+        return self.wait_status(ws, lambda value: value["seq"] == seq)
+
+    def motion(self, ws, status, seq, **values):
+        message = dict(session_id=status["session_id"], permit=status["permit"],
+                       seq=seq, deadman=True, v=0.5, w=0, pan=0,
+                       mode="teleop", video_fresh=True, video_age_ms=0)
+        message.update(values)
+        ws.send_json(message)
+
+    def test_simulated_camera_stream_and_expired_permit_motor_stop(self):
+        app = create_app(demo=True, simulate_rover=True, detector="off")
+        with TestClient(app) as client:
+            health = self.wait_health(client, lambda value: value["camera"] and value["rover"])
+            self.assertEqual(health["camera_source"], "SIMULATED")
+            self.assertTrue(health["control"]["simulated"])
+            preview = client.get("/camera.jpg")
+            self.assertEqual(preview.status_code, 200)
+            self.assertEqual(preview.headers["cache-control"], "no-store")
+            self.assertEqual(preview.headers["x-frame-source"], "SIMULATED")
+            image = cv2.imdecode(np.frombuffer(preview.content, np.uint8), cv2.IMREAD_COLOR)
+            self.assertIsNotNone(image)
+            self.assertGreater(image.shape[0], 100)
+            self.assertLess(int(preview.headers["x-frame-age-ms"]), 500)
+            self.assertEqual(client.get("/map/points.bin").status_code, 200)
+            with client.websocket_connect("/ws/control") as ws:
+                status = ws.receive_json()
+                status = self.release(ws, status, 0)
+                self.motion(ws, status, 1)
+                active = self.wait_status(ws, lambda value: value["seq"] == 1)
+                self.assertEqual((active["left_pwm"], active["right_pwm"]), (50, 50))
+                # Even a later sequence and an apparently fresh camera cannot
+                # restore a motor command using an old network permit.
+                old_permit = active["permit"]
+                time.sleep(0.3)
+                self.motion(ws, active, 2, permit=old_permit)
+                stopped = self.wait_status(ws, lambda value: value["reason"] == "expired_permit")
+                self.assertEqual((stopped["left_pwm"], stopped["right_pwm"]), (0, 0))
+                self.assertTrue(stopped["requires_release"])
+                self.assertEqual(stopped["seq"], 1)
+            self.assertEqual(app.state.control.state.output()[:2], (0, 0))
+
+    def test_pose_heartbeat_does_not_hide_camera_outage_or_restore_motion(self):
+        app = create_app(simulate_rover=True, detector="off")
+        mapping = app.state.mapping
+        identity = ("integration-phone", 1)
+        mapping.start_session(identity, "Test RGB-D phone")
+        frame = simulated_frame(0, 0, identity)
+        mapping.process(frame)
+        with TestClient(app) as client:
+            self.wait_health(client, lambda value: value["camera"] and value["rover"])
+            with client.websocket_connect("/ws/control") as ws:
+                status = self.release(ws, ws.receive_json(), 0)
+                self.motion(ws, status, 1, v=-0.5)  # guard also applies to reverse
+                self.wait_status(ws, lambda value: value["left_pwm"] == -50)
+                with mapping.lock:
+                    mapping.last_frame_received = time.monotonic() - 1
+                pose_header = dict(frame.header, t_capture=1, frame_id=100)
+                mapping.observe_pose(pose_header, frame.transform)
+                health = client.get("/health").json()
+                self.assertTrue(health["fresh"])  # pose link genuinely still live
+                self.assertFalse(health["camera"])
+                stopped = self.wait_status(ws, lambda value: value["reason"] == "camera_stale")
+                self.assertEqual((stopped["left_pwm"], stopped["right_pwm"]), (0, 0))
+                self.assertTrue(stopped["requires_release"])
+                mapping.process(simulated_frame(2, 1, identity))
+                self.assertTrue(client.get("/health").json()["camera"])
+                self.motion(ws, stopped, 2)
+                refused = self.wait_status(ws, lambda value: value["reason"] == "release_required")
+                self.assertEqual(refused["left_pwm"], 0)
+                status = self.release(ws, refused, 3)
+                self.motion(ws, status, 4)
+                resumed = self.wait_status(ws, lambda value: value["seq"] == 4)
+                self.assertEqual(resumed["left_pwm"], 50)
+
+    def test_simulated_serial_disconnect_in_assembled_server_requires_new_release(self):
+        app = create_app(demo=True, simulate_rover=True, detector="off")
+        with TestClient(app) as client:
+            self.wait_health(client, lambda value: value["camera"] and value["rover"])
+            with client.websocket_connect("/ws/control") as ws:
+                status = self.release(ws, ws.receive_json(), 0)
+                self.motion(ws, status, 1)
+                active = self.wait_status(ws, lambda value: value["seq"] == 1)
+                app.state.control.state.set_connected(False)
+                self.assertFalse(client.get("/health").json()["rover"])
+                stopped = self.wait_status(ws, lambda value: not value["rover"])
+                self.assertEqual(stopped["left_pwm"], 0)
+                self.motion(ws, active, 2)
+                self.wait_status(ws, lambda value: value["reason"] == "expired_permit")
+                app.state.control.state.set_connected(True)
+                app.state.control.state.update_range(120)
+                reconnected = self.wait_status(ws, lambda value: value["rover"])
+                self.motion(ws, reconnected, 3)
+                refused = self.wait_status(ws, lambda value: value["reason"] == "release_required")
+                self.assertEqual(refused["left_pwm"], 0)
+                self.assertTrue(refused["requires_release"])
+
+    def test_demo_mapping_never_silently_enables_motor_simulation(self):
+        app = create_app(demo=True, detector="off")
+        with TestClient(app) as client:
+            health = self.wait_health(client, lambda value: value["camera"])
+            self.assertFalse(health["rover"])
+            self.assertFalse(health["control"]["simulated"])
+            self.assertEqual(health["control"]["reason"], "rover_disabled")
+            with client.websocket_connect("/ws/control") as ws:
+                status = self.release(ws, ws.receive_json(), 0)
+                self.motion(ws, status, 1)
+                denied = self.wait_status(ws, lambda value: value["reason"] == "serial_disconnected")
+                self.assertEqual((denied["left_pwm"], denied["right_pwm"]), (0, 0))
+
+
+if __name__ == "__main__":
+    unittest.main()

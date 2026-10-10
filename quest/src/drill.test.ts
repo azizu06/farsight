@@ -48,6 +48,10 @@ const command = (v: number, w = 0, deadman = true): ControlCommand => ({
   w,
   pan: 0,
   mode: "teleop",
+  session_id: "drill-fixture",
+  permit: "drill-permit",
+  video_fresh: true,
+  video_age_ms: 10,
 });
 
 describe("rescue drill timer and scoring readiness", () => {
