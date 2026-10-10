@@ -27,7 +27,7 @@ try {
  const relay=start(['-m','tools.operator_relay','--upstream',direct,'--port',String(relayPort)]);
  const origin=`http://127.0.0.1:${relayPort}`;await until(()=>json(origin+'/relay/health'));
  browser=await chromium.launch({args:['--no-sandbox','--disable-dev-shm-usage','--use-gl=angle','--use-angle=swiftshader','--enable-unsafe-swiftshader']});
- for(const profile of [{name:'baseline',postDelayMs:0,cpuRate:1},{name:'delayed-response',postDelayMs:300,cpuRate:1},{name:'cpu-four',postDelayMs:0,cpuRate:4}]) {
+ for(const profile of [{name:'baseline',postDelayMs:0,cpuRate:1},{name:'delayed-response',postDelayMs:300,cpuRate:1},{name:'completion-before-response',postDelayMs:700,cpuRate:1},{name:'cpu-four',postDelayMs:0,cpuRate:4}]) {
   const page=await browser.newPage({viewport:{width:960,height:600}});
   await page.addInitScript(({postDelayMs})=>{
    const trace=[];let lastCameraDraw=-Infinity;globalThis.__scanTrace=trace;const record=(kind,fields={})=>{trace.push({wall_ms:Date.now(),at:performance.now(),kind,...fields});if(trace.length>2000)trace.shift();};
