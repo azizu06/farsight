@@ -25,3 +25,4 @@ url = "2"
 
 [dev-dependencies]
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
+regex = "1"

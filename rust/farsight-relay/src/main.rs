@@ -543,3 +543,55 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod contract_tests {
+    /// Port of tools/tests/test_relay_contract.py (#73): every rover path the
+    /// Quest source calls must be proxied by this relay.
+    #[test]
+    fn every_quest_path_is_proxied() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../quest/src");
+        let call = regex::Regex::new(
+            r#"(?:fetch|fetchImpl|api|endpoint|URL)\(\s*["'`](/[A-Za-z0-9_./-]*)"#,
+        )
+        .unwrap();
+        let local = ["/relay/health"];
+        let mut missing = Vec::new();
+        if !src.is_dir() {
+            return; // quest/ not present in a rust-only checkout
+        }
+        for entry in walkdir(&src) {
+            let path = entry.to_string_lossy().replace('\\', "/");
+            if !(path.ends_with(".ts") || path.ends_with(".js")) {
+                continue;
+            }
+            let text = std::fs::read_to_string(&entry).unwrap_or_default();
+            for cap in call.captures_iter(&text) {
+                let p = cap[1].to_string();
+                if local.contains(&p.as_str())
+                    || !super::PROXY_PATHS.contains(&p.as_str())
+                        && !super::PROXY_PREFIXES.iter().any(|pre| p.starts_with(pre))
+                {
+                    missing.push((p, path.clone()));
+                }
+            }
+        }
+        assert!(missing.is_empty(), "Quest calls paths the relay does not proxy: {missing:?}");
+    }
+
+    fn walkdir(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let mut out = Vec::new();
+        if let Ok(rd) = std::fs::read_dir(dir) {
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    out.extend(walkdir(&p));
+                } else {
+                    out.push(p);
+                }
+            }
+        }
+        out
+    }
+}
