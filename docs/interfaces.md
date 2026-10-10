@@ -934,9 +934,15 @@ ignore:
 | `session_id` | Renderer view identity, new per AUTO entry: a UUID in secure contexts, otherwise an opaque token. |
 | `map_revision` | Point revision of the Quest's local map, or `null`. |
 | `viewer` | `{x, y, z, yaw}` of `mapWalk`. |
-| `eyes[]` | `{position, quaternion, projection[16]}` per XR eye, in map coordinates. `projection` is column-major. |
+| `eyes[]` | `{eye, position, quaternion, projection[16]}` per XR eye from the frame's `XRViewerPose`, ordered left then right, in map coordinates. `eye` is `"left"` or `"right"`; `projection` is column-major. |
 | `fov_y_deg`, `aspect` | The picture the Quest would like to receive. |
 | `stereo` | `false`. |
+
+With `?stereo=1` the viewer opens `/ws/macview?layout=sbs-left-right` and shows
+a segment as a stereo pair only when it carries `stereo: true`,
+`layout: "sbs-left-right"` and positive `eye_width`/`eye_height`; each half is
+placed from the matching sent eye pose and projection. A segment with neither
+field is shown flat; one with an invalid pair is not shown.
 
 The viewer finds a frame's render pose by the echoed `pose_id`, or failing
 that by an exact `sent_mono_ms`. It sizes the picture from the echoed
