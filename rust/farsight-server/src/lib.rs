@@ -16,6 +16,7 @@ pub mod drive_profile;
 pub mod detector;
 pub mod geometry;
 pub mod mission;
+pub mod nav;
 pub mod pacer;
 pub mod perception;
 pub mod phone;

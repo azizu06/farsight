@@ -16,7 +16,7 @@ fn fixture() -> Fixture {
     let now = Arc::new(Mutex::new(10.0f64));
     let n = now.clone();
     let clock: Clock = Arc::new(move || *n.lock().unwrap());
-    let state = ControlState::new(false, 0, 100, None, None, Some(clock), None, false, true, "servo", None).unwrap();
+    let state = ControlState::new(false, 0, 100, None, None, Some(clock), None, false, true, "servo", None, None).unwrap();
     state.set_connected(true, None);
     let session = state.begin().unwrap();
     state.update_range(100.0);
@@ -148,9 +148,9 @@ fn pwm_scaling() {
 #[test]
 fn pwm_validation_and_floor() {
     for (floor, ceiling) in [(-1, 100), (100, 100), (101, 100), (0, 256), (0, 0)] {
-        assert!(ControlState::new(false, floor, ceiling, None, None, None, None, false, true, "servo", None).is_err());
+        assert!(ControlState::new(false, floor, ceiling, None, None, None, None, false, true, "servo", None, None).is_err());
     }
-    let state = ControlState::new(false, 70, 110, None, None, None, None, false, true, "servo", None).unwrap();
+    let state = ControlState::new(false, 70, 110, None, None, None, None, false, true, "servo", None, None).unwrap();
     let status = state.status(false);
     assert_eq!(status["min_pwm"], 70);
     assert_eq!(status["max_pwm"], 110);
@@ -174,7 +174,7 @@ fn camera_guard() {
         None,
         Some(Arc::new(move || *n.lock().unwrap())),
         None,
-        false, true, "servo", None,
+        false, true, "servo", None, None,
     ).unwrap();
     state.set_connected(true, None);
     let session = state.begin().unwrap();
@@ -271,7 +271,7 @@ fn mode_fixture(
     let n = now.clone();
     let clock: Clock = Arc::new(move || *n.lock().unwrap());
     let state = ControlState::new(
-        false, min_pwm, 100, None, None, Some(clock), drive_profile, allow_calibration, true, "servo", None,
+        false, min_pwm, 100, None, None, Some(clock), drive_profile, allow_calibration, true, "servo", None, None,
     ).unwrap();
     state.set_connected(true, None);
     let session = state.begin().unwrap();
@@ -350,7 +350,7 @@ fn proximity_stop_off_lets_forward_run_without_range() {
     let now = Arc::new(Mutex::new(10.0f64));
     let n = now.clone();
     let clock: Clock = Arc::new(move || *n.lock().unwrap());
-    let state = ControlState::new(false, 0, 100, None, None, Some(clock), None, false, false, "servo", None).unwrap();
+    let state = ControlState::new(false, 0, 100, None, None, Some(clock), None, false, false, "servo", None, None).unwrap();
     state.set_connected(true, None);
     let session = state.begin().unwrap();
     let f = Fixture { state, session, seq: std::cell::Cell::new(0), now };
@@ -384,7 +384,7 @@ fn no_pan_fixture() -> Fixture {
     let n = now.clone();
     let clock: Clock = Arc::new(move || *n.lock().unwrap());
     let state =
-        ControlState::new(false, 0, 100, None, None, Some(clock), None, false, false, "none", None)
+        ControlState::new(false, 0, 100, None, None, Some(clock), None, false, false, "none", None, None)
             .unwrap();
     state.set_connected(true, None);
     let session = state.begin().unwrap();
@@ -427,7 +427,7 @@ fn no_pan_is_still_validated_and_every_stop_remains() {
 
 #[test]
 fn no_pan_unknown_mount_is_rejected() {
-    assert!(ControlState::new(false, 0, 100, None, None, None, None, false, false, "gimbal", None).is_err());
+    assert!(ControlState::new(false, 0, 100, None, None, None, None, false, false, "gimbal", None, None).is_err());
 }
 
 // Port of test_autonomy.py::test_autonomy_ceiling_keeps_autonomous_speed_while_teleop_uses_full_range (#99).
@@ -440,7 +440,7 @@ fn autonomy_ceiling_keeps_autonomous_speed_while_teleop_uses_full_range() {
     let state = ControlState::new(
         false, 70, 255, None,
         Some(Arc::new(move || snapshot.clone())),
-        Some(clock), None, false, true, "servo", Some(100),
+        Some(clock), None, false, true, "servo", Some(100), None,
     ).unwrap();
     state.set_connected(true, None);
     let session = state.begin().unwrap();
@@ -458,10 +458,10 @@ fn autonomy_ceiling_keeps_autonomous_speed_while_teleop_uses_full_range() {
 fn autonomy_ceiling_validates_bounds_and_defaults_to_max() {
     for bad in [256, 70, 60] {
         assert!(
-            ControlState::new(false, 70, 255, None, None, None, None, false, true, "servo", Some(bad)).is_err(),
+            ControlState::new(false, 70, 255, None, None, None, None, false, true, "servo", Some(bad), None).is_err(),
             "autonomy_max_pwm={bad} must be rejected"
         );
     }
-    let s = ControlState::new(false, 0, 200, None, None, None, None, false, true, "servo", None).unwrap();
+    let s = ControlState::new(false, 0, 200, None, None, None, None, false, true, "servo", None, None).unwrap();
     assert_eq!(s.autonomy_max_pwm, 200); // default: unchanged behaviour
 }

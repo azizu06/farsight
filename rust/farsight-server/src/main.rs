@@ -123,6 +123,28 @@ struct Args {
     /// operator-relay paths; /ws/control single-owner behaviour unchanged
     #[arg(long)]
     bonded_control: bool,
+    /// Closed-loop indoor simulator: a moving ray-cast rover in a test floor
+    /// plan feeding camera/depth/range/detections (SimFeed parity)
+    #[arg(long, value_parser = ["deadend", "doorway", "floorplan", "popup", "seek"])]
+    sim_world: Option<String>,
+    /// Opt in to the ROS 2 Nav2 backend (ros2/farsight_nav bridge on /ws/nav); default off
+    #[arg(long)]
+    nav2: bool,
+    /// Measured forward speed at v=1 (m/s)
+    #[arg(long, default_value_t = 0.45)]
+    nav_speed_mps: f64,
+    /// Measured yaw rate at w=1 (rad/s)
+    #[arg(long, default_value_t = 3.0)]
+    nav_turn_radps: f64,
+    /// Cap on Nav2 forward command, normalized 0..1
+    #[arg(long, default_value_t = 0.7)]
+    nav_max_v: f64,
+    /// Cap on Nav2 turn command, normalized 0..1
+    #[arg(long, default_value_t = 0.8)]
+    nav_max_w: f64,
+    /// Phone optical centre above the floor (m)
+    #[arg(long, default_value_t = 0.15)]
+    nav_camera_height: f64,
 }
 
 #[global_allocator]
@@ -139,7 +161,7 @@ async fn main() {
     if args.simulate_rover && args.serial_port.is_some() {
         panic!("--simulate-rover cannot be combined with --serial-port");
     }
-    if args.demo && args.serial_port.is_some() {
+    if (args.demo || args.sim_world.is_some()) && args.serial_port.is_some() {
         panic!("A simulated camera cannot be used to drive physical motors");
     }
     if args.demo && args.camera.is_some() {
@@ -166,10 +188,14 @@ async fn main() {
         && (args.serial_port.is_some()
             || args.camera.is_some()
             || args.demo
+            || args.sim_world.is_some()
             || args.simulate_rover
             || args.record)
     {
         panic!("Replay cannot be combined with serial, live/simulated sources, or recording");
+    }
+    if args.sim_world.is_some() && args.camera.is_some() {
+        panic!("--sim-world cannot be combined with a real --camera or --replay");
     }
     let state = server::build_state(
         args.demo,
@@ -210,6 +236,13 @@ async fn main() {
         &args.pan_mount,
         args.autonomy_max_pwm,
         args.bonded_control,
+        args.nav2,
+        args.nav_speed_mps,
+        args.nav_turn_radps,
+        args.nav_max_v,
+        args.nav_max_w,
+        args.nav_camera_height,
+        args.sim_world,
     );
     server::start_services(&state);
     let dist = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../quest/dist");
@@ -228,9 +261,53 @@ async fn main() {
             // the TLS handshake (control/service.py parity).
             let acceptor = axum_server::tls_rustls::RustlsAcceptor::new(config)
                 .acceptor(axum_server::accept::NoDelayAcceptor::new());
+            // axum-server's TLS acceptor is a MakeService<SocketAddr>, not an
+            // axum::serve::Listener, so ConnectInfo is injected per-request.
+            use std::convert::Infallible;
+            use std::future::{ready, Ready};
+            use std::pin::Pin;
+            use std::task::{Context, Poll};
+            use tower_service::Service;
+
+            #[derive(Clone)]
+            struct ConnectMakeService {
+                app: axum::Router,
+            }
+            impl Service<std::net::SocketAddr> for ConnectMakeService {
+                type Response = ConnectService;
+                type Error = Infallible;
+                type Future = Ready<Result<ConnectService, Infallible>>;
+                fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Infallible>> {
+                    Poll::Ready(Ok(()))
+                }
+                fn call(&mut self, addr: std::net::SocketAddr) -> Self::Future {
+                    ready(Ok(ConnectService { app: self.app.clone(), addr }))
+                }
+            }
+            #[derive(Clone)]
+            struct ConnectService {
+                app: axum::Router,
+                addr: std::net::SocketAddr,
+            }
+            impl Service<axum::http::Request<hyper::body::Incoming>> for ConnectService {
+                type Response = axum::response::Response;
+                type Error = Infallible;
+                type Future = Pin<
+                    Box<dyn std::future::Future<Output = Result<axum::response::Response, Infallible>> + Send>,
+                >;
+                fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Infallible>> {
+                    Poll::Ready(Ok(()))
+                }
+                fn call(&mut self, mut req: axum::http::Request<hyper::body::Incoming>) -> Self::Future {
+                    req.extensions_mut().insert(axum::extract::ConnectInfo(
+                        farsight_server::server::PeerAddr(self.addr),
+                    ));
+                    Box::pin(self.app.call(req.map(axum::body::Body::new)))
+                }
+            }
             axum_server::Server::bind(addr)
                 .acceptor(acceptor)
-                .serve(app.into_make_service())
+                .serve(ConnectMakeService { app })
                 .await
                 .unwrap();
         }
