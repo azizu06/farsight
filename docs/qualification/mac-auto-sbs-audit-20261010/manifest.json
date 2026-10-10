@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "scope": "Actual-class offline stereo presentation/session regression. No GPU, rendered wire pair, headset or hardware proof.",
+  "source_client_revision": "fb326627380a1daf0ff334dc006a9b156df6c5af",
+  "commands": [
+    "node docs/qualification/mac-auto-sbs-audit-20261010/probe.mjs /path/to/farsight",
+    "node docs/qualification/mac-auto-sbs-audit-20261010/probe.mjs /path/to/farsight --expect-fixed"
+  ],
+  "dependencies": "Existing quest/node_modules (TypeScript and Three.js).",
+  "cases": [
+    "Null pose echo",
+    "Unknown pose ID",
+    "Missing eye views",
+    "Invalid second-eye projection",
+    "Foreign session with reused pose ID",
+    "Valid current-session positive control"
+  ],
+  "owner": "Aziz quest-hud; this artifact edits no production source."
+}

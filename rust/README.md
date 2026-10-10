@@ -89,6 +89,11 @@ no Rust runtime); `--detector none` works everywhere.
   JPEG + float32 depth + uint8 confidence)
 - `/map/points.bin` `u32le` count + 16-byte records; `/map/mesh.bin`,
   `/map/export.ply`, `surfaces` keyframe encoding identical to Python
+- `/map/dense.bin` fine measured lane (`dense.py`/`dense_worker.py` port):
+  `u32le` JSON len + metadata + 16-byte `<iiiBBBB` records, epoch/snapshot/
+  anchor/cursor delta paging, bounded journal, TTL tombstones, latest-only
+  2 Hz/4096-point worker, `FARSIGHT_DENSE=0` opt-out, `status.dense_worker`
+  diagnostics identical to Python
 - `/ws/control` permits, 250 ms lease, deadman release, seq monotonicity,
   20 Hz adaptive status + `on_status` hook, `on_output` telemetry feed
   (v/w/blocked), forward estop (<25 cm), camera-guard, autonomy

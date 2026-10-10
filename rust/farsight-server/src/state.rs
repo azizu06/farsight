@@ -7,6 +7,8 @@ use std::time::Instant;
 
 use serde_json::{json, Value};
 
+use crate::dense::DenseMap;
+use crate::dense_worker::DenseWorker;
 use crate::geometry::{encode_points, export_ply, flatten_f, Mat4, IDENTITY};
 use crate::phone::{Identity, RgbdFrame};
 use crate::surfaces::SurfaceMap;
@@ -40,6 +42,10 @@ type PoseIdentity = (i64, String, [f64; 16]);
 
 pub struct Inner {
     pub cloud: VoxelMap,
+    /// Measured dense cloud, swapped whole on reset/session change — a
+    /// running visual job retains the old Arc and its stale generation
+    /// fails the worker's current() check (7ca27e0 swap-in-new-cloud).
+    pub dense: Arc<DenseMap>,
     pub surfaces: SurfaceMap,
     pub connected: bool,
     pub identity: Option<Identity>,
@@ -76,7 +82,9 @@ const FUSION_BYPASSED: &str = "Geometry lane external; fusion bypassed";
 
 pub struct MapState {
     pub demo: bool,
-    pub inner: Mutex<Inner>,
+    pub inner: Arc<Mutex<Inner>>,
+    /// Bounded latest-only measured visual worker (dense_worker.py port).
+    pub dense_worker: DenseWorker,
     /// Encoded packet cache keyed on (generation, frames, keyframe count).
     /// Compressible variants (zstd/br/gzip) are cached per map version like
     /// jetson/mapping/compress.py — no re-encoding per request.
@@ -131,11 +139,26 @@ impl MapState {
             depth_range: None,
             pose_history: VecDeque::new(),
             scan: None,
+            dense: Arc::new(DenseMap::new(true)),
         };
+        let inner = Arc::new(Mutex::new(inner));
+        // dense_worker.current: generation + cloud identity + live session.
+        let inner_for_worker = inner.clone();
+        let dense_worker = DenseWorker::new(Arc::new(
+            move |generation: u64, cloud: &Arc<DenseMap>| {
+                let s = inner_for_worker.lock().unwrap();
+                generation == s.processing_generation
+                    && Arc::ptr_eq(cloud, &s.dense)
+                    && s.connected
+                    && !s.paused
+                    && s.tracking == "normal"
+            },
+        ));
         let (revision_tx, _) = tokio::sync::watch::channel(0u64);
         Self {
             demo,
-            inner: Mutex::new(inner),
+            inner,
+            dense_worker,
             packets: Mutex::new(None),
             frame_observers: Mutex::new(Vec::new()),
             revision_tx,
@@ -174,6 +197,9 @@ impl MapState {
         }
         s.connected = true;
         s.device = device;
+        if let Some((session_id, map_epoch)) = &s.identity {
+            s.dense.set_source(json!([session_id, map_epoch]));
+        }
         s.processing_generation += 1;
         s.last_capture = -1.0;
         s.last_pose_capture = -1.0;
@@ -184,6 +210,13 @@ impl MapState {
 
     fn clear_locked(s: &mut Inner) {
         s.cloud.clear();
+        // A running visual job retains the old cloud, never the new epoch.
+        // Swapping avoids waiting for its integration/delta lock on reset.
+        s.dense = Arc::new(DenseMap::new(true));
+        s.dense.set_source(match &s.identity {
+            Some((session_id, map_epoch)) => json!([session_id, map_epoch]),
+            None => Value::Null,
+        });
         if s.scan.is_some() {
             s.cloud = VoxelMap::default(); // restore phone fusion's voxel size/budget
         }
@@ -252,6 +285,8 @@ impl MapState {
             crate::camera::adjusted_receipt(&frame.header, crate::state::monotonic())?;
         let generation;
         let may_fuse;
+        let may_dense;
+        let dense_cloud;
         {
             let mut s = self.inner.lock().unwrap();
             let frame_identity = (
@@ -312,6 +347,10 @@ impl MapState {
                 && !s.paused
                 && frame.header["tracking"].as_str() == Some("normal")
                 && s.tracking == "normal";
+            may_dense = !s.paused
+                && frame.header["tracking"].as_str() == Some("normal")
+                && s.tracking == "normal";
+            dense_cloud = s.dense.clone();
             s.reason = if self.fusion_bypass {
                 Some(FUSION_BYPASSED.into())
             } else if s.paused {
@@ -326,6 +365,10 @@ impl MapState {
         // too degraded to fuse (mapping/state.py parity).
         for observer in self.frame_observers.lock().unwrap().iter() {
             observer(frame);
+        }
+        if may_dense {
+            // Latest-only offer; sampling/integration happens off this path.
+            self.dense_worker.offer(frame.clone(), dense_cloud, generation);
         }
         // #109: bypassed frames keep the pose/depth/camera lanes live but are
         // not fused and not counted — frames/processing_ms stay frozen at the
@@ -394,6 +437,7 @@ impl MapState {
             "capped": (self.points_cap > 0 && s.cloud.cells.len() > self.points_cap)
                 || (self.triangles_cap > 0 && s.surfaces.count > self.triangles_cap),
             "fusion_bypass": self.fusion_bypass,
+            "dense_worker": self.dense_worker.status(),
             "keyframes": s.surfaces.keyframes.len(),
             "frames": s.frames,
             "rejected": s.rejected,
@@ -524,6 +568,11 @@ impl MapState {
         export_ply(&points, &colors)
     }
 
+    /// The live measured dense cloud (swapped whole on reset/session).
+    pub fn dense(&self) -> Arc<DenseMap> {
+        self.inner.lock().unwrap().dense.clone()
+    }
+
     /// Live /phone session with normal ARKit tracking (--lidar-drive opt-in).
     pub fn lidar_drive_eligible(&self) -> bool {
         let s = self.inner.lock().unwrap();
@@ -617,14 +666,14 @@ struct PacketCache {
 }
 
 #[derive(Clone, Copy)]
-enum Coding {
+pub(crate) enum Coding {
     Zstd,
     Br,
     Gzip,
 }
 
 impl Coding {
-    fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Coding::Zstd => "zstd",
             Coding::Br => "br",
@@ -634,7 +683,7 @@ impl Coding {
 }
 
 /// zstd preferred over br over gzip; any q=0 refusal drops the coding.
-fn negotiate_encoding(accept: &str) -> Option<Coding> {
+pub(crate) fn negotiate_encoding(accept: &str) -> Option<Coding> {
     let mut zstd = false;
     let mut br = false;
     let mut gz = false;
@@ -660,14 +709,14 @@ fn negotiate_encoding(accept: &str) -> Option<Coding> {
     }
 }
 
-fn gzip_compress(data: &[u8]) -> Vec<u8> {
+pub(crate) fn gzip_compress(data: &[u8]) -> Vec<u8> {
     use std::io::Write;
     let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::new(5));
     let _ = enc.write_all(data);
     enc.finish().unwrap_or_default()
 }
 
-fn brotli_compress(data: &[u8]) -> Vec<u8> {
+pub(crate) fn brotli_compress(data: &[u8]) -> Vec<u8> {
     use std::io::Read;
     let mut out = Vec::new();
     let mut r = brotli::CompressorReader::new(data, 1 << 20, 4, 22);
@@ -677,7 +726,7 @@ fn brotli_compress(data: &[u8]) -> Vec<u8> {
 
 /// Level 9: encodes faster than gzip-5 and br-4 while beating both on
 /// points/ply bytes; higher levels cost seconds on the Jetson per version.
-fn zstd_compress(data: &[u8]) -> Vec<u8> {
+pub(crate) fn zstd_compress(data: &[u8]) -> Vec<u8> {
     zstd::bulk::compress(data, 9).unwrap_or_default()
 }
 
