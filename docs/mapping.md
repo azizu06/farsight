@@ -106,8 +106,8 @@ sensor-native and consistent in both mounts, so fusion, Nav2 and the Quest pose 
 points down for 3 consecutive frames (past 110 degrees; back at 70 degrees, held while the camera looks within ~20 degrees of
 vertical) it rotates the published JPEG 180 degrees (`CameraFrame.mirrored`). `/camera.jpg`, the video lane, detectors,
 SBAR/identity crops and mission snapshots stay upright; person markers look up depth through a rotated view of the same RGB-D
-frame so boxes still hit the right pixels. `/depth.jpg`, phone RGB-only frames (no pose on the wire) and the Rust server are not
-normalised.
+frame so boxes still hit the right pixels. `/depth.jpg` and phone RGB-only frames (no pose on the wire) are not normalised; the
+Rust server mirrors the same lane (`rust/farsight-server/src/orientation.rs`).
 
 ARKit optional floor and mesh metadata on v2/v3 bundles is accepted but not used to fabricate geometry.
 In phone mode, only measured RGB-D creates this map. Full ARKit mesh archives, object detection, and old rover relay messages
