@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { SourceTruth } from "./source-banner.js";
 import { explainStop } from "./stop-reason.js";
-import { ControlSafety, stick } from "./control-safety.js";
+import { ControlSafety, stick, triggerHeld } from "./control-safety.js";
 import { H264Viewer } from "./h264";
 import { cameraCrop, croppedBox } from "./camera-view.js";
 import { VRActionMenu, type VRAction } from "./vr-actions";
@@ -609,7 +609,7 @@ export class RoverExperience {
       }
       this.lastXRAt = now;
       const axes = right?.gamepad?.axes ?? [];
-      const held = !!right?.gamepad?.buttons[0]?.pressed;
+      const held = triggerHeld(this.input.held, right?.gamepad?.buttons[0]);
       const scan = leftTracked && !!left?.gamepad?.buttons[5]?.pressed;
       const toggle = !!right?.gamepad?.buttons[4]?.pressed;
       const explore = !!right?.gamepad?.buttons[5]?.pressed;

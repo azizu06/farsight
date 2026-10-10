@@ -50,7 +50,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                depth_model=None, scan_pan=False, scan_fov=70, scan_intrinsics=None, scan_turn_dps=90,
                record=False, replay=None, proximity_stop=True, pan_mount="servo", autonomy_max_pwm=None, nav2=False, nav_speed_mps=0.45,
                nav_turn_radps=3.0, nav_max_v=0.7, nav_max_w=0.8, nav_camera_height=0.15, bulk_limit_mbps=0, drive_profile=None,
-               video_limit_mbps=0,
+               video_limit_mbps=0, demo_mode=False,
                allow_calibration=False, sim_world=None, bonded_control=False, lidar_drive=False,
                fusion_bypass=False, map_points_cap=None, map_triangles_cap=None):
     if sim_world is not None:  # closed-loop simulator: a moving ray-cast rover in a test floor plan
@@ -99,7 +99,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                              simulated_range=sim.sim.ultrasonic_cm if sim else None,
                              proximity_stop=proximity_stop, pan_mount=pan_mount,
                              autonomy_max_pwm=autonomy_max_pwm, navigator=nav,
-                             bonded=bonded_control)
+                             bonded=bonded_control, demo_mode=demo_mode)
     if nav is not None:
         nav.attach(control.state)
         state.frame_observers.append(nav.offer_frame)
@@ -740,6 +740,10 @@ def main():
                         help="PWM ceiling for explore, seek, go-to, Nav2 and scan motion (min-pwm < N <= max-pwm); "
                              "default max-pwm. Keeps autonomy at a calibrated speed when teleop uses a high --max-pwm")
     parser.add_argument("--drive-profile", help="Opt-in measured drive profile (tools.calibrate_drive output); enables mode \"velocity\" in m/s, rad/s")
+    parser.add_argument("--demo-mode", action="store_true",
+                        help="Demo guards on the real rover (not --demo): transient stops (serial blip, controller "
+                             "reconnect, stale camera, lease/permit lapse, Nav2 sensor blip) do not latch "
+                             "release_required, and teleop is not gated on camera freshness")
     parser.add_argument("--allow-calibration", action="store_true",
                         help="Accept raw-PWM mode \"calibrate\" from a held-deadman controller; for tools.calibrate_drive on a cleared floor only")
     parser.add_argument("--lidar-drive", action="store_true",
@@ -831,7 +835,7 @@ def main():
                 scan_intrinsics=args.scan_intrinsics, scan_turn_dps=args.scan_turn_dps,
                 record=args.record, replay=args.replay, bulk_limit_mbps=args.bulk_limit_mbps,
                 video_limit_mbps=args.video_limit_mbps,
-                drive_profile=args.drive_profile, allow_calibration=args.allow_calibration,
+                drive_profile=args.drive_profile, allow_calibration=args.allow_calibration, demo_mode=args.demo_mode,
                 proximity_stop=args.proximity_stop, pan_mount=args.pan_mount, autonomy_max_pwm=args.autonomy_max_pwm,
                 nav2=args.nav2, nav_speed_mps=args.nav_speed_mps, nav_turn_radps=args.nav_turn_radps,
                 nav_max_v=args.nav_max_v, nav_max_w=args.nav_max_w,

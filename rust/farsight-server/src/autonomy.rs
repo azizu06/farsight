@@ -99,28 +99,25 @@ impl Autonomy {
         } else {
             Vec::new()
         };
+        // #130: people never switch Explore to Seek — indoors a person is a
+        // moving obstacle for the costmaps, not a target. Seek runs only
+        // when the operator selects it.
         if self.mode == "explore" {
-            if let Some(person) = boxes.first() {
-                self.mode = "seek".into();
-                self.target_id = person["id"].as_i64();
-                self.last_seen = Some(now);
-            } else {
-                if self.phase == "turning" {
-                    if now - self.phase_at < 1.0 {
-                        return (0.0, self.direction * 0.35);
-                    }
-                    self.phase = "forward".into();
-                    self.phase_at = now;
-                }
-                if (known && cm < 70.0) || now - self.phase_at >= 4.0 {
-                    self.phase = "turning".into();
-                    self.phase_at = now;
-                    self.direction = (self.choose_turn)();
+            if self.phase == "turning" {
+                if now - self.phase_at < 1.0 {
                     return (0.0, self.direction * 0.35);
                 }
                 self.phase = "forward".into();
-                return (0.25, 0.0);
+                self.phase_at = now;
             }
+            if (known && cm < 70.0) || now - self.phase_at >= 4.0 {
+                self.phase = "turning".into();
+                self.phase_at = now;
+                self.direction = (self.choose_turn)();
+                return (0.0, self.direction * 0.35);
+            }
+            self.phase = "forward".into();
+            return (0.25, 0.0);
         }
         let target = boxes
             .iter()

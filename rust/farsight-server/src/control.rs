@@ -662,35 +662,13 @@ impl ControlState {
                 .as_ref()
                 .map(|a| self.navigator.as_ref().unwrap().handles(&a.mode))
                 .unwrap_or(false);
-        if backed && matches!(s.autonomy.as_ref().map(|a| a.mode.as_str()), Some("explore") | Some("seek")) {
+        // #130: Explore never hands over to Seek — a person indoors is a
+        // moving obstacle for the costmaps to avoid, not a target. Seek
+        // runs only when the operator selects it.
+        if backed && s.autonomy.as_ref().map(|a| a.mode.as_str()) == Some("seek") {
             let nav = self.navigator.as_ref().unwrap();
             let snapshot = self.detections.as_ref().map(|d| d()).unwrap_or(json!({}));
-            let usable = snapshot.get("fresh").and_then(Value::as_bool).unwrap_or(false)
-                && snapshot.get("error").map(|e| e.is_null()).unwrap_or(true);
-            let person = if usable {
-                snapshot
-                    .get("boxes")
-                    .and_then(Value::as_array)
-                    .map(|boxes| boxes.iter().find(|b| crate::autonomy::valid_person(b)))
-                    .flatten()
-            } else {
-                None
-            };
-            if s.autonomy.as_ref().map(|a| a.mode.as_str()) == Some("explore") {
-                if let Some(person) = person {
-                    // Like the reactive policy: Explore hands over to Seek on
-                    // the first person seen.
-                    let id = person["id"].as_i64();
-                    if let Some(a) = s.autonomy.as_mut() {
-                        a.mode = "seek".into();
-                        a.target_id = id;
-                    }
-                    nav.sync(Some("seek"), id, true);
-                }
-            }
-            if s.autonomy.as_ref().map(|a| a.mode.as_str()) == Some("seek") {
-                nav.update_seek(&snapshot);
-            }
+            nav.update_seek(&snapshot);
         }
         let fault = if backed {
             self.navigator.as_ref().unwrap().sensor_fault()

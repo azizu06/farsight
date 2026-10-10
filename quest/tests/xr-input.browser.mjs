@@ -919,8 +919,14 @@ try {
     const fresh = await context.newPage();
     await fresh.goto(origin);
     await fresh.waitForTimeout(500);
+    // The HUD line lists the mount only after the first /health and camera frame; poll instead of one fixed wait.
+    const deadline = Date.now() + 3000;
+    let hud = await fresh.locator("#rover-details").textContent();
+    while (!/camera · full frame|Servo pan/.test(hud) || /Waiting for camera/.test(hud)) {
+      if (Date.now() > deadline) break;
+      await fresh.waitForTimeout(100); hud = await fresh.locator("#rover-details").textContent();
+    }
     const value = await fresh.locator('select[aria-label="Camera mounting mode"]').inputValue();
-    const hud = await fresh.locator("#rover-details").textContent();
     await context.close();
     return { value, hud };
   };
