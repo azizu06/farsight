@@ -1,7 +1,7 @@
 //! Bounded live mission evidence, persisted when a directory is set.
 //! Port of jetson/mission.py.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -19,18 +19,22 @@ fn epoch() -> f64 {
 
 struct Inner {
     events: VecDeque<Value>,
-    encounters: HashMap<String, Value>,
+    encounters: indexmap::IndexMap<String, Value>,
+    triage: indexmap::IndexMap<String, Value>,
     drill_start: Option<f64>,
     drill_duration: f64,
     drill_seen: std::collections::HashSet<String>,
     saved_snapshots: u64,
 }
 
+type OnPerson = Box<dyn Fn(&str, &Value, &[u8], &Value) + Send + Sync>;
+
 pub struct Mission {
     pub started: f64,
     pub id: String,
     pub directory: Option<PathBuf>,
     inner: Mutex<Inner>,
+    on_person: Mutex<Option<OnPerson>>,
 }
 
 impl Mission {
@@ -46,17 +50,26 @@ impl Mission {
             directory,
             inner: Mutex::new(Inner {
                 events: VecDeque::new(),
-                encounters: HashMap::new(),
+                encounters: indexmap::IndexMap::new(),
+                triage: indexmap::IndexMap::new(),
                 drill_start: None,
                 drill_duration: 90.0,
                 drill_seen: std::collections::HashSet::new(),
                 saved_snapshots: 0,
             }),
+            on_person: Mutex::new(None),
         }
+    }
+
+    /// Called as on_person(key, encounter, jpeg, snapshot_url) for each new
+    /// person track (e.g. the triage worker).
+    pub fn set_on_person(&self, callback: OnPerson) {
+        *self.on_person.lock().unwrap() = Some(callback);
     }
 
     pub fn detect(&self, packet: &Value, frame: &CameraFrame) {
         let mut inner = self.inner.lock().unwrap();
+        let mut new_persons: Vec<(String, Value, Value)> = Vec::new();
         let Some(boxes) = packet["boxes"].as_array() else { return };
         for boxv in boxes {
             let key = format!("{}:{}", frame.source, boxv["id"]);
@@ -105,10 +118,52 @@ impl Mission {
                     }
                 }
             }
+            if boxv["cls"].as_str() == Some("person") {
+                if let Some(stored) = inner.encounters.get(&key).cloned() {
+                    new_persons.push((key, stored, event["snapshot_url"].clone()));
+                }
+            }
         }
         while inner.encounters.len() > 500 {
-            if let Some(k) = inner.encounters.keys().next().cloned() {
-                inner.encounters.remove(&k);
+            inner.encounters.shift_remove_index(0);
+        }
+        drop(inner);
+        // Callbacks re-enter the mission (set_sbar); they must run unlocked.
+        if !new_persons.is_empty() {
+            let cb = self.on_person.lock().unwrap();
+            if let Some(cb) = cb.as_ref() {
+                for (key, encounter, snapshot_url) in new_persons {
+                    cb(&key, &encounter, &frame.jpeg, &snapshot_url);
+                }
+            }
+        }
+    }
+
+    pub fn encounter(&self, key: &str) -> Option<Value> {
+        self.inner.lock().unwrap().encounters.get(key).cloned()
+    }
+
+    /// Store a person's SBAR and rewrite the persisted report so it always
+    /// carries one.
+    pub fn set_sbar(&self, key: &str, sbar: Value) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.triage.insert(key.to_string(), sbar.clone());
+        while inner.triage.len() > 500 {
+            inner.triage.shift_remove_index(0);
+        }
+        if let Some(dir) = &self.directory {
+            let mut record = sbar.as_object().cloned().unwrap_or_default();
+            let mut entry = serde_json::Map::new();
+            entry.insert("key".into(), json!(key));
+            entry.append(&mut record);
+            if let Ok(mut log) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("triage.jsonl")) {
+                use std::io::Write;
+                let _ = writeln!(log, "{}", serde_json::to_string(&Value::Object(entry)).unwrap());
+            }
+            let report = Self::report_locked(&self.id, self.started, self.directory.is_some(), &inner);
+            let temporary = dir.join("report.json.tmp");
+            if std::fs::write(&temporary, serde_json::to_string(&report).unwrap()).is_ok() {
+                let _ = std::fs::rename(&temporary, dir.join("report.json"));
             }
         }
     }
@@ -138,19 +193,31 @@ impl Mission {
         Self::drill_locked(&self.inner.lock().unwrap())
     }
 
-    pub fn report(&self) -> Value {
-        let inner = self.inner.lock().unwrap();
+    fn report_locked(id: &str, started: f64, persisted: bool, inner: &Inner) -> Value {
         json!({
-            "mission_id": self.id,
-            "started_at": self.started,
-            "duration_s": (epoch() - self.started).round() as i64,
-            "persisted": self.directory.is_some(),
+            "mission_id": id,
+            "started_at": started,
+            "duration_s": (epoch() - started).round() as i64,
+            "persisted": persisted,
             "events": inner.events.iter().cloned().collect::<Vec<_>>(),
-            "encounters": inner.encounters.values().cloned().collect::<Vec<_>>(),
+            "encounters": inner.encounters.iter().map(|(key, entry)| {
+                let mut e = entry.as_object().cloned().unwrap_or_default();
+                e.insert("key".into(), json!(key));
+                e.insert("sbar".into(), inner.triage.get(key).cloned().unwrap_or(Value::Null));
+                Value::Object(e)
+            }).collect::<Vec<_>>(),
+            "triage": serde_json::Map::from_iter(
+                inner.triage.iter().map(|(k, v)| (k.clone(), v.clone()))
+            ),
             "saved_snapshots": inner.saved_snapshots,
             "snapshot_limit": 1000,
-            "drill": Self::drill_locked(&inner),
+            "drill": Self::drill_locked(inner),
         })
+    }
+
+    pub fn report(&self) -> Value {
+        let inner = self.inner.lock().unwrap();
+        Self::report_locked(&self.id, self.started, self.directory.is_some(), &inner)
     }
 
     /// Serve a persisted detection snapshot; enforces the same name

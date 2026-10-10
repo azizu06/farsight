@@ -40,15 +40,38 @@ struct Args {
     /// UltraFace RFB-320 ONNX pass; omitted means off
     #[arg(long)]
     face_model: Option<String>,
+    /// Metric Indoor Small 308x406 ONNX depth model
+    #[arg(long)]
+    depth_model: Option<String>,
+    /// Physical camera pan installed; default is approximate rover turn
+    #[arg(long)]
+    scan_pan: bool,
+    /// Camera horizontal FOV degrees; ignored with calibrated intrinsics
+    #[arg(long, default_value_t = 70.0)]
+    scan_fov: f64,
+    /// Calibrated intrinsics for the transmitted RGB pixel grid: FX FY CX CY
+    #[arg(long, num_args = 4)]
+    scan_intrinsics: Option<Vec<f64>>,
+    /// Measured turn degrees/sec at w=.3; approximate open-loop fallback
+    #[arg(long, default_value_t = 90.0)]
+    scan_turn_dps: f64,
     /// Enable ffmpeg H264 fragmented MP4 WebSocket
     #[arg(long)]
     h264: bool,
+    #[arg(long, default_value_t = 10)]
+    video_fps: u32,
+    /// H264 bit/s; start low for cellular headroom
+    #[arg(long, default_value_t = 500000)]
+    video_bitrate: u32,
     /// Persist detection evidence beneath this directory
     #[arg(long)]
     mission_dir: Option<PathBuf>,
     /// Local llama-server origin, e.g. http://127.0.0.1:8082
     #[arg(long)]
     assistant_url: Option<String>,
+    /// Running whisper-server origin (model stays loaded), e.g. http://127.0.0.1:8091
+    #[arg(long)]
+    whisper_url: Option<String>,
     #[arg(long)]
     whisper_bin: Option<String>,
     #[arg(long)]
@@ -57,6 +80,15 @@ struct Args {
     piper_bin: Option<String>,
     #[arg(long)]
     piper_model: Option<String>,
+    /// Spanish Piper .onnx voice for survivor phrases
+    #[arg(long)]
+    piper_model_es: Option<String>,
+    /// Rover speaker player, e.g. 'aplay -q' or 'paplay'; auto probes ALSA/Pulse; none disables
+    #[arg(long, default_value = "auto")]
+    speaker_cmd: String,
+    /// Minimum seconds between SBAR model calls
+    #[arg(long, default_value_t = 3.0)]
+    triage_interval: f64,
     /// Directory for generated reply-*.wav speech
     #[arg(long)]
     tts_dir: Option<PathBuf>,
@@ -92,6 +124,17 @@ async fn main() {
         args.piper_bin,
         args.piper_model,
         args.tts_dir,
+        args.whisper_url,
+        args.piper_model_es,
+        Some(args.speaker_cmd),
+        args.triage_interval,
+        args.depth_model,
+        args.scan_pan,
+        args.scan_fov,
+        args.scan_intrinsics,
+        args.scan_turn_dps,
+        args.video_fps,
+        args.video_bitrate,
     );
     server::start_services(&state);
     let dist = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../quest/dist");

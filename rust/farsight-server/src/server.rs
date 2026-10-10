@@ -23,7 +23,10 @@ use crate::mission::Mission;
 use crate::perception::PerceptionService;
 use crate::phone::{self, Hello};
 use crate::assistant::SceneAssistant;
+use crate::phrases::{PhraseSpeaker, SpeechError};
+use crate::scan::ScanService;
 use crate::state::{now_monotonic, MapState};
+use crate::triage::{TriageError, TriageService};
 use crate::video::VideoService;
 
 pub struct AppState {
@@ -36,8 +39,15 @@ pub struct AppState {
     pub mission: Arc<Mission>,
     pub demo: bool,
     pub h264: bool,
+    pub video_fps: u32,
+    pub video_bitrate: u32,
     pub phone_owner: Mutex<bool>,
     pub assistant: Option<Arc<SceneAssistant>>,
+    pub assistant_whisper: bool,
+    pub assistant_piper: bool,
+    pub triage: Arc<TriageService>,
+    pub phrases: Arc<PhraseSpeaker>,
+    pub scanner: Arc<ScanService>,
 }
 
 pub fn build_state(
@@ -57,13 +67,27 @@ pub fn build_state(
     piper_bin: Option<String>,
     piper_model: Option<String>,
     tts_dir: Option<PathBuf>,
+    whisper_url: Option<String>,
+    piper_model_es: Option<String>,
+    speaker_cmd: Option<String>,
+    triage_interval: f64,
+    depth_model: Option<String>,
+    scan_pan: bool,
+    scan_fov: f64,
+    scan_intrinsics: Option<Vec<f64>>,
+    scan_turn_dps: f64,
+    video_fps: u32,
+    video_bitrate: u32,
 ) -> Arc<AppState> {
     if (demo || simulate_rover) && serial_port.is_some() {
         panic!("Simulated sources cannot be combined with a physical motor serial port");
     }
     let mapping = Arc::new(MapState::new(demo));
     let camera = Arc::new(CameraService::new(mapping.clone(), camera_device.clone()));
-    let video = Arc::new(VideoService::new(camera.clone(), h264));
+    let mut video = VideoService::new(camera.clone(), h264);
+    video.fps = video_fps;
+    video.bitrate = video_bitrate;
+    let video = Arc::new(video);
     let mission = Arc::new(Mission::new(mission_dir));
     let m = mission.clone();
     let perception = Arc::new(PerceptionService::new(
@@ -89,6 +113,8 @@ pub fn build_state(
         .expect("PWM bounds"),
     );
     let pump = Arc::new(SerialPump::new(control.clone(), serial_port, simulate_rover));
+    let assistant_whisper = whisper_url.is_some() || (whisper_bin.is_some() && whisper_model.is_some());
+    let assistant_piper = piper_model.is_some();
     let assistant = SceneAssistant::new(
         camera.clone(),
         perception.clone(),
@@ -96,11 +122,39 @@ pub fn build_state(
         assistant_url,
         whisper_bin,
         whisper_model,
-        piper_bin,
-        piper_model,
-        tts_dir,
+        piper_bin.clone(),
+        piper_model.clone(),
+        tts_dir.clone(),
+        whisper_url,
     )
-    .ok();
+    .ok()
+    .map(Arc::new);
+    let range = control.clone();
+    let triage = TriageService::new(
+        mission.clone(),
+        assistant.as_ref().and_then(|a| a.server_url.clone()),
+        Arc::new(move || range.status(false)["range_cm"].as_f64()),
+        triage_interval,
+    );
+    let voices = [("en", piper_model), ("es", piper_model_es)]
+        .into_iter()
+        .filter_map(|(lang, p)| p.map(|p| (lang.to_string(), PathBuf::from(p))))
+        .collect();
+    let phrases = Arc::new(PhraseSpeaker::new(tts_dir, voices, piper_bin, speaker_cmd));
+    let scanner = Arc::new(
+        ScanService::new(
+            mapping.clone(),
+            camera.clone(),
+            control.clone(),
+            perception.clone(),
+            depth_model,
+            scan_pan,
+            scan_fov,
+            scan_intrinsics,
+            scan_turn_dps,
+        )
+        .expect("scan configuration"),
+    );
     Arc::new(AppState {
         mapping,
         camera,
@@ -111,8 +165,15 @@ pub fn build_state(
         mission,
         demo,
         h264,
+        video_fps,
+        video_bitrate,
         phone_owner: Mutex::new(false),
-        assistant: assistant.map(Arc::new),
+        assistant,
+        assistant_whisper,
+        assistant_piper,
+        triage,
+        phrases,
+        scanner,
     })
 }
 
@@ -123,6 +184,7 @@ pub fn start_services(state: &Arc<AppState>) {
     state.camera.clone().start();
     state.video.clone().start();
     state.perception.clone().start();
+    state.triage.clone().start();
     if state.demo {
         let mapping = state.mapping.clone();
         std::thread::spawn(move || {
@@ -149,29 +211,62 @@ async fn health(State(s): State<Arc<AppState>>) -> Json<Value> {
     let cam = s.camera.status();
     let rover = s.control.status(false);
     let video_err = s.video.error.lock().unwrap().clone();
-    let init_ready = s.video.init.lock().unwrap().is_some();
     let obj = status.as_object_mut().unwrap();
     for (k, v) in cam.as_object().unwrap() {
+        obj.insert(k.clone(), v.clone());
+    }
+    obj.insert("scan".into(), s.scanner.result());
+    for (k, v) in s.perception.health().as_object().unwrap() {
         obj.insert(k.clone(), v.clone());
     }
     obj.insert("rover".into(), rover["rover"].clone());
     obj.insert("estop".into(), rover["estop"].clone());
     obj.insert("control".into(), rover);
-    obj.insert("detector".into(), json!(s.perception.mode));
-    obj.insert("detector_error".into(), s.perception.snapshot()["error"].clone());
-    obj.insert("detector_fps".into(), s.perception.snapshot()["fps"].clone());
+    obj.insert(
+        "video".into(),
+        json!({"enabled": s.h264, "ready": s.video.ready(), "error": video_err,
+               "fps": s.video_fps, "bitrate": s.video_bitrate}),
+    );
     obj.insert(
         "assistant".into(),
         json!({
             "vision_model": s.assistant.as_ref().map(|a| a.server_url.is_some()).unwrap_or(false),
-            "tts": s.assistant.as_ref().map(|a| a.output_dir.is_some()).unwrap_or(false),
+            "whisper": s.assistant_whisper,
+            "piper": s.assistant_piper,
         }),
     );
-    obj.insert(
-        "video".into(),
-        json!({"enabled": s.h264, "ready": init_ready, "error": video_err}),
-    );
+    obj.insert("speech".into(), s.phrases.status());
+    obj.insert("triage".into(), s.triage.status());
     Json(status)
+}
+
+async fn scan_status(State(s): State<Arc<AppState>>) -> Json<Value> {
+    Json(s.scanner.result())
+}
+
+async fn scan_start(State(s): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
+    let session_id = body["session_id"].as_str();
+    let permit = body["permit"].as_str();
+    if session_id.is_none() || permit.is_none() {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({"detail": [{"loc": ["body", "permit"], "msg": "Field required", "type": "missing"}]})),
+        )
+            .into_response();
+    }
+    let session_id = session_id.map(str::to_string);
+    let permit = permit.map(str::to_string);
+    let scanner = s.scanner.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        scanner.start(session_id.as_deref(), permit.as_deref())
+    })
+    .await
+    .map_err(|e| e.to_string())
+    .and_then(|r| r);
+    match result {
+        Ok(v) => (StatusCode::ACCEPTED, Json(v)).into_response(),
+        Err(e) => (StatusCode::CONFLICT, Json(json!({"detail": e}))).into_response(),
+    }
 }
 
 async fn map_points(State(s): State<Arc<AppState>>) -> Response {
@@ -210,7 +305,12 @@ async fn map_reset(State(s): State<Arc<AppState>>) -> Json<Value> {
 }
 
 async fn map_pause(State(s): State<Arc<AppState>>, Json(body): Json<Value>) -> Json<Value> {
-    s.mapping.set_paused(body["paused"].as_bool().unwrap_or(false));
+    let paused = body["paused"].as_bool().unwrap_or(false);
+    // Resuming replaces a camera-only scan snapshot with live fusion.
+    if !paused && s.mapping.inner.lock().unwrap().scan.is_some() {
+        s.mapping.clear();
+    }
+    s.mapping.set_paused(paused);
     Json(s.mapping.status())
 }
 
@@ -293,6 +393,48 @@ async fn mission_drill_status(State(s): State<Arc<AppState>>) -> Json<Value> {
     Json(s.mission.drill())
 }
 
+async fn mission_triage(State(s): State<Arc<AppState>>, Path(key): Path<String>) -> Response {
+    let triage = s.triage.clone();
+    match tokio::task::spawn_blocking(move || triage.generate(&key)).await {
+        Ok(Ok(v)) => Json(v).into_response(),
+        Ok(Err(TriageError::Unknown(m))) => {
+            (StatusCode::NOT_FOUND, Json(json!({"detail": m}))).into_response()
+        }
+        Ok(Err(TriageError::Busy(m))) => {
+            (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"detail": m}))).into_response()
+        }
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+async fn speak_options(State(s): State<Arc<AppState>>) -> Json<Value> {
+    let mut out = json!({"phrases": s.phrases.phrases()});
+    for (k, v) in s.phrases.status().as_object().unwrap() {
+        out[k.clone()] = v.clone();
+    }
+    Json(out)
+}
+
+async fn speak(State(s): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
+    let phrase = body["phrase"].as_str();
+    let lang = body["lang"].as_str();
+    if phrase.is_none() || lang.is_none() {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({"detail": [{"loc": ["body", "lang"], "msg": "Field required", "type": "missing"}]})),
+        )
+            .into_response();
+    }
+    match s.phrases.speak(phrase.unwrap(), lang.unwrap()).await {
+        Ok(v) => Json(v).into_response(),
+        Err(SpeechError { status_code, message }) => (
+            StatusCode::from_u16(status_code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            Json(json!({"detail": message})),
+        )
+            .into_response(),
+    }
+}
+
 async fn ask(State(s): State<Arc<AppState>>, headers: HeaderMap, body: Bytes) -> Response {
     let content_type = headers
         .get("content-type")
@@ -354,7 +496,7 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 
 async fn tts(State(s): State<Arc<AppState>>, Path(name): Path<String>) -> Response {
     let dir = s.assistant.as_ref().and_then(|a| a.output_dir.clone());
-    if !(name.starts_with("reply-") && name.ends_with(".wav") && !name.contains('/') && !name.contains('\\')) {
+    if !((name.starts_with("reply-") || name.starts_with("phrase-")) && name.ends_with(".wav") && !name.contains('/') && !name.contains('\\')) {
         return StatusCode::NOT_FOUND.into_response();
     }
     let Some(dir) = dir else { return StatusCode::NOT_FOUND.into_response(); };
@@ -493,16 +635,17 @@ async fn handle_ws_video(socket: WebSocket, s: Arc<AppState>) {
         close!(1008, "");
     }
     for _ in 0..100 {
-        if s.video.init.lock().unwrap().is_some() || s.video.error.lock().unwrap().is_some() {
+        if s.video.ready() || s.video.error.lock().unwrap().is_some() {
             break;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    let Some(init) = s.video.init.lock().unwrap().clone() else {
+    if !s.video.ready() {
         let err = s.video.error.lock().unwrap().clone().unwrap_or_else(|| "Waiting for camera".into());
         let _ = tx.send(Message::Text(json!({"type":"video_error","reason":err}).to_string().into())).await;
         close!(1013, "");
-    };
+    }
+    let init = s.video.init.lock().unwrap().clone().unwrap_or_default();
     let mut queue = s.video.subscribe();
     let frame = s.camera.snapshot();
     let _ = tx
@@ -513,34 +656,69 @@ async fn handle_ws_video(socket: WebSocket, s: Arc<AppState>) {
         ))
         .await;
     let _ = tx.send(Message::Binary(init.into())).await;
-    loop {
-        let request = match tokio::time::timeout(Duration::from_secs(10), rx.next()).await {
-            Ok(Some(Ok(Message::Text(t)))) => match serde_json::from_str::<Value>(&t) {
-                Ok(v) => v,
-                Err(_) => close!(1008, "Expected next video fragment request"),
-            },
-            Ok(Some(Ok(Message::Close(_)))) | Ok(None) | Ok(Some(Err(_))) | Err(_) => return,
-            _ => close!(1008, "Expected next video fragment request"),
-        };
-        let request_id = request["request_id"].as_i64();
-        if request["type"] != "next" || request_id.map(|i| !(0..=(1i64 << 53) - 1).contains(&i)).unwrap_or(true) {
-            close!(1008, "Expected next video fragment request");
+    // Pipelined requests: bounded request window of 4 (Python requests Queue).
+    let shared_tx = Arc::new(tokio::sync::Mutex::new(tx));
+    let (req_tx, mut req_rx) = tokio::sync::mpsc::channel::<(i64, f64)>(4);
+    let receiver = tokio::spawn(async move {
+        loop {
+            let valid = match tokio::time::timeout(Duration::from_secs(10), rx.next()).await {
+                Ok(Some(Ok(Message::Text(t)))) => serde_json::from_str::<Value>(&t)
+                    .ok()
+                    .and_then(|v| {
+                        let id = v["request_id"].as_i64()?;
+                        if v.is_object() && v["type"] == "next" && (0..=(1i64 << 53) - 1).contains(&id) {
+                            Some(id)
+                        } else {
+                            None
+                        }
+                    }),
+                _ => None,
+            };
+            match valid {
+                Some(id) if req_tx.try_send((id, now_monotonic())).is_ok() => {}
+                _ => return, // Invalid or excessive video request window
+            }
         }
-        let fragment = match tokio::time::timeout(Duration::from_secs(2), queue.recv()).await {
-            Ok(Some(Some(f))) => f,
-            Ok(Some(None)) | Err(_) => close!(1013, "Video consumer fell behind; reconnect for fresh video"),
-            Ok(None) => return,
-        };
-        let mut metadata = fragment.metadata();
-        metadata["type"] = json!("video_segment");
-        metadata["request_id"] = json!(request_id.unwrap());
-        metadata["age_ms"] = json!(((now_monotonic() - fragment.received) * 1000.0).round().max(0.0) as i64);
-        if tokio::time::timeout(Duration::from_millis(500), tx.send(Message::Text(metadata.to_string().into()))).await.is_err() {
-            return;
+    });
+    let tx2 = shared_tx.clone();
+    let sender = tokio::spawn(async move {
+        while let Some((request_id, waiting_at)) = req_rx.recv().await {
+            let fragment = match tokio::time::timeout(Duration::from_secs(2), queue.recv()).await {
+                Ok(Some(Some(f))) => f,
+                Ok(Some(None)) | Ok(None) | Err(_) => return,
+            };
+            let mut metadata = fragment.metadata();
+            metadata["type"] = json!("video_segment");
+            metadata["request_id"] = json!(request_id);
+            metadata["server_wait_ms"] = json!((now_monotonic() - waiting_at) * 1000.0);
+            metadata["age_ms"] = json!(((now_monotonic() - fragment.received) * 1000.0).round().max(0.0) as i64);
+            let mut out = tx2.lock().await;
+            if tokio::time::timeout(Duration::from_millis(500), out.send(Message::Text(metadata.to_string().into()))).await.is_err() {
+                return;
+            }
+            if tokio::time::timeout(Duration::from_millis(500), out.send(Message::Binary(fragment.payload.into()))).await.is_err() {
+                return;
+            }
+            drop(out);
         }
-        if tokio::time::timeout(Duration::from_millis(500), tx.send(Message::Binary(fragment.payload.into()))).await.is_err() {
-            return;
-        }
+    });
+    // FIRST_COMPLETED: whichever loop ends first tears down the session (1013).
+    tokio::pin!(receiver);
+    tokio::pin!(sender);
+    tokio::select! {
+        _ = &mut receiver => {}
+        _ = &mut sender => {}
+    }
+    receiver.abort();
+    sender.abort();
+    {
+        let mut out = shared_tx.lock().await;
+        let _ = out
+            .send(Message::Close(Some(axum::extract::ws::CloseFrame {
+                code: 1013,
+                reason: "".into(),
+            })))
+            .await;
     }
 }
 
@@ -715,11 +893,16 @@ pub fn router(state: Arc<AppState>, dist: Option<PathBuf>) -> Router {
         .route("/phone", get(ws_phone))
         .route("/phone/rgb", get(ws_phone_rgb))
         .route("/control/status", get(control_status))
+        .route("/scan", get(scan_status))
+        .route("/scan", post(scan_start))
         .route("/mission/report", get(mission_report))
         .route("/mission/snapshots/{name}", get(mission_snapshot))
         .route("/mission/drill", post(mission_drill_start))
         .route("/mission/drill", get(mission_drill_status))
+        .route("/mission/triage/{key}", post(mission_triage))
         .route("/ask", post(ask))
+        .route("/speak", get(speak_options))
+        .route("/speak", post(speak))
         .route("/tts/{name}", get(tts));
     let app = if let Some(dist) = dist {
         if dist.is_dir() {

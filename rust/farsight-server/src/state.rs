@@ -64,6 +64,7 @@ pub struct Inner {
     pub depth_jpeg: Option<Vec<u8>>,
     pub depth_range: Option<[f64; 2]>,
     pub pose_history: VecDeque<(f64, PoseIdentity)>,
+    pub scan: Option<Value>,
 }
 
 pub struct MapState {
@@ -100,6 +101,7 @@ impl MapState {
             depth_jpeg: None,
             depth_range: None,
             pose_history: VecDeque::new(),
+            scan: None,
         };
         Self { demo, inner: Mutex::new(inner) }
     }
@@ -129,15 +131,29 @@ impl MapState {
 
     fn clear_locked(s: &mut Inner) {
         s.cloud.clear();
+        if s.scan.is_some() {
+            s.cloud = VoxelMap::default(); // restore phone fusion's voxel size/budget
+        }
         s.surfaces.clear();
         s.generation += 1;
         s.processing_generation += 1;
         s.revision += 1;
         s.frames = 0;
+        s.scan = None;
     }
 
     pub fn clear(&self) {
         Self::clear_locked(&mut self.inner.lock().unwrap());
+    }
+
+    /// Replace, never stitch separate rover origins or mix with ARKit geometry.
+    pub fn install_scan(&self, cloud: VoxelMap, metadata: Value) {
+        let mut s = self.inner.lock().unwrap();
+        Self::clear_locked(&mut s);
+        s.cloud = cloud;
+        s.scan = Some(metadata);
+        s.paused = true;
+        s.reason = Some("Camera-only snapshot retained; estimated metric depth".into());
     }
 
     pub fn observe_pose(&self, header: &Value, transform: &Mat4) -> Result<(), String> {
@@ -272,20 +288,23 @@ impl MapState {
         let s = self.inner.lock().unwrap();
         let age = if s.last_received != 0.0 { Some(monotonic() - s.last_received) } else { None };
         let fresh = s.connected && age.map(|a| a < 2.0).unwrap_or(false);
-        let reason = if fresh {
+        let reason = if s.scan.is_some() {
+            Some("Camera-only snapshot retained; estimated metric depth".into())
+        } else if fresh {
             s.reason.clone()
         } else if !s.connected {
             Some("Sensor disconnected".into())
         } else {
             Some("Waiting for fresh sensor frames".into())
         };
+        let pose: Mat4 = if s.scan.is_some() { IDENTITY } else { s.pose };
         let (session_id, map_epoch) = match &s.identity {
             Some((id, epoch)) => (Some(id.clone()), Some(*epoch)),
             None => (None, None),
         };
         json!({
             "type": "status",
-            "source": if self.demo { "SIMULATED" } else { "IPHONE LIDAR" },
+            "source": if self.demo { "SIMULATED" } else if s.scan.is_some() { "CAMERA SCAN" } else { "IPHONE LIDAR" },
             "connected": s.connected,
             "fresh": fresh,
             "device": s.device,
@@ -305,8 +324,9 @@ impl MapState {
             "processing_ms": s.processing_ms,
             "processing_fps": s.fps,
             "age_ms": age.map(|a| (a * 1000.0).round() as i64),
-            "position": [s.pose[0][3], s.pose[1][3], s.pose[2][3]],
-            "transform": flatten_f(&s.pose).to_vec(),
+            "position": [pose[0][3], pose[1][3], pose[2][3]],
+            "transform": flatten_f(&pose).to_vec(),
+            "scan": s.scan.clone().unwrap_or(Value::Null),
             "voxel_m": s.cloud.size,
             "depth_range": s.depth_range,
             "reason": reason,

@@ -22,6 +22,7 @@ pub struct Fragment {
     pub received: f64,
     pub frame: i64,
     pub source: String,
+    pub samples: Vec<Value>,
 }
 
 impl Fragment {
@@ -31,6 +32,7 @@ impl Fragment {
             "media_end_s": self.media_end_s,
             "frame": self.frame,
             "source": self.source,
+            "samples": self.samples,
         })
     }
 }
@@ -74,6 +76,7 @@ pub struct VideoService {
     samples: Mutex<BTreeMap<u64, CameraFrame>>,
     subscribers: Mutex<Vec<mpsc::Sender<Option<Fragment>>>>,
     running: AtomicBool,
+    alive: AtomicBool,
 }
 
 impl VideoService {
@@ -91,7 +94,16 @@ impl VideoService {
             samples: Mutex::new(BTreeMap::new()),
             subscribers: Mutex::new(Vec::new()),
             running: AtomicBool::new(false),
+            alive: AtomicBool::new(false),
         }
+    }
+
+    /// Mirrors ready: init received, supervisor and ffmpeg alive, no error.
+    pub fn ready(&self) -> bool {
+        self.init.lock().unwrap().is_some()
+            && self.running.load(Ordering::Relaxed)
+            && self.alive.load(Ordering::Relaxed)
+            && self.error.lock().unwrap().as_deref().map(|e| e.is_empty()).unwrap_or(true)
     }
 
     pub fn subscribe(&self) -> Subscriber {
@@ -125,7 +137,23 @@ impl VideoService {
         std::thread::spawn(move || self.run());
     }
 
+    /// Supervisor: restart ffmpeg forever on any failure (Python _supervise).
     fn run(self: Arc<Self>) {
+        while self.running.load(Ordering::Relaxed) {
+            *self.init.lock().unwrap() = None;
+            *self.mime.lock().unwrap() = None;
+            self.samples.lock().unwrap().clear();
+            *self.error.lock().unwrap() = None;
+            self.run_once();
+            *self.init.lock().unwrap() = None;
+            *self.mime.lock().unwrap() = None;
+            if self.running.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_secs_f64(0.5));
+            }
+        }
+    }
+
+    fn run_once(self: &Arc<Self>) {
         let args = [
             "-hide_banner", "-loglevel", "error", "-f", "rawvideo",
             "-pix_fmt", "bgr24", "-s", &format!("{}x{}", self.width, self.height),
@@ -139,7 +167,7 @@ impl VideoService {
             "-video_track_timescale", "1000000",
             "-frag_duration", "100000", "-f", "mp4", "pipe:1",
         ];
-        let mut child = match Command::new("ffmpeg").args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() {
+        let mut child = match Command::new("ffmpeg").args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
             Ok(c) => c,
             Err(e) => {
                 *self.error.lock().unwrap() = Some(e.to_string());
@@ -147,8 +175,34 @@ impl VideoService {
                 return;
             }
         };
+        self.alive.store(true, Ordering::Relaxed);
         let mut stdin = child.stdin.take().unwrap();
         let stdout: ChildStdout = child.stdout.take().unwrap();
+        let stderr = child.stderr.take().unwrap();
+
+        // ffmpeg's own error text is the latest failure line (Python stderr task).
+        {
+            let svc = self.clone();
+            std::thread::spawn(move || {
+                let mut buf: Vec<u8> = Vec::new();
+                let mut byte = [0u8; 1];
+                let mut stderr = stderr;
+                loop {
+                    match stderr.read(&mut byte) {
+                        Ok(0) | Err(_) => return,
+                        Ok(_) => {
+                            if byte[0] == b'\n' {
+                                let line = String::from_utf8_lossy(&buf).trim().chars().take(300).collect::<String>();
+                                *svc.error.lock().unwrap() = Some(line);
+                                buf.clear();
+                            } else if buf.len() < 4096 {
+                                buf.push(byte[0]);
+                            }
+                        }
+                    }
+                }
+            });
+        }
 
         let stop_reader = Arc::new(AtomicBool::new(false));
         let r = Arc::clone(&stop_reader);
@@ -188,6 +242,7 @@ impl VideoService {
         drop(stdin);
         let _ = child.kill();
         let _ = reader.join();
+        self.alive.store(false, Ordering::Relaxed);
         self.publish(None);
     }
 
@@ -263,6 +318,17 @@ impl VideoService {
             received: captures.iter().map(|f| f.received).fold(f64::INFINITY, f64::min),
             frame: captures.last().unwrap().frame_id,
             source: captures.last().unwrap().source.clone(),
+            samples: captures
+                .iter()
+                .enumerate()
+                .map(|(offset, frame)| {
+                    json!({
+                        "media_start_s": (first + offset as u64) as f64 / self.fps as f64,
+                        "media_end_s": (first + offset as u64 + 1) as f64 / self.fps as f64,
+                        "frame": frame.frame_id,
+                    })
+                })
+                .collect(),
         })
     }
 
