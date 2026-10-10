@@ -178,6 +178,8 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
 
     @app.post("/scan", status_code=202)
     async def scan(body: ScanRequest):
+        if replay is not None:
+            raise HTTPException(409, "Replay is read-only; live scans are disabled")
         try:
             return scanner.start(body.session_id, body.permit)
         except ValueError as exc:

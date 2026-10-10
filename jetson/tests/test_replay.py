@@ -135,3 +135,12 @@ def test_replay_rejects_incomplete_frame_copy_before_startup(tmp_path):
     (mission.directory / 'frames/00000000.jpg').unlink()
     with pytest.raises(ValueError, match='Missing replay frame'):
         ReplayRun(mission.directory)
+
+
+def test_replay_refuses_live_scan_control():
+    from fastapi.testclient import TestClient
+    from jetson.mapping.server import create_app
+    with TestClient(create_app(replay='tools/fixtures/replay-demo')) as client:
+        response = client.post('/scan', json=dict(session_id='replay', permit=''))
+        assert response.status_code == 409
+        assert 'replay' in response.json()['detail'].lower()
