@@ -121,6 +121,19 @@ needs no audio hardware for this.
 `action` is `null` or a proposal like `{"type": "seek", "target_id": 3}` that the Quest shows as a
 confirmation prompt. The Jetson never executes it without that confirmation.
 
+Optional additive fields (clients ignore unknown fields):
+
+- `action` types: `{"type": "seek", "target_id": <int>}` (a fresh tracked person; one flagged `down` first,
+  otherwise the largest box) or `{"type": "scan"}`. Proposals come from keywords in the question
+  ("go to", "seek", "approach"; "scan", "look around"), never from the model. The answer then ends with
+  "Confirm on the headset to ...". On confirm, the Quest sends `mode: "seek"` + `target_id` on
+  `/ws/control`, which still needs the held deadman; scan has no rover handler yet.
+- `timings`: `{"stt": ms|null, "vlm": ms|null, "tts": ms|null}` per stage; `ms` stays the total.
+- `source`, `simulated`, `observation` (facts given to the model), `assistant_warning`, `speech_warning`.
+
+Headset: hold left **X** (or **T** / the on-screen button on a laptop) to record, release to send;
+left **Y** (or **Y**) confirms a proposal, pressing X again (or **N**) dismisses it.
+
 ## WebSocket `/ws/points` (Jetson -> Quest), binary, 3D scan
 
 Little-endian: `uint32 n`, then `n * (float32 x, y, z, uint8 r, g, b, pad)`, metres, rover frame at the scan position
