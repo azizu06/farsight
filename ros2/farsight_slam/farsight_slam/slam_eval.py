@@ -56,6 +56,12 @@ def compose(a, b):
             wrap(ath + bth))
 
 
+def inverse(a):
+    x, y, th = a
+    c, s = math.cos(th), math.sin(th)
+    return (-c * x - s * y, s * x - c * y, -th)
+
+
 def summarize(values):
     if not values:
         return None
@@ -94,6 +100,7 @@ class SlamEval(Node):
         self.map = None
         self.serialize_future = None
         self.serialize_result = None
+        self.odom_alignment = None
 
         self.create_subscription(Odometry, "/odom", self.on_odom, 50)
         self.create_subscription(Odometry, "/sim/ground_truth", self.on_truth, 50)
@@ -136,6 +143,11 @@ class SlamEval(Node):
         map_odom = (t.translation.x, t.translation.y, yaw_of(t.rotation))
         truth = self.pose(msg)
         slam = compose(map_odom, odom)
+        # Odometry error is drift: express odom in the truth frame via the first sample,
+        # which also covers a session whose odom starts at its own origin.
+        if self.odom_alignment is None:
+            self.odom_alignment = compose(truth, inverse(odom))
+        odom = compose(self.odom_alignment, odom)
         elapsed = now - self.started
         self.samples.append({
             "t": round(elapsed, 2),

@@ -14,6 +14,8 @@ import subprocess
 
 import pytest
 
+from farsight_slam import world
+
 if shutil.which("ros2") is None:
     pytest.skip("ROS 2 not sourced; run test/run_docker.sh", allow_module_level=True)
 
@@ -54,8 +56,12 @@ def mapping():
 @pytest.fixture(scope="module")
 def relocalized(mapping):
     assert mapping["heavy"]["serialized"]["ok"]
+    # A new session: odometry restarts at its origin, and the operator gives the
+    # start pose in the saved map (the heavy run's map frame is the sim world frame).
+    start = ",".join(f"{v:.3f}" for v in world.start_pose(world.loop_route()))
     procs = {"relocalize": launch("relocalize", 44, "drift:=heavy", "laps:=1.0",
-                                  "slam_mode:=localization",
+                                  "odom_at_origin:=true", "slam_mode:=localization",
+                                  f"start_pose:={start}",
                                   f"map_file:={RESULTS / 'heavy_map'}")}
     return finish(procs)["relocalize"]
 

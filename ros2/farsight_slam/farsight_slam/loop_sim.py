@@ -51,6 +51,8 @@ class LoopSim(Node):
         self.base_frame = p("base_frame", "base_link").value
         self.camera_frame = p("camera_frame", "camera_link").value
         self.startup_delay = p("startup_delay_s", 3.0).value
+        # A fresh ARKit session starts its world (our odom) at the phone, not at the map origin.
+        odom_at_origin = p("odom_at_origin", False).value
         self.odom = w.DriftingOdometry(
             scale_error=p("scale_error", 0.0).value,
             yaw_drift_per_m=p("yaw_drift_per_m", 0.0).value,
@@ -60,10 +62,8 @@ class LoopSim(Node):
         self.world = w.loop_world()
         self.route = w.loop_route()
         self.pilot = w.PurePursuit(self.route, self.speed)
-        self.x, self.y = self.route[-1]
-        nx, ny = self.route[0]
-        self.yaw = math.atan2(ny - self.y, nx - self.x)
-        self.odom.reset(self.x, self.y, self.yaw)
+        self.x, self.y, self.yaw = w.start_pose(self.route)
+        self.odom.reset(*((0.0, 0.0, 0.0) if odom_at_origin else (self.x, self.y, self.yaw)))
         self.goal_distance = self.laps * w.route_length(self.route)
         self.travelled = 0.0
         self.rng = np.random.default_rng(11)

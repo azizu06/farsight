@@ -6,7 +6,7 @@
 set -euo pipefail
 pkg="$(cd "$(dirname "$0")/.." && pwd)"
 docker build -q -t farsight-slam:jazzy -f "$pkg/docker/Dockerfile" "$pkg/docker" >/dev/null
-docker run --rm -v "$pkg:/ws/src/farsight_slam" -w /ws farsight-slam:jazzy bash -c '
+docker run --rm --network none -v "$pkg:/ws/src/farsight_slam" -w /ws farsight-slam:jazzy bash -c '
   set -e
   source /opt/ros/jazzy/setup.bash
   colcon build --packages-select farsight_slam --symlink-install >/tmp/colcon.log 2>&1 || { cat /tmp/colcon.log; exit 1; }

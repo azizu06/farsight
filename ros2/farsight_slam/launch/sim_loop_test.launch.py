@@ -27,8 +27,10 @@ DRIFT = {
 def nodes(context):
     drift = DRIFT[LaunchConfiguration("drift").perform(context)]
     laps = float(LaunchConfiguration("laps").perform(context))
+    odom_at_origin = LaunchConfiguration("odom_at_origin").perform(context).lower() == "true"
     sim = Node(package="farsight_slam", executable="loop_sim", name="farsight_loop_sim",
-               parameters=[drift, {"laps": laps}], output="screen")
+               parameters=[drift, {"laps": laps, "odom_at_origin": odom_at_origin}],
+               output="screen")
     evaluator = Node(
         package="farsight_slam", executable="slam_eval", name="farsight_slam_eval",
         parameters=[{"report_path": LaunchConfiguration("report_path"),
@@ -46,6 +48,8 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument("drift", default_value="heavy", choices=list(DRIFT)),
         DeclareLaunchArgument("laps", default_value="2.0"),
+        # true starts odometry at (0, 0, 0) like a new ARKit session; false starts it at the truth pose.
+        DeclareLaunchArgument("odom_at_origin", default_value="false"),
         DeclareLaunchArgument("report_path", default_value="/tmp/slam_report.json"),
         # Pose graph to save after the run (no extension); reload with slam_mode:=localization map_file:=...
         DeclareLaunchArgument("serialize_to", default_value=""),

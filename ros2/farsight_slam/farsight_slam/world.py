@@ -106,8 +106,8 @@ def loop_world():
 
     The island forces a closed loop; shelves, a pillar and low crates give the
     narrow LiDAR cone distinct corners so scan matching has something to lock to.
-    Two crates are 0.12 m tall, below the scan band, so they must not appear in
-    the map.
+    Two 4 cm floor items (a rug edge and a cable tray) sit below the 6 cm scan
+    band, so pointcloud_to_laserscan must keep them out of the map.
     """
     boxes = [
         Box(-1.5, -0.7, 1.5, 0.7),            # island
@@ -117,8 +117,8 @@ def loop_world():
         Box(3.3, -0.4, 3.7, 0.0),             # east pillar
         Box(-0.6, -3.0, 0.2, -2.6, 0.9),      # south desk (in band)
         Box(2.6, -2.9, 3.6, -2.4, 0.5),       # south-east crate (in band)
-        Box(-3.2, -2.9, -2.8, -2.5, 0.12),    # floor clutter (below band)
-        Box(0.6, -1.4, 0.8, -1.2, 0.12),      # floor clutter on the path edge (below band)
+        Box(-3.2, -2.9, -2.8, -2.5, 0.04),    # rug edge (below band)
+        Box(0.6, -1.4, 0.8, -1.2, 0.04),      # cable tray on the path edge (below band)
     ]
     return World(8.0, 6.0, boxes)
 
@@ -154,6 +154,12 @@ def densify(route, step):
         n = max(1, math.ceil(math.dist(a, b) / step))
         out += [(a[0] + (b[0] - a[0]) * k / n, a[1] + (b[1] - a[1]) * k / n) for k in range(n)]
     return out
+
+
+def start_pose(route):
+    """(x, y, yaw) where the loop sim starts: the last route point, facing the first."""
+    (x, y), (nx, ny) = route[-1], route[0]
+    return x, y, math.atan2(ny - y, nx - x)
 
 
 def route_length(route):
