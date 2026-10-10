@@ -184,6 +184,34 @@ impl PerceptionService {
         packet
     }
 
+    /// Detector fields for GET /health: mode, concrete backend, error, and
+    /// live fps/latency. Port of perception.health().
+    pub fn health(&self) -> Value {
+        let packet = self.snapshot();
+        let fresh = packet["fresh"].as_bool().unwrap_or(false);
+        let backend = {
+            #[cfg(feature = "detector")]
+            {
+                if self.mode == "pose" && self.onnx.lock().unwrap().is_some() {
+                    "pose-onnx".to_string()
+                } else {
+                    self.mode.clone()
+                }
+            }
+            #[cfg(not(feature = "detector"))]
+            {
+                self.mode.clone()
+            }
+        };
+        json!({
+            "detector": self.mode,
+            "detector_backend": backend,
+            "detector_error": self.inner.lock().unwrap().error,
+            "detector_fps": if fresh { packet["fps"].clone() } else { json!(0) },
+            "detector_inference_ms": if fresh { packet["inference_ms"].clone() } else { Value::Null },
+        })
+    }
+
     pub fn close(&self) {
         self.stop.store(true, Ordering::Relaxed);
     }
