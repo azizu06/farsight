@@ -62,10 +62,37 @@ null and the primary detector keeps running) and is null otherwise. Replay serve
 omit both. The Quest drill HUD and the settings drill line show "No face model:
 victims cannot be found" when `face_detector` is false; absent means no warning.
 
-Camera age is receiver receipt age adjusted by reported producer encoding time
-and server queue/decode delay. It does not measure pre-callback sensor exposure
-or the phone-to-Jetson transit. Measure physical camera-to-display latency on
-the actual rig; never advertise this metadata as that full measurement.
+Legacy camera age is receiver receipt age adjusted by reported producer encoding
+time and server queue/decode delay. It excludes pre-callback exposure and transit.
+Native verified RGB instead uses the earlier of receiver token issuance and
+adjusted receipt, giving a conservative capture-age bound without synchronizing
+phone and server clocks. Neither value measures camera-to-display latency.
+
+### Native capture freshness
+
+Both phone WebSocket routes accept optional hello `supports_capture_permits:true`.
+The server pipelines an unpaced `capture_permit` every 50 ms:
+`{type:"capture_permit",version:1,session_id,map_epoch,token,valid_for_ms:250}`.
+Tokens belong to one socket/session/epoch, expire after 250 ms on the server
+monotonic clock and are revoked on disconnect. At most eight are retained.
+
+Native RGB converts the actual AVCapture sample timestamp into the Core Media
+host clock and captures an exposure strictly after receiving a current token.
+Its frame header echoes `capture_permit`, `capture_permit_received_t`,
+`capture_clock:"avcapture_sync_to_host"`, `capture_clock_verified:true` and
+`capture_bound:true`; `t_capture` is the converted sensor timestamp. The two
+phone times share a clock; neither is compared to server time. Verification
+requires a live matching token and valid finite, ordered phone timestamps.
+The trusted native producer must enforce exposure ordering and sensor freshness;
+these fields are not authentication or sensor attestation.
+
+Optional health fields `camera_capture_verified` and `camera_drive_ready`
+separate verified physical-driving eligibility from `camera` viewing freshness.
+Physical serial control requires drive eligibility. Legacy/unverified RGB and
+ARKit RGB-D remain viewable and mappable, but do not qualify physical driving.
+ARKit exposure-clock qualification remains a hardware task; measured LiDAR plus
+driving is not yet qualified. UVC and explicit simulation/replay behavior stay
+as previously defined.
 
 ## WebSocket `/ws/detections` (Jetson -> Quest), JSON, every inference
 

@@ -2,12 +2,13 @@ import ARKit
 import AVFoundation
 import Combine
 import CoreImage
+import CoreMedia
 import Foundation
 import UIKit
 
 // All AR/transport state lives on this one serial queue. Main-thread published
 // values are presentation only. There is never more than one frame send active.
-final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
+final class CaptureController: NSObject, ObservableObject, ARSessionDelegate, AVCaptureVideoDataOutputSampleBufferDelegate {
     @Published var running = false
     @Published var status = "Ready. Connect the rover phone to the Jetson over USB."
     @Published var source = "Not streaming"
@@ -16,9 +17,15 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
     @Published var skipped = 0
     @Published var preview: UIImage?
     @Published var resolvedEndpoint = ""
+    @Published var clockDiagnostic = "Capture clock not checked"
 
     let supportsDepth = ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth)
     private let capture = ARSession()
+    private let rgbCapture = AVCaptureSession()
+    private var permitGate = CapturePermitGate()
+    private var capturePermitsNegotiated = false
+    private var lastDiagnosticAt = -Double.infinity
+    private var cameraObservers: [NSObjectProtocol] = []
     private let queue = DispatchQueue(label: "farsight.capture", qos: .userInitiated)
     private let context = CIContext(options: [.cacheIntermediates: false])
     private let network = URLSession(configuration: .ephemeral)
@@ -39,15 +46,26 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
         super.init()
         capture.delegate = self
         capture.delegateQueue = queue
+        for name in [Notification.Name.AVCaptureSessionWasInterrupted, .AVCaptureSessionRuntimeError] {
+            cameraObservers.append(NotificationCenter.default.addObserver(forName: name, object: rgbCapture, queue: nil) { [weak self] note in
+                let error = (note.userInfo?[AVCaptureSessionErrorKey] as? NSError)?.localizedDescription
+                self?.queue.async { [weak self] in
+                    guard let self, !self.withDepth, let id = self.generation else { return }
+                    self.fail(error.map { "RGB camera: \($0)" } ?? "RGB camera interrupted", id: id)
+                }
+            })
+        }
     }
+
+    deinit { for observer in cameraObservers { NotificationCenter.default.removeObserver(observer) } }
 
     func start(endpoint: String, rgbOnly: Bool) {
         guard !running else { return }
-        guard ARWorldTrackingConfiguration.isSupported else {
+        let depth = supportsDepth && !rgbOnly
+        guard !depth || ARWorldTrackingConfiguration.isSupported else {
             status = "ARKit camera capture is unavailable on this device. Use a real iPhone."
             return
         }
-        let depth = supportsDepth && !rgbOnly
         guard let url = WirePacket.endpoint(endpoint, depth: depth) else {
             status = "Enter ws://JETSON_USB_IP:8443 (or a trusted wss:// address)."
             return
@@ -96,6 +114,9 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
         disconnect()
         generation = id
         sessionID = UUID().uuidString
+        permitGate.start(sessionID: sessionID, mapEpoch: 1)
+        capturePermitsNegotiated = false
+        lastDiagnosticAt = -.infinity
         withDepth = depth
         helloSent = false
         inFlight = false
@@ -103,10 +124,15 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
         frameID = 0
         sentCount = 0
         skippedCount = 0
-        let configuration = ARWorldTrackingConfiguration()
-        configuration.worldAlignment = .gravity
-        if depth { configuration.frameSemantics = [.sceneDepth] }
-        capture.run(configuration, options: [.resetTracking, .removeExistingAnchors])
+        if depth {
+            let configuration = ARWorldTrackingConfiguration()
+            configuration.worldAlignment = .gravity
+            configuration.frameSemantics = [.sceneDepth]
+            capture.run(configuration, options: [.resetTracking, .removeExistingAnchors])
+        } else {
+            do { try startRGBCapture() }
+            catch { fail("RGB camera: \(error.localizedDescription)", id: id); return }
+        }
         var request = URLRequest(url: url)
         request.timeoutInterval = 5
         let task = network.webSocketTask(with: request)
@@ -117,7 +143,7 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
         do {
             let hello: [String: Any] = ["type": "hello", "version": 1,
                 "session_id": sessionID, "map_epoch": 1, "device": device,
-                "supports_scene_depth": depth, "supports_mesh": false]
+                "supports_scene_depth": depth, "supports_mesh": false, "supports_capture_permits": true]
             let json = try JSONSerialization.data(withJSONObject: hello)
             let text = String(decoding: json, as: UTF8.self)
             task.send(.string(text)) { [weak self] error in
@@ -134,13 +160,22 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
 
     private func receive(_ task: URLSessionWebSocketTask, id: UUID) {
         task.receive { [weak self] result in
+            let receivedAt = Self.hostTime()
             self?.queue.async { [weak self] in
                 guard let self, self.generation == id else { return }
                 switch result {
                 case .failure(let error): self.fail("Connection closed: \(error.localizedDescription)", id: id)
                 case .success(let message):
                     if case .string(let text) = message {
-                        self.publish(id) { $0.status = "Jetson: \(text.prefix(180))" }
+                        if let data = text.data(using: .utf8),
+                           let message = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                           message["type"] as? String == "capture_permit" {
+                            if self.permitGate.receive(message, at: receivedAt) {
+                                self.capturePermitsNegotiated = true
+                            } // Wrong-session/malformed permits never become current.
+                        } else {
+                            self.publish(id) { $0.status = "Jetson: \(text.prefix(180))" }
+                        }
                     }
                     self.receive(task, id: id)
                 }
@@ -164,7 +199,10 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
         generation = nil
         helloSent = false
         inFlight = false
+        permitGate.clear()
+        capturePermitsNegotiated = false
         capture.pause()
+        if rgbCapture.isRunning { rgbCapture.stopRunning() }
         socket?.cancel(with: .normalClosure, reason: nil)
         socket = nil
     }
@@ -178,23 +216,101 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
         }
     }
 
+    private static func hostTime() -> Double {
+        CMTimeGetSeconds(CMClockGetTime(CMClockGetHostTimeClock()))
+    }
+
+    private func startRGBCapture() throws {
+        rgbCapture.beginConfiguration()
+        defer { rgbCapture.commitConfiguration() }
+        for output in rgbCapture.outputs { rgbCapture.removeOutput(output) }
+        for input in rgbCapture.inputs { rgbCapture.removeInput(input) }
+        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) else {
+            throw NSError(domain: "FarsightCamera", code: 4, userInfo: [NSLocalizedDescriptionKey: "Rear RGB camera unavailable"])
+        }
+        let input = try AVCaptureDeviceInput(device: device)
+        guard rgbCapture.canAddInput(input) else { throw NSError(domain: "FarsightCamera", code: 5) }
+        rgbCapture.addInput(input)
+        if rgbCapture.canSetSessionPreset(.vga640x480) { rgbCapture.sessionPreset = .vga640x480 }
+        let output = AVCaptureVideoDataOutput()
+        output.alwaysDiscardsLateVideoFrames = true
+        output.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
+        output.setSampleBufferDelegate(self, queue: queue)
+        guard rgbCapture.canAddOutput(output) else { throw NSError(domain: "FarsightCamera", code: 6) }
+        rgbCapture.addOutput(output)
+        if let connection = output.connection(with: .video), connection.isVideoOrientationSupported {
+            connection.videoOrientation = .landscapeRight
+        }
+        // startRunning must occur after commitConfiguration and off the main queue.
+        queue.async { [weak self] in
+            guard let self, self.generation != nil, !self.withDepth else { return }
+            self.rgbCapture.startRunning()
+        }
+    }
+
+    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer,
+                       from connection: AVCaptureConnection) {
+        let callbackHost = Self.hostTime()
+        guard !withDepth, let pixels = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        guard let clock = rgbCapture.synchronizationClock else {
+            if let id = generation { publish(id) { $0.clockDiagnostic = "RGB synchronization clock unavailable; frames blocked" } }
+            return
+        }
+        let raw = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        let converted = CMSyncConvertTime(raw, from: clock, to: CMClockGetHostTimeClock())
+        guard raw.isNumeric, converted.isNumeric else {
+            if let id = generation { publish(id) { $0.clockDiagnostic = "RGB clock conversion unavailable; frames blocked" } }
+            return
+        }
+        sendFrame(pixels: pixels, captureTime: CMTimeGetSeconds(converted),
+                  rawTimestamp: CMTimeGetSeconds(raw), callbackHost: callbackHost,
+                  clock: "avcapture_sync_to_host", frame: nil)
+    }
+
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
+        guard withDepth else { return }
+        sendFrame(pixels: frame.capturedImage, captureTime: frame.timestamp,
+                  rawTimestamp: frame.timestamp, callbackHost: Self.hostTime(),
+                  clock: "arkit_unverified", frame: frame)
+    }
+
+    private func reportClock(id: UUID, captureTime: Double, hostTime: Double, message: String) {
+        guard hostTime - lastDiagnosticAt >= 0.25 else { return }
+        lastDiagnosticAt = hostTime
+        let detail = String(format: "%@ · sensor %.6f · host %.6f · delta %.1f ms",
+                            message, captureTime, hostTime, (hostTime - captureTime) * 1000)
+        publish(id) { $0.clockDiagnostic = detail }
+    }
+
+    private func sendFrame(pixels: CVPixelBuffer, captureTime: Double, rawTimestamp: Double,
+                           callbackHost: Double, clock: String, frame: ARFrame?) {
         let producerStarted = ContinuousClock.now
         guard let id = generation, helloSent, let task = socket else { return }
+        let documentedClock = clock == "avcapture_sync_to_host"
+        let plausible = documentedClock && permitGate.observe(captureTime: captureTime, hostTime: callbackHost)
+        let selectedPermit = documentedClock ?
+            permitGate.eligible(captureTime: captureTime, hostTime: callbackHost, clockQualified: true) : permitGate.permit
+        let verifiedClock = documentedClock && plausible
+        reportClock(id: id, captureTime: captureTime, hostTime: callbackHost,
+                    message: documentedClock ? permitGate.diagnostic : "ARKit origin unverified · view only")
+        if capturePermitsNegotiated && documentedClock && selectedPermit == nil {
+            skippedCount += 1
+            return
+        }
         if inFlight {
             skippedCount += 1
             return
         }
         let fps = withDepth ? 6.0 : 15.0
-        guard frame.timestamp - lastCapture >= 1 / fps else { return }
-        if withDepth && frame.sceneDepth == nil {
+        guard captureTime - lastCapture >= 1 / fps else { return }
+        if withDepth && frame?.sceneDepth == nil {
             publish(id) { $0.status = "Waiting for same-frame LiDAR depth; no synthetic depth is sent" }
             return
         }
-        lastCapture = frame.timestamp
+        lastCapture = captureTime
         inFlight = true
         do {
-            let image = CIImage(cvPixelBuffer: frame.capturedImage)
+            let image = CIImage(cvPixelBuffer: pixels)
             let scale = min(640 / image.extent.width, 1)
             let width = Int((image.extent.width * scale).rounded())
             let height = Int((image.extent.height * scale).rounded())
@@ -205,12 +321,12 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
                 throw NSError(domain: "FarsightCamera", code: 1,
                               userInfo: [NSLocalizedDescriptionKey: "Camera JPEG encoding failed"])
             }
-            let state = trackingState(frame.camera.trackingState)
+            let state = frame.map { trackingState($0.camera.trackingState) } ?? "not_available"
             var header: [String: Any] = ["version": 1, "type": withDepth ? "frame" : "rgb_frame",
-                "session_id": sessionID, "frame_id": frameID, "t_capture": frame.timestamp,
+                "session_id": sessionID, "frame_id": frameID, "t_capture": captureTime, "map_epoch": 1,
                 "t_wall_ms": Int64(Date().timeIntervalSince1970 * 1000)]
             var payloads = [jpeg]
-            if let scene = frame.sceneDepth, withDepth {
+            if let frame, let scene = frame.sceneDepth, withDepth {
                 let dw = CVPixelBufferGetWidth(scene.depthMap)
                 let dh = CVPixelBufferGetHeight(scene.depthMap)
                 guard CVPixelBufferGetPixelFormatType(scene.depthMap) == kCVPixelFormatType_DepthFloat32,
@@ -245,13 +361,32 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
                 header["height"] = height
                 header["tracking"] = state
             }
-            // ARFrame.timestamp's clock origin is not specified by Apple's
-            // public contract. Measure a local interval instead of subtracting
-            // it from systemUptime and claiming a complete capture age.
+            // Producer encoding interval is separate from sensor clock diagnostics.
             let elapsed = producerStarted.duration(to: ContinuousClock.now).components
             header["producer_delay_ms"] = max(0, (Double(elapsed.seconds)
                 + Double(elapsed.attoseconds) / 1_000_000_000_000_000_000) * 1000)
+            let finishedHost = Self.hostTime()
+            let bound = verifiedClock && selectedPermit != nil
+            header["capture_clock"] = clock
+            header["capture_clock_verified"] = verifiedClock
+            header["capture_bound"] = bound
+            header["sensor_timestamp_raw_t"] = rawTimestamp
+            header["callback_host_t"] = callbackHost
+            header["sensor_host_delta_ms"] = (callbackHost - captureTime) * 1000
+            if clock == "avcapture_sync_to_host" {
+                header["sensor_timestamp_host_t"] = captureTime
+                header["sensor_age_ms"] = (finishedHost - captureTime) * 1000
+            }
+            if let selectedPermit {
+                header["capture_permit"] = selectedPermit.token
+                header["capture_permit_received_t"] = selectedPermit.receivedAt
+            }
             let packet = try WirePacket.bundle(header: header, payloads: payloads)
+            if bound && !CapturePermitGate.validAtSend(selectedPermit!, captureTime: captureTime, hostTime: Self.hostTime()) {
+                inFlight = false; skippedCount += 1
+                reportClock(id: id, captureTime: captureTime, hostTime: Self.hostTime(), message: "Encoding exhausted capture permit; frame skipped")
+                return
+            }
             frameID += 1
             armTimeout(id: id, seconds: 0.5, message: "Frame send stalled for 500 ms; closed to discard stale frames.")
             task.send(.data(packet)) { [weak self] error in
@@ -268,8 +403,8 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate {
                         $0.skipped = skipped
                         $0.tracking = state
                         $0.preview = UIImage(cgImage: cgImage)
-                        $0.status = state == "normal" ? "Streaming — \(Int(fps)) fps target" :
-                            depthMode ? "Tracking \(state); map fusion is frozen" : "RGB streaming; camera tracking \(state)"
+                        $0.status = bound ? "Permit-bound RGB streaming — \(Int(fps)) fps target" :
+                            depthMode ? "LiDAR view only · AR clock unverified" : "Legacy view only · server capture permits unavailable"
                     }
                 }
             }

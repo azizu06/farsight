@@ -26,6 +26,7 @@ class Hello(BaseModel):
     device: str = Field(default="iPhone", max_length=256)
     supports_scene_depth: bool
     supports_mesh: bool = False
+    supports_capture_permits: bool = False
 
 
 def rigid_transform(values):

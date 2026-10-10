@@ -42,6 +42,8 @@ class CameraFrame:
     received: float
     frame_id: int
     source: str
+    capture_verified: bool = False
+    capture_binding: object = None
 
     @property
     def age_ms(self):
@@ -69,7 +71,7 @@ class CameraService:
         with self.lock:
             return self.frame
 
-    def accept_phone_rgb(self, packet, session_id, previous_frame=-1, received_at=None):
+    def accept_phone_rgb(self, packet, session_id, previous_frame=-1, received_at=None, permits=None):
         arrived = time.monotonic() if received_at is None else received_at
         if not isinstance(packet, bytes) or not 4 < len(packet) <= 2 * 1024 * 1024:
             raise ValueError("RGB packet length is invalid")
@@ -90,12 +92,22 @@ class CameraService:
         image = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
         if image is None or max(image.shape[:2]) > 4096:
             raise ValueError("RGB image cannot be decoded or is excessive")
-        self.phone_rgb = CameraFrame(jpeg, adjusted_receipt(header, arrived), frame_id, "PHONE RGB")
+        origin = permits.verified_origin(header) if permits is not None else None
+        received = adjusted_receipt(header, arrived)
+        if origin is not None:
+            received = min(origin, received)
+        self.phone_rgb = CameraFrame(jpeg, received, frame_id, "PHONE RGB", origin is not None, permits)
         return frame_id
 
     def status(self):
         frame = self.snapshot()
-        return dict(camera=bool(frame and frame.age_ms < 500),
+        fresh = bool(frame and frame.age_ms < 500)
+        bound = bool(frame and frame.capture_verified and frame.capture_binding
+                     and frame.capture_binding.active)
+        drive_ready = fresh and (self.device is not None or bound
+                                 or frame.source == "SIMULATED" or frame.source.startswith("REPLAY"))
+        return dict(camera=fresh, camera_drive_ready=bool(drive_ready),
+                    camera_capture_verified=bound,
                     camera_age_ms=frame.age_ms if frame else None,
                     camera_frame=frame.frame_id if frame else None,
                     camera_source=frame.source if frame else "USB CAMERA" if self.device is not None else "WAITING",
@@ -157,4 +169,5 @@ class CameraService:
         if image.shape[1] > max_width:
             image = cv2.resize(image, (max_width, round(image.shape[0] * max_width / image.shape[1])))
         okay, jpeg = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, quality])
-        return CameraFrame(jpeg.tobytes(), frame.received, frame.frame_id, frame.source) if okay else None
+        return CameraFrame(jpeg.tobytes(), frame.received, frame.frame_id, frame.source,
+                           frame.capture_verified, frame.capture_binding) if okay else None

@@ -19,6 +19,7 @@ from .demo import stream_demo
 from .phone import Hello, decode_frame, validate_pose
 from .state import MapState
 from jetson.camera import CameraService
+from jetson.capture_permits import CapturePermits
 from jetson.video import VideoService
 from jetson.perception import PerceptionService
 from jetson.mission import Mission
@@ -52,7 +53,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
     mission = Mission(mission_dir, record=record)
     perception = ReplayPerception(camera_service) if replay is not None else PerceptionService(camera_service, model=detector_model, mode=detector, on_detection=mission.detect, face_model=face_model)
     control = ReplayControl() if replay is not None else ControlService(serial_port=serial_port, simulate=simulate_rover, max_pwm=max_pwm, min_pwm=min_pwm,
-                             camera_ready=lambda: camera_service.status()["camera"],
+                             camera_ready=lambda: camera_service.status()["camera_drive_ready" if serial_port else "camera"],
                              detections=perception.snapshot)
     replay_session = ReplaySession(replay, camera_service, perception, control) if replay is not None else None
     if record:
@@ -527,12 +528,14 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
         owner = object()
         app.state.phone_owner = owner
         worker = None
+        permits = None
         queue = asyncio.Queue(maxsize=1)
         try:
             hello = Hello.model_validate_json(await asyncio.wait_for(ws.receive_text(), timeout=10))
             if not hello.supports_scene_depth:
                 raise ValueError("This mapper requires measured scene depth")
             identity = hello.session_id, hello.map_epoch
+            permits = CapturePermits(*identity, enabled=hello.supports_capture_permits)
             camera_service.phone_rgb = None
             await asyncio.to_thread(state.start_session, identity, hello.device)
 
@@ -549,26 +552,30 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                             state.reason = f"Frame rejected: {str(exc)[:180]}"
 
             worker = asyncio.create_task(consume())
-            while True:
-                message = await ws.receive()
-                if message["type"] == "websocket.disconnect":
-                    break
-                if message.get("bytes") is not None:
-                    if queue.full():
-                        queue.get_nowait()
-                        state.dropped += 1
-                    queue.put_nowait((message["bytes"], time.monotonic()))
-                elif message.get("text"):
-                    header = json.loads(message["text"])
-                    if header.get("type") != "pose":
-                        raise ValueError("Expected a pose message or binary RGB-D frame")
-                    await asyncio.to_thread(state.observe_pose, header, validate_pose(header, identity))
+            async def receive_frames():
+                while True:
+                    message = await ws.receive()
+                    if message["type"] == "websocket.disconnect":
+                        break
+                    if message.get("bytes") is not None:
+                        if queue.full():
+                            queue.get_nowait()
+                            state.dropped += 1
+                        queue.put_nowait((message["bytes"], time.monotonic()))
+                    elif message.get("text"):
+                        header = json.loads(message["text"])
+                        if header.get("type") != "pose":
+                            raise ValueError("Expected a pose message or binary RGB-D frame")
+                        await asyncio.to_thread(state.observe_pose, header, validate_pose(header, identity))
+            await permits.run(ws, receive_frames)
         except (ValueError, TypeError, KeyError, ValidationError, asyncio.TimeoutError) as exc:
             with suppress(RuntimeError, WebSocketDisconnect):
                 await ws.close(code=1008, reason=str(exc)[:100])
-        except WebSocketDisconnect:
+        except (WebSocketDisconnect, RuntimeError, OSError):
             pass
         finally:
+            if permits:
+                permits.close()
             if worker:
                 worker.cancel()
                 with suppress(asyncio.CancelledError):
@@ -591,19 +598,26 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
         owner = object()
         app.state.phone_owner = owner
         previous = -1
+        permits = None
         try:
             hello = Hello.model_validate_json(await asyncio.wait_for(ws.receive_text(), 10))
+            permits = CapturePermits(hello.session_id, hello.map_epoch, enabled=hello.supports_capture_permits)
             camera_service.phone_rgb = None
-            while True:
-                packet = await ws.receive_bytes()
-                previous = await asyncio.to_thread(camera_service.accept_phone_rgb, packet, hello.session_id,
-                                                   previous, time.monotonic())
-        except WebSocketDisconnect:
+            async def receive_frames():
+                nonlocal previous
+                while True:
+                    packet = await ws.receive_bytes()
+                    previous = await asyncio.to_thread(camera_service.accept_phone_rgb, packet, hello.session_id,
+                                                       previous, time.monotonic(), permits)
+            await permits.run(ws, receive_frames)
+        except (WebSocketDisconnect, RuntimeError, OSError):
             pass
         except (ValueError, TypeError, KeyError, ValidationError, asyncio.TimeoutError) as exc:
             with suppress(RuntimeError, WebSocketDisconnect):
                 await ws.close(code=1008, reason=str(exc)[:100])
         finally:
+            if permits:
+                permits.close()
             if app.state.phone_owner is owner:
                 app.state.phone_owner = None
                 # Preserve the last image for inspection; its receipt age keeps increasing.
