@@ -431,8 +431,6 @@ class FarsightBridge(Node):
             if session != self.explore_session or not self.exploring:
                 return
             self.local_support = (support, info.resolution, origin, obstacles)
-            if self.explore_finished:
-                return
             if now - self.pose_at >= 0.5 or now - self.depth_at >= 0.5 or now - self.global_grid_at >= 2.5:
                 return  # server capture-loss interlock owns stopping and explicit rearming
             target = self.explore_target
@@ -443,21 +441,21 @@ class FarsightBridge(Node):
             explorer, blacklist = self.explorer, list(self.blacklist)
         choice = explorer.choose(found, robot_map, cells, info.resolution, origin,
                                  now=now, blacklist=blacklist)
+        if choice is None:  # never stop while a rover-width route to any frontier exists
+            choice = explorer.choose(found, robot_map, cells, info.resolution, origin,
+                                     now=now, blacklist=blacklist, relaxed=True)
         with self.lock:
-            if (session != self.explore_session or not self.exploring or self.explore_finished
+            if (session != self.explore_session or not self.exploring
                     or time.monotonic() - self.pose_at >= 0.5 or time.monotonic() - self.depth_at >= 0.5):
                 return
             if choice is None:
+                # Explore never ends on its own (captain's order): local motion wanders toward
+                # the most open measured arc, scanning when none is open, until a frontier appears.
                 if self.no_frontier_since is None:
                     self.no_frontier_since = now
-                    self.cancel_goal("Looking for a wide frontier")
+                    self.cancel_goal("No reachable frontier")
                 self.explore_target = None
-                self.goal_state, self.goal_message = "planning", "Looking for a sensed wide route"
-                if (self.local_motion.scan_exhausted or now - self.no_frontier_since
-                        >= self.local_motion.scan_budget_s + self.local_motion.budget_s):
-                    self.cancel_goal("no reachable wide frontier")
-                    self.goal_state, self.goal_message = "arrived", "Exploration complete: no reachable wide frontier"
-                    self.explore_finished = True
+                self.goal_state, self.goal_message = "planning", "No reachable frontier: wandering toward open space"
                 return
             self.no_frontier_since = None
             running = self.goal_handle is not None or (
@@ -506,7 +504,7 @@ class FarsightBridge(Node):
                 nav_command=self.nav_command, nav_at=self.nav_command_at,
                 robot=robot, pose_at=self.pose_at, depth=depth, header=header, depth_at=self.depth_at,
                 support=support, resolution=resolution, origin=origin, map_at=self.global_grid_at,
-                to_map=to_map, body_clear=body_clear, scan_only=self.no_frontier_since is not None)
+                to_map=to_map, body_clear=body_clear)
             if command is not None:
                 self.send(protocol.cmd_vel(*command, self.goal_id))
 

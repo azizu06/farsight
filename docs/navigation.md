@@ -32,31 +32,32 @@ ros2 launch farsight_nav nav.launch.py                 # or the farsight-nav sys
     scores observed wide approaches, visible unknown area, frontier size,
     heading, thin clutter and decaying path revisits. Goals stay in known free
     space, one footprint short of the unseen boundary. A candidate must support
-    a 0.7 m wide goal and final 1.2 m approach; Nav2 plans the full route. The
+    a 0.36 m wide goal (any gap the ~0.35 m body fits through) and final 1.2 m
+    approach; if none does, a relaxed pass accepts a 0.36 m corridor with a
+    0.6 m approach. Nav2 plans the full route. The
     current broad direction is held for at least 4 s and changes only for a
     score improvement of 0.8, unless its approach becomes unsafe or disappears.
     Within 0.6 m it selects the next patch before the current goal completes.
     A goal Nav2 fails, or one that takes over 25 s, is skipped for that press.
-    Planning gaps get up to 4 s of locally measured creep. With insufficient
-    support it scans in place for up to one measured full turn (10 s ceiling),
-    rescoring every second and departing as soon as a wide frontier qualifies.
-    No useful wide frontier after that ends Explore as `arrived`. A detected
+    Explore never ends on its own (captain's order, 2026-10-10). Planning gaps,
+    and stretches with no reachable frontier at all, creep along the most open
+    measured arc; with no open arc it turns in place to look, restarting after
+    each full turn, and re-scores frontiers every second. A detected
     person never switches Explore to Seek: people are moving obstacles in the
     LiDAR costmaps. Seek runs only when the operator selects it.
     The 20 Hz planning-gap arbiter uses the current validated depth and pose
     (each under 0.5 s) and a costmap under 2.5 s. It projects the sampled swept
     corridor at rover body height into the depth camera: every ray needs a real
-    return beyond the corridor. Unknown/missing forward rays are blocked.
-    The current 0.35 m body disc and actual sampled pose path fill only unknown
-    near-field cells; measured costs remain intact. This supports the occupied
-    body through the LiDAR blind ring. In-place scanning checks measured lethal
-    cells and live body-height depth, rather than treating inflation padding as
-    a physical object inside the rover. The fallback
-    selects the widest supported gentle arc at 0.2 m/s, or turns in place at
-    0.82 rad/s only with an observed clear footprint. A live-plan controller stop
-    is never replaced. A missing footprint, close obstacle, stale capture, or
-    exhausted fallback budget stops. Server deadman, B/STOP, disconnect,
-    capture-loss/release and first-person Seek interlocks still apply; the
+    return beyond the corridor. Unknown/missing forward rays are blocked for that
+    arc (it picks another arc or turns), never stopping Explore.
+    The current 0.2 m body disc and actual sampled pose path fill only unknown
+    near-field cells; measured costs remain intact. Something measured inside
+    the body disc makes it back straight off (at most 0.35 m, only over floor
+    the costmap has seen or the rover has driven), then turn away from it.
+    The fallback selects the widest supported gentle arc at 0.25 m/s, or turns
+    in place at 0.82 rad/s. A live-plan controller stop is never replaced. Only
+    a stale pose, depth or costmap stops it. Server deadman, B/STOP, the lease
+    (link-loss stop) and the Nav2 sensor gate still apply; the
     `/ws/nav` and viewer status contracts are unchanged.
   - **Seek:** the server projects the tracked person's box through the LiDAR depth
     (median of the torso region) to a floor point, and Nav2 drives to a point
@@ -145,9 +146,9 @@ the goal.
 - **Global costmap:** 40 x 40 m, not rolling, `track_unknown_space` so explored and
   unexplored space stay distinct for frontiers and replanning. Updated at 10 Hz:
   `IsPathValid` checks it, so a person stepping onto the path invalidates it within 0.1 s.
-- **Inflation:** `robot_radius` 0.16 m (a ~0.12 m chassis plus 4 cm for tracking
-  error at corners), inflation 0.28 m, cost scaling 8, so a 0.65 m gap keeps a
-  zero-cost centre line. With 0.35 m inflation the rover dithered at such gaps;
+- **Inflation:** `robot_radius` 0.17 m (the ~0.35 m wide body, no extra margin),
+  inflation 0.22 m (footprint + 5 cm), cost scaling 8, so the rover threads gaps
+  just over its width (captain's call, 2026-10-10; earlier 0.16 / 0.28 m). With 0.35 m inflation the rover dithered at such gaps;
   with a 0.13 m radius RPP clipped a wall end.
 - **Planner:** `SmacPlanner2D`, `allow_unknown` (goals are often in unseen space),
   0.25 m tolerance.
