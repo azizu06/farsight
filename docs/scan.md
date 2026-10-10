@@ -16,8 +16,8 @@ python -m jetson.server --demo --simulate-rover --detector none \
 
 Open the viewer's Live rover view. Release once, then hold Space (or the enable
 button) with no driving input and press Scan. Keep holding until completion;
-release cancels. Quest uses the right trigger plus left X to start; A switches
-between live camera and the snapshot. A confirmed assistant Scan proposal arms
+release cancels. Quest uses the right trigger plus left Y to start; A switches
+between live camera and the snapshot when not pointing at a person. A confirmed assistant Scan proposal arms
 the same path: close Settings, release, then hold the deadman with centred sticks.
 The completed snapshot replaces previous geometry and pauses fusion. Export PLY
 before clearing or resuming capture. Resume clears the scan before phone/demo fusion.

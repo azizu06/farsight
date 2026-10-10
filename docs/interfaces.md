@@ -277,7 +277,7 @@ the previous origin; resuming phone/demo fusion clears the scan first.
 `scan.markers` contains up to 500 `{id, cls, position:[x,y,z]}` observations from
 exact-source/frame-matched sweep detections, projected at estimated box-centre depth.
 The existing viewer renders yellow marker points and toggles live camera / scan
-with Quest A; trigger + left X requests a scan. See [scan setup and evidence](scan.md).
+with Quest A; trigger + left Y requests a scan. See [scan setup and evidence](scan.md).
 
 ## Serial (Jetson <-> Uno), 115200 baud, newline-terminated ASCII
 

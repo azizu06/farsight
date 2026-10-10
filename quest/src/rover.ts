@@ -61,7 +61,7 @@ export class RoverExperience {
   private scanning = false;
   private scanCompleting = false;
   private scanDown = false;
-  private scanMessage = "Hold trigger + X to scan; keep sticks centered";
+  private scanMessage = "Hold trigger + Y to scan; keep sticks centered";
   private scanPollAt = 0;
   private canvas = document.createElement("canvas");
   private ctx: CanvasRenderingContext2D;
@@ -104,7 +104,7 @@ export class RoverExperience {
       <p id="rover-details">Motion disabled until camera and control are fresh.</p>
       <button id="rover-hold" class="hold-button">Hold to enable · WASD to drive</button>
       <button id="rover-explore" aria-pressed="false">Explore (E)</button>
-      <p class="rover-help">Quest: hold right trigger + left stick. A: seek pointed person (else camera/map). B: explore. X: center pan.<br>Desktop: hold Space + WASD in camera view; click a person to seek; E explores. Stick/WASD takes back control.</p>`;
+      <p class="rover-help">Quest: hold right trigger + left stick. A: seek pointed person (else camera/map). B: explore. X: center pan. Y: scan.<br>Desktop: hold Space + WASD in camera view; click a person to seek; E explores. Stick/WASD takes back control.</p>`;
     document.querySelector("main")!.append(panel);
     this.message = panel.querySelector("#rover-message")!;
     this.details = panel.querySelector("#rover-details")!;
@@ -305,7 +305,7 @@ export class RoverExperience {
       const gamepad = (left ?? right)?.gamepad;
       const axes = gamepad?.axes ?? [];
       const held = !!right?.gamepad?.buttons[0]?.pressed;
-      const scan = !!left?.gamepad?.buttons[4]?.pressed;
+      const scan = !!left?.gamepad?.buttons[5]?.pressed;
       const toggle = !!right?.gamepad?.buttons[4]?.pressed;
       const explore = !!right?.gamepad?.buttons[5]?.pressed;
       const center = !!left?.gamepad?.buttons[4]?.pressed;
@@ -376,11 +376,16 @@ export class RoverExperience {
   }
   private selectAt(point: { x: number; y: number }) {
     const box = pickTarget(this.drawnBoxes, point.x, point.y);
-    if (!box || !this.autonomy.select(box.id!)) return false;
+    if (!box) return false;
+    if (this.scanning || this.scanPending) this.stop("Scan cancelled: Seek selected");
+    if (!this.autonomy.select(box.id!)) return false;
     this.dirty = true;
     return true;
   }
-  private toggleExplore() { this.autonomy.toggleExplore(); this.dirty = true; }
+  private toggleExplore() {
+    if (this.scanning || this.scanPending) this.stop("Scan cancelled: Explore selected");
+    this.autonomy.toggleExplore(); this.dirty = true;
+  }
   get vrCameraView() { return this.renderer.xr.isPresenting && this.xrLive; }
 
   private pump() {
@@ -431,9 +436,9 @@ export class RoverExperience {
   }
   private async startScan() {
     if (this.scanPending || this.scanning) return;
-    if (!this.input.held || this.input.v || this.input.w || this.gate.needsRelease ||
+    if (this.autonomy.mode !== "teleop" || !this.input.held || this.input.v || this.input.w || this.gate.needsRelease ||
         this.gate.readiness(performance.now(), this.socket?.readyState === WebSocket.OPEN)) {
-      this.scanMessage = "Scan: hold deadman in live view with sticks centered";
+      this.scanMessage = "Scan: stop autonomy first; hold deadman with sticks centered";
       return;
     }
     this.send(true);
