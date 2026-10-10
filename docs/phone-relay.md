@@ -76,6 +76,17 @@ proxy. The computers do not need Tailscale for this path.
 
 ## Required evidence
 
+Software integration evidence is saved in
+[phone-bridge-chain.json](qualification/phone-bridge-chain.json). Two unchanged
+production Network.framework bridges ran in series on macOS loopback, between
+the production operator relay and a simulated Jetson server. HTTP/JPEG,
+detections and six ordered H.264 fragments passed; simulated release, lease
+expiry, disconnect and stopping either bridge returned zero output. Restart
+kept zero output and required release. Run the reproducible test with
+`python -m unittest tools.tests.test_phone_bridge_chain -v` on a Mac with
+Swift/Network.framework and the documented Python/FFmpeg dependencies.
+It uses no phone, usbmux, cellular, Quest or physical motor.
+
 Compilation and loopback tests do not prove iPhone USB/VPN interoperability.
 Before switching the demo to this path, verify all of these on the actual rig:
 
