@@ -1,0 +1,1189 @@
+{
+  "hardware_verified": false,
+  "host": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+  "python": "3.13.5",
+  "opencv": "4.14.0",
+  "onnxruntime": "1.31.0",
+  "ffmpeg": "9.0.2",
+  "runs": {
+    "pose-before": {
+      "settings": {
+        "detector": "pose",
+        "model_sha256": "b4d3abde2f7233a9f4f869e8ff1048263ef6ed28957bad1382504ade24bd6299",
+        "scene_sha256": "c02019c4979c191eb739ddd944445ef408dad5679acab6fd520ef9d434bfbc63",
+        "cv_threads": null,
+        "ort_threads": null,
+        "source": "rgb15",
+        "delay_each_direction_ms": 50,
+        "aggregate_mbps": 2,
+        "encoder_fps": 10,
+        "encoder_bitrate": 500000,
+        "request_window": 2,
+        "permit_ms": 250,
+        "command_hz": 20,
+        "view_guard_ms": 500
+      },
+      "trials": [
+        {
+          "repeat": 1,
+          "load": "quiet",
+          "motion": {
+            "stable_moving_fraction": 1.0,
+            "capture_receipt_p95_ms": 313.2187079915311,
+            "held_view_age_max_ms": 437.9156250236556,
+            "server_event_loop_lag_max_ms": 22.905083993682634,
+            "client_event_loop_lag_max_ms": 6.858084010891616,
+            "command_cadence_p95_ms": 52.02529099187814,
+            "command_cadence_max_ms": 52.64345899922773,
+            "server_command_cadence_p95_ms": 63.42179101193324,
+            "server_status_cadence_p95_ms": 67.79254099819809,
+            "accepted_permit_age_p95_ms": 165.14858399750665,
+            "control_ack_p95_ms": 158.22574999765493,
+            "invalidations": [],
+            "first_backend_failure": null,
+            "video_errors": [],
+            "control_errors": []
+          },
+          "stage_p95": {
+            "imencode.work_ms": 0.817,
+            "imencode.queue_ms": 0.084,
+            "imdecode.work_ms": 1.013,
+            "imdecode.queue_ms": 0.666,
+            "onnx.run_ms": 20.07,
+            "PerceptionService._detect.work_ms": 26.892,
+            "PerceptionService._detect.queue_ms": 0.255,
+            "h264.input_to_fragment_ms": 120.768,
+            "server.cpu_percent": 244.04,
+            "server.threads": 30,
+            "ffmpeg.cpu_percent": 3.645,
+            "ffmpeg.threads": 50
+          },
+          "stage_max": {
+            "imencode.work_ms": 8.783,
+            "imencode.queue_ms": 15.18,
+            "imdecode.work_ms": 14.85,
+            "imdecode.queue_ms": 16.092,
+            "onnx.run_ms": 30.165,
+            "PerceptionService._detect.work_ms": 34.29,
+            "PerceptionService._detect.queue_ms": 17.319,
+            "h264.input_to_fragment_ms": 126.999,
+            "server.cpu_percent": 265.765,
+            "server.threads": 30,
+            "ffmpeg.cpu_percent": 4.27,
+            "ffmpeg.threads": 50
+          },
+          "burst_statuses": []
+        },
+        {
+          "repeat": 1,
+          "load": "combined",
+          "motion": {
+            "stable_moving_fraction": 1.0,
+            "capture_receipt_p95_ms": 325.85516600566916,
+            "held_view_age_max_ms": 465.617833991535,
+            "server_event_loop_lag_max_ms": 35.222457993077114,
+            "client_event_loop_lag_max_ms": 5.646500018192455,
+            "command_cadence_p95_ms": 52.04783400404267,
+            "command_cadence_max_ms": 53.50345798069611,
+            "server_command_cadence_p95_ms": 64.19941698550247,
+            "server_status_cadence_p95_ms": 68.86287502129562,
+            "accepted_permit_age_p95_ms": 165.96449998905882,
+            "control_ack_p95_ms": 160.086791991489,
+            "invalidations": [],
+            "first_backend_failure": null,
+            "video_errors": [],
+            "control_errors": []
+          },
+          "stage_p95": {
+            "imencode.work_ms": 0.907,
+            "imencode.queue_ms": 0.117,
+            "imdecode.work_ms": 1.13,
+            "imdecode.queue_ms": 0.403,
+            "onnx.run_ms": 26.478,
+            "PerceptionService._detect.work_ms": 31.435,
+            "PerceptionService._detect.queue_ms": 0.305,
+            "h264.input_to_fragment_ms": 126.741,
+            "simulated_frame.work_ms": 16.274,
+            "VoxelMap.integrate.work_ms": 53.032,
+            "back_project.work_ms": 1.085,
+            "server.cpu_percent": 245.533,
+            "server.threads": 31,
+            "ffmpeg.cpu_percent": 3.772,
+            "ffmpeg.threads": 50
+          },
+          "stage_max": {
+            "imencode.work_ms": 14.058,
+            "imencode.queue_ms": 17.662,
+            "imdecode.work_ms": 16.97,
+            "imdecode.queue_ms": 17.654,
+            "onnx.run_ms": 51.304,
+            "PerceptionService._detect.work_ms": 64.772,
+            "PerceptionService._detect.queue_ms": 13.324,
+            "h264.input_to_fragment_ms": 156.579,
+            "simulated_frame.work_ms": 22.504,
+            "VoxelMap.integrate.work_ms": 63.476,
+            "back_project.work_ms": 1.213,
+            "server.cpu_percent": 293.58,
+            "server.threads": 31,
+            "ffmpeg.cpu_percent": 4.994,
+            "ffmpeg.threads": 50
+          },
+          "burst_statuses": [
+            [
+              "/__profile/scan-kernels",
+              200
+            ],
+            [
+              "/ask",
+              200
+            ]
+          ]
+        },
+        {
+          "repeat": 2,
+          "load": "quiet",
+          "motion": {
+            "stable_moving_fraction": 0.4304461942257218,
+            "capture_receipt_p95_ms": 641.0069170219358,
+            "held_view_age_max_ms": 1184.2565420095343,
+            "server_event_loop_lag_max_ms": 229.56312501104549,
+            "client_event_loop_lag_max_ms": 84.82354199280962,
+            "command_cadence_p95_ms": 55.78629099181853,
+            "command_cadence_max_ms": 128.50195899954997,
+            "server_command_cadence_p95_ms": 62.78645899146795,
+            "server_status_cadence_p95_ms": 114.91841697716154,
+            "accepted_permit_age_p95_ms": 177.67404101323336,
+            "control_ack_p95_ms": 169.72212499240413,
+            "invalidations": [
+              {
+                "kind": "view_stale",
+                "video_age_ms": 534.839415979106,
+                "arrival_age_ms": 270.9431249804329
+              }
+            ],
+            "first_backend_failure": {
+              "reason": "lease_expired",
+              "at": 201993.45513725,
+              "seq": 183,
+              "last_active_command": {
+                "at": 201993.442242666,
+                "seq": 183,
+                "accepted": true,
+                "reason": "active",
+                "permit_age_ms": 248.54583299020305,
+                "permit_issued_at": 201993.193696833,
+                "permit_expires_at": 201993.443696833,
+                "previous_deadline_at": 201993.443696833,
+                "deadline_at": 201993.443696833
+              }
+            },
+            "video_errors": [],
+            "control_errors": []
+          },
+          "stage_p95": {
+            "imencode.work_ms": 1.725,
+            "imencode.queue_ms": 2.954,
+            "imdecode.work_ms": 2.314,
+            "imdecode.queue_ms": 4.985,
+            "onnx.run_ms": 253.658,
+            "PerceptionService._detect.work_ms": 259.701,
+            "PerceptionService._detect.queue_ms": 3.69,
+            "h264.input_to_fragment_ms": 309.069,
+            "server.cpu_percent": 270.068,
+            "server.threads": 30,
+            "ffmpeg.cpu_percent": 3.641,
+            "ffmpeg.threads": 50
+          },
+          "stage_max": {
+            "imencode.work_ms": 28.662,
+            "imencode.queue_ms": 127.884,
+            "imdecode.work_ms": 25.478,
+            "imdecode.queue_ms": 18.25,
+            "onnx.run_ms": 457.676,
+            "PerceptionService._detect.work_ms": 466.305,
+            "PerceptionService._detect.queue_ms": 110.893,
+            "h264.input_to_fragment_ms": 663.412,
+            "server.cpu_percent": 406.279,
+            "server.threads": 30,
+            "ffmpeg.cpu_percent": 4.705,
+            "ffmpeg.threads": 50
+          },
+          "burst_statuses": []
+        },
+        {
+          "repeat": 2,
+          "load": "combined",
+          "motion": {
+            "stable_moving_fraction": 1.0,
+            "capture_receipt_p95_ms": 314.80354102747515,
+            "held_view_age_max_ms": 432.96858397265896,
+            "server_event_loop_lag_max_ms": 33.341832992155105,
+            "client_event_loop_lag_max_ms": 0,
+            "command_cadence_p95_ms": 52.038833004189655,
+            "command_cadence_max_ms": 52.09912502323277,
+            "server_command_cadence_p95_ms": 62.52608299837448,
+            "server_status_cadence_p95_ms": 67.29674999951385,
+            "accepted_permit_age_p95_ms": 171.1135000223294,
+            "control_ack_p95_ms": 157.66637501656078,
+            "invalidations": [],
+            "first_backend_failure": null,
+            "video_errors": [],
+            "control_errors": []
+          },
+          "stage_p95": {
+            "imencode.work_ms": 0.8,
+            "imencode.queue_ms": 0.076,
+            "imdecode.work_ms": 0.981,
+            "imdecode.queue_ms": 6.178,
+            "onnx.run_ms": 24.142,
+            "PerceptionService._detect.work_ms": 30.301,
+            "PerceptionService._detect.queue_ms": 6.314,
+            "h264.input_to_fragment_ms": 121.613,
+            "simulated_frame.work_ms": 20.779,
+            "VoxelMap.integrate.work_ms": 50.667,
+            "back_project.work_ms": 1.104,
+            "server.cpu_percent": 240.444,
+            "server.threads": 31,
+            "ffmpeg.cpu_percent": 3.531,
+            "ffmpeg.threads": 50
+          },
+          "stage_max": {
+            "imencode.work_ms": 22.865,
+            "imencode.queue_ms": 12.432,
+            "imdecode.work_ms": 23.582,
+            "imdecode.queue_ms": 15.881,
+            "onnx.run_ms": 31.028,
+            "PerceptionService._detect.work_ms": 54.614,
+            "PerceptionService._detect.queue_ms": 16.992,
+            "h264.input_to_fragment_ms": 140.075,
+            "simulated_frame.work_ms": 21.915,
+            "VoxelMap.integrate.work_ms": 51.78,
+            "back_project.work_ms": 8.394,
+            "server.cpu_percent": 330.24,
+            "server.threads": 31,
+            "ffmpeg.cpu_percent": 4.668,
+            "ffmpeg.threads": 50
+          },
+          "burst_statuses": [
+            [
+              "/__profile/scan-kernels",
+              200
+            ],
+            [
+              "/ask",
+              200
+            ]
+          ]
+        }
+      ]
+    },
+    "pose-two-threads": {
+      "settings": {
+        "detector": "pose",
+        "model_sha256": "b4d3abde2f7233a9f4f869e8ff1048263ef6ed28957bad1382504ade24bd6299",
+        "scene_sha256": "c02019c4979c191eb739ddd944445ef408dad5679acab6fd520ef9d434bfbc63",
+        "cv_threads": null,
+        "ort_threads": 2,
+        "source": "rgb15",
+        "delay_each_direction_ms": 50,
+        "aggregate_mbps": 2,
+        "encoder_fps": 10,
+        "encoder_bitrate": 500000,
+        "request_window": 2,
+        "permit_ms": 250,
+        "command_hz": 20,
+        "view_guard_ms": 500
+      },
+      "trials": [
+        {
+          "repeat": 1,
+          "load": "quiet",
+          "motion": {
+            "stable_moving_fraction": 1.0,
+            "capture_receipt_p95_ms": 313.27212500874884,
+            "held_view_age_max_ms": 448.3317089928314,
+            "server_event_loop_lag_max_ms": 29.283709018491205,
+            "client_event_loop_lag_max_ms": 0,
+            "command_cadence_p95_ms": 52.03479100600816,
+            "command_cadence_max_ms": 52.09437498706393,
+            "server_command_cadence_p95_ms": 60.86333401617594,
+            "server_status_cadence_p95_ms": 65.70837501203641,
+            "accepted_permit_age_p95_ms": 161.47200000705197,
+            "control_ack_p95_ms": 156.09087501070462,
+            "invalidations": [],
+            "first_backend_failure": null,
+            "video_errors": [],
+            "control_errors": []
+          },
+          "stage_p95": {
+            "imencode.work_ms": 0.804,
+            "imencode.queue_ms": 0.062,
+            "imdecode.work_ms": 0.967,
+            "imdecode.queue_ms": 0.377,
+            "onnx.run_ms": 25.803,
+            "PerceptionService._detect.work_ms": 29.947,
+            "PerceptionService._detect.queue_ms": 0.18,
+            "h264.input_to_fragment_ms": 118.295,
+            "server.cpu_percent": 88.374,
+            "server.threads": 25,
+            "ffmpeg.cpu_percent": 3.597,
+            "ffmpeg.threads": 50
+          },
+          "stage_max": {
+            "imencode.work_ms": 1.089,
+            "imencode.queue_ms": 0.115,
+            "imdecode.work_ms": 1.921,
+            "imdecode.queue_ms": 16.318,
+            "onnx.run_ms": 28.579,
+            "PerceptionService._detect.work_ms": 36.152,
+            "PerceptionService._detect.queue_ms": 15.678,
+            "h264.input_to_fragment_ms": 131.99,
+            "server.cpu_percent": 98.126,
+            "server.threads": 25,
+            "ffmpeg.cpu_percent": 4.262,
+            "ffmpeg.threads": 50
+          },
+          "burst_statuses": []
+        },
+        {
+          "repeat": 1,
+          "load": "combined",
+          "motion": {
+            "stable_moving_fraction": 1.0,
+            "capture_receipt_p95_ms": 311.15104097127914,
+            "held_view_age_max_ms": 426.45170900877565,
+            "server_event_loop_lag_max_ms": 32.965375003404915,
+            "client_event_loop_lag_max_ms": 0,
+            "command_cadence_p95_ms": 52.03870800323784,
+            "command_cadence_max_ms": 52.125749993138015,
+            "server_command_cadence_p95_ms": 62.51783299376257,
+            "server_status_cadence_p95_ms": 67.57429201388732,
+            "accepted_permit_age_p95_ms": 167.50200002570637,
+            "control_ack_p95_ms": 158.2469170098193,
+            "invalidations": [],
+            "first_backend_failure": null,
+            "video_errors": [],
+            "control_errors": []
+          },
+          "stage_p95": {
+            "imencode.work_ms": 0.839,
+            "imencode.queue_ms": 0.092,
+            "imdecode.work_ms": 0.938,
+            "imdecode.queue_ms": 0.448,
+            "onnx.run_ms": 26.721,
+            "PerceptionService._detect.work_ms": 31.084,
+            "PerceptionService._detect.queue_ms": 0.578,
+            "h264.input_to_fragment_ms": 118.953,
+            "simulated_frame.work_ms": 9.571,
+            "VoxelMap.integrate.work_ms": 46.451,
+            "back_project.work_ms": 0.856,
+            "server.cpu_percent": 131.951,
+            "server.threads": 26,
+            "ffmpeg.cpu_percent": 3.802,
+            "ffmpeg.threads": 50
+          },
+          "stage_max": {
+            "imencode.work_ms": 11.896,
+            "imencode.queue_ms": 10.987,
+            "imdecode.work_ms": 11.2,
+            "imdecode.queue_ms": 14.96,
+            "onnx.run_ms": 43.718,
+            "PerceptionService._detect.work_ms": 46.151,
+            "PerceptionService._detect.queue_ms": 15.688,
+            "h264.input_to_fragment_ms": 136.641,
+            "simulated_frame.work_ms": 18.909,
+            "VoxelMap.integrate.work_ms": 74.461,
+            "back_project.work_ms": 0.873,
+            "server.cpu_percent": 161.452,
+            "server.threads": 26,
+            "ffmpeg.cpu_percent": 4.466,
+            "ffmpeg.threads": 50
+          },
+          "burst_statuses": [
+            [
+              "/__profile/scan-kernels",
+              200
+            ],
+            [
+              "/ask",
+              200
+            ]
+          ]
+        },
+        {
+          "repeat": 2,
+          "load": "quiet",
+          "motion": {
+            "stable_moving_fraction": 1.0,
+            "capture_receipt_p95_ms": 304.7707090084441,
+            "held_view_age_max_ms": 432.12974997540005,
+            "server_event_loop_lag_max_ms": 24.18295801384374,
+            "client_event_loop_lag_max_ms": 0,
+            "command_cadence_p95_ms": 52.03154098126106,
+            "command_cadence_max_ms": 52.12170799495652,
+            "server_command_cadence_p95_ms": 61.11379197682254,
+            "server_status_cadence_p95_ms": 65.32833399251103,
+            "accepted_permit_age_p95_ms": 163.32479199627414,
+            "control_ack_p95_ms": 155.73608299018815,
+            "invalidations": [],
+            "first_backend_failure": null,
+            "video_errors": [],
+            "control_errors": []
+          },
+          "stage_p95": {
+            "imencode.work_ms": 0.741,
+            "imencode.queue_ms": 0.069,
+            "imdecode.work_ms": 0.958,
+            "imdecode.queue_ms": 0.376,
+            "onnx.run_ms": 22.227,
+            "PerceptionService._detect.work_ms": 26.24,
+            "PerceptionService._detect.queue_ms": 0.187,
+            "h264.input_to_fragment_ms": 118.58,
+            "server.cpu_percent": 84.461,
+            "server.threads": 26,
+            "ffmpeg.cpu_percent": 3.758,
+            "ffmpeg.threads": 50
+          },
+          "stage_max": {
+            "imencode.work_ms": 0.992,
+            "imencode.queue_ms": 0.554,
+            "imdecode.work_ms": 6.631,
+            "imdecode.queue_ms": 13.032,
+            "onnx.run_ms": 26.654,
+            "PerceptionService._detect.work_ms": 35.963,
+            "PerceptionService._detect.queue_ms": 14.39,
+            "h264.input_to_fragment_ms": 133.998,
+            "server.cpu_percent": 96.768,
+            "server.threads": 26,
+            "ffmpeg.cpu_percent": 4.423,
+            "ffmpeg.threads": 50
+          },
+          "burst_statuses": []
+        },
+        {
+          "repeat": 2,
+          "load": "combined",
+          "motion": {
+            "stable_moving_fraction": 1.0,
+            "capture_receipt_p95_ms": 321.06241697398946,
+            "held_view_age_max_ms": 459.6304580126889,
+            "server_event_loop_lag_max_ms": 32.72370898979716,
+            "client_event_loop_lag_max_ms": 0,
+            "command_cadence_p95_ms": 52.00695799430832,
+            "command_cadence_max_ms": 52.1215419867076,
+            "server_command_cadence_p95_ms": 64.90516700432636,
+            "server_status_cadence_p95_ms": 66.79620800423436,
+            "accepted_permit_age_p95_ms": 171.89875000622123,
+            "control_ack_p95_ms": 158.04845897946507,
+            "invalidations": [],
+            "first_backend_failure": null,
+            "video_errors": [],
+            "control_errors": []
+          },
+          "stage_p95": {
+            "imencode.work_ms": 0.822,
+            "imencode.queue_ms": 0.083,
+            "imdecode.work_ms": 1.164,
+            "imdecode.queue_ms": 8.836,
+            "onnx.run_ms": 27.159,
+            "PerceptionService._detect.work_ms": 35.78,
+            "PerceptionService._detect.queue_ms": 0.373,
+            "h264.input_to_fragment_ms": 120.484,
+            "simulated_frame.work_ms": 18.3,
+            "VoxelMap.integrate.work_ms": 45.881,
+            "back_project.work_ms": 0.78,
+            "server.cpu_percent": 133.695,
+            "server.threads": 25,
+            "ffmpeg.cpu_percent": 3.468,
+            "ffmpeg.threads": 50
+          },
+          "stage_max": {
+            "imencode.work_ms": 13.294,
+            "imencode.queue_ms": 8.783,
+            "imdecode.work_ms": 15.355,
+            "imdecode.queue_ms": 13.297,
+            "onnx.run_ms": 46.165,
+            "PerceptionService._detect.work_ms": 48.497,
+            "PerceptionService._detect.queue_ms": 15.888,
+            "h264.input_to_fragment_ms": 148.048,
+            "simulated_frame.work_ms": 19.949,
+            "VoxelMap.integrate.work_ms": 55.272,
+            "back_project.work_ms": 0.808,
+            "server.cpu_percent": 172.618,
+            "server.threads": 26,
+            "ffmpeg.cpu_percent": 4.748,
+            "ffmpeg.threads": 50
+          },
+          "burst_statuses": [
+            [
+              "/__profile/scan-kernels",
+              200
+            ],
+            [
+              "/ask",
+              200
+            ]
+          ]
+        }
+      ]
+    },
+    "pose-after": {
+      "settings": {
+        "detector": "pose",
+        "model_sha256": "b4d3abde2f7233a9f4f869e8ff1048263ef6ed28957bad1382504ade24bd6299",
+        "scene_sha256": "c02019c4979c191eb739ddd944445ef408dad5679acab6fd520ef9d434bfbc63",
+        "cv_threads": null,
+        "ort_threads": null,
+        "source": "rgb15",
+        "delay_each_direction_ms": 50,
+        "aggregate_mbps": 2,
+        "encoder_fps": 10,
+        "encoder_bitrate": 500000,
+        "request_window": 2,
+        "permit_ms": 250,
+        "command_hz": 20,
+        "view_guard_ms": 500
+      },
+      "trials": [
+        {
+          "repeat": 1,
+          "load": "quiet",
+          "motion": {
+            "stable_moving_fraction": 1.0,
+            "capture_receipt_p95_ms": 311.19304199307226,
+            "held_view_age_max_ms": 454.07133300299756,
+            "server_event_loop_lag_max_ms": 21.94624997559003,
+            "client_event_loop_lag_max_ms": 0,
+            "command_cadence_p95_ms": 51.999791990965605,
+            "command_cadence_max_ms": 52.064791991142556,
+            "server_command_cadence_p95_ms": 61.176457995316014,
+            "server_status_cadence_p95_ms": 65.870124992216,
+            "accepted_permit_age_p95_ms": 163.71895800693892,
+            "control_ack_p95_ms": 156.88712502014823,
+            "invalidations": [],
+            "first_backend_failure": null,
+            "video_errors": [],
+            "control_errors": []
+          },
+          "stage_p95": {
+            "imencode.work_ms": 0.779,
+            "imencode.queue_ms": 0.056,
+            "imdecode.work_ms": 0.963,
+            "imdecode.queue_ms": 10.845,
+            "onnx.run_ms": 22.568,
+            "PerceptionService._detect.work_ms": 28.357,
+            "PerceptionService._detect.queue_ms": 0.293,
+            "h264.input_to_fragment_ms": 118.762,
+            "server.cpu_percent": 85.707,
+            "server.threads": 25,
+            "ffmpeg.cpu_percent": 3.662,
+            "ffmpeg.threads": 50
+          },
+          "stage_max": {
+            "imencode.work_ms": 0.943,
+            "imencode.queue_ms": 0.175,
+            "imdecode.work_ms": 18.8,
+            "imdecode.queue_ms": 15.611,
+            "onnx.run_ms": 27.438,
+            "PerceptionService._detect.work_ms": 37.561,
+            "PerceptionService._detect.queue_ms": 15.437,
+            "h264.input_to_fragment_ms": 134.706,
+            "server.cpu_percent": 96.406,
+            "server.threads": 25,
+            "ffmpeg.cpu_percent": 4.733,
+            "ffmpeg.threads": 50
+          },
+          "burst_statuses": []
+        },
+        {
+          "repeat": 1,
+          "load": "combined",
+          "motion": {
+            "stable_moving_fraction": 1.0,
+            "capture_receipt_p95_ms": 339.34795698616654,
+            "held_view_age_max_ms": 478.16395903006196,
+            "server_event_loop_lag_max_ms": 31.45212500588968,
+            "client_event_loop_lag_max_ms": 0,
+            "command_cadence_p95_ms": 52.02637502225116,
+            "command_cadence_max_ms": 52.08958400180563,
+            "server_command_cadence_p95_ms": 65.59974999981932,
+            "server_status_cadence_p95_ms": 67.42270800168626,
+            "accepted_permit_age_p95_ms": 171.28537499229424,
+            "control_ack_p95_ms": 160.48908399534412,
+            "invalidations": [],
+            "first_backend_failure": null,
+            "video_errors": [],
+            "control_errors": []
+          },
+          "stage_p95": {
+            "imencode.work_ms": 0.804,
+            "imencode.queue_ms": 0.105,
+            "imdecode.work_ms": 1.009,
+            "imdecode.queue_ms": 0.317,
+            "onnx.run_ms": 26.845,
+            "PerceptionService._detect.work_ms": 35.386,
+            "PerceptionService._detect.queue_ms": 0.241,
+            "h264.input_to_fragment_ms": 126.811,
+            "simulated_frame.work_ms": 10.12,
+            "VoxelMap.integrate.work_ms": 43.215,
+            "back_project.work_ms": 0.912,
+            "server.cpu_percent": 132.294,
+            "server.threads": 25,
+            "ffmpeg.cpu_percent": 2.688,
+            "ffmpeg.threads": 50
+          },
+          "stage_max": {
+            "imencode.work_ms": 5.785,
+            "imencode.queue_ms": 16.298,
+            "imdecode.work_ms": 15.958,
+            "imdecode.queue_ms": 17.81,
+            "onnx.run_ms": 43.885,
+            "PerceptionService._detect.work_ms": 49.788,
+            "PerceptionService._detect.queue_ms": 16.033,
+            "h264.input_to_fragment_ms": 148.602,
+            "simulated_frame.work_ms": 20.097,
+            "VoxelMap.integrate.work_ms": 53.893,
+            "back_project.work_ms": 1.016,
+            "server.cpu_percent": 160.658,
+            "server.threads": 25,
+            "ffmpeg.cpu_percent": 4.775,
+            "ffmpeg.threads": 50
+          },
+          "burst_statuses": [
+            [
+              "/__profile/scan-kernels",
+              200
+            ],
+            [
+              "/ask",
+              200
+            ]
+          ]
+        },
+        {
+          "repeat": 2,
+          "load": "quiet",
+          "motion": {
+            "stable_moving_fraction": 1.0,
+            "capture_receipt_p95_ms": 308.6414170109201,
+            "held_view_age_max_ms": 439.9819580039475,
+            "server_event_loop_lag_max_ms": 22.14524997747503,
+            "client_event_loop_lag_max_ms": 0,
+            "command_cadence_p95_ms": 51.91870901035145,
+            "command_cadence_max_ms": 52.07179198623635,
+            "server_command_cadence_p95_ms": 59.55333300516941,
+            "server_status_cadence_p95_ms": 65.93537499429658,
+            "accepted_permit_age_p95_ms": 160.14525000355206,
+            "control_ack_p95_ms": 158.92237500520423,
+            "invalidations": [],
+            "first_backend_failure": null,
+            "video_errors": [],
+            "control_errors": []
+          },
+          "stage_p95": {
+            "imencode.work_ms": 0.743,
+            "imencode.queue_ms": 0.059,
+            "imdecode.work_ms": 0.931,
+            "imdecode.queue_ms": 0.339,
+            "onnx.run_ms": 19.199,
+            "PerceptionService._detect.work_ms": 24.031,
+            "PerceptionService._detect.queue_ms": 0.211,
+            "h264.input_to_fragment_ms": 118.377,
+            "server.cpu_percent": 62.977,
+            "server.threads": 26,
+            "ffmpeg.cpu_percent": 3.643,
+            "ffmpeg.threads": 50
+          },
+          "stage_max": {
+            "imencode.work_ms": 12.039,
+            "imencode.queue_ms": 11.754,
+            "imdecode.work_ms": 1.099,
+            "imdecode.queue_ms": 15.606,
+            "onnx.run_ms": 36.993,
+            "PerceptionService._detect.work_ms": 39.837,
+            "PerceptionService._detect.queue_ms": 15.567,
+            "h264.input_to_fragment_ms": 122.423,
+            "server.cpu_percent": 96.202,
+            "server.threads": 26,
+            "ffmpeg.cpu_percent": 4.57,
+            "ffmpeg.threads": 50
+          },
+          "burst_statuses": []
+        },
+        {
+          "repeat": 2,
+          "load": "combined",
+          "motion": {
+            "stable_moving_fraction": 1.0,
+            "capture_receipt_p95_ms": 317.0070000165142,
+            "held_view_age_max_ms": 442.7974579927977,
+            "server_event_loop_lag_max_ms": 30.96458299318328,
+            "client_event_loop_lag_max_ms": 0,
+            "command_cadence_p95_ms": 52.03204200370237,
+            "command_cadence_max_ms": 52.09591600578278,
+            "server_command_cadence_p95_ms": 63.790707994485274,
+            "server_status_cadence_p95_ms": 67.9997079714667,
+            "accepted_permit_age_p95_ms": 171.4628339977935,
+            "control_ack_p95_ms": 156.36708398233168,
+            "invalidations": [],
+            "first_backend_failure": null,
+            "video_errors": [],
+            "control_errors": []
+          },
+          "stage_p95": {
+            "imencode.work_ms": 0.799,
+            "imencode.queue_ms": 0.066,
+            "imdecode.work_ms": 0.988,
+            "imdecode.queue_ms": 0.541,
+            "onnx.run_ms": 23.19,
+            "PerceptionService._detect.work_ms": 29.674,
+            "PerceptionService._detect.queue_ms": 0.589,
+            "h264.input_to_fragment_ms": 119.941,
+            "simulated_frame.work_ms": 9.067,
+            "VoxelMap.integrate.work_ms": 43.7,
+            "back_project.work_ms": 0.812,
+            "server.cpu_percent": 129.085,
+            "server.threads": 26,
+            "ffmpeg.cpu_percent": 3.728,
+            "ffmpeg.threads": 50
+          },
+          "stage_max": {
+            "imencode.work_ms": 0.964,
+            "imencode.queue_ms": 0.24,
+            "imdecode.work_ms": 15.199,
+            "imdecode.queue_ms": 17.963,
+            "onnx.run_ms": 35.424,
+            "PerceptionService._detect.work_ms": 46.151,
+            "PerceptionService._detect.queue_ms": 15.849,
+            "h264.input_to_fragment_ms": 135.392,
+            "simulated_frame.work_ms": 21.751,
+            "VoxelMap.integrate.work_ms": 47.755,
+            "back_project.work_ms": 0.915,
+            "server.cpu_percent": 145.303,
+            "server.threads": 26,
+            "ffmpeg.cpu_percent": 4.581,
+            "ffmpeg.threads": 50
+          },
+          "burst_statuses": [
+            [
+              "/__profile/scan-kernels",
+              200
+            ],
+            [
+              "/ask",
+              200
+            ]
+          ]
+        }
+      ]
+    },
+    "hog-final": {
+      "settings": {
+        "detector": "hog",
+        "model_sha256": null,
+        "scene_sha256": "c02019c4979c191eb739ddd944445ef408dad5679acab6fd520ef9d434bfbc63",
+        "cv_threads": null,
+        "ort_threads": null,
+        "source": "rgb15",
+        "delay_each_direction_ms": 50,
+        "aggregate_mbps": 2,
+        "encoder_fps": 10,
+        "encoder_bitrate": 500000,
+        "request_window": 2,
+        "permit_ms": 250,
+        "command_hz": 20,
+        "view_guard_ms": 500
+      },
+      "trials": [
+        {
+          "repeat": 1,
+          "load": "quiet",
+          "motion": {
+            "stable_moving_fraction": 1.0,
+            "capture_receipt_p95_ms": 331.90479102218524,
+            "held_view_age_max_ms": 477.0334169983398,
+            "server_event_loop_lag_max_ms": 30.689374989597123,
+            "client_event_loop_lag_max_ms": 0,
+            "command_cadence_p95_ms": 52.03179101226851,
+            "command_cadence_max_ms": 52.136249985778704,
+            "server_command_cadence_p95_ms": 63.346208014991134,
+            "server_status_cadence_p95_ms": 73.70870799059048,
+            "accepted_permit_age_p95_ms": 169.57066601025872,
+            "control_ack_p95_ms": 164.19116698671132,
+            "invalidations": [],
+            "first_backend_failure": null,
+            "video_errors": [],
+            "control_errors": []
+          },
+          "stage_p95": {
+            "imencode.work_ms": 1.203,
+            "imencode.queue_ms": 0.098,
+            "imdecode.work_ms": 1.565,
+            "imdecode.queue_ms": 0.239,
+            "PerceptionService._detect.work_ms": 17.298,
+            "PerceptionService._detect.queue_ms": 0.129,
+            "h264.input_to_fragment_ms": 126.917,
+            "server.cpu_percent": 33.819,
+            "server.threads": 25,
+            "ffmpeg.cpu_percent": 3.839,
+            "ffmpeg.threads": 50
+          },
+          "stage_max": {
+            "imencode.work_ms": 1.748,
+            "imencode.queue_ms": 19.456,
+            "imdecode.work_ms": 24.053,
+            "imdecode.queue_ms": 24.723,
+            "PerceptionService._detect.work_ms": 30.594,
+            "PerceptionService._detect.queue_ms": 0.228,
+            "h264.input_to_fragment_ms": 141.212,
+            "server.cpu_percent": 48.33,
+            "server.threads": 25,
+            "ffmpeg.cpu_percent": 5.9,
+            "ffmpeg.threads": 50
+          },
+          "burst_statuses": []
+        },
+        {
+          "repeat": 1,
+          "load": "combined",
+          "motion": {
+            "stable_moving_fraction": 1.0,
+            "capture_receipt_p95_ms": 331.78879099781625,
+            "held_view_age_max_ms": 455.37995898211375,
+            "server_event_loop_lag_max_ms": 33.964500015135854,
+            "client_event_loop_lag_max_ms": 0,
+            "command_cadence_p95_ms": 52.038124995306134,
+            "command_cadence_max_ms": 52.16883399407379,
+            "server_command_cadence_p95_ms": 65.16012499923818,
+            "server_status_cadence_p95_ms": 74.20491598895751,
+            "accepted_permit_age_p95_ms": 170.0549169909209,
+            "control_ack_p95_ms": 165.09795899037272,
+            "invalidations": [],
+            "first_backend_failure": null,
+            "video_errors": [],
+            "control_errors": []
+          },
+          "stage_p95": {
+            "imencode.work_ms": 1.264,
+            "imencode.queue_ms": 0.109,
+            "imdecode.work_ms": 1.588,
+            "imdecode.queue_ms": 10.232,
+            "PerceptionService._detect.work_ms": 5.454,
+            "PerceptionService._detect.queue_ms": 12.222,
+            "h264.input_to_fragment_ms": 127.293,
+            "simulated_frame.work_ms": 13.556,
+            "VoxelMap.integrate.work_ms": 40.852,
+            "back_project.work_ms": 0.894,
+            "server.cpu_percent": 100.261,
+            "server.threads": 25,
+            "ffmpeg.cpu_percent": 4.621,
+            "ffmpeg.threads": 50
+          },
+          "stage_max": {
+            "imencode.work_ms": 22.699,
+            "imencode.queue_ms": 13.748,
+            "imdecode.work_ms": 25.806,
+            "imdecode.queue_ms": 25.21,
+            "PerceptionService._detect.work_ms": 9.713,
+            "PerceptionService._detect.queue_ms": 24.804,
+            "h264.input_to_fragment_ms": 138.477,
+            "simulated_frame.work_ms": 32.033,
+            "VoxelMap.integrate.work_ms": 45.097,
+            "back_project.work_ms": 1.167,
+            "server.cpu_percent": 108.048,
+            "server.threads": 25,
+            "ffmpeg.cpu_percent": 5.874,
+            "ffmpeg.threads": 50
+          },
+          "burst_statuses": [
+            [
+              "/__profile/scan-kernels",
+              200
+            ],
+            [
+              "/ask",
+              200
+            ]
+          ]
+        },
+        {
+          "repeat": 2,
+          "load": "quiet",
+          "motion": {
+            "stable_moving_fraction": 1.0,
+            "capture_receipt_p95_ms": 328.6939169696998,
+            "held_view_age_max_ms": 452.98249900108203,
+            "server_event_loop_lag_max_ms": 38.26883299392648,
+            "client_event_loop_lag_max_ms": 0,
+            "command_cadence_p95_ms": 52.03612500918098,
+            "command_cadence_max_ms": 52.124334004474804,
+            "server_command_cadence_p95_ms": 63.49212501663715,
+            "server_status_cadence_p95_ms": 73.8084579934366,
+            "accepted_permit_age_p95_ms": 166.33574999286793,
+            "control_ack_p95_ms": 163.80750000826083,
+            "invalidations": [],
+            "first_backend_failure": null,
+            "video_errors": [],
+            "control_errors": []
+          },
+          "stage_p95": {
+            "imencode.work_ms": 1.212,
+            "imencode.queue_ms": 0.097,
+            "imdecode.work_ms": 1.644,
+            "imdecode.queue_ms": 8.033,
+            "PerceptionService._detect.work_ms": 4.517,
+            "PerceptionService._detect.queue_ms": 0.108,
+            "h264.input_to_fragment_ms": 126.686,
+            "server.cpu_percent": 33.966,
+            "server.threads": 26,
+            "ffmpeg.cpu_percent": 4.648,
+            "ffmpeg.threads": 50
+          },
+          "stage_max": {
+            "imencode.work_ms": 22.74,
+            "imencode.queue_ms": 21.133,
+            "imdecode.work_ms": 22.55,
+            "imdecode.queue_ms": 24.245,
+            "PerceptionService._detect.work_ms": 23.569,
+            "PerceptionService._detect.queue_ms": 0.151,
+            "h264.input_to_fragment_ms": 128.041,
+            "server.cpu_percent": 45.493,
+            "server.threads": 26,
+            "ffmpeg.cpu_percent": 5.677,
+            "ffmpeg.threads": 50
+          },
+          "burst_statuses": []
+        },
+        {
+          "repeat": 2,
+          "load": "combined",
+          "motion": {
+            "stable_moving_fraction": 1.0,
+            "capture_receipt_p95_ms": 342.06308302120306,
+            "held_view_age_max_ms": 458.95729200402275,
+            "server_event_loop_lag_max_ms": 32.39183402387425,
+            "client_event_loop_lag_max_ms": 0,
+            "command_cadence_p95_ms": 52.029291982762516,
+            "command_cadence_max_ms": 52.13037499925122,
+            "server_command_cadence_p95_ms": 65.97929098643363,
+            "server_status_cadence_p95_ms": 74.13100000121631,
+            "accepted_permit_age_p95_ms": 170.65016698325053,
+            "control_ack_p95_ms": 165.2554160100408,
+            "invalidations": [],
+            "first_backend_failure": null,
+            "video_errors": [],
+            "control_errors": []
+          },
+          "stage_p95": {
+            "imencode.work_ms": 1.349,
+            "imencode.queue_ms": 0.112,
+            "imdecode.work_ms": 1.612,
+            "imdecode.queue_ms": 6.253,
+            "PerceptionService._detect.work_ms": 20.682,
+            "PerceptionService._detect.queue_ms": 0.135,
+            "h264.input_to_fragment_ms": 127.624,
+            "simulated_frame.work_ms": 14.112,
+            "VoxelMap.integrate.work_ms": 44.753,
+            "back_project.work_ms": 0.862,
+            "server.cpu_percent": 95.14,
+            "server.threads": 25,
+            "ffmpeg.cpu_percent": 4.143,
+            "ffmpeg.threads": 50
+          },
+          "stage_max": {
+            "imencode.work_ms": 13.894,
+            "imencode.queue_ms": 10.514,
+            "imdecode.work_ms": 24.811,
+            "imdecode.queue_ms": 23.997,
+            "PerceptionService._detect.work_ms": 27.037,
+            "PerceptionService._detect.queue_ms": 9.122,
+            "h264.input_to_fragment_ms": 142.623,
+            "simulated_frame.work_ms": 36.435,
+            "VoxelMap.integrate.work_ms": 48.373,
+            "back_project.work_ms": 1.05,
+            "server.cpu_percent": 110.981,
+            "server.threads": 25,
+            "ffmpeg.cpu_percent": 5.523,
+            "ffmpeg.threads": 50
+          },
+          "burst_statuses": [
+            [
+              "/__profile/scan-kernels",
+              200
+            ],
+            [
+              "/ask",
+              200
+            ]
+          ]
+        }
+      ]
+    },
+    "map5-final": {
+      "settings": {
+        "detector": "pose",
+        "model_sha256": "b4d3abde2f7233a9f4f869e8ff1048263ef6ed28957bad1382504ade24bd6299",
+        "scene_sha256": null,
+        "cv_threads": null,
+        "ort_threads": null,
+        "source": "map5",
+        "delay_each_direction_ms": 50,
+        "aggregate_mbps": 2,
+        "encoder_fps": 10,
+        "encoder_bitrate": 500000,
+        "request_window": 2,
+        "permit_ms": 250,
+        "command_hz": 20,
+        "view_guard_ms": 500
+      },
+      "trials": [
+        {
+          "repeat": 1,
+          "load": "quiet",
+          "motion": {
+            "stable_moving_fraction": 0.0,
+            "capture_receipt_p95_ms": 418.1908340123482,
+            "held_view_age_max_ms": 554.3300419789739,
+            "server_event_loop_lag_max_ms": 29.809750014683228,
+            "client_event_loop_lag_max_ms": 0,
+            "command_cadence_p95_ms": 52.02845798339695,
+            "command_cadence_max_ms": 52.09554100292735,
+            "server_command_cadence_p95_ms": 63.28879200736992,
+            "server_status_cadence_p95_ms": 66.27479099552147,
+            "accepted_permit_age_p95_ms": 139.54779200139455,
+            "control_ack_p95_ms": 155.43620797689073,
+            "invalidations": [
+              {
+                "kind": "view_stale",
+                "video_age_ms": 506.417207977036,
+                "arrival_age_ms": 383.7701249618549
+              }
+            ],
+            "first_backend_failure": null,
+            "video_errors": [],
+            "control_errors": []
+          },
+          "stage_p95": {
+            "imdecode.work_ms": 0.349,
+            "imdecode.queue_ms": 0.304,
+            "onnx.run_ms": 19.673,
+            "PerceptionService._detect.work_ms": 28.711,
+            "PerceptionService._detect.queue_ms": 0.345,
+            "h264.input_to_fragment_ms": 118.578,
+            "simulated_frame.work_ms": 23.307,
+            "MapState.process.work_ms": 18.647,
+            "server.cpu_percent": 74.043,
+            "server.threads": 18,
+            "ffmpeg.cpu_percent": 3.414,
+            "ffmpeg.threads": 50
+          },
+          "stage_max": {
+            "imdecode.work_ms": 3.601,
+            "imdecode.queue_ms": 15.336,
+            "onnx.run_ms": 27.946,
+            "PerceptionService._detect.work_ms": 30.487,
+            "PerceptionService._detect.queue_ms": 12.242,
+            "h264.input_to_fragment_ms": 135.164,
+            "simulated_frame.work_ms": 24.268,
+            "MapState.process.work_ms": 30.479,
+            "server.cpu_percent": 101.074,
+            "server.threads": 18,
+            "ffmpeg.cpu_percent": 4.24,
+            "ffmpeg.threads": 50
+          },
+          "burst_statuses": []
+        },
+        {
+          "repeat": 2,
+          "load": "quiet",
+          "motion": {
+            "stable_moving_fraction": 0.015909090909090907,
+            "capture_receipt_p95_ms": 418.07304199039936,
+            "held_view_age_max_ms": 550.2915419966448,
+            "server_event_loop_lag_max_ms": 21.486000021686774,
+            "client_event_loop_lag_max_ms": 0,
+            "command_cadence_p95_ms": 51.996624999446794,
+            "command_cadence_max_ms": 52.061624999623746,
+            "server_command_cadence_p95_ms": 66.20087497867644,
+            "server_status_cadence_p95_ms": 66.47487499867566,
+            "accepted_permit_age_p95_ms": 165.07975000422448,
+            "control_ack_p95_ms": 159.27537498646416,
+            "invalidations": [
+              {
+                "kind": "view_stale",
+                "video_age_ms": 512.1524170259945,
+                "arrival_age_ms": 421.93691701837815
+              }
+            ],
+            "first_backend_failure": null,
+            "video_errors": [],
+            "control_errors": []
+          },
+          "stage_p95": {
+            "imdecode.work_ms": 0.326,
+            "imdecode.queue_ms": 0.244,
+            "onnx.run_ms": 19.236,
+            "PerceptionService._detect.work_ms": 25.22,
+            "PerceptionService._detect.queue_ms": 0.339,
+            "h264.input_to_fragment_ms": 119.876,
+            "simulated_frame.work_ms": 23.578,
+            "MapState.process.work_ms": 20.277,
+            "server.cpu_percent": 74.553,
+            "server.threads": 17,
+            "ffmpeg.cpu_percent": 3.224,
+            "ffmpeg.threads": 50
+          },
+          "stage_max": {
+            "imdecode.work_ms": 0.531,
+            "imdecode.queue_ms": 17.031,
+            "onnx.run_ms": 27.546,
+            "PerceptionService._detect.work_ms": 30.109,
+            "PerceptionService._detect.queue_ms": 12.35,
+            "h264.input_to_fragment_ms": 126.238,
+            "simulated_frame.work_ms": 24.957,
+            "MapState.process.work_ms": 31.246,
+            "server.cpu_percent": 100.573,
+            "server.threads": 17,
+            "ffmpeg.cpu_percent": 4.239,
+            "ffmpeg.threads": 50
+          },
+          "burst_statuses": []
+        }
+      ]
+    }
+  },
+  "cadence_baseline": [
+    {
+      "label": "periodic20",
+      "repeat": 1,
+      "stable_moving_fraction": 1.0,
+      "capture_receipt_p95_ms": 293.46408400079235,
+      "server_event_loop_lag_max_ms": 0,
+      "client_event_loop_lag_max_ms": 0
+    },
+    {
+      "label": "periodic20_plus_status",
+      "repeat": 1,
+      "stable_moving_fraction": 1.0,
+      "capture_receipt_p95_ms": 282.1829169741832,
+      "server_event_loop_lag_max_ms": 0,
+      "client_event_loop_lag_max_ms": 0
+    },
+    {
+      "label": "periodic20",
+      "repeat": 2,
+      "stable_moving_fraction": 1.0,
+      "capture_receipt_p95_ms": 290.058667991776,
+      "server_event_loop_lag_max_ms": 0,
+      "client_event_loop_lag_max_ms": 0
+    },
+    {
+      "label": "periodic20_plus_status",
+      "repeat": 2,
+      "stable_moving_fraction": 1.0,
+      "capture_receipt_p95_ms": 280.93245799909346,
+      "server_event_loop_lag_max_ms": 0,
+      "client_event_loop_lag_max_ms": 0
+    }
+  ]
+}
