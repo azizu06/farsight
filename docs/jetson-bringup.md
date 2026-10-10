@@ -154,7 +154,7 @@ curl -s -o /tmp/f.jpg -w '%{http_code} %{size_download}\n' localhost:8000/camera
 
 ```sh
 cd ~/farsight
-bash jetson/install_service.sh --dry-run      # read it once
+bash jetson/install_service.sh --dry-run --camera-source phone --serial-port ''  # review this profile
 bash jetson/install_service.sh --camera-source phone --serial-port ''
 ```
 

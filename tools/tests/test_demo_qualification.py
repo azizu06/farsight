@@ -45,27 +45,89 @@ def fixture_app(source):
                      h264=True, video_fps=10, video_bitrate=500000)
     original_lifespan = app.router.lifespan_context
     stop_events = []
+    command_events, status_events = [], []
+    callback_events, ws_send_events, loop_lags = [], [], []
+    first_failure, last_active_command = None, None
     original_stop = app.state.control.state.stop
     original_accept = app.state.control.state.accept
+    original_status = app.state.control.state.status
     def record_stop(reason, *args, **kwargs):
+        nonlocal first_failure
         if reason != "deadman_released":
-            stop_events.append(dict(reason=reason, at=time.monotonic(), seq=app.state.control.state.seq))
+            event = dict(reason=reason, at=time.monotonic(), seq=app.state.control.state.seq)
+            stop_events.append(event)
             del stop_events[:-100]
+            if (first_failure is None and last_active_command is not None
+                    and reason in ("lease_expired", "expired_permit", "camera_stale", "video_stale")):
+                first_failure = dict(event, last_active_command=last_active_command.copy())
         return original_stop(reason, *args, **kwargs)
     def record_accept(command, session_id):
+        nonlocal last_active_command
         state = app.state.control.state
         with state.lock:
             expiry = state.permits.get(command.get("permit"), 0) if isinstance(command, dict) else 0
             now = state.clock()
             active = isinstance(command, dict) and command.get("deadman") is True
+            previous_deadline = state.deadline
             result = original_accept(command, session_id)
+            if active:
+                event = dict(at=now, seq=command.get("seq"), accepted=result, reason=state.reason,
+                    permit_age_ms=(state.LEASE - (expiry - now)) * 1000 if expiry else None,
+                    permit_issued_at=expiry - state.LEASE if expiry else None,
+                    permit_expires_at=expiry if expiry else None,
+                    previous_deadline_at=previous_deadline, deadline_at=state.deadline)
+                command_events.append(event)
+                del command_events[:-500]
+                if result:
+                    last_active_command = event
             if active and not result:
                 stop_events.append(dict(reason="command_rejected:" + state.reason, at=now,
                     seq=command.get("seq"), permit_age_ms=(state.LEASE - (expiry - now)) * 1000))
                 del stop_events[:-100]
             return result
+    def record_status(*args, **kwargs):
+        status = original_status(*args, **kwargs)
+        if kwargs.get("issue_permit", args[0] if args else False):
+            status_events.append(dict(at=time.monotonic(), seq=status["seq"]))
+            del status_events[:-500]
+        return status
     app.state.control.state.stop = record_stop
     app.state.control.state.accept = record_accept
+    app.state.control.state.status = record_status
+    original_callback = app.state.control.on_status
+    if original_callback:
+        def record_callback(status):
+            started = time.monotonic()
+            original_callback(status)
+            callback_events.append(dict(at=started, duration_ms=(time.monotonic() - started) * 1000,
+                since_status_issued_ms=(started - status_events[-1]["at"]) * 1000 if status_events else None))
+            del callback_events[:-500]
+        app.state.control.on_status = record_callback
+
+    class SendTiming:
+        def __init__(self, app):
+            self.app = app
+        async def __call__(self, scope, receive, send):
+            async def record_send(message):
+                started = time.monotonic()
+                await send(message)
+                if message["type"] == "websocket.send":
+                    ws_send_events.append(dict(at=started, duration_ms=(time.monotonic() - started) * 1000))
+                    del ws_send_events[:-500]
+            await self.app(scope, receive, record_send if scope["type"] == "websocket"
+                           and scope.get("path") == "/ws/control" else send)
+    app.add_middleware(SendTiming)
+
+    async def monitor_loop():
+        previous = time.monotonic()
+        while True:
+            await asyncio.sleep(.01)
+            now = time.monotonic()
+            lag = (now - previous - .01) * 1000
+            if lag >= 5:
+                loop_lags.append(dict(at=now, lag_ms=lag))
+                del loop_lags[:-100]
+            previous = now
 
     async def feed_rgb():
         # A moving textured synthetic scene stresses the real encoder more than
@@ -91,12 +153,15 @@ def fixture_app(source):
     async def lifespan(app):
         async with original_lifespan(app):
             producer = asyncio.create_task(feed_rgb()) if source == "rgb15" else None
+            monitor = asyncio.create_task(monitor_loop())
             try:
                 yield
             finally:
                 if producer:
                     producer.cancel()
                     await asyncio.gather(producer, return_exceptions=True)
+                monitor.cancel()
+                await asyncio.gather(monitor, return_exceptions=True)
 
     app.router.lifespan_context = lifespan
 
@@ -111,7 +176,10 @@ def fixture_app(source):
         process = app.state.video.process
         return dict(simulated=True, source=source, encoder_pid=process.pid if process else None,
                     encoder_alive=bool(process and process.returncode is None),
-                    video_ready=app.state.video.ready, stop_events=stop_events.copy())
+                    video_ready=app.state.video.ready, stop_events=stop_events.copy(),
+                    command_events=command_events.copy(), status_events=status_events.copy(),
+                    first_failure=first_failure, callback_events=callback_events.copy(),
+                    ws_send_events=ws_send_events.copy(), loop_lags=loop_lags.copy())
 
     @app.post("/__qualification/kill-encoder")
     async def kill_encoder(request: Request):
@@ -294,8 +362,16 @@ class VideoClient:
 
 
 class Controller:
-    def __init__(self, rig, video):
+    def __init__(self, rig, video, command_hz=20, send_on_status=False):
+        if (type(command_hz) not in (int, float) or not math.isfinite(command_hz)
+                or not 1 <= command_hz <= 100 or type(send_on_status) is not bool):
+            raise ValueError("Fixture command cadence must be 1..100 Hz; status trigger must be boolean")
         self.rig, self.video = rig, video
+        self.command_hz, self.send_on_status = command_hz, send_on_status
+        self.send_lock = asyncio.Lock()
+        self.last_send_at = self.status_at = None
+        self.status_cadences, self.send_context = [], []
+        self.loop_lags = []
         self.status = {}
         self.armed = False
         self.held = False
@@ -303,6 +379,7 @@ class Controller:
         self.sent, self.acks, self.cadences = {}, [], []
         self.reasons = set()
         self.invalidations = []
+        self.first_invalidation_sends = None
         self.tasks = []
         self.client = self.ws = None
         self.stopping = False
@@ -315,12 +392,28 @@ class Controller:
         self.status = await asyncio.wait_for(self.ws.receive_json(), 3)
         if not self.status.get("simulated"):
             raise RuntimeError("Controller fixture refuses physical motors")
-        self.tasks = [asyncio.create_task(self.receive()), asyncio.create_task(self.send())]
+        self.tasks = [asyncio.create_task(self.receive()), asyncio.create_task(self.send()),
+                      asyncio.create_task(self.monitor_loop())]
+
+    async def monitor_loop(self):
+        previous = time.monotonic()
+        while True:
+            await asyncio.sleep(.01)
+            now = time.monotonic()
+            lag = (now - previous - .01) * 1000
+            if lag >= 5:
+                self.loop_lags.append(dict(at=now, lag_ms=lag))
+                del self.loop_lags[:-100]
+            previous = now
 
     async def receive(self):
         try:
             while not self.stopping:
                 status = await self.ws.receive_json()
+                received = time.monotonic()
+                if self.status_at is not None:
+                    self.status_cadences.append((received - self.status_at) * 1000)
+                self.status_at = received
                 self.status = status
                 seq = status.get("seq")
                 self.reasons.add(status.get("reason"))
@@ -328,44 +421,53 @@ class Controller:
                     self.acks.append((time.monotonic() - self.sent.pop(seq)) * 1000)
                 if status.get("requires_release") and self.held:
                     if self.armed:
+                        self.first_invalidation_sends = self.send_context[-30:].copy()
                         self.invalidations.append(dict(kind="server_release_required", reason=status.get("reason"),
                                                        video_age_ms=self.video.current_age()
                                                        if math.isfinite(self.video.current_age()) else None,
                                                        seq=status.get("seq")))
                     self.armed = False
-        except (aiohttp.ClientError, TypeError, ValueError) as exc:
+                if self.send_on_status and self.held and self.armed:
+                    await self.send_command("new_status")
+        except (aiohttp.ClientError, TypeError, ValueError, asyncio.TimeoutError) as exc:
             if not self.stopping:
                 self.errors.append(type(exc).__name__)
             self.armed = False
 
+    async def send_command(self, trigger):
+        async with self.send_lock:
+            now = time.monotonic()
+            age = self.video.current_age()
+            fresh = age <= 500
+            if not fresh:
+                if self.armed:
+                    self.first_invalidation_sends = self.send_context[-30:].copy()
+                    self.invalidations.append(dict(kind="view_stale", video_age_ms=age if math.isfinite(age) else None,
+                                                   arrival_age_ms=self.video.age))
+                self.armed = False
+            active = bool(self.held and self.armed and fresh)
+            command = dict(session_id=self.status["session_id"], seq=self.seq, permit=self.status.get("permit"),
+                deadman=active, v=.5 if active else 0, w=0, pan=0, mode="teleop", video_fresh=fresh,
+                video_age_ms=round(age) if fresh else 999999)
+            self.send_context.append(dict(at=now, seq=self.seq, trigger=trigger, active=active,
+                status_age_ms=(now - self.status_at) * 1000 if self.status_at is not None else None))
+            del self.send_context[:-500]
+            self.sent[self.seq] = now
+            self.seq += 1
+            if len(self.sent) > 100:
+                del self.sent[min(self.sent)]
+            await asyncio.wait_for(self.ws.send_json(command), .1)
+            if self.last_send_at is not None:
+                self.cadences.append((now - self.last_send_at) * 1000)
+            self.last_send_at = now
+
     async def send(self):
-        previous = None
         try:
             while not self.stopping:
                 now = time.monotonic()
-                age = self.video.current_age()
-                fresh = age <= 500
-                if not fresh:
-                    if self.armed:
-                        self.invalidations.append(dict(kind="view_stale", video_age_ms=age,
-                                                       arrival_age_ms=self.video.age))
-                        if not math.isfinite(age):
-                            self.invalidations[-1]["video_age_ms"] = None
-                    self.armed = False
-                active = bool(self.held and self.armed and fresh)
-                command = dict(session_id=self.status["session_id"], seq=self.seq, permit=self.status.get("permit"),
-                    deadman=active, v=.5 if active else 0, w=0, pan=0, mode="teleop", video_fresh=fresh,
-                    video_age_ms=round(age) if fresh else 999999)
-                self.sent[self.seq] = now
-                self.seq += 1
-                if len(self.sent) > 100:
-                    del self.sent[min(self.sent)]
-                await self.ws.send_json(command)
-                if previous is not None:
-                    self.cadences.append((now - previous) * 1000)
-                previous = now
-                await asyncio.sleep(max(0, .05 - (time.monotonic() - now)))
-        except (aiohttp.ClientError, KeyError) as exc:
+                await self.send_command("periodic")
+                await asyncio.sleep(max(0, 1 / self.command_hz - (time.monotonic() - now)))
+        except (aiohttp.ClientError, KeyError, asyncio.TimeoutError) as exc:
             if not self.stopping:
                 self.errors.append(type(exc).__name__)
 
@@ -402,9 +504,9 @@ async def wait_until(predicate, timeout=5):
     raise RuntimeError("Qualification condition timed out")
 
 
-async def motion_trial(rig, duration=8, fault=None, window=2):
+async def motion_trial(rig, duration=8, fault=None, window=2, command_hz=20, send_on_status=False):
     video = VideoClient(rig.url, window=window)
-    controller = Controller(rig, video)
+    controller = Controller(rig, video, command_hz=command_hz, send_on_status=send_on_status)
     samples, stopped_ms, before_pid, after_pid = [], None, None, None
     started = fault_at = None
     try:
@@ -438,7 +540,8 @@ async def motion_trial(rig, duration=8, fault=None, window=2):
             if fault_at and stopped_ms is None and not moving:
                 stopped_ms = (time.monotonic() - fault_at) * 1000
             await asyncio.sleep(.04)
-        result = dict(source=rig.source, seconds=duration, request_window=window, samples=len(samples),
+        result = dict(source=rig.source, seconds=duration, request_window=window, command_hz=command_hz,
+            send_on_status=send_on_status, samples=len(samples),
             moving_samples=sum(value[1] for value in samples),
             stable_moving_fraction=sum(value[1] for value in samples if value[0] >= 1)
                 / max(1, sum(value[0] >= 1 for value in samples)),
@@ -453,11 +556,43 @@ async def motion_trial(rig, duration=8, fault=None, window=2):
             fragment_payload_max_bytes=max(video.payload_sizes) if video.payload_sizes else None,
             control_ack_p95_ms=percentile(controller.acks, .95),
             command_cadence_p95_ms=percentile(controller.cadences, .95),
+            command_cadence_max_ms=max(controller.cadences) if controller.cadences else None,
+            status_arrival_cadence_p95_ms=percentile(controller.status_cadences, .95),
+            status_arrival_cadence_max_ms=max(controller.status_cadences) if controller.status_cadences else None,
             reasons=sorted(value for value in controller.reasons if value),
             invalidations=controller.invalidations.copy(),
             video_errors=video.errors.copy(), control_errors=controller.errors.copy(),
             fault=fault, fault_to_observed_simulated_stop_ms=stopped_ms)
-        result["backend_stop_events"] = (await rig.fixture_status())["stop_events"]
+        backend = await rig.fixture_status()
+        result["backend_stop_events"] = backend["stop_events"]
+        result["first_backend_failure"] = backend["first_failure"]
+        commands, statuses = backend["command_events"], backend["status_events"]
+        result["server_command_cadence_p95_ms"] = percentile([(b["at"] - a["at"]) * 1000
+                                                              for a, b in zip(commands, commands[1:])], .95)
+        result["server_status_cadence_p95_ms"] = percentile([(b["at"] - a["at"]) * 1000
+                                                             for a, b in zip(statuses, statuses[1:])], .95)
+        result["accepted_permit_age_p95_ms"] = percentile([entry["permit_age_ms"] for entry in commands
+                                                           if entry["accepted"] and entry["permit_age_ms"] is not None], .95)
+        result["status_callback_duration_p95_ms"] = percentile([entry["duration_ms"]
+                                                                for entry in backend["callback_events"]], .95)
+        result["status_callback_start_delay_p95_ms"] = percentile([entry["since_status_issued_ms"]
+                                                                   for entry in backend["callback_events"]], .95)
+        result["control_ws_send_duration_p95_ms"] = percentile([entry["duration_ms"]
+                                                                for entry in backend["ws_send_events"]], .95)
+        result["server_event_loop_lag_max_ms"] = max((entry["lag_ms"] for entry in backend["loop_lags"]), default=0)
+        result["client_event_loop_lag_max_ms"] = max((entry["lag_ms"] for entry in controller.loop_lags), default=0)
+        if result["first_backend_failure"]:
+            failure = result["first_backend_failure"]
+            event_at = failure["at"]
+            result["first_failure_context"] = dict(
+                server_commands=[entry for entry in commands if abs(entry["at"] - event_at) <= .2],
+                server_statuses=[entry for entry in statuses if abs(entry["at"] - event_at) <= .2],
+                client_sends=[entry for entry in (controller.first_invalidation_sends or controller.send_context)
+                              if abs(entry["at"] - event_at) <= .2],
+                server_callbacks=[entry for entry in backend["callback_events"] if abs(entry["at"] - event_at) <= .2],
+                server_ws_sends=[entry for entry in backend["ws_send_events"] if abs(entry["at"] - event_at) <= .2],
+                server_loop_lags=[entry for entry in backend["loop_lags"] if abs(entry["at"] - event_at) <= .3],
+                client_loop_lags=[entry for entry in controller.loop_lags if abs(entry["at"] - event_at) <= .3])
         if fault == "encoder":
             old_video = video
             await old_video.close()
@@ -520,6 +655,27 @@ async def run_report(output=None):
     return results
 
 
+async def compare_cadence(output=None, duration=20, repeats=1, policies=None):
+    report = dict(hardware_verified=False, production_changed=False,
+        condition=dict(delay_each_direction_ms=50, aggregate_mbps=2, encoder_bitrate=500000,
+                       encoder_fps=10, video_request_window=2, control_expiry_ms=250, view_guard_ms=500),
+        duration_s=duration, trials=[])
+    choices = (("periodic20", 20, False), ("periodic40", 40, False), ("periodic20_plus_status", 20, True))
+    selected = [choice for choice in choices if policies is None or choice[0] in policies]
+    for repeat in range(repeats):
+        for label, rate, immediate in selected:
+            async with Rig("rgb15") as rig:
+                trial = await motion_trial(rig, duration=duration, command_hz=rate, send_on_status=immediate)
+                trial.update(label=label, repeat=repeat + 1)
+                report["trials"].append(trial)
+                print(f"Recorded {label} repeat {repeat + 1}: "
+                      f"stable={trial['stable_moving_fraction']:.3f}, "
+                      f"first_failure={trial['first_backend_failure']}", file=sys.stderr, flush=True)
+                if output:
+                    output.write_text(json.dumps(report, indent=2) + "\n")
+    return report
+
+
 @unittest.skipUnless(shutil.which("ffmpeg"), "Actual H264 qualification requires ffmpeg")
 class QualificationTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -566,11 +722,71 @@ class QualificationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual((stopped["left_pwm"], stopped["right_pwm"]), (0, 0))
 
 
+class ControllerPolicyTests(unittest.IsolatedAsyncioTestCase):
+    def controller(self, age=100, immediate=False):
+        video = type("Video", (), {"age": age, "current_age": lambda self: self.age})()
+        controller = Controller(type("Rig", (), {"url": "http://localhost"})(), video,
+                                send_on_status=immediate)
+        controller.status = dict(session_id="SIMULATED", permit="test-only", requires_release=False)
+        controller.held = controller.armed = True
+        class Socket:
+            def __init__(self):
+                self.commands = []
+                self.messages = asyncio.Queue()
+            async def send_json(self, command):
+                await asyncio.sleep(0)
+                self.commands.append(command)
+            async def receive_json(self):
+                return await self.messages.get()
+            async def close(self):
+                pass
+        controller.ws = Socket()
+        return controller
+
+    async def test_periodic_and_status_sends_have_unique_ordered_sequences(self):
+        controller = self.controller()
+        await asyncio.gather(controller.send_command("periodic"), controller.send_command("new_status"))
+        self.assertEqual([command["seq"] for command in controller.ws.commands], [0, 1])
+        self.assertTrue(all(command["deadman"] for command in controller.ws.commands))
+
+    async def test_status_trigger_preserves_stale_view_latch(self):
+        controller = self.controller(age=501, immediate=True)
+        await controller.send_command("new_status")
+        self.assertFalse(controller.armed)
+        self.assertFalse(controller.ws.commands[-1]["deadman"])
+        controller.video.age = 100
+        await controller.send_command("periodic")
+        self.assertFalse(controller.ws.commands[-1]["deadman"], "A fresh view cannot rearm a held deadman")
+
+    async def test_new_status_sends_current_permit_without_queueing_old_state(self):
+        controller = self.controller(immediate=True)
+        receiving = asyncio.create_task(controller.receive())
+        await controller.ws.messages.put(dict(session_id="SIMULATED", permit="fresh", requires_release=False, seq=-1))
+        await wait_until(lambda: bool(controller.ws.commands))
+        self.assertEqual(controller.ws.commands[0]["permit"], "fresh")
+        await controller.ws.messages.put(dict(session_id="SIMULATED", permit="next", requires_release=True,
+                                             reason="lease_expired", seq=0))
+        await wait_until(lambda: not controller.armed)
+        self.assertEqual(len(controller.ws.commands), 1)
+        receiving.cancel()
+        await asyncio.gather(receiving, return_exceptions=True)
+
+    def test_invalid_fixture_cadence_is_rejected(self):
+        for cadence in (0, 101, float("nan"), True):
+            with self.assertRaises(ValueError):
+                Controller(None, None, command_hz=cadence)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--serve-fixture", choices=("rgb15", "map5"))
     parser.add_argument("--port", type=int)
     parser.add_argument("--report", type=Path)
+    parser.add_argument("--compare-cadence", action="store_true", help="Compare fixture-only command policies")
+    parser.add_argument("--duration", type=int, default=20, help="Seconds of held motion per cadence trial")
+    parser.add_argument("--repeats", type=int, default=1)
+    parser.add_argument("--policies", nargs="+", choices=("periodic20", "periodic40", "periodic20_plus_status"),
+                        help="Subset of fixture cadence policies to compare")
     args = parser.parse_args()
     if args.serve_fixture:
         if not args.port:
@@ -579,7 +795,10 @@ def main():
         uvicorn.run(fixture_app(args.serve_fixture), host="127.0.0.1", port=args.port,
                     access_log=False, log_level="warning", timeout_graceful_shutdown=2)
     else:
-        result = asyncio.run(run_report(args.report))
+        if not 2 <= args.duration <= 300 or not 1 <= args.repeats <= 10:
+            parser.error("Duration must be 2..300 seconds and repeats 1..10")
+        result = asyncio.run(compare_cadence(args.report, args.duration, args.repeats, args.policies)
+                            if args.compare_cadence else run_report(args.report))
         text = json.dumps(result, indent=2)
         print(text)
         if args.report:

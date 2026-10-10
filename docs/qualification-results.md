@@ -105,6 +105,57 @@ independent physical Jetson lease and Uno watchdog timing. The slow map source
 remains an explicit failed continuous-drive case; a real 15 fps camera source
 must be validated separately.
 
+## Residual lease-gap investigation
+
+The final quiet eight-second run after the original handoff still had a late
+lease stop: 98.18% of settled motion samples moved, with zero stale-view samples,
+arrival age p95 318 ms, and held view peak 443 ms. A subsequent valid command
+arrived after the old permit's deadline, so the server correctly required a new
+release. This was not evidence that the link had become generally qualified.
+
+The fixture client now supports three experimental policies without changing
+production code: periodic 20 Hz, periodic 40 Hz, and periodic 20 Hz plus an
+immediate serialized command when a new status/permit arrives. Every policy
+keeps the 250 ms expiry, 500 ms view guard, two-fragment video window, and release
+latch. The extra send uses the current input and current permit, with a bounded
+send deadline; it does not queue old commands or rearm a held deadman.
+
+Reproduce the repeated comparison:
+
+```sh
+python -m tools.tests.test_demo_qualification --compare-cadence --duration 20 --repeats 2 --policies periodic20 periodic20_plus_status --report /tmp/farsight-cadence.json
+```
+
+Four twenty-second repeats on the same 100 ms RTT / shared 2 Mbps profile:
+
+| Fixture policy | Repeat | Settled moving samples | First cause / observed scheduling |
+|---|---:|---:|---|
+| Periodic 20 Hz | 1 | 45.6% | Lease expired; server loop lag up to 49 ms and client loop lag up to 62 ms |
+| 20 Hz plus status-triggered send | 1 | 100% | No invalidation; server lag maximum 5 ms, client monitor recorded no lag above 5 ms |
+| Periodic 20 Hz | 2 | 48.2% | Lease expired during a 360 ms server pause and 236 ms client pause |
+| 20 Hz plus status-triggered send | 2 | 95.3% | View guard stopped after a 113 ms client pause; no first backend lease failure |
+
+The first periodic failure's last accepted command carried a 170.6 ms old permit,
+leaving 79.4 ms before expiry. The next command reached the server 162 ms later.
+Near that failure, permit publication gaps reached 98 ms, received-status gaps
+reached 166 ms, and client command gaps reached 94 ms. The trace retained the
+actual issued/expiry times, accepted and rejected commands, and client send
+context around the first failure rather than relying only on final fractions.
+
+ASGI control WebSocket send duration p95 was about 0.05–0.07 ms. No mission
+recording callback was configured in this fixture, so these failures cannot be
+attributed to recording overhead. Measured event-loop scheduling pauses explain
+the publication and command gaps. An earlier 40 Hz trial also stopped during a
+139 ms command gap / 158 ms status gap, so increased periodic traffic alone did
+not prevent a process stall.
+
+The policies experienced different uncontrolled host pauses. Their fractions
+therefore do not prove that the status-triggered policy is superior, and no
+production policy change follows from this comparison. A controlled paired
+delay/stall experiment or the actual hardware rehearsal is needed to isolate any
+benefit. Four fixture-policy unit tests verify sequence serialization, newest
+permit use, cadence validation, and unchanged stale-view/release behavior.
+
 The report's fault trials require motion to be active immediately before fault
 injection. A trial that has already stopped cannot claim a measured fault-stop
 latency. Recovery checks require a changed real FFmpeg PID, newly received MP4
