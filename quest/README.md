@@ -168,6 +168,14 @@ Manual right-stick driving and the stick's virtual locomotion are unchanged.
   stays world-locked as the head turns. Without an echo it is head-locked. Its
   size matches the renderer's vertical FOV (50°, or the echoed `fov_y_deg`).
   It is labelled `MAC RENDER · FLAT`. It is not stereo.
+- **Stereo (`?macview=1&stereo=1`, stretch).** Asks `/ws/macview?layout=sbs-left-right`
+  for packed side-by-side pairs. Each half is a quad seen by only its XR eye
+  (three.js layers 1 and 2) with UVs cropped to that half, placed where that eye
+  was when the pair was requested and sized to cover that eye's exact
+  (asymmetric) frustum at 3 m. Eye poses come from the frame's `XRViewerPose`
+  views. Labelled `MAC RENDER · STEREO`. A segment without `stereo`/`layout`
+  stays flat; one that claims stereo with a bad layout or eye size is not shown
+  and lets the local map return. Without `stereo=1` nothing changes.
 - **Fallback.** While Mac frames are fresh (under 1 s old), the local map
   geometry (points, mesh, scan markers) is hidden and its `/ws/map` transfers
   pause. People markers and nav goals stay drawn over the picture. When frames

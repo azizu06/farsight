@@ -7,8 +7,8 @@ import * as THREE from "three";
 import { MapWalk } from "../src/map-walk.js";
 import * as macPose from "../src/mac-auto-pose.js";
 import {
-  MAC_STALE_MS, PoseRing, frameSeenAt, macPresenting, macViewEnabled, mapPoint, mapPoseMessage, mapQuaternion, pictureSize,
-  projectionFovY, shouldSendPose, worldPoint,
+  MAC_STALE_MS, PoseRing, frameSeenAt, frustumRect, macPresenting, macStereoEnabled, macViewEnabled, mapPoint, mapPoseMessage,
+  mapQuaternion, pictureSize, projectionFovY, segmentKind, shouldSendPose, viewerEyes, worldPoint,
 } from "../src/mac-auto-pose.js";
 
 const close = (actual, expected, label) => actual.forEach((value, i) => assert.ok(Math.abs(value - expected[i]) < 1e-9, `${label}[${i}] ${value} vs ${expected[i]}`));
@@ -124,10 +124,11 @@ function presentation() {
   const context = { clearRect() {}, beginPath() {}, roundRect() {}, fill() {}, fillText() {} };
   Object.assign(view, {
     active: true, viewer: { update() {}, displayedFrame: null, video: { videoWidth: 640, videoHeight: 360 } },
-    renderer: { xr: { getCamera: () => camera } }, poseSocket: null,
+    renderer: { xr: { getCamera: () => camera, getReferenceSpace: () => null } }, poseSocket: null,
     head: { position: new THREE.Vector3(), quaternion: new THREE.Quaternion() }, offset: new THREE.Vector3(),
     lastFrameAt: -Infinity, lastFrameId: null, ring: new PoseRing(),
     picture: new THREE.Object3D(), label: new THREE.Object3D(), group: new THREE.Group(),
+    eyeQuads: [new THREE.Object3D(), new THREE.Object3D()], stereoShown: false,
     labelCanvas: { getContext: () => context }, labelTexture: {}, labelText: "",
   });
   const show = (now, id, age) => {
@@ -181,4 +182,57 @@ test("Mac view is opt-in and never owns rover control", () => {
   assert.doesNotMatch(code, /ws\/control/);
   const sockets = code.match(/new WebSocket\([^)]*\)/g);
   assert.deepEqual(sockets, ["new WebSocket(socketUrl(location.origin, MACVIEW_POSE_PATH)"], "only the pose socket; video goes through H264Viewer");
+});
+
+const stereoMeta = { stereo: true, layout: "sbs-left-right", eye_width: 960, eye_height: 1080 };
+
+test("stereo is a separate opt-in on top of the Mac view and asks the renderer for packed pairs", () => {
+  assert.equal(macStereoEnabled("?macview=1"), false);
+  assert.equal(macStereoEnabled("?macview=1&stereo=1"), true);
+  const source = readFileSync(new URL("../src/mac-auto.ts", import.meta.url), "utf8");
+  assert.match(source, /stereo \? `\$\{MACVIEW_PATH\}\?layout=\$\{STEREO_LAYOUT\}` : MACVIEW_PATH/);
+  const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+  assert.match(main, /new MacAutoView\([^\n]*macStereoEnabled\(location\.search\)\)/);
+});
+
+test("segments are flat, a valid side-by-side pair, or invalid; invalid stereo never shows as mono", () => {
+  assert.equal(segmentKind(null), "flat");
+  assert.equal(segmentKind({ pose: {} }), "flat");
+  assert.equal(segmentKind(stereoMeta), "stereo");
+  assert.equal(segmentKind({ ...stereoMeta, layout: "top-bottom" }), "invalid");
+  assert.equal(segmentKind({ ...stereoMeta, eye_width: 0 }), "invalid");
+  assert.equal(segmentKind({ ...stereoMeta, stereo: false }), "invalid");
+  assert.equal(segmentKind({ layout: "sbs-left-right" }), "invalid");
+});
+
+test("an eye quad covers exactly that eye's frustum at the picture distance, asymmetric included", () => {
+  const symmetric = new THREE.PerspectiveCamera(90, 1, 0.1, 100).projectionMatrix.elements;
+  const rect = frustumRect(symmetric, 3);
+  close([rect.cx, rect.cy, rect.width, rect.height], [0, 0, 6, 6], "symmetric");
+  // Off-axis frustum, like each Quest eye.
+  const [left, right, top, bottom, near] = [-0.9, 0.5, 0.8, -0.95, 0.1];
+  const asymmetric = new THREE.Matrix4().makePerspective(left * near, right * near, top * near, bottom * near, near, 100).elements;
+  const skewed = frustumRect(asymmetric, 3);
+  close([skewed.cx - skewed.width / 2, skewed.cx + skewed.width / 2], [3 * left, 3 * right], "horizontal edges");
+  close([skewed.cy - skewed.height / 2, skewed.cy + skewed.height / 2], [3 * bottom, 3 * top], "vertical edges");
+  assert.equal(frustumRect([], 3), null);
+  assert.equal(frustumRect(new Array(16).fill(NaN), 3), null);
+});
+
+test("eye poses come from the XRFrame views, ordered and labelled, or not at all", () => {
+  const view = (eye, x) => ({
+    eye, projectionMatrix: Float32Array.from({ length: 16 }, (_, i) => i === 0 ? 1.2 : i === 5 ? 1.1 : 0),
+    transform: { position: { x, y: 1.6, z: 0 }, orientation: { x: 0, y: 0, z: 0, w: 1 } },
+  });
+  const eyes = viewerEyes([view("right", 0.032), view("left", -0.032)]);
+  assert.deepEqual(eyes.map(eye => eye.eye), ["left", "right"]);
+  assert.deepEqual(eyes[0].position, [-0.032, 1.6, 0]);
+  assert.equal(eyes[1].projection.length, 16);
+  assert.deepEqual(viewerEyes([view("none", 0)]), []);
+  assert.deepEqual(viewerEyes(undefined), []);
+  const message = mapPoseMessage({
+    id: 7, mono: 1, wall: 2, walk: new MapWalk(), head: { position: [0, 1.6, 0], quaternion: [0, 0, 0, 1] }, ray: null,
+    eyes, session: "s", mapRevision: 1, aspect: 16 / 9,
+  });
+  assert.deepEqual(message.eyes.map(eye => eye.eye), ["left", "right"]);
 });

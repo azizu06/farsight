@@ -46,6 +46,45 @@ export function summary(values) {
   const at = quantile => sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(quantile * sorted.length))] : null;
   return { count: sorted.length, p50: at(.5), p95: at(.95), maximum: sorted.at(-1) ?? null };
 }
+export function frameIdentityCounts(samples) {
+  const mediaTimes = samples.map(sample => sample.mediaTime).filter(Number.isFinite);
+  const frameCounts = samples.map(sample => sample.presentedFrames).filter(Number.isFinite);
+  return { uniqueMediaTimeCount: new Set(mediaTimes).size, uniquePresentedFramesCount: new Set(frameCounts).size,
+    mediaTimeSamples: mediaTimes.length, presentedFramesSamples: frameCounts.length,
+    scope: 'Unique observed rVFC value counts; not XR FPS or optically displayed frames.' };
+}
+export function pixelSummary(observation) {
+  if (observation.state !== 'readable') return observation;
+  const { pixels, ...result } = observation;
+  let nonblack = 0, sum = 0, squares = 0, minimum = Infinity, maximum = 0;
+  for (let index = 0; index < pixels.length; index += 4) {
+    const [red, green, blue] = pixels.slice(index, index + 3);
+    if (Math.max(red, green, blue) > 3) nonblack++;
+    const luminance = .2126 * red + .7152 * green + .0722 * blue;
+    sum += luminance; squares += luminance * luminance;
+    minimum = Math.min(minimum, luminance); maximum = Math.max(maximum, luminance);
+  }
+  const count = pixels.length / 4, mean = sum / count;
+  return { ...result, pixelCount: count, nonblackPixels: nonblack, nonblackFraction: nonblack / count,
+    blackChannelThreshold: 3, luminance: { minimum, maximum, mean, standardDeviation: Math.sqrt(Math.max(0, squares / count - mean * mean)) },
+    blackFrameObserved: nonblack === 0 };
+}
+export function videoPixelRead() {
+  const scope = 'One end-of-sample 64x36 decoded-video read, excluding page HUD; blackness does not prove room fidelity or generic-scene failure. This readback can stall the page and increase the later final-age snapshot.';
+  const started = performance.now();
+  try {
+    const video = window.__farsightMacviewQualification?.video;
+    if (!video || video.readyState < 2 || !video.videoWidth || !video.videoHeight)
+      return { state: 'unknown', scope, reason: 'No readable decoded video frame' };
+    const canvas = document.createElement('canvas'); canvas.width = 64; canvas.height = 36;
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    if (!context) return { state: 'unknown', scope, reason: 'No 2D pixel-read context' };
+    context.drawImage(video, 0, 0, 64, 36);
+    const pixels = Array.from(context.getImageData(0, 0, 64, 36).data), ended = performance.now();
+    return { state: 'readable', scope, width: 64, height: 36, videoWidth: video.videoWidth, videoHeight: video.videoHeight,
+      mediaTime: video.currentTime, readStartedNow: started, readNow: ended, readElapsedMs: ended - started, pixels };
+  } catch (error) { return { state: 'unknown', scope, reason: `${error.name}: ${error.message}`, readElapsedMs: performance.now() - started }; }
+}
 export function failures(report, minFps) {
   const errors = [...report.errors];
   const video = report.video;
@@ -115,7 +154,8 @@ export async function qualify(config) {
     stream: { urls: [], init: null, segments: 0, sources: [], stereoClaims: [], binaryBytes: 0, lastSegment: null } };
   const sentPoses = new Map();
   const sidecarGaps = []; let lastSidecarAt = null;
-  const timingSamples = Object.fromEntries(['age_ms', 'pose_to_frame_ms', 'render_ms', 'capture_ms', 'encode_ms'].map(key => [key, []]));
+  const timingSamples = Object.fromEntries(['age_ms', 'pose_to_frame_ms', 'render_ms', 'capture_ms', 'encode_ms',
+    'encode_pipeline_ms', 'capture_eval_ms', 'jpeg_decode_ms', 'feed_wait_ms', 'server_wait_ms'].map(key => [key, []]));
   // This is the checker checkout, never proof of the remotely served page revision.
   try { report.checkerCheckoutHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fileURLToPath(new URL('..', import.meta.url)), encoding: 'utf8' }).trim(); } catch {}
   let browser, page, watchdog;
@@ -174,7 +214,8 @@ export async function qualify(config) {
           if (!report.stream.sources.includes(source) && report.stream.sources.length < 20) report.stream.sources.push(source);
           const stereo = packet.stereo ?? null;
           if (!report.stream.stereoClaims.includes(stereo)) report.stream.stereoClaims.push(stereo);
-          const snapshot = Object.fromEntries(['type', 'version', 'mime', 'width', 'height', 'fps', 'stereo', 'source', 'frame_id', 'age_ms', 'media_start_s', 'media_end_s', 'map', 'pose', 'fov_y_deg', 'aspect', 'encoder', 'pose_to_frame_ms', 'render_ms', 'capture_ms', 'encode_ms', 'timing_scope'].map(key => [key, packet[key] ?? null]));
+          const snapshot = Object.fromEntries(['type', 'version', 'mime', 'width', 'height', 'fps', 'stereo', 'source', 'frame_id', 'age_ms', 'media_start_s', 'media_end_s', 'map', 'pose', 'fov_y_deg', 'aspect', 'encoder',
+            'pose_to_frame_ms', 'render_ms', 'capture_ms', 'encode_ms', 'encode_pipeline_ms', 'capture_eval_ms', 'jpeg_decode_ms', 'feed_wait_ms', 'server_wait_ms', 'timing_scope'].map(key => [key, packet[key] ?? null]));
           if (packet.type === 'video_init') report.stream.init = snapshot;
           else {
             report.stream.segments++; report.stream.lastSegment = snapshot;
@@ -255,6 +296,8 @@ export async function qualify(config) {
       const before = await page.evaluate(videoSnapshot, true);
       await page.waitForTimeout(config.seconds * 1000);
       const after = await page.evaluate(videoSnapshot, false);
+      // One video-only read after the cadence window; no per-frame readback.
+      report.visualEvidence = pixelSummary(await page.evaluate(videoPixelRead));
       report.conditions.blockedSeekAttempts = await page.evaluate(() => window.__farsightMacviewQualification?.blockedSeekAttempts ?? 0);
       report.conditions.webglRenderer = await page.evaluate(() => {
         const gl = document.querySelector('canvas')?.getContext('webgl2');
@@ -263,8 +306,11 @@ export async function qualify(config) {
       });
       const elapsed = (after.now - before.now) / 1000;
       const intervals = after.samples.slice(1).map((sample, index) => sample.now - after.samples[index].now);
+      const identities = frameIdentityCounts(after.samples);
       report.video = { ...after, samples: undefined, bufferSamples: undefined, callbacks: after.samples.length, measurementSeconds: elapsed,
         frameTail: after.samples.slice(-10),
+        frameIdentityCounts: identities, uniqueMediaTimeHz: identities.uniqueMediaTimeCount / elapsed,
+        uniquePresentedFramesHz: identities.uniquePresentedFramesCount / elapsed,
         callbackHz: after.samples.length / elapsed, intervalMs: summary(intervals),
         seekingCount: after.seekingEvents.length, seekedCount: after.seekedEvents.length, bufferAheadSeconds: summary(after.bufferSamples.filter(sample => sample.bufferAhead !== null).map(sample => sample.bufferAhead)),
         bufferSeekingSamples: after.bufferSamples.filter(sample => sample.seeking).length, bufferSampleCount: after.bufferSamples.length,
@@ -292,6 +338,11 @@ export async function qualify(config) {
   report.performanceTarget = { evaluated: false, reason: 'No real-headset frame budget, stereo, or pose-to-photon target measured.' };
   report.stream.sidecarArrivalGapMs = summary(sidecarGaps);
   report.stream.sidecarTimingMs = Object.fromEntries(Object.entries(timingSamples).map(([key, values]) => [key, summary(values)]));
+  report.stream.timingFieldScopes = { encode_ms: 'fMP4 header parsing, not encoder latency',
+    encode_pipeline_ms: 'Producer capture timestamp through complete encoded fragment, producer monotonic clock',
+    capture_eval_ms: 'Browser capture evaluate turn', jpeg_decode_ms: 'Optional publisher field; absence remains unknown',
+    feed_wait_ms: 'ffmpeg stdin drain wait', server_wait_ms: 'Measured viewer fragment-availability wait' };
+  report.browserQualityScope = 'Raw getVideoPlaybackQuality counters; do not infer missed XR/optical frames or delivered-frame counts by subtraction.';
   report.stream.timingScope = 'Server-reported fragment sidecars across warmup, sampling and screenshot; not optical/headset latency.';
   report.finishedAt = new Date().toISOString();
   await writeFile(resolve(config.out, 'evidence.json'), JSON.stringify(report, null, 2) + '\n');

@@ -3,7 +3,7 @@ import { chooseMapTransfer, MAP_TRANSFER_INTERVAL_MS } from "./map-transfer.js";
 import { floorHeight, mapWalk } from "./map-walk.js";
 import { PersonMarkers } from "./person-markers.js";
 import { DenseMapView } from "./dense-map";
-import { macViewEnabled } from "./mac-auto-pose.js";
+import { macStereoEnabled, macViewEnabled } from "./mac-auto-pose.js";
 import { MacAutoView } from "./mac-auto";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
@@ -347,7 +347,7 @@ renderer.setAnimationLoop((_time, frame) => {
 });
 
 rover = new RoverExperience(renderer, scene, camera, () => view, setView);
-if (macViewEnabled(location.search)) macView = new MacAutoView(renderer, scene, () => appliedPoints >= 0 ? appliedPoints : null);
+if (macViewEnabled(location.search)) macView = new MacAutoView(renderer, scene, () => appliedPoints >= 0 ? appliedPoints : null, macStereoEnabled(location.search));
 root.add(rover.navLayer);
 diagnostics = new DiagnosticsOverlay(() => rover!.diagnostics());
 rover.addCockpitPanel(diagnostics.panel);

@@ -20,6 +20,7 @@ use tower_http::services::ServeDir;
 use crate::bonded::BondedControlHub;
 use crate::camera::CameraService;
 use crate::control::{ControlState, SerialPump};
+use crate::identity::IdentityService;
 use crate::mission::Mission;
 use crate::perception::PerceptionService;
 use crate::phone::{self, Hello};
@@ -68,6 +69,9 @@ pub struct AppState {
     pub sim: Option<Arc<crate::sim::SimFeed>>,
     /// The loaded sim world name for /health (`sim_world` key).
     pub sim_world: Option<String>,
+    /// Opt-in enrolled-face identity (jetson identity_service.py port);
+    /// created unconditionally like Python, silently disabled with no models.
+    pub identity: Arc<IdentityService>,
 }
 
 pub fn build_state(
@@ -118,6 +122,8 @@ pub fn build_state(
     visual_caps: (usize, usize),
     fusion_bypass: bool,
     demo_mode: bool,
+    // (yunet, sface, gallery) — IdentityService::from_environment inputs.
+    identity_config: (Option<String>, Option<String>, Option<String>),
 ) -> Arc<AppState> {
     // create_app validation order: sim-world, replay, simulated+serial,
     // nav2+replay, then pan mount.
@@ -348,6 +354,16 @@ pub fn build_state(
         )
         .expect("scan configuration"),
     );
+    // Python creates IdentityService.from_environment(camera) for every
+    // server flavor, replay included; start() is a no-op without models.
+    let (identity_yunet, identity_sface, identity_gallery) = identity_config;
+    let identity = Arc::new(IdentityService::new(
+        camera.clone(),
+        identity_yunet,
+        identity_sface,
+        identity_gallery,
+        3.0,
+    ));
     Arc::new(AppState {
         mapping,
         camera,
@@ -376,6 +392,7 @@ pub fn build_state(
         nav,
         sim,
         sim_world,
+        identity,
     })
 }
 
@@ -387,6 +404,7 @@ pub fn start_services(state: &Arc<AppState>) {
     state.video.clone().start();
     state.perception.clone().start();
     state.triage.clone().start();
+    state.identity.clone().start();
     {
         // sample_mission: read-only control telemetry at <=10 Hz; never
         // issues permits or commands. Replays sample the ReplayControl
@@ -1911,7 +1929,10 @@ pub fn router(state: Arc<AppState>, dist: Option<PathBuf>) -> Router {
         .route("/nav/goal", post(nav_goal))
         .route("/nav/cancel", post(nav_cancel))
         .route("/nav/status", get(nav_status))
-        .route("/ws/nav", get(ws_nav));
+        .route("/ws/nav", get(ws_nav))
+        // identity_router mounted unconditionally like the Python app
+        // (replay servers included — the service stays disabled w/o models).
+        .merge(crate::identity::router(state.identity.clone()));
     // Opt-in bonded upstream (experimental v1): only mounted with
     // --bonded-control; /ws/control keeps its single-owner behaviour.
     let app = if state.bonded.is_some() {
@@ -2040,6 +2061,7 @@ mod phone_lifecycle_tests {
             (0, 0),     // visual_caps: uncapped in tests
             false,      // fusion_bypass
             false,      // demo_mode
+            (None, None, None), // identity_config
         )
     }
 

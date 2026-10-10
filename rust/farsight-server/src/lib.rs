@@ -15,6 +15,9 @@ pub mod drive_profile;
 #[cfg(feature = "detector")]
 pub mod detector;
 pub mod geometry;
+pub mod identity;
+#[cfg(feature = "detector")]
+pub mod identity_onnx;
 pub mod mission;
 pub mod nav;
 pub mod pacer;
