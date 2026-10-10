@@ -49,12 +49,21 @@ pub struct Update {
     pub mesh: Option<ChunkMesh>,
 }
 
+/// Record payload compression. Flag bits 0-1 are an enum, not bit flags:
+/// 0=raw, 1=zlib-deflate, 2=iOS-native Brotli; 3 and any other flag bit
+/// are rejected (board-agreed after Codex adopted this header).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RecordCoding {
+    Raw,
+    Zlib,
+    Brotli,
+}
+
 /// Decode one v1 record. Layout (little-endian):
-///   u8 version | u8 op | u16 flags (bit0: deflate payload; bit1 reserved
-///   for iOS-native Brotli pending tools/qualify_geometry.py codec numbers)
+///   u8 version | u8 op | u16 flags (bits0-1: payload coding enum)
 ///   u64 seq | u64 epoch | 16B session | 16B anchor
 ///   f32 transform[16] | u32 vertex_count | u32 index_count
-///   payload: vertices f32 xyz | indices u32 (deflated when flag set)
+///   payload: vertices f32 xyz | indices u32 (compressed per flags)
 /// Padding is not allowed — trailing bytes make the record malformed.
 pub fn decode(packet: &[u8]) -> Result<Update, String> {
     const HEAD: usize = 1 + 1 + 2 + 8 + 8 + 16 + 16 + 16 * 4 + 4 + 4;
@@ -78,8 +87,13 @@ pub fn decode(packet: &[u8]) -> Result<Update, String> {
         other => return Err(format!("unknown geometry op {other}")),
     };
     let flags = u16::from_le_bytes(take(2).try_into().unwrap());
-    let compressed = flags & 1 != 0;
-    if flags & !1 != 0 {
+    let coding = match flags & 3 {
+        0 => RecordCoding::Raw,
+        1 => RecordCoding::Zlib,
+        2 => RecordCoding::Brotli,
+        _ => return Err(format!("unknown geometry payload coding in flags {flags:#x}")),
+    };
+    if flags & !3 != 0 {
         return Err(format!("unknown geometry flags {flags:#x}"));
     }
     let seq = u64::from_le_bytes(take(8).try_into().unwrap());
@@ -102,15 +116,24 @@ pub fn decode(packet: &[u8]) -> Result<Update, String> {
         return Err("non-replace op must carry an empty payload".into());
     }
     let payload = packet[off..].to_vec();
-    let payload = if compressed {
-        use std::io::Read;
-        let mut out = Vec::new();
-        flate2::read::ZlibDecoder::new(&payload[..])
-            .read_to_end(&mut out)
-            .map_err(|e| format!("deflate payload invalid: {e}"))?;
-        out
-    } else {
-        payload
+    let payload = match coding {
+        RecordCoding::Raw => payload,
+        RecordCoding::Zlib => {
+            use std::io::Read;
+            let mut out = Vec::new();
+            flate2::read::ZlibDecoder::new(&payload[..])
+                .read_to_end(&mut out)
+                .map_err(|e| format!("deflate payload invalid: {e}"))?;
+            out
+        }
+        RecordCoding::Brotli => {
+            use std::io::Read;
+            let mut out = Vec::new();
+            brotli::Decompressor::new(&payload[..], 4096)
+                .read_to_end(&mut out)
+                .map_err(|e| format!("brotli payload invalid: {e}"))?;
+            out
+        }
     };
     let want = vcount * 12 + icount * 4;
     if payload.len() != want {
@@ -147,7 +170,7 @@ pub fn decode(packet: &[u8]) -> Result<Update, String> {
 }
 
 /// Encode one v1 record (test + forwarder use; the phone is the real producer).
-pub fn encode(update: &Update, compress: bool) -> Vec<u8> {
+pub fn encode(update: &Update, coding: RecordCoding) -> Vec<u8> {
     let (vcount, icount) = update
         .mesh
         .as_ref()
@@ -166,13 +189,25 @@ pub fn encode(update: &Update, compress: bool) -> Vec<u8> {
             }
         }
     }
-    let payload = if compress {
-        use std::io::Write;
-        let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::new(1));
-        e.write_all(&payload).unwrap();
-        e.finish().unwrap()
-    } else {
-        payload
+    let payload = match coding {
+        RecordCoding::Raw => payload,
+        RecordCoding::Zlib => {
+            use std::io::Write;
+            let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::new(1));
+            e.write_all(&payload).unwrap();
+            e.finish().unwrap()
+        }
+        RecordCoding::Brotli => {
+            // Apple COMPRESSION_BROTLI encodes at fixed level 2; the decoder
+            // accepts any level, so match the phone's emitted profile.
+            let mut out = Vec::new();
+            {
+                let mut w = brotli::CompressorWriter::new(&mut out, 4096, 2, 22);
+                use std::io::Write;
+                w.write_all(&payload).unwrap();
+            }
+            out
+        }
     };
     let mut out = Vec::with_capacity(124 + payload.len());
     out.push(PROTOCOL_VERSION);
@@ -182,7 +217,7 @@ pub fn encode(update: &Update, compress: bool) -> Vec<u8> {
         Op::Reset => 2,
         Op::SnapshotEnd => 3,
     });
-    out.extend_from_slice(&(compress as u16).to_le_bytes());
+    out.extend_from_slice(&(match coding { RecordCoding::Raw => 0u16, RecordCoding::Zlib => 1, RecordCoding::Brotli => 2 }).to_le_bytes());
     out.extend_from_slice(&update.seq.to_le_bytes());
     out.extend_from_slice(&update.epoch.to_le_bytes());
     out.extend_from_slice(&update.session);
@@ -531,9 +566,9 @@ mod tests {
 
     #[test]
     fn record_roundtrip_plain_and_deflate() {
-        for compress in [false, true] {
+        for coding in [RecordCoding::Raw, RecordCoding::Zlib, RecordCoding::Brotli] {
             let u = upd(9, Op::Replace, Some(mesh(2)));
-            let bytes = encode(&u, compress);
+            let bytes = encode(&u, coding);
             let d = decode(&bytes).unwrap();
             assert_eq!((d.seq, d.epoch, d.op, d.anchor), (9, 3, Op::Replace, [1; 16]));
             let m = d.mesh.unwrap();
@@ -545,15 +580,21 @@ mod tests {
     fn decode_rejects_garbage_and_oversized() {
         assert!(decode(&[]).is_err());
         assert!(decode(&[0u8; 8]).is_err());
-        let mut bad = encode(&upd(1, Op::Replace, Some(mesh(1))), false);
+        let mut bad = encode(&upd(1, Op::Replace, Some(mesh(1))), RecordCoding::Raw);
         bad[0] = 99; // version
         assert!(decode(&bad).is_err());
-        let mut bad = encode(&upd(1, Op::Replace, Some(mesh(1))), false);
+        let mut bad = encode(&upd(1, Op::Replace, Some(mesh(1))), RecordCoding::Raw);
         bad[1] = 9; // op
         assert!(decode(&bad).is_err());
         assert!(decode(&vec![0u8; MAX_UPDATE_BYTES + 1]).is_err());
         // remove must not carry a payload
-        assert!(decode(&encode(&upd(1, Op::Remove, Some(mesh(1))), false)).is_err());
+        assert!(decode(&encode(&upd(1, Op::Remove, Some(mesh(1))), RecordCoding::Raw)).is_err());
+        // flags 1+2 together (enum value 3) and any higher bits reject
+        let mut bad = encode(&upd(1, Op::Replace, Some(mesh(1))), RecordCoding::Raw);
+        bad[2] = 3;
+        assert!(decode(&bad).is_err());
+        bad[2] = 4;
+        assert!(decode(&bad).is_err());
     }
 
     #[test]
