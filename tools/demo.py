@@ -47,14 +47,18 @@ def wait_http(url, process):
     raise RuntimeError(f"Server did not become ready: {url}")
 
 
-def quest_reverse(port, serial):
-    if not shutil.which("adb"):
+def quest_reverse(port, serial, adb="adb", timeout=15):
+    executable = shutil.which(adb)
+    if not executable:
         raise RuntimeError("Android Platform Tools missing: install adb before the Quest hardware check")
-    prefix = ["adb"] + (["-s", serial] if serial else [])
+    prefix = [executable] + (["-s", serial] if serial else [])
     # adb get-state fails helpfully for unauthorized/offline/multiple devices.
-    run(prefix + ["get-state"])
-    run(prefix + ["reverse", f"tcp:{port}", f"tcp:{port}"])
-    run(prefix + ["reverse", "--list"])
+    for command in (["get-state"], ["reverse", f"tcp:{port}", f"tcp:{port}"],
+                    ["reverse", "--list"]):
+        try:
+            subprocess.run(prefix + command, cwd=ROOT, check=True, timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError("ADB timed out; check the USB cable and approve debugging in the headset") from exc
 
 
 def main():
@@ -67,6 +71,7 @@ def main():
     parser.add_argument("--build", action="store_true", help="Build bundled Quest assets with installed npm dependencies")
     parser.add_argument("--h264", action="store_true", help="Enable CPU H.264 video in simulation (requires ffmpeg)")
     parser.add_argument("--quest", action="store_true", help="Configure the connected Quest ADB reverse tunnel")
+    parser.add_argument("--adb", default="adb", help="ADB executable or path (use Windows adb.exe from WSL)")
     parser.add_argument("--adb-serial", help="Select the Quest when multiple ADB devices are connected")
     parser.add_argument("--ca-file", help="CA PEM for private Jetson TLS")
     parser.add_argument("--bonded-upstream", help="Opt-in second route to the same Jetson; requires server --bonded-control, JPEG only")
@@ -121,8 +126,8 @@ def main():
                 raise RuntimeError("--h264 configures the local simulation; configure video on the remote Jetson separately")
             if not shutil.which("ffmpeg"):
                 raise RuntimeError("ffmpeg missing; install before enabling --h264")
-        if args.quest and not shutil.which("adb"):
-            raise RuntimeError("Android Platform Tools (adb) missing")
+        if args.quest and not shutil.which(args.adb):
+            raise RuntimeError(f"Android Platform Tools executable missing: {args.adb}")
         if args.check:
             print("Prerequisites ready. USB, cellular routing, TLS, and headset WebXR still require hardware checks.")
             return
@@ -152,7 +157,7 @@ def main():
         relay = start(command)
         wait_http(f"http://127.0.0.1:{args.port}/relay/health", relay)
         if args.quest:
-            quest_reverse(args.port, args.adb_serial)
+            quest_reverse(args.port, args.adb_serial, args.adb)
         print(f"Open http://localhost:{args.port} in Quest Browser" if args.quest
               else f"Open http://localhost:{args.port}; add --quest when the headset is connected", flush=True)
         print("Simulation: no physical motors" if args.simulate else f"Rover upstream: {upstream}", flush=True)
