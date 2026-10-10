@@ -47,6 +47,7 @@ pub fn build_state(
     simulate_rover: bool,
     detector: &str,
     detector_model: Option<String>,
+    face_model: Option<String>,
     h264: bool,
     mission_dir: Option<PathBuf>,
     max_pwm: i64,
@@ -70,6 +71,7 @@ pub fn build_state(
         detector,
         Some(Box::new(move |packet, frame| m.detect(packet, frame))),
         detector_model.as_deref(),
+        face_model.as_deref(),
     ));
     let cam = camera.clone();
     let perc = perception.clone();

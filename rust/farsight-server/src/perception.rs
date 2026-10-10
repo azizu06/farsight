@@ -33,6 +33,8 @@ pub struct PerceptionService {
     on_detection: Mutex<Option<Box<dyn Fn(&Value, &CameraFrame) + Send + Sync>>>,
     #[cfg(feature = "detector")]
     onnx: Mutex<Option<crate::detector::OnnxDetector>>,
+    #[cfg(feature = "detector")]
+    face: Mutex<Option<crate::detector::FaceDetector>>,
     inner: Mutex<Inner>,
     stop: AtomicBool,
 }
@@ -43,13 +45,14 @@ impl PerceptionService {
         mode: &str,
         on_detection: Option<Box<dyn Fn(&Value, &CameraFrame) + Send + Sync>>,
         model_path: Option<&str>,
+        face_model_path: Option<&str>,
     ) -> Self {
         #[cfg(not(feature = "detector"))]
-        let _ = model_path;
+        let _ = (model_path, face_model_path);
         #[cfg(feature = "detector")]
-        let onnx = if mode == "onnx" {
+        let onnx = if mode == "onnx" || mode == "pose" {
             match model_path {
-                Some(path) => crate::detector::OnnxDetector::new(path)
+                Some(path) => crate::detector::OnnxDetector::new(path, mode == "pose")
                     .map_err(|e| tracing::warn!("Detector unavailable: {e}"))
                     .ok(),
                 None => None,
@@ -57,6 +60,12 @@ impl PerceptionService {
         } else {
             None
         };
+        #[cfg(feature = "detector")]
+        let face = face_model_path.and_then(|p| {
+            crate::detector::FaceDetector::new(p)
+                .map_err(|e| tracing::warn!("Face detector unavailable: {e}"))
+                .ok()
+        });
         Self {
             camera,
             mode: mode.to_string(),
@@ -64,6 +73,8 @@ impl PerceptionService {
             on_detection: Mutex::new(on_detection),
             #[cfg(feature = "detector")]
             onnx: Mutex::new(onnx),
+            #[cfg(feature = "detector")]
+            face: Mutex::new(face),
             inner: Mutex::new(Inner {
                 packet: json!({"ts": 0, "frame": -1, "fps": 0, "boxes": [], "detector": "disabled", "source": "WAITING"}),
                 tracker: crate::tracker::Tracker::new(),
@@ -79,11 +90,24 @@ impl PerceptionService {
     /// `detector` feature + a model file for real inference).
     fn detect(&self, jpeg: &[u8]) -> Result<Vec<Value>, String> {
         #[cfg(feature = "detector")]
-        if let Some(det) = self.onnx.lock().unwrap().as_mut() {
-            return det.detect(jpeg);
+        {
+            let mut boxes = if let Some(det) = self.onnx.lock().unwrap().as_mut() {
+                det.detect(jpeg)?
+            } else {
+                Vec::new()
+            };
+            if let Some(face) = self.face.lock().unwrap().as_mut() {
+                if let Ok(faces) = face.detect(jpeg) {
+                    boxes.extend(faces);
+                }
+            }
+            return Ok(boxes);
         }
-        let _ = jpeg;
-        Ok(Vec::new())
+        #[allow(unreachable_code)]
+        {
+            let _ = jpeg;
+            Ok(Vec::new())
+        }
     }
 
     fn track(&self, boxes: &mut Vec<Value>, now: f64) {
