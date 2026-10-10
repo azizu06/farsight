@@ -49,7 +49,11 @@ export class ControlSafety {
     if (now - this.receivedAt >= Math.min(this.status.permit_ms, 200)) return "Waiting for fresh control permit";
     return null;
   }
-  decide(held, now, connected = true) {
+  decide(held, now, connected = true, inputAvailable = true) {
+    if (!inputAvailable) {
+      this.invalidate("Input or display inactive: release deadman");
+      return false;
+    }
     const unsafe = this.readiness(now, connected);
     if (unsafe) this.invalidate(unsafe);
     if (!held) this.needsRelease = false;

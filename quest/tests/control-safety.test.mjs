@@ -85,3 +85,18 @@ test("server release requirement overrides a locally fresh connection", () => {
   gate.decide(false, 140);
   assert.equal(gate.decide(true, 150), true);
 });
+
+test("inactive headset or unobserved input cannot invent a deadman release", () => {
+  for (const reportedHeld of [true, false]) {
+    const gate = ready();
+    assert.equal(gate.decide(true, 110), true);
+    // A hidden headset, absent controller, or frozen display may report false;
+    // that is unavailable input, rather than evidence of a physical release.
+    assert.equal(gate.decide(reportedHeld, 120, true, false), false);
+    gate.acceptStatus(status, 130);
+    gate.acceptFrame("2", 0, 130);
+    assert.equal(gate.decide(true, 131, true, true), false);
+    gate.decide(false, 140, true, true);
+    assert.equal(gate.decide(true, 150, true, true), true);
+  }
+});
