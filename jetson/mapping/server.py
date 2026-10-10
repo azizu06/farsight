@@ -106,9 +106,8 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
         status = await asyncio.to_thread(state.status)
         status.update(camera_service.status())
         rover = control.status()
+        status.update(perception.health())
         status.update(rover=rover["rover"], estop=rover["estop"], control=rover,
-                      detector=perception.mode, detector_error=perception.error,
-                      detector_fps=perception.snapshot()["fps"] if perception.snapshot()["fresh"] else 0,
                       video=dict(enabled=h264, ready=video_service.init is not None, error=video_service.error,
                                  fps=video_fps, bitrate=video_bitrate),
                       assistant=dict(vision_model=bool(assistant_url), whisper=bool(whisper_bin and whisper_model),
