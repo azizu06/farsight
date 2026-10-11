@@ -839,11 +839,21 @@ pub fn reconstruct(cloud: &PointCloud, opts: &SurfaceOptions) -> (Mesh, Stats) {
     let dens: Vec<f32> = cloud
         .pos
         .par_iter()
-        .map_init(Vec::new, |scratch, &p| {
+        .enumerate()
+        .map_init(Vec::new, |scratch, (si, &p)| {
             scratch.clear();
             grid.radius(p, dens_r, scratch);
-            let c = scratch.len() as f32 - 1.0;
-            (c / 8.0).clamp(0.0, 1.0)
+            // Count only *measured* neighbours: fill points halo a scattered
+            // noise point into looking supported, which lets its sign vote
+            // grow a membrane. A real surface sample sits inside a dense
+            // sheet of measured points; a stray has <~8.
+            let mut c = 0f32;
+            for &i in scratch.iter() {
+                if i as usize != si && cloud.flag(i as usize) & FLAG_INTERPOLATED == 0 {
+                    c += 1.0;
+                }
+            }
+            if c < 8.0 { 0.0 } else { (c / 24.0).clamp(0.0, 1.0) }
         })
         .collect();
     let nrm_fallback: Vec<V3>;
