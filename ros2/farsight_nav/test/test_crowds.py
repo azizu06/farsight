@@ -134,6 +134,15 @@ class CrowdTests(unittest.TestCase):
         self.assertTrue(all(not self.at(self.mask(points), *point) for point in choice.route))
         self.assertGreater(max(abs(y) for x, y in choice.route), .7)
 
+    def test_new_crowd_at_current_destination_selects_reachable_open_space(self):
+        points = [(-.4, -.4), (.4, -.4), (.4, .4), (-.4, .4)]
+        mask = self.mask(points)
+        cells = crowds.overlay(np.zeros(self.shape, np.int16), points, .05, self.origin)
+        choice = open_space.choose(cells, .05, self.origin, (-2., 0., 0.), current_goal=(0., 0.))
+        self.assertIsNotNone(choice)
+        self.assertNotEqual(choice.goal, (0., 0.))
+        self.assertTrue(all(not self.at(mask, *point) for point in choice.route))
+
 
 if __name__ == "__main__":
     unittest.main()

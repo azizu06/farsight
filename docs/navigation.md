@@ -324,6 +324,14 @@ to `ros2/tests/out/scenarios.json` and per-run timelines to `*-timeline.json`.
 | Bringup smoke | `bash ros2/docker/run-tests.sh smoke` | PASS in 17-19 s: Nav2 lifecycle active, topics and `map -> camera_optical` TF present |
 | Closed-loop scenarios | `bash ros2/docker/run-tests.sh scenarios` | see below |
 
+The separate crowd-layer probe uses real Nav2 local/global costmaps and Smac
+paths over a synthetic floor with sparse feet. In an isolated Jazzy container
+with this checkout's `farsight_nav` built and sourced, run
+`ROS_DOMAIN_ID=91 python3 ros2/tests/crowds.py --out /out/crowds`.
+It tests a detour around the filled group, moved/empty footprint clearing, a
+wide aisle and preserved unknown/measured costs. It launches no rover server
+and sends no motor commands; its results are software evidence only.
+
 The Docker image is `ros2/docker/Dockerfile` (ROS 2 Jazzy ros-base + Nav2 on
 Apple silicon arm64). Nothing here has run on the Jetson or with real phone depth.
 
