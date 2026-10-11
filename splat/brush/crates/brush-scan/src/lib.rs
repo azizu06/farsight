@@ -30,6 +30,13 @@ pub fn prefix_sum(input: CubeTensor) -> CubeTensor {
     }
 
     let client = input.client.clone();
+    // Plane/subgroup ops aren't guaranteed (e.g. wgpu GL backend). Pick
+    // the shared-memory scan variant when the device lacks them.
+    let use_planes = client
+        .properties()
+        .features
+        .plane
+        .contains(burn::cubecl::features::Plane::Ops);
     let device = input.device.clone();
     let dtype = input.dtype;
     let cube_dim = CubeDim::new_1d(WG);
@@ -54,6 +61,7 @@ pub fn prefix_sum(input: CubeTensor) -> CubeTensor {
             level_input.into_tensor_arg(),
             out.clone().into_tensor_arg(),
             sums.clone().into_tensor_arg(),
+            use_planes,
         );
         scanned.push(out);
         if blocks == 1 {
@@ -106,6 +114,54 @@ mod tests {
         let summed = read_i32(prefix_sum(keys)).await;
         assert_eq!(summed.len(), 4);
         assert_eq!(summed, [1, 2, 3, 4]);
+    }
+
+    /// Force the non-subgroup scan path: `scan_blocks_kernel` launched
+    /// with `use_planes=false` must match a CPU inclusive scan, on any
+    /// adapter (including ones that do have SUBGROUP support).
+    #[wasm_bindgen_test(unsupported = tokio::test)]
+    async fn test_scan_blocks_no_planes() {
+        let device = CubeDevice::Wgpu(brush_cube::test_helpers::test_device().await);
+        // Two blocks: 1024 + 513 elements.
+        let data: Vec<i32> = (0..1537).map(|i| (i * 7 % 13) + 1).collect();
+        let input = create_tensor_from_slice(&data, &device, DType::I32);
+
+        let client = input.client.clone();
+        let out = create_tensor_from_slice(&vec![0i32; data.len()], &device, DType::I32);
+        let block_sums = create_tensor_from_slice(&[0i32; 2], &device, DType::I32);
+        crate::kernels::scan_blocks_kernel::launch(
+            &client,
+            burn::cubecl::calculate_cube_count_elemwise(
+                &client,
+                data.len(),
+                burn::cubecl::CubeDim::new_1d(crate::BLOCK_SIZE),
+            ),
+            burn::cubecl::CubeDim::new_1d(crate::WG),
+            input.into_tensor_arg(),
+            out.clone().into_tensor_arg(),
+            block_sums.clone().into_tensor_arg(),
+            false,
+        );
+
+        let scanned = read_i32(out).await;
+        // Blocks scan independently: expected is per-block inclusive scan.
+        let mut expected_blocks = Vec::with_capacity(data.len());
+        for chunk in data.chunks(crate::BLOCK_SIZE_USIZE) {
+            let mut acc = 0;
+            for &v in chunk {
+                acc += v;
+                expected_blocks.push(acc);
+            }
+        }
+        assert_eq!(scanned, expected_blocks);
+
+        // block_sums holds each block's total.
+        let sums = read_i32(block_sums).await;
+        let expected_sums: Vec<i32> = data
+            .chunks(crate::BLOCK_SIZE_USIZE)
+            .map(|c| c.iter().sum())
+            .collect();
+        assert_eq!(sums, expected_sums);
     }
 
     #[wasm_bindgen_test(unsupported = tokio::test)]

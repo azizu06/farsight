@@ -63,6 +63,7 @@ pub fn sort_reduce_kernel(
     num_keys_arr: &Tensor<u32>,
     counts: &Tensor<u32>,
     reduced: &mut Tensor<u32>,
+    #[comptime] use_planes: bool,
 ) {
     let num_keys = num_keys_arr[0];
     let num_wgs = div_ceil(num_keys, BLOCK_SIZE);
@@ -87,14 +88,18 @@ pub fn sort_reduce_kernel(
         }
     }
 
-    let total = cube_sum(sum);
+    let total = cube_sum(sum, use_planes);
     if UNIT_POS == 0u32 {
         reduced[group_id as usize] = total;
     }
 }
 
 #[cube(launch)]
-pub fn sort_scan_kernel(num_keys_arr: &Tensor<u32>, reduced: &mut Tensor<u32>) {
+pub fn sort_scan_kernel(
+    num_keys_arr: &Tensor<u32>,
+    reduced: &mut Tensor<u32>,
+    #[comptime] use_planes: bool,
+) {
     let num_keys = num_keys_arr[0];
     let num_wgs = div_ceil(num_keys, BLOCK_SIZE);
     let num_reduce_wgs = BIN_COUNT * div_ceil(num_wgs, BLOCK_SIZE);
@@ -115,7 +120,7 @@ pub fn sort_scan_kernel(num_keys_arr: &Tensor<u32>, reduced: &mut Tensor<u32>) {
         }
         sync_cube();
 
-        let chunk_total = block_scan(&mut lds, carry, false);
+        let chunk_total = block_scan(&mut lds, carry, false, use_planes);
         sync_cube();
 
         for i in 0u32..ELEMENTS_PER_THREAD {
@@ -138,6 +143,7 @@ pub fn sort_scan_add_kernel(
     num_keys_arr: &Tensor<u32>,
     reduced: &Tensor<u32>,
     counts: &mut Tensor<u32>,
+    #[comptime] use_planes: bool,
 ) {
     let num_keys = num_keys_arr[0];
     let num_wgs = div_ceil(num_keys, BLOCK_SIZE);
@@ -168,7 +174,7 @@ pub fn sort_scan_add_kernel(
     }
     sync_cube();
 
-    block_scan(&mut lds, reduced[group_id as usize], false);
+    block_scan(&mut lds, reduced[group_id as usize], false, use_planes);
     sync_cube();
 
     for i in 0u32..ELEMENTS_PER_THREAD {
@@ -189,6 +195,7 @@ pub fn sort_scatter_kernel(
     out: &mut Tensor<u32>,
     out_values: &mut Tensor<u32>,
     shift: u32,
+    #[comptime] use_planes: bool,
 ) {
     let num_keys = num_keys_arr[0];
     let num_wgs = div_ceil(num_keys, BLOCK_SIZE);
@@ -231,7 +238,8 @@ pub fn sort_scatter_kernel(
             let packed_input = 1u32 << (bit_key * 8u32);
 
             // The packed per-bit-pair counters scan as plain u32 adds.
-            let (exclusive_at_thread, total) = cube_exclusive_sum(packed_input);
+            let (exclusive_at_thread, total) =
+                cube_exclusive_sum(packed_input, use_planes);
             let bin_offsets = (total << 8u32) + (total << 16u32) + (total << 24u32);
             let local_sum = bin_offsets + exclusive_at_thread;
             let key_offset = (local_sum >> (bit_key * 8u32)) & 0xffu32;
@@ -256,7 +264,7 @@ pub fn sort_scatter_kernel(
         } else {
             0u32
         };
-        let (bin_exclusive, _bin_total) = cube_exclusive_sum(bin_v);
+        let (bin_exclusive, _bin_total) = cube_exclusive_sum(bin_v, use_planes);
         if UNIT_POS < BIN_COUNT {
             lds_scratch[UNIT_POS as usize] = bin_exclusive + bin_v;
         }

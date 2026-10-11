@@ -66,6 +66,14 @@ pub fn radix_argsort_len(
     );
 
     let client = input_keys.client.clone();
+    // Plane/subgroup ops (SUBGROUP capability) aren't guaranteed —
+    // adapters like wgpu's GL backend don't have them. Detect once and
+    // pick the shared-memory scan variant when absent.
+    let use_planes = client
+        .properties()
+        .features
+        .plane
+        .contains(burn::cubecl::features::Plane::Ops);
     let max_n = input_keys.shape()[0] as u32;
     let device = input_keys.device.clone();
 
@@ -121,6 +129,7 @@ pub fn radix_argsort_len(
                 num_keys_buf.clone().into_tensor_arg(),
                 count_buf.clone().into_tensor_arg(),
                 reduced_buf.clone().into_tensor_arg(),
+                use_planes,
             );
             kernels::sort_scan_kernel::launch(
                 &client,
@@ -128,6 +137,7 @@ pub fn radix_argsort_len(
                 cube_dim,
                 num_keys_buf.clone().into_tensor_arg(),
                 reduced_buf.clone().into_tensor_arg(),
+                use_planes,
             );
 
             kernels::sort_scan_add_kernel::launch(
@@ -137,6 +147,7 @@ pub fn radix_argsort_len(
                 num_keys_buf.clone().into_tensor_arg(),
                 reduced_buf.clone().into_tensor_arg(),
                 count_buf.clone().into_tensor_arg(),
+                use_planes,
             );
         }
 
@@ -154,6 +165,7 @@ pub fn radix_argsort_len(
             output_keys.clone().into_tensor_arg(),
             output_values.clone().into_tensor_arg(),
             pass * kernels::BITS_PER_PASS,
+            use_planes,
         );
 
         cur_keys = output_keys;

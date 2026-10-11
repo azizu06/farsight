@@ -6,6 +6,7 @@ use burn::cubecl::prelude::*;
 
 /// Threads per cube for the scan kernels. WebGPU guarantees at least 256.
 pub const WG: u32 = 256;
+pub const WG_USIZE: usize = WG as usize;
 /// Elements each thread scans locally before the cube-wide combine.
 pub const ELEMENTS_PER_THREAD: u32 = 4;
 /// Elements scanned by one cube.
@@ -27,7 +28,19 @@ pub const MAX_PLANES: usize = 32;
 /// memory internally, so a caller running this in a loop must `sync_cube()`
 /// between calls to keep one call's reads ahead of the next call's writes.
 #[cube]
-pub fn cube_exclusive_sum(value: u32) -> (u32, u32) {
+pub fn cube_exclusive_sum(value: u32, #[comptime] use_planes: bool) -> (u32, u32) {
+    if comptime![use_planes] {
+        cube_exclusive_sum_plane(value)
+    } else {
+        cube_exclusive_sum_shared(value)
+    }
+}
+
+/// Plane-op path: requires `features.plane` (SUBGROUP). Plane-scan first,
+/// then one plane scans the per-plane totals, with a serial fallback when
+/// there are more planes than one plane has lanes.
+#[cube]
+fn cube_exclusive_sum_plane(value: u32) -> (u32, u32) {
     let mut partials = Shared::new_slice(MAX_PLANES);
     let mut total_shared = Shared::new_slice(1usize);
 
@@ -70,10 +83,39 @@ pub fn cube_exclusive_sum(value: u32) -> (u32, u32) {
     (exclusive, total_shared[0_usize])
 }
 
+/// Shared-memory Hillis-Steele fallback for adapters without `Plane::Ops`
+/// (e.g. wgpu GL/llvmpipe). log2(CUBE_DIM) rounds, two syncs per round —
+/// slower than the plane path but correct everywhere. The buffer is sized
+/// for [`WG`] threads: every brush launch uses `CubeDim::new_1d(WG)`, so
+/// `CUBE_DIM <= WG` holds. Extra trailing sync keeps the buffer reusable
+/// when the caller invokes this in a loop.
+#[cube]
+fn cube_exclusive_sum_shared(value: u32) -> (u32, u32) {
+    let mut buf = Shared::<[u32]>::new_slice(WG_USIZE);
+    buf[UNIT_POS as usize] = value;
+    sync_cube();
+    let mut offset = 1u32;
+    while offset < CUBE_DIM {
+        let add = select(
+            UNIT_POS >= offset,
+            buf[(UNIT_POS - offset) as usize],
+            0u32,
+        );
+        sync_cube();
+        buf[UNIT_POS as usize] += add;
+        sync_cube();
+        offset *= 2u32;
+    }
+    let inclusive = buf[UNIT_POS as usize];
+    let total = buf[(CUBE_DIM - 1u32) as usize];
+    sync_cube();
+    (inclusive - value, total)
+}
+
 /// Sum of `value` over the whole cube, returned to every thread.
 #[cube]
-pub fn cube_sum(value: u32) -> u32 {
-    let (_, total) = cube_exclusive_sum(value);
+pub fn cube_sum(value: u32, #[comptime] use_planes: bool) -> u32 {
+    let (_, total) = cube_exclusive_sum(value, use_planes);
     total
 }
 
@@ -94,7 +136,12 @@ pub fn lds_index(lin: u32) -> u32 {
 /// The caller syncs: once after filling `lds`, and again before reading the
 /// scanned values back out.
 #[cube]
-pub fn block_scan(lds: &mut Shared<[u32]>, base: u32, #[comptime] inclusive: bool) -> u32 {
+pub fn block_scan(
+    lds: &mut Shared<[u32]>,
+    base: u32,
+    #[comptime] inclusive: bool,
+    #[comptime] use_planes: bool,
+) -> u32 {
     let mut thread_sum = 0u32;
     for j in 0u32..ELEMENTS_PER_THREAD {
         let idx = (j * WG + UNIT_POS) as usize;
@@ -108,7 +155,7 @@ pub fn block_scan(lds: &mut Shared<[u32]>, base: u32, #[comptime] inclusive: boo
         }
     }
 
-    let (exclusive, total) = cube_exclusive_sum(thread_sum);
+    let (exclusive, total) = cube_exclusive_sum(thread_sum, use_planes);
 
     let offset = base + exclusive;
     for j in 0u32..ELEMENTS_PER_THREAD {
@@ -124,6 +171,7 @@ pub fn scan_blocks_kernel(
     input: &Tensor<u32>,
     output: &mut Tensor<u32>,
     block_sums: &mut Tensor<u32>,
+    #[comptime] use_planes: bool,
 ) {
     let n = input.len() as u32;
     let block = CUBE_POS as u32;
@@ -141,7 +189,7 @@ pub fn scan_blocks_kernel(
     }
     sync_cube();
 
-    let total = block_scan(&mut lds, 0u32, true);
+    let total = block_scan(&mut lds, 0u32, true, use_planes);
     sync_cube();
 
     for i in 0u32..ELEMENTS_PER_THREAD {
