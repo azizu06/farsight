@@ -129,9 +129,9 @@ controller_server:
     RPP:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
       desired_linear_vel: 0.95        # the profile's top at AUTONOMY_MAX_PWM 255: full power, as manual (captain, 2026-10-11)
-      lookahead_dist: 0.35            # short: pure pursuit cuts corners by about the lookahead
-      min_lookahead_dist: 0.2
-      max_lookahead_dist: 0.5         # 0.9 cut the sim deadend divider corner at 0.7 m/s
+      lookahead_dist: 0.25            # short: pure pursuit cuts corners by about the lookahead
+      min_lookahead_dist: 0.12
+      max_lookahead_dist: 0.4         # 0.9 cut the sim deadend divider corner at 0.7 m/s
       lookahead_time: 0.6
       rotate_to_heading_angular_vel: 2.2
       transform_tolerance: 0.3
