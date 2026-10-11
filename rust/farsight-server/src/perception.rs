@@ -223,6 +223,8 @@ impl PerceptionService {
                                 "source": frame.source,
                                 "received": frame.received,
                                 "age_ms": frame.age_ms(),
+                                "sensor_key": frame.sensor_key.clone().unwrap_or(serde_json::Value::Null),
+                                "mirrored": frame.mirrored,
                             });
                             inner.error = None;
                             drop(inner);

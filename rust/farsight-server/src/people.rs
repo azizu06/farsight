@@ -26,6 +26,10 @@ struct HeldFrame {
     height: usize,
     calibration: Calibration,
     transform: Mat4,
+    /// Trusted `_mapping_sensor_key` stamped by MapState (None for
+    /// simulated/direct captures that never passed a socket).
+    sensor_key: Option<Value>,
+    frame_id: i64,
 }
 
 /// Map-frame torso centre from the median measured depth in the box's
@@ -78,12 +82,17 @@ fn torso_point(b: &Value, f: &HeldFrame) -> Option<[f64; 3]> {
     }
 }
 
-/// Holds the newest normal-tracking RGB-D frames by frame id; a MapState
-/// frame observer on the offer side and a perception annotate hook on the
-/// detection side — same split as people.py.
+/// Holds the newest normal-tracking RGB-D captures by trusted sensor key
+/// (falling back to frame id when unstamped); a MapState frame observer on
+/// the offer side and a perception annotate hook on the detection side —
+/// same split as people.py.
 pub struct PersonLocator {
-    frames: Mutex<HashMap<i64, HeldFrame>>,
-    order: Mutex<std::collections::VecDeque<i64>>,
+    frames: Mutex<HashMap<String, HeldFrame>>,
+    order: Mutex<std::collections::VecDeque<String>>,
+}
+
+fn hold_key(value: &Value) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| "null".into())
 }
 
 impl PersonLocator {
@@ -95,12 +104,17 @@ impl PersonLocator {
     }
 
     /// MapState frame observer: keep the newest RGB-D frames only when the
-    /// producer reported normal tracking.
+    /// producer reported normal tracking, keyed by its trusted sensor key.
     pub fn offer_frame(&self, frame: &RgbdFrame) {
         if frame.header["tracking"].as_str() != Some("normal") {
             return;
         }
-        let id = frame.header["frame_id"].as_i64().unwrap_or(-1);
+        let key = frame
+            .header
+            .get("_mapping_sensor_key")
+            .cloned()
+            .unwrap_or_else(|| frame.header["frame_id"].clone());
+        let id = hold_key(&key);
         let held = HeldFrame {
             jpeg: frame.jpeg.clone(),
             depth: frame.depth.clone(),
@@ -109,11 +123,13 @@ impl PersonLocator {
             height: frame.depth_height,
             calibration: frame.calibration,
             transform: frame.transform,
+            sensor_key: frame.header.get("_mapping_sensor_key").cloned(),
+            frame_id: frame.header["frame_id"].as_i64().unwrap_or(-1),
         };
         {
             let mut order = self.order.lock().unwrap();
-            order.retain(|&x| x != id);
-            order.push_back(id);
+            order.retain(|x| *x != id);
+            order.push_back(id.clone());
             while order.len() > HELD_FRAMES {
                 if let Some(old) = order.pop_front() {
                     self.frames.lock().unwrap().remove(&old);
@@ -124,17 +140,30 @@ impl PersonLocator {
     }
 
     /// Perception annotate hook: add `world` to tracked person boxes that
-    /// were detected on a held RGB-D frame. Byte-compares the JPEG like the
-    /// Python object-identity check — RGB-only or estimated-depth sources
-    /// never get a 3D position. A mirrored IPHONE LIDAR frame counts as the
-    /// same picture: its published JPEG was rotated, so the bytes differ.
+    /// were detected on a held RGB-D frame — its exact native sensor
+    /// capture, matched by trusted sensor key when one exists. RGB-only
+    /// or estimated-depth sources never get a 3D position.
     pub fn annotate(&self, boxes: &mut Vec<Value>, camera_frame: &CameraFrame) {
-        let held = self.frames.lock().unwrap();
-        let Some(f) = held.get(&camera_frame.frame_id) else {
+        let native_jpeg = camera_frame.native_jpeg.as_ref().unwrap_or(&camera_frame.jpeg);
+        let key = camera_frame.sensor_key.clone();
+        let frames = self.frames.lock().unwrap();
+        let lookup = key
+            .as_ref()
+            .map(|k| hold_key(k))
+            .unwrap_or_else(|| hold_key(&json!(camera_frame.frame_id)));
+        let mut held = frames.get(&lookup);
+        if key.is_none() && held.is_none() {
+            // Direct/simulated map snapshots retain the exact sensor JPEG.
+            held = frames.values().find(|frame| {
+                frame.frame_id == camera_frame.frame_id && frame.jpeg == *native_jpeg
+            });
+        }
+        let Some(f) = held else {
             return;
         };
-        let same_picture = f.jpeg == camera_frame.jpeg
-            || (camera_frame.source == "IPHONE LIDAR" && camera_frame.mirrored);
+        let same_picture = matches!(camera_frame.source.as_str(), "IPHONE LIDAR" | "SIMULATED")
+            && f.jpeg == *native_jpeg
+            && (key.is_none() || f.sensor_key.as_ref() == key.as_ref());
         if !same_picture {
             return;
         }
@@ -150,6 +179,8 @@ impl PersonLocator {
                 &f.transform,
             );
             rotated = HeldFrame {
+                sensor_key: None,
+                frame_id: 0,
                 jpeg: f.jpeg.clone(),
                 depth,
                 confidence,
@@ -199,6 +230,8 @@ mod tests {
                 cy: height as f64 / 2.0,
             },
             transform: IDENTITY,
+            sensor_key: None,
+            frame_id: 0,
         }
     }
 

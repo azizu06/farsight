@@ -610,6 +610,8 @@ mod tests {
             mirrored: false,
             socket_received: Some(crate::state::now_monotonic() - 0.2),
             published: Some(crate::state::now_monotonic()),
+            native_jpeg: None,
+            sensor_key: None,
         };
         {
             let mut samples = svc.samples.lock().unwrap();
@@ -651,6 +653,8 @@ mod tests {
             mirrored: false,
             socket_received: None,
             published: None,
+            native_jpeg: None,
+            sensor_key: None,
         }
     }
 }

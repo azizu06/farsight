@@ -1066,7 +1066,11 @@ pub struct SimFeed {
     pub identity: crate::phone::Identity,
     pub started: f64,
     frame_id: AtomicI64,
-    boxes: Mutex<(Vec<Value>, Option<f64>)>,
+    /// (rendered frame, its ground-truth boxes, original receipt) waiting
+    /// for MapState acceptance — detections publish only the capture the
+    /// map actually stamped with a sensor key (jetson/sim/stream.py).
+    pending: Mutex<Option<(RgbdFrame, Vec<Value>, f64)>>,
+    capture: Mutex<Option<(RgbdFrame, Vec<Value>, f64)>>,
 }
 
 impl SimFeed {
@@ -1076,7 +1080,8 @@ impl SimFeed {
             identity: ("simulated-room".into(), 1),
             started: now_monotonic(),
             frame_id: AtomicI64::new(0),
-            boxes: Mutex::new((Vec::new(), None)),
+            pending: Mutex::new(None),
+            capture: Mutex::new(None),
         }
     }
 
@@ -1099,11 +1104,11 @@ impl SimFeed {
         })
     }
 
-    /// Render one RGB-D frame; refreshes ground-truth detections too.
+    /// Render one pending RGB-D capture; boxes publish after MapState
+    /// accepts it (stamps `_mapping_sensor_key`).
     pub fn frame(&self, now: f64) -> RgbdFrame {
         let (depth, rgb, pose) = self.sim.render(0.0);
         let boxes = self.sim.person_boxes(&depth, &pose);
-        *self.boxes.lock().unwrap() = (boxes, Some(now_monotonic()));
         let confidence: Vec<u8> = depth.iter().map(|d| if *d > 0.0 { 2 } else { 0 }).collect();
         let mut header = self.header(now, &pose);
         header
@@ -1111,7 +1116,7 @@ impl SimFeed {
             .unwrap()
             .insert("_received_monotonic".into(), json!(now));
         let jpeg = self.sim.jpeg(&rgb);
-        RgbdFrame {
+        let frame = RgbdFrame {
             header,
             rgb,
             depth,
@@ -1121,21 +1126,48 @@ impl SimFeed {
             jpeg,
             depth_width: self.sim.calibration.width,
             depth_height: self.sim.calibration.height,
+        };
+        *self.pending.lock().unwrap() = Some((frame.clone(), boxes, now));
+        frame
+    }
+
+    /// MapState frame observer: publish an accepted capture after
+    /// navigation's depth observer received it. Never guess a current
+    /// socket/capture key for boxes rendered earlier or still in flight.
+    pub fn offer_frame(&self, frame: &RgbdFrame) {
+        let pending = self.pending.lock().unwrap();
+        if let Some(p) = pending.as_ref() {
+            if p.0.header["frame_id"] == frame.header["frame_id"]
+                && frame.header.get("_mapping_sensor_key").is_some()
+            {
+                *self.capture.lock().unwrap() = Some(p.clone());
+            }
         }
     }
 
     /// The perception.snapshot() shape autonomy reads, from ground truth.
     pub fn detections(&self) -> Value {
-        let (boxes, boxes_at) = self.boxes.lock().unwrap().clone();
+        let capture = self.capture.lock().unwrap().clone();
+        let (frame, boxes, received) = match &capture {
+            Some((f, b, r)) => (Some(f), b.clone(), Some(*r)),
+            None => (None, Vec::new(), None),
+        };
+        let elapsed = received.map(|r| now_monotonic() - r);
         // Python round() returns an int: age_ms must be a JSON integer.
-        let age = boxes_at.map(|at| ((now_monotonic() - at) * 1000.0).round_ties_even() as i64);
-        let fresh = age.map(|a| a < 1000).unwrap_or(false);
+        let age = elapsed.map(|e| (e * 1000.0).round_ties_even() as i64);
+        // MapState stamps this exact frame only after acceptance.
+        let key = frame.and_then(|f| f.header.get("_mapping_sensor_key")).cloned();
+        let fresh = key.is_some() && elapsed.map(|e| e >= 0.0 && e < 1.0).unwrap_or(false);
         json!({
             "boxes": if fresh { boxes } else { Vec::new() },
             "age_ms": age,
             "fresh": fresh,
             "error": Value::Null,
             "backend": "simulated",
+            "source": "SIMULATED",
+            "mirrored": false,
+            "sensor_key": key.unwrap_or(Value::Null),
+            "frame": frame.map(|f| f.header["frame_id"].clone()).unwrap_or(json!(-1)),
         })
     }
 }
@@ -1147,6 +1179,15 @@ pub fn spawn_world_stream(
     camera: Arc<crate::camera::CameraService>,
     feed: Arc<SimFeed>,
 ) -> std::thread::JoinHandle<()> {
+    // Existing depth observers (including Nav) run before detections publish.
+    {
+        let feed_obs = feed.clone();
+        mapping
+            .frame_observers
+            .lock()
+            .unwrap()
+            .push(Arc::new(move |frame| feed_obs.offer_frame(frame)));
+    }
     std::thread::spawn(move || {
         let busy = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let mut next_frame = 0.0f64;
@@ -1154,7 +1195,7 @@ pub fn spawn_world_stream(
             let now = now_monotonic();
             feed.sim.advance();
             if !busy.load(Ordering::SeqCst) && now >= next_frame {
-                let frame = feed.frame(now);
+                let mut frame = feed.frame(now);
                 let frame_id = frame.header["frame_id"].as_i64().unwrap_or(-1);
                 camera.set_phone_rgb(Some(CameraFrame {
                     jpeg: frame.jpeg.clone(),
@@ -1166,19 +1207,21 @@ pub fn spawn_world_stream(
                     mirrored: false,
                     socket_received: None,
                     published: None,
+                    native_jpeg: None,
+                    sensor_key: None,
                     source: "SIMULATED".into(),
                 }));
                 let (mapping, busy) = (mapping.clone(), busy.clone());
                 busy.store(true, Ordering::SeqCst);
                 next_frame = now + 1.0 / FRAME_HZ;
                 std::thread::spawn(move || {
-                    let _ = mapping.process(&frame);
+                    let _ = mapping.process(&mut frame);
                     busy.store(false, Ordering::SeqCst);
                 });
             } else {
                 let pose = feed.sim.camera_pose(0.0);
                 let header = feed.header(now, &pose);
-                let _ = mapping.observe_pose(&header, &pose);
+                let _ = mapping.observe_pose(&header, &pose, None, None);
             }
             let elapsed = now_monotonic() - now;
             let wait = 1.0 / POSE_HZ - elapsed;

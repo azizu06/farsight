@@ -46,6 +46,10 @@ pub struct ControlInner {
     pub stick_override: bool,
     pub autonomy: Option<Autonomy>,
     pub scan_token: Option<u64>,
+    /// First stop reason that cancelled a running scan; retained so the
+    /// scan lane can report the initiating cause even after a later
+    /// viewer release resets the controller (state._scan_stop_reason).
+    pub scan_stop_reason: Option<String>,
     /// Permits already issued when the scan began: a zero-stick teleop
     /// heartbeat carrying one was sent before POST /scan and may race it (#72).
     pub scan_race_permits: std::collections::HashSet<String>,
@@ -188,6 +192,7 @@ impl ControlState {
                     None
                 },
                 scan_token: None,
+                scan_stop_reason: None,
                 scan_race_permits: std::collections::HashSet::new(),
                 scan_serial: 0,
                 scan_w: 0.0,
@@ -212,6 +217,9 @@ impl ControlState {
         s.w = 0.0;
         s.deadline = 0.0;
         s.drive = None;
+        if s.scan_token.is_some() {
+            s.scan_stop_reason = Some(reason.into());
+        }
         s.scan_token = None;
         s.scan_race_permits.clear();
         s.scan_w = 0.0;
@@ -309,6 +317,7 @@ impl ControlState {
             return Err("Scan requires a stopped rover and a live operator-held permit".into());
         }
         s.scan_serial += 1;
+        s.scan_stop_reason = None;
         s.scan_token = Some(s.scan_serial);
         s.scan_race_permits = s.permits.iter().map(|(k, _)| k.clone()).collect();
         s.scan_w = 0.0;
@@ -319,7 +328,10 @@ impl ControlState {
         let mut s = self.inner.lock().unwrap();
         self.output_locked(&mut s); // enforce expiry, camera and range gates
         if token.is_none() || token != s.scan_token {
-            return Err("Scan cancelled: operator lease, override, or safety stop".into());
+            let reason = s.scan_stop_reason.as_deref().unwrap_or("unknown");
+            return Err(format!(
+                "Scan cancelled: operator lease, override, or safety stop ({reason})"
+            ));
         }
         if !w.is_finite() || !(-0.35..=0.35).contains(&w) || !(-80.0..=80.0).contains(&pan) {
             return Err("Scan command outside bounded sweep".into());
@@ -328,7 +340,8 @@ impl ControlState {
         s.pan = if self.pan_mount == "servo" { pan.round_ties_even() as i64 } else { 0 };
         self.output_locked(&mut s);
         if token != s.scan_token {
-            return Err("Scan cancelled: camera or range unavailable".into());
+            let reason = s.scan_stop_reason.as_deref().unwrap_or("unknown");
+            return Err(format!("Scan cancelled: camera or range unavailable ({reason})"));
         }
         Ok(())
     }
