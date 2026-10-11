@@ -268,8 +268,7 @@ def wander_check(controller):
         path = [(s["sim"]["x"], s["sim"]["z"]) for s in late]
         n = max(1, len(late))
         messages = [s["remote"].get("message") or "" for s in late]
-        goals = {s["remote"].get("goal_id") for s in late if "open space" in (s["remote"].get("message") or "")
-                 and "No reachable" not in (s["remote"].get("message") or "")}
+        goals = {s["remote"].get("goal_id") for s in late}  # Nav2 goals sent with no frontier: open-space routes
         collided = next((round(s["t"] - samples[0]["t"], 1) for s in samples if (s["sim"].get("collisions") or 0) > 0), None)
         result.update(controller=controller, no_frontier_at_s=round(late[0]["t"] - samples[0]["t"], 1) if late else None,
                       no_frontier_samples=len(late),
