@@ -695,6 +695,16 @@ client watermark; `X-Map-Generation` and `X-Map-Delta: 1` are also
 emitted. `status()` exposes `points_delta: true` as the feature flag;
 older servers 404 and clients fall back to full `/map/points.bin` pulls.
 
+The Mac geometry assembler mirrors the same `/map/*` surface over the
+published mesh: `/map/points.bin` serves the vertex stream verbatim
+(u32 LE count + 16B records), `/map/mesh.bin` and `/map/export.ply`
+match the mapper layouts, `/map/status` merges the assembler's
+`geometry{...}` block, and `/ws/map` pushes status plus binary packets
+(`?points=http` opts to status-only, same as the mapper). `/map/reset`
+and `/map/pause` answer 409 there — restart the phone capture session
+instead. Binary routes 503 "Matching geometry not available" until the
+first complete snapshot publishes.
+
 The feed is additive-only: each record's identity is its voxel key,
 recomputed client-side as `floor(x/voxel_m), floor(y/voxel_m),
 floor(z/voxel_m)` (a cell's mean always stays inside its voxel). Clients
