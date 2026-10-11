@@ -82,7 +82,11 @@ try {
     }finally{performance.now=realNow;}
   });
   assert.deepEqual(result.initial,{auto:false,mode:'teleop'});
-  assert.equal(result.manual.deadman,true,'joystick drives with trigger released');assert.equal(result.manual.v,0);assert.equal(result.manual.w,1);
+  assert.equal(result.manual.deadman,true,'joystick drives with trigger released');
+  // Full forward plus .625 stick steering becomes v=1, w=.5 after the .25 deadzone.
+  // Preserve forward authority instead of restoring the old diagonal-to-pivot mapping.
+  assert.equal(result.manual.v,1,'steering preserves full forward demand');
+  assert.equal(result.manual.w,.5,'steering uses its dead-zoned independent demand');
   assert.equal(result.centered.deadman,false);assert.equal(result.centered.v,0);assert.equal(result.centered.w,0);
   assert.equal(result.autoOnPress,true);assert.equal(result.auto.deadman,true);assert.equal(result.auto.mode,'explore');assert.equal(result.auto.v,0);assert.equal(result.auto.w,0);
   assert.deepEqual(result.heldA,{auto:true,menu:false});
