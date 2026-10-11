@@ -78,6 +78,7 @@ class ControlState:
         self.deadline = 0.0
         self.requires_release = True
         self.reason = "rover_disabled"
+        self.sensor_pause_since = None  # demo autonomy: when a short sensor stall began holding the motors
         self.link_ms = None
         self.scan_token = None
         self._scan_stop_reason = None
@@ -131,6 +132,12 @@ class ControlState:
                                 "camera_stale", "video_stale", "lease_expired", "expired_permit",
                                 "stale_sequence", "nav_pose_lost", "nav_tracking_limited",
                                 "nav_depth_lost", "nav_sensor_reset"})
+
+    # Demo autonomy: a pose, depth or camera stall shorter than SENSOR_PAUSE_S holds the motors
+    # at zero and resumes the same Explore/Seek/Goto on its own (captain, 2026-10-11: AUTO never
+    # stops on outside things). A longer stall still stops as before.
+    SENSOR_PAUSE = frozenset({"camera_stale", "nav_pose_lost", "nav_tracking_limited", "nav_depth_lost"})
+    SENSOR_PAUSE_S = 2.0
 
     def stop(self, reason, require_release=True):
         with self.lock:
@@ -208,6 +215,18 @@ class ControlState:
         # one, pan is always 0 here.
         return self.range_unsafe() or abs(self.pan) > 10
 
+    def _sensor_pause(self, fault):
+        """Caller holds the lock. True while a demo-autonomy sensor stall may hold instead of stop."""
+        if fault not in self.SENSOR_PAUSE:
+            return False
+        now = self.clock()
+        if self.sensor_pause_since is None:
+            self.sensor_pause_since = now
+        if now - self.sensor_pause_since >= self.SENSOR_PAUSE_S:
+            return False  # a long stall stops as before; the timer clears only on fresh sensors
+        self.reason = fault
+        return True
+
     def camera_is_ready(self):
         if self.camera_ready is None:
             return True
@@ -250,7 +269,10 @@ class ControlState:
                 return False
             mode = message.get("mode", "teleop")
             teleop_ungated = self.demo_mode and mode == "teleop"  # demo: no camera gate on driving by hand
-            if not teleop_ungated and not self.camera_is_ready():
+            # Demo autonomy drives on the rover's own camera, pose and depth, which output() checks
+            # every tick (a short stall pauses it there); it is never gated on the viewer's picture.
+            autonomy_ungated = self.demo_mode and mode in ("explore", "seek", "goto")
+            if not teleop_ungated and not autonomy_ungated and not self.camera_is_ready():
                 self.stop("camera_stale")
                 return False
             if mode == "scan":
@@ -273,8 +295,9 @@ class ControlState:
                 self.stop("invalid_target")
                 return False
             video_age = message.get("video_age_ms")
-            if not teleop_ungated and (message.get("video_fresh") is not True or type(video_age) not in (int, float)
-                                       or not math.isfinite(video_age) or not 0 <= video_age <= 500):
+            if not teleop_ungated and not autonomy_ungated and (
+                    message.get("video_fresh") is not True or type(video_age) not in (int, float)
+                    or not math.isfinite(video_age) or not 0 <= video_age <= 500):
                 self.stop("video_stale")
                 return False
             if mode in ("calibrate", "velocity"):
@@ -388,7 +411,9 @@ class ControlState:
             autonomous = self.autonomy is not None and self.autonomy.mode != "teleop"
             gated = (autonomous or self.drive is not None or self.scan_token is not None
                      or ((self.v or self.w) and not self.demo_mode))  # demo: teleop drives without the camera gate
-            if gated and not self.camera_is_ready():
+            camera_ok = self.camera_is_ready()
+            demo_autonomy = self.demo_mode and autonomous and bool(self.deadline) and self.drive is None
+            if gated and not camera_ok and not demo_autonomy:
                 self.stop("camera_stale")
             if self.drive is not None and self.deadline:
                 return self._drive_output()
@@ -407,7 +432,13 @@ class ControlState:
             if backed and self.autonomy.mode == "seek":
                 self.navigator.update_seek(self.detections() if self.detections else {})
             fault = self.navigator.sensor_fault() if backed else None
-            if fault:
+            if demo_autonomy and engaged:
+                fault = fault or (None if camera_ok else "camera_stale")
+                if fault is None:
+                    self.sensor_pause_since = None
+            if fault and demo_autonomy and engaged and self._sensor_pause(fault):
+                v = w = 0.0  # hold still; the session, lease, goal and Nav2 intent all stay
+            elif fault:
                 # No fresh normal-tracking pose or measured depth of the current sensor session:
                 # stop now, even with a live lease and fresh cmd_vel, and require a new press.
                 self.stop(fault)

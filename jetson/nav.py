@@ -179,7 +179,8 @@ class GoalRequest(BaseModel):
 class NavService:
     CMD_TTL = 0.25     # a velocity command older than one control lease stops the rover
     BRIDGE_TTL = 1.5   # no bridge status for this long: Nav2 is unavailable, use the fallback
-    POSE_TTL = 0.5     # Nav2 motion needs a normal-tracking ARKit pose at least this fresh ...
+    POSE_TTL = 1.0     # Nav2 motion needs a normal-tracking ARKit pose at least this fresh (0.5 tripped on
+                       # the rig's 500-750 ms camera stalls every ~5 s and cut AUTO into 0.75 s runs) ...
     DEPTH_TTL = 1.0    # ... and measured depth of the same sensor session at least this fresh
 
     def __init__(self, mapping, *, speed_mps=0.45, turn_radps=3.0, max_v=0.7, max_w=0.8,

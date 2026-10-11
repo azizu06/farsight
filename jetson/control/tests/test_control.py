@@ -516,6 +516,23 @@ class DemoModeTests(unittest.TestCase):
         self.assertEqual(self.state.status()["reason"], "camera_stale")
         self.assertFalse(self.state.status()["requires_release"])
 
+    def test_demo_autonomy_is_not_gated_on_the_viewer_picture(self):
+        def explore(demo_mode, video_age_ms):
+            state = ControlState(clock=self.clock, proximity_stop=False, demo_mode=demo_mode,
+                                 camera_ready=lambda: True, detections=lambda: {})
+            state.set_connected(True)
+            session = state.begin()
+            for seq, deadman in ((1, False), (2, True)):
+                permit = state.status(issue_permit=True)["permit"]
+                accepted = state.accept({"session_id": session, "permit": permit, "seq": seq,
+                                         "deadman": deadman, "v": 0, "w": 0, "pan": 0, "mode": "explore",
+                                         "video_fresh": False, "video_age_ms": video_age_ms}, session)
+            return accepted, state.status()["reason"]
+
+        self.assertTrue(explore(True, 900)[0])  # demo AUTO drives on its own sensors, not the viewer's picture
+        self.assertTrue(explore(True, 60000)[0])
+        self.assertEqual(explore(False, 900), (False, "video_stale"))  # strict mode keeps the 500 ms gate
+
     def test_protocol_faults_and_releases_still_latch(self):
         self.assertTrue(self.send())
         self.assertFalse(self.send(v=5))
