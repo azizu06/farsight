@@ -438,6 +438,9 @@ mod onnx {
                 eprintln!("mono: view {i}: {ms:.0}ms fit rejected (pairs or rmse)");
             }
         }
+        // ort with load-dynamic can segfault in Session::drop after the
+        // provider lib is unloaded — leak it (process is exiting anyway).
+        std::mem::forget(session);
         Ok(out)
     }
 

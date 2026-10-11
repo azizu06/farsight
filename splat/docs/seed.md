@@ -125,6 +125,16 @@ seed splats. Ported from `farsight-compiler` `learned/`.
 4. Emit `seed_stats.json` `mono_added` and compare PSNR vs the same seed
    without mono at 30/60/120 s budgets.
 
+### Verified on Linux CPU EP (2026-10-11, synth capture)
+
+End-to-end mechanics confirmed: `ort` load-dynamic + ONNX Runtime 1.22.0,
+DAV2-Small fp32 (~0.9 s/view on 16-core x86 CPU EP — ANE will differ),
+IRLS fit ran on all 48 views. Every view was **rejected by the RMSE gate**
+(zero splats emitted): DAV2 cannot infer depth from the textureless
+checkerboard synth renders, and the fit correctly refused to inject
+model noise into the seed. PSNR ±mono therefore needs real rover photos —
+the gate guarantees mono can only ever *add* confidence-supported splats.
+
 ## Equal-wall-time fight (Mac steps/s model, lavapipe measured)
 
 Mac receipt (fb5edc6): 290k splats ≈ 77 st/s (SH1), 2.18M ≈ 15 st/s →
