@@ -11,7 +11,7 @@ import numpy as np
 from fastapi.testclient import TestClient
 
 from jetson.mapping.phone import decode_frame
-from jetson.mapping.run_capture import PhoneRunCapture
+from jetson.mapping.run_capture import PhoneRunCapture, merge_run_points
 from jetson.mapping.server import create_app
 from jetson.mapping.tests.test_mapping import bundle, flat_frame
 
@@ -27,7 +27,135 @@ def capture_frame(frame_id=0, epoch=1):
                         ('test', epoch))
 
 
+def save_frames(root, *frames, **settings):
+    archive = PhoneRunCapture(root, **settings)
+    archive.start()
+    try:
+        for i, frame in enumerate(frames):
+            archive.offer_frame(frame, now=i)
+    finally:
+        archive.close()
+    return archive, sorted(Path(root).glob('*/transforms.json'))
+
+
 class RunCaptureTests(unittest.TestCase):
+    def test_saved_frame_points_recover_a_ply_when_finalization_is_interrupted(self):
+        with tempfile.TemporaryDirectory() as root:
+            original = Path.replace
+
+            def interrupted(path, target):
+                if path.name == 'dense.ply.tmp':
+                    raise OSError('interrupted final export')
+                return original(path, target)
+
+            with patch.object(Path, 'replace', interrupted):
+                archive, (manifest,) = save_frames(root, capture_frame())
+            document = json.loads(manifest.read_text())
+            self.assertNotIn('point_cloud', document)
+            self.assertEqual(document['frames'][0]['points_count'], 48)
+            self.assertEqual(archive.status()['failed'], 1)
+            recovered = merge_run_points(manifest.parent)
+            self.assertEqual(recovered['points'], 48)
+            self.assertTrue(json.loads(manifest.read_text())['point_cloud']['complete'])
+
+    def test_long_stream_rotates_segments_to_bound_manifest_memory(self):
+        with tempfile.TemporaryDirectory() as root:
+            _, manifests = save_frames(root, *(capture_frame(i) for i in range(3)), max_frames=2)
+            documents = [json.loads(p.read_text()) for p in manifests]
+            self.assertEqual(sorted(len(d['frames']) for d in documents), [1, 2])
+            self.assertEqual(sorted(f['frame_id'] for d in documents for f in d['frames']), [0, 1, 2])
+            self.assertTrue(all(d['point_cloud']['complete'] for d in documents))
+
+    def test_large_frames_are_bounded_and_ply_cap_keeps_frame_points_for_recovery(self):
+        with tempfile.TemporaryDirectory() as root:
+            frame = capture_frame()
+            frame.depth = np.full((120, 160), 2, np.float32)
+            frame.confidence = np.full((120, 160), 2, np.uint8)
+            frame.rgb = np.full((120, 160, 3), 100, np.uint8)
+            frame.calibration = type(frame.calibration)(160, 120, 160, 160, 80, 60)
+            _, (manifest,) = save_frames(root, frame, max_merge_points=2)
+            document = json.loads(manifest.read_text())
+            saved = document['frames'][0]
+            self.assertEqual(saved['points_count'], 12288)
+            self.assertEqual((manifest.parent / saved['points_path']).stat().st_size, 12288 * 15)
+            self.assertEqual(document['point_cloud']['points'], 2)
+            self.assertTrue(document['point_cloud']['truncated'])
+
+    def test_limited_tracking_keeps_the_photo_without_fusing_unreliable_world_points(self):
+        with tempfile.TemporaryDirectory() as root:
+            frame = capture_frame()
+            frame.header['tracking'] = 'limited'
+            _, (manifest,) = save_frames(root, frame)
+            document = json.loads(manifest.read_text())
+            saved = document['frames'][0]
+            self.assertEqual(saved['points_count'], 0)
+            self.assertEqual((manifest.parent / saved['points_path']).read_bytes(), b'')
+            self.assertEqual((manifest.parent / saved['file_path']).read_bytes(), frame.jpeg)
+            self.assertEqual(document['point_cloud']['points'], 0)
+
+    def test_stopping_the_stream_finalizes_without_stopping_the_service(self):
+        with tempfile.TemporaryDirectory() as root:
+            archive = PhoneRunCapture(root, idle_seconds=.1)
+            archive.start()
+            try:
+                archive.offer_frame(capture_frame(), now=0)
+                deadline = time.monotonic() + 2
+                while not list(Path(root).glob('*/dense.ply')) and time.monotonic() < deadline:
+                    time.sleep(.01)
+                self.assertEqual(len(list(Path(root).glob('*/dense.ply'))), 1)
+                archive.offer_frame(capture_frame(1), now=1)
+            finally:
+                archive.close()
+            self.assertEqual(len(list(Path(root).glob('*/dense.ply'))), 2)
+
+    def test_archive_budget_preserves_old_files_and_drops_without_writing_pairs(self):
+        with tempfile.TemporaryDirectory() as root:
+            old = Path(root) / 'old-photo.jpg'
+            old.write_bytes(b'x' * 2000)
+            archive, _ = save_frames(root, capture_frame(), max_bytes=2000, max_merge_points=2)
+            self.assertEqual(old.read_bytes(), b'x' * 2000)
+            self.assertFalse(list(Path(root).glob('*/images/*')))
+            self.assertEqual(archive.status()['written'], 0)
+            self.assertEqual(archive.status()['dropped'], 1)
+            self.assertTrue(archive.status()['disk_limited'])
+
+    def test_close_and_session_change_publish_separate_deduplicated_run_ply(self):
+        with tempfile.TemporaryDirectory() as root:
+            other = capture_frame(2, epoch=2)
+            other.transform[0, 3] += 10
+            _, manifests = save_frames(root, capture_frame(), capture_frame(1), other)
+            for manifest in manifests:
+                document = json.loads(manifest.read_text())
+                cloud = document['point_cloud']
+                self.assertTrue(cloud['complete'])
+                self.assertEqual(cloud['points'], 48)  # repeated observations are not duplicated
+                header, records = (manifest.parent / cloud['file_path']).read_bytes().split(b'end_header\n', 1)
+                self.assertIn(b'format binary_little_endian 1.0', header)
+                self.assertIn(b'element vertex 48', header)
+                xyz = np.frombuffer(records, dtype=np.dtype([
+                    ('xyz', '<f4', (3,)), ('rgb', 'u1', (3,))]))['xyz']
+                expected = [2, 5, 6] if document['map_epoch'] == 1 else [12, 5, 6]
+                self.assertTrue(np.any(np.all(xyz == expected, axis=1)))
+
+    def test_measured_world_points_and_rgb_survive_with_the_matching_jpeg(self):
+        with tempfile.TemporaryDirectory() as root:
+            frame = capture_frame()
+            frame.confidence[-1, -1] = 0
+            _, (manifest,) = save_frames(root, frame)
+            saved = json.loads(manifest.read_text())['frames'][0]
+            points_path = manifest.parent / saved['points_path']
+            data = np.frombuffer(points_path.read_bytes(), dtype=np.dtype([
+                ('xyz', '<f4', (3,)), ('rgb', 'u1', (3,))]))
+            self.assertEqual(saved['points_count'], 47)
+            self.assertEqual(len(data), 47)
+            # Independent ARKit example: depth 2m at the optical centre,
+            # transformed by the JPEG's pose, is world (2,5,6).
+            self.assertTrue(np.any(np.all(data['xyz'] == [2, 5, 6], axis=1)))
+            np.testing.assert_array_equal(data['rgb'], np.full((47, 3), 100))
+            np.testing.assert_array_equal(saved['transform_matrix'], frame.transform)
+            self.assertEqual(points_path.parent, (manifest.parent / saved['file_path']).parent)
+            self.assertEqual((manifest.parent / saved['file_path']).read_bytes(), frame.jpeg)
+
     def test_native_jpeg_intrinsics_opengl_pose_sampling_and_run_reset(self):
         with tempfile.TemporaryDirectory() as root:
             archive = PhoneRunCapture(root)

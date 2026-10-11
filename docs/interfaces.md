@@ -831,7 +831,7 @@ See `docs/dense-map.md` for launch, budgets and evidence limits.
 Jetson visual samples skip depth-edge fringes (5x5 depth range above 20% of depth) and
 surfaces seen past 80 degrees from the view ray (86 for near-horizontal surfaces), which
 removes ARKit's smoothed flying-pixel sheets between foreground and background.
-The Mac's retained history fades cells in recent person footprints (torso points from
+The Mac relay can fade retained cells in recent person footprints (off by default, `FADE_FOOTPRINTS` in `tools/dense_map.py`, because it also erased cells that had only gone out of view) (torso points from
 `/ws/detections`, 0.45 m radius, ±0.9 m height, 60 s memory) once unobserved for 15 s,
 as journaled deletes; `/dense/status` adds `faded_footprint_cells` and `people_error`.
 Jetson visual ingestion is latest-only background work (default 8 Hz, 12,288 real
@@ -916,6 +916,19 @@ with only upserts plus `chunk`, `revision`, `lod`, `sample_voxel_m` and
 not an addition to its previous version. Mac renderer full-detail deltas use
 the delta contract above. The gray ARKit source is selected separately with
 `source=geometry`; it never overwrites calibrated RGB-D colors.
+
+## Offline measured capture archive
+
+`PhoneRunCapture` optionally saves each sampled JPEG with a bounded measured
+point file in the same run/session/epoch. `transforms.json` adds `points_format`,
+`points_coordinate_system`, per-frame `points_path`/`points_count`, and final
+`point_cloud` export metadata. The 15-byte `xyz_f32le_rgb8` records contain
+world-space float32 XYZ and RGB8. This is an on-disk archive, separate from the
+16-byte live delta feed; consumers must not decode it as live delta records.
+The writer publishes a capped measured `dense.ply` when the segment ends.
+See [post-run capture](postrun-capture.md) for disk/queue budgets, finalization,
+power-loss recovery and the offline export command. No live reset/TTL or control
+contract changes.
 
 ## Phone-built mesh lane (v1)
 
