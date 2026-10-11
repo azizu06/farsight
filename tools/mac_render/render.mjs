@@ -228,8 +228,6 @@ let cloudCount = 0;
 let cloudHalf = 0;
 let cloudQuarter = 0;
 let meshTris = 0;
-let meshHalfTris = 0;
-let meshQuarterTris = 0;
 
 function uploadCloud(data) {
   const count = data.count;
@@ -271,16 +269,10 @@ function uploadMesh(data) {
   const triangles = data.indices.length / 3;
   const index = ensureIndex(data.indices.length);
   const dstIndex = index.array;
-  const srcIndex = data.indices;
-  const n0 = (triangles + 3) >> 2;
-  const n2 = (triangles + 1) >> 2;
-  for (let t = 0; t < triangles; t++) {
-    const dst = scatterOrder(triangles, t, n0, n2) * 3;
-    const src = t * 3;
-    dstIndex[dst] = srcIndex[src];
-    dstIndex[dst + 1] = srcIndex[src + 1];
-    dstIndex[dst + 2] = srcIndex[src + 2];
-  }
+  // Meshes keep full topology: a scattered prefix is a perforated surface,
+  // not a coarser one (point clouds can scatter; triangles cannot). The
+  // LOD ladder sheds mesh cost through pixelRatio and the fx rungs instead.
+  dstIndex.set(data.indices);
   // Stale indices beyond the new range would feed computeVertexNormals;
   // zero them so they fold into a degenerate (0,0,0) triangle.
   if (indexUsed > data.indices.length) dstIndex.fill(0, data.indices.length, indexUsed);
@@ -294,15 +286,13 @@ function uploadMesh(data) {
     meshNormal.flush(vertices * 3);
   }
   meshTris = triangles;
-  meshQuarterTris = n0;
-  meshHalfTris = n0 + n2;
   surfaceGeometry.setDrawRange(0, meshDrawCount());
   frameDirty = true;
 }
 
 function clearGeometry() {
   cloudCount = cloudHalf = cloudQuarter = 0;
-  meshTris = meshHalfTris = meshQuarterTris = 0;
+  meshTris = 0;
   indexUsed = 0;
   cloudGeometry.setDrawRange(0, 0);
   surfaceGeometry.setDrawRange(0, 0);
@@ -342,8 +332,7 @@ function cloudDrawCount() {
   return fraction === 1 ? cloudCount : fraction === 0.5 ? cloudHalf : cloudQuarter;
 }
 function meshDrawCount() {
-  const fraction = LADDER[lodIndex].fraction;
-  return (fraction === 1 ? meshTris : fraction === 0.5 ? meshHalfTris : meshQuarterTris) * 3;
+  return meshTris * 3;
 }
 
 let frameDirty = true;
@@ -609,7 +598,7 @@ async function refresh() {
       if (!await snapshotStillCurrent(nextIdentity, next.generation, abort.signal)) return false;
       uploadCloud(decodePoints(result.body)); appliedPoints = result.revision;
       lastSnapshotKind = "points";
-      if (!next.triangles) { meshTris = meshHalfTris = meshQuarterTris = 0; indexUsed = 0; surfaceGeometry.setDrawRange(0, 0); appliedMesh = next.mesh_revision; frameDirty = true; }
+      if (!next.triangles) { meshTris = 0; indexUsed = 0; surfaceGeometry.setDrawRange(0, 0); appliedMesh = next.mesh_revision; frameDirty = true; }
     }
     mapError = null;
     return true;
