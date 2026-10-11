@@ -30,6 +30,9 @@ VIEW_CHUNKS = 32
 # Ghost fade: retained history is permanent, so a walking person would leave a
 # trail. Cells inside a recent person footprint (horizontal radius, vertical band
 # around the torso point from /ws/detections) fade once unobserved this long.
+# Off: without a camera-frustum check it also erased people and furniture that
+# had only gone out of view (about 112k cells in 8 min on a crowded run).
+FADE_FOOTPRINTS = False
 PERSON_MEMORY_S = 60
 PERSON_RADIUS_MM = 450
 PERSON_BELOW_MM, PERSON_ABOVE_MM = 900, 900
@@ -63,6 +66,9 @@ class MacCloud(DenseMap):
     def fade_footprints(self):
         """Delete retained cells in recent person footprints that went unobserved; returns the count."""
         with self.lock:
+            if not FADE_FOOTPRINTS:
+                self.people.clear()
+                return 0
             now = self.clock()
             while self.people and now - self.people[0][0] > PERSON_MEMORY_S:
                 self.people.popleft()

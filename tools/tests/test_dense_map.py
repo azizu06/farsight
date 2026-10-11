@@ -1,6 +1,7 @@
 import asyncio
 import struct
 import unittest
+from unittest import mock
 import uuid
 
 from aiohttp import web
@@ -52,6 +53,16 @@ class CloudTests(unittest.TestCase):
                            [(40, 0, 0, 10, 11, 12, 1)])
         self.assertEqual(list(accumulator.cloud.cells), [(4, 0, 0)])
 
+    def test_person_footprint_fade_is_off_by_default(self):
+        now = [0.]
+        cloud = MacCloud(retained_history=True, clock=lambda: now[0])
+        cloud.apply([(1000, 1000, -2000, 9, 9, 9, 1)])
+        cloud.observe_people([(1.0, 1.0, -2.0)])
+        now[0] = 30.
+        self.assertEqual(cloud.fade_footprints(), 0)
+        self.assertEqual(len(cloud.cells), 1)
+
+    @mock.patch("tools.dense_map.FADE_FOOTPRINTS", True)
     def test_person_footprint_fades_unobserved_cells_and_keeps_the_rest(self):
         now = [0.]
         cloud = MacCloud(retained_history=True, clock=lambda: now[0])

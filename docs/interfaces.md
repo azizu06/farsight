@@ -831,7 +831,7 @@ See `docs/dense-map.md` for launch, budgets and evidence limits.
 Jetson visual samples skip depth-edge fringes (5x5 depth range above 20% of depth) and
 surfaces seen past 80 degrees from the view ray (86 for near-horizontal surfaces), which
 removes ARKit's smoothed flying-pixel sheets between foreground and background.
-The Mac's retained history fades cells in recent person footprints (torso points from
+The Mac relay can fade retained cells in recent person footprints (off by default, `FADE_FOOTPRINTS` in `tools/dense_map.py`, because it also erased cells that had only gone out of view) (torso points from
 `/ws/detections`, 0.45 m radius, ±0.9 m height, 60 s memory) once unobserved for 15 s,
 as journaled deletes; `/dense/status` adds `faded_footprint_cells` and `people_error`.
 Jetson visual ingestion is latest-only background work (default 8 Hz, 12,288 real
