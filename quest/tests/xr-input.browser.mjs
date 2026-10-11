@@ -522,13 +522,13 @@ try {
   assert.equal(result.second.replaced, true);
   assert.deepEqual([result.second.width, result.second.height], [1280, 720]);
   assert.deepEqual(result.tracked, {
-    initialArm: true, valid: true, held: true, v: 0.45, w: 0.55, moving: true, sampledAt: 100,
+    initialArm: true, valid: true, held: true, v: 0.675, w: 0.825, moving: true, sampledAt: 100,
   }, "right Touch thumbstick drives despite opposite left-stick axes");
   assert.deepEqual(result.lost, {
     valid: true,
     held: true,
-    v: 0.45,
-    w: 0.55,
+    v: 0.675,
+    w: 0.825,
     moving: true,
     needsRelease: false,
     stale: false,
@@ -548,13 +548,13 @@ try {
   assert.deepEqual(result.removedLeft, {
     initiallyArmed: true,
     valid: true,
-    v: 0.45,
-    w: 0.55,
+    v: 0.675,
+    w: 0.825,
     moving: true,
     needsRelease: false,
   }, "removing the optional left controller does not interrupt right-controller driving");
   assert.deepEqual(result.disconnectedLeft, {
-    valid: true, v: 0.45, w: 0.55, moving: true, needsRelease: false,
+    valid: true, v: 0.675, w: 0.825, moving: true, needsRelease: false,
   }, "disconnected left controller does not invalidate a tracked right controller");
   assert.deepEqual(result.replacedRight, {
     rearmed: true,
@@ -743,7 +743,7 @@ try {
   assert.deepEqual(interactions.autoDrive, { deadman: true, mode: "explore", v: 0, w: 0, intent: "explore", roamed: true, turned: true },
     "AUTO: a deflected stick roams the map and never sends physical v/w or a stick override");
   assert.deepEqual(interactions.backToManual, { mode: "teleop", release: true, auto: false, cameraView: true, deadman: false });
-  assert.deepEqual(interactions.drove, { deadman: true, v: 0.45, w: 0 }, "right stick forward drives");
+  assert.deepEqual(interactions.drove, { deadman: true, v: 0.675, w: 0 }, "right stick forward drives");
   assert.deepEqual(interactions.drift, { mode: "explore", v: 0, w: 0 }, "drift inside the deadzone and the left stick never override Explore");
   assert.equal(interactions.override, "teleop", "a real right-stick push takes back control");
   assert.deepEqual(interactions.holdA, { menu: true, view: "camera", viewBeforeHold: "camera" });
@@ -1205,9 +1205,9 @@ try {
       return { driving, blip, afterBlip, lost, resumed, stale, auto, bStop, heldAfterB, rePressed: messages.at(-1).deadman };
     } finally { renderer.xr.isPresenting = false; subject.dispose(); renderer.dispose(); }
   });
-  assert.deepEqual(demo.driving, { deadman: true, v: 0.45 });
+  assert.deepEqual(demo.driving, { deadman: true, v: 0.675 });
   assert.deepEqual(demo.blip, { stops: [], deadman: true, v: 0 }, "a short tracking blip neither stops nor needs a re-press");
-  assert.deepEqual(demo.afterBlip, { deadman: true, v: 0.45 });
+  assert.deepEqual(demo.afterBlip, { deadman: true, v: 0.675 });
   assert.deepEqual(demo.lost, { deadman: false, stopped: true }, "right controller gone > 1 s stops");
   assert.deepEqual(demo.resumed, { releaseTick: true, deadman: true }, "held trigger resumes after one client-sent release");
   assert.deepEqual(demo.stale, { deadman: true, videoFresh: false, warning: true }, "stale video warns instead of blocking on the client");

@@ -332,11 +332,24 @@ async fn bonded_guards(
     next.run(req).await
 }
 
+/// operator_relay.py dispatch parity: the geometry lane owns this exact
+/// surface when --geometry-upstream is set. /geometry/* stays a prefix
+/// (Python lists /geometry/status + /geometry/mesh.bin exactly; the chunk
+/// delta feed lives there too and no other upstream serves it).
+fn geometry_path(path: &str) -> bool {
+    path.starts_with("/geometry/")
+        || matches!(
+            path,
+            "/ws/map" | "/map/status" | "/map/mesh.bin" | "/map/points.bin"
+                | "/map/export.ply" | "/map/reset" | "/map/pause"
+        )
+}
+
 /// The HTTP route for geometry paths when a --geometry-upstream origin is
 /// configured (None = the Jetson origin serves everything).
 fn geometry_route(s: &AppState, path: &str) -> Option<Url> {
     let g = s.geometry.as_ref()?;
-    (path.starts_with("/geometry/") || path == "/map/mesh.bin").then(|| g.clone())
+    geometry_path(path).then(|| g.clone())
 }
 
 fn upstream_target(s: &AppState, req: &Request) -> String {
@@ -345,7 +358,7 @@ fn upstream_target(s: &AppState, req: &Request) -> String {
     // Board-agreed split: assembled geometry comes from the Mac service,
     // everything else from the Jetson.
     if let Some(g) = &s.geometry {
-        if path.starts_with("/geometry/") || path == "/map/mesh.bin" {
+        if geometry_path(path) {
             return format!("{}{}", g.as_str().trim_end_matches('/'), path_and_query);
         }
     }
