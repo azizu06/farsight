@@ -5,10 +5,9 @@ export function rawTextureLayer({endpoint='/phone/frame.bin',enabled=false,pollI
   let raw,polling=true;
   return {
     init(ctx) {
-      raw=new RawView(ctx.root,()=>ctx.requestFrame(),{endpoint,history:false,surfaceHistory,pollInterval,onChange:()=>ctx.requestFrame()});
-      // The core renderer retains measured points already. Avoid a duplicate
-      // point overlay stippling the native camera texture.
-      raw.setLayers({points:false});
+      raw=new RawView(ctx.root,()=>ctx.requestFrame(),{endpoint,history:false,surfaceHistory,fallbackOnly:true,pollInterval,onChange:()=>ctx.requestFrame()});
+      // Native textures cover supported faces; isolated measured pixels remain
+      // visible as fallback points without stippling the accepted faces.
     },
     poll() { void raw.update(enabled,false,polling); return false; },
     setEnabled(value) { enabled=Boolean(value);if(!enabled)void raw?.update(false,false); },

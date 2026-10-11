@@ -43,14 +43,20 @@ self.onmessage=async({data})=>{
   }
   // Only triangles supported by neighboring measured depth pixels; refuse depth
   // discontinuities. No unorganized-cell triangulation or hole filling.
-  const indices=[];
+  const indices=[],covered=history?null:new Uint8Array(count);
   const triangle=(a,b,c)=>{
    if(!valid[a]||!valid[b]||!valid[c])return;
    const lo=Math.min(depths[a],depths[b],depths[c]),hi=Math.max(depths[a],depths[b],depths[c]);
    if(hi-lo>Math.max(.025,lo*.04))return;
    indices.push(a,b,c);
+   if(covered)covered[a]=covered[b]=covered[c]=1;
   };
   for(let y=0;y<ht-1;y++)for(let x=0;x<w-1;x++){const a=y*w+x,b=a+1,c=a+w,d=c+1;triangle(a,c,b);triangle(b,c,d);}
+  // Preserve every valid latest-grid measurement; draw only the ones that
+  // belong to none of the already accepted native-depth triangles.
+  const fallback=[];let pointIndex=0;
+  if(!history)for(let i=0;i<count;i++)if(valid[i]){if(!covered[i])fallback.push(pointIndex);pointIndex++;}
+  const fallbackIndices=history?null:new Uint32Array(fallback);
   if(history)for(const [key,value]of cells){if(now-value.at>ttl*1000||cells.size>capacity)cells.delete(key);else break;}
   const cloudPositions=history?new Float32Array(cells.size*3):latestPositions.subarray(0,latestCount*3);
   const colors=history?new Float32Array(cells.size*3):latestColors.subarray(0,latestCount*3);let cursor=0;
@@ -60,8 +66,8 @@ self.onmessage=async({data})=>{
   if(Date.now()>(data.deadline??Infinity)){textureImage.close();throw Error('RGB-D expired during projection');}
   lastFrame=h.frame_id;
   const faces=new Uint32Array(indices);
-  self.postMessage({identity,frame:h.frame_id,mode:history?'history':'latest',max_points:history?capacity:count,point_transfer_bytes:cloudPositions.buffer.byteLength+colors.buffer.byteLength,points:cloudPositions.length/3,positions:cloudPositions,colors,
+  self.postMessage({identity,frame:h.frame_id,mode:history?'history':'latest',max_points:history?capacity:count,point_transfer_bytes:cloudPositions.buffer.byteLength+colors.buffer.byteLength,points:cloudPositions.length/3,positions:cloudPositions,colors,fallback_indices:fallbackIndices,
    patch:{positions,uv,indices:faces,image:textureImage,at:now,transform:m},ttl,source:h.capture_source??'UNVERIFIED RAW CAPTURE',processing_ms:Date.now()-now},
-   [cloudPositions.buffer,colors.buffer,positions.buffer,uv.buffer,faces.buffer,textureImage]);
+   [cloudPositions.buffer,colors.buffer,positions.buffer,uv.buffer,faces.buffer,textureImage,...(fallbackIndices?[fallbackIndices.buffer]:[])]);
  }catch(e){self.postMessage({error:String(e)});}
 };

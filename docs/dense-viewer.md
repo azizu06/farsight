@@ -157,6 +157,12 @@ keeping already accepted surfaces visible and expiring; stats expose
 `raw_polling`. Re-enable continuous pulls only in the owner's qualified window.
 
 The production Mac renderer draws measured surfaces before fallback points.
+The raw adapter retains the entire valid native point grid and uses an index
+mask to draw only samples that belong to no accepted depth triangle. This keeps
+isolated measured pixels visible without a duplicate point overlay on textured
+faces. Stats expose `raw_point_mode: 'uncovered'`, `raw_fallback_points` and
+`raw_point_draw_count`; `raw_points` remains the full valid native sample count.
+The mask reuses existing triangle support decisions and adds no admission rule.
 Its coarse splats follow the map's advertised voxel spacing (1.8×voxel size,
 72mm at4cm cells, corrected for the camera projection/FOV); the1cm dense lane
 uses a separate35mm material, matching the Pip Scout point footprint. Both
