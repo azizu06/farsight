@@ -29,8 +29,15 @@ enum Cmd {
     Select {
         #[arg(long)] in_dir: PathBuf,
         #[arg(long)] out_dir: PathBuf,
-        /// Max number of TRAIN views to keep (0 = keep all after culls).
+        /// Max number of TRAIN views to keep (0 = keep all after culls,
+        /// unless --steps auto-sizes it).
         #[arg(long, default_value_t = 0)] budget: usize,
+        /// Auto view count: planned training steps. With --budget 0 this
+        /// keeps ceil(steps / epochs) train views so each is seen ~epochs
+        /// times on average.
+        #[arg(long)] steps: Option<u32>,
+        /// Target epochs per view for --steps auto-sizing.
+        #[arg(long, default_value_t = 30.0)] epochs: f64,
         /// Held-out split period, identical to eval-split-every (0 = none).
         #[arg(long, default_value_t = 8)] eval_every: usize,
         /// Drop this fraction of the blurriest training views.
@@ -221,7 +228,9 @@ fn dist(a: [f64; 3], b: [f64; 3]) -> f64 {
 fn cmd_select(
     in_dir: &Path,
     out_dir: &Path,
-    budget: usize,
+    budget_arg: usize,
+    steps: Option<u32>,
+    epochs: f64,
     eval_every: usize,
     blur_drop_frac: f64,
     blur_rel_thresh: f64,
@@ -233,6 +242,16 @@ fn cmd_select(
 ) -> Result<()> {
     let (json, frames) = load_transforms(&in_dir.join("transforms.json"))?;
     let n = frames.len();
+
+    // --views auto: keep ceil(steps/epochs) views so every view is sampled
+    // ~epochs times at a steps-per-view random schedule; 0 = keep all.
+    let mut budget = budget_arg;
+    if budget == 0 {
+        if let Some(s) = steps {
+            budget = ((s as f64) / epochs.max(1.0)).ceil() as usize;
+            eprintln!("views auto: {} steps @ {} epochs/view -> keep <= {}", s, epochs, budget);
+        }
+    }
 
     let _use_vimage = want_vision(engine, "select")?;
     #[cfg(all(target_os = "macos", feature = "vision"))]
@@ -1253,6 +1272,8 @@ fn main() -> Result<()> {
             in_dir,
             out_dir,
             budget,
+            steps,
+            epochs,
             eval_every,
             blur_drop_frac,
             blur_rel_thresh,
@@ -1265,6 +1286,8 @@ fn main() -> Result<()> {
             &in_dir,
             &out_dir,
             budget,
+            steps,
+            epochs,
             eval_every,
             blur_drop_frac,
             blur_rel_thresh,
