@@ -114,6 +114,7 @@ pub async fn eval_current(
             img.clone(),
             AlphaMode::Masked,
             device,
+            false,
         )
         .await?;
         let p = sample.psnr.clone().into_scalar_async::<f32>().await?;
