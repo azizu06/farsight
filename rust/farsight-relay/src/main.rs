@@ -552,9 +552,11 @@ async fn relay_ws(local: WebSocket, s: Arc<AppState>, target: &str, control: boo
                 local_seen.store(now_ms(), Ordering::Relaxed);
                 match message {
                     Message::Text(text) => {
-                        let mut data = text.to_string();
-                        if camera_video {
-                            if let Ok(packet) = serde_json::from_str::<Value>(&data) {
+                        // Utf8Bytes -> String only when a gate actually mutates
+                        // the payload; unchanged messages forward verbatim.
+                        let mut data: Option<String> = None;
+                        if camera_video && text.contains("request_id") {
+                            if let Ok(packet) = serde_json::from_str::<Value>(&text) {
                                 if packet.is_object()
                                     && packet.get("type").and_then(|v| v.as_str()) == Some("next")
                                     && packet.get("request_id").map(|v| v.is_i64()).unwrap_or(false)
@@ -574,7 +576,7 @@ async fn relay_ws(local: WebSocket, s: Arc<AppState>, target: &str, control: boo
                             }
                         }
                         if control {
-                            match serde_json::from_str::<Value>(&data) {
+                            match serde_json::from_str::<Value>(&text) {
                                 Ok(mut command) if command.is_object() => {
                                     if command["deadman"] == Value::Bool(true) && !demo_mode {
                                         let age = command["video_age_ms"].as_f64();
@@ -584,7 +586,7 @@ async fn relay_ws(local: WebSocket, s: Arc<AppState>, target: &str, control: boo
                                             command["deadman"] = json!(false);
                                             command["v"] = json!(0);
                                             command["w"] = json!(0);
-                                            data = command.to_string();
+                                            data = Some(command.to_string());
                                         }
                                     }
                                 }
@@ -597,12 +599,13 @@ async fn relay_ws(local: WebSocket, s: Arc<AppState>, target: &str, control: boo
                                 }
                             }
                         }
+                        let out = match data {
+                            Some(d) => tokio_tungstenite::tungstenite::Message::Text(d.into()),
+                            None => tokio_tungstenite::tungstenite::Message::Text(text.as_str().into()),
+                        };
                         let rtx = remote_tx.clone();
                         if tokio::time::timeout(deadline, async move {
-                            rtx.lock()
-                                .await
-                                .send(tokio_tungstenite::tungstenite::Message::Text(data.into()))
-                                .await
+                            rtx.lock().await.send(out).await
                         })
                         .await
                         .is_err()
@@ -676,9 +679,12 @@ async fn relay_ws(local: WebSocket, s: Arc<AppState>, target: &str, control: boo
                 let arrived = Instant::now();
                 match message {
                     tokio_tungstenite::tungstenite::Message::Text(text) => {
-                        let mut data = text.to_string();
+                        // URL rewriting can only change a packet that mentions
+                        // the upstream origin; parse/serialize only then, or
+                        // when the video lane needs segment instrumentation.
+                        let mut data: Option<String> = None;
                         if camera_video {
-                            match serde_json::from_str::<Value>(&data) {
+                            match serde_json::from_str::<Value>(&text) {
                                 Ok(mut packet) if packet.is_object()
                                     && packet.get("type").and_then(|v| v.as_str()) == Some("video_segment") =>
                                 {
@@ -707,7 +713,7 @@ async fn relay_ws(local: WebSocket, s: Arc<AppState>, target: &str, control: boo
                                         st.network_bound_ms = bound;
                                         st.residence_ms = Some(residence);
                                     }
-                                    data = packet.to_string();
+                                    data = Some(packet.to_string());
                                     let age = packet
                                         .get("age_ms")
                                         .and_then(|v| v.as_f64())
@@ -715,23 +721,35 @@ async fn relay_ws(local: WebSocket, s: Arc<AppState>, target: &str, control: boo
                                     if age.is_some() {
                                         video_stats.lock().unwrap().stale_disconnects += 1;
                                         let ltx = local_tx.clone();
-                                        let _ = ltx.lock().await.send(Message::Text(data.into())).await;
+                                        let _ = ltx
+                                            .lock()
+                                            .await
+                                            .send(Message::Text(data.take().unwrap().into()))
+                                            .await;
                                         local_close(&ltx, 1013, "Stale camera; reconnect for latest keyframe").await;
                                         return;
                                     }
                                 }
                                 _ => {
-                                    if let Ok(v) = serde_json::from_str::<Value>(&data) {
-                                        data = rewrite_json(&v, &origin).to_string();
+                                    if text.contains(origin.as_str()) {
+                                        if let Ok(v) = serde_json::from_str::<Value>(&text) {
+                                            data = Some(rewrite_json(&v, &origin).to_string());
+                                        }
                                     }
                                 }
                             }
-                        } else if let Ok(v) = serde_json::from_str::<Value>(&data) {
-                            data = rewrite_json(&v, &origin).to_string();
+                        } else if text.contains(origin.as_str()) {
+                            if let Ok(v) = serde_json::from_str::<Value>(&text) {
+                                data = Some(rewrite_json(&v, &origin).to_string());
+                            }
                         }
+                        let out = match data {
+                            Some(d) => Message::Text(d.into()),
+                            None => Message::Text(text.as_str().into()),
+                        };
                         let ltx = local_tx.clone();
                         if tokio::time::timeout(deadline, async move {
-                            ltx.lock().await.send(Message::Text(data.into())).await
+                            ltx.lock().await.send(out).await
                         })
                         .await
                         .is_err()
