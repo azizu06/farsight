@@ -210,7 +210,9 @@ the goal.
   lethal map cell. With nothing within `speed_open_clearance_m` (0.8 m) it drives at the
   server's top speed: the drive profile's `max_linear_mps` (0.304 m/s loaded, PWM 255),
   else `speed_mps * max_v`. It slows linearly to the 0.15 m/s floor at
-  `speed_tight_clearance_m` (0.3 m), on the same arc. Off-map space never slows it.
+  `speed_tight_clearance_m` (0.3 m). The turn rate stays as Nav2 sent it, like the
+  server's own speed clamp, so the slower rover turns more sharply; scaling the turn with
+  the speed kept RPP's wider arc and hit simulated walls. Off-map space never slows it.
   RPP's own cost-regulated scaling stays off: it only sees the 0.22 m inflation.
   Before, RPP asked for the same speed everywhere (captain, 2026-10-11: "it should go
   fast in open space and slower in tight corners").

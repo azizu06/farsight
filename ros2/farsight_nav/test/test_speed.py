@@ -7,12 +7,12 @@ from farsight_nav import speed
 
 def test_open_space_is_full_speed_and_tight_spots_slow_to_the_floor():
     top = 0.304  # the loaded rover's profile top
-    assert speed.limit((0.95, 0.4), None, top) == (top, 0.4 * top / 0.95)  # nothing within reach
+    assert speed.limit((0.95, 0.4), None, top) == (top, 0.4)  # nothing within reach; the turn rate stays
     assert speed.limit((0.95, 0.0), 1.2, top) == (top, 0.0)
     assert speed.limit((0.95, 0.0), 0.3, top) == (0.15, 0.0)
     assert speed.limit((0.95, 0.0), 0.1, top) == (0.15, 0.0)  # never under the AUTO floor
     v, w = speed.limit((0.95, 1.0), 0.55, top)
-    assert math.isclose(v, 0.15 + (top - 0.15) * 0.5) and math.isclose(w / v, 1.0 / 0.95)  # same arc
+    assert math.isclose(v, 0.15 + (top - 0.15) * 0.5) and w == 1.0  # as the server's clamp: a sharper turn
     assert speed.limit((0.1, 0.3), 0.3, top) == (0.1, 0.3)  # a slower command passes unchanged
     assert speed.limit((0.0, 2.2), 0.3, top) == (0.0, 2.2)  # an in-place turn is not a translation
     assert speed.limit((-0.3, 0.0), 0.3, top) == (-0.15, 0.0)

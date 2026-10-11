@@ -51,11 +51,15 @@ def clearance_limit(clearance_m, top_mps, *, floor_mps=0.15, tight_m=0.3, open_m
 
 
 def limit(command, clearance_m, top_mps, **bands):
-    """(v, w) scaled down together so |v| obeys the clearance limit (same arc); slower commands pass."""
+    """(v, w) with |v| held to the clearance limit and w as Nav2 sent it; slower commands pass.
+
+    The turn rate is kept, like the server's own speed clamp: the slower rover then turns
+    more sharply than planned. Scaling w with v kept RPP's wider arc and hit simulated walls.
+    """
     v, w = command
     if top_mps is None:
         return command
     cap = clearance_limit(clearance_m, top_mps, **bands)
     if abs(v) <= cap:
         return command
-    return math.copysign(cap, v), w * cap / abs(v)
+    return math.copysign(cap, v), w
