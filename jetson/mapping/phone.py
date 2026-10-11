@@ -165,6 +165,11 @@ def measured_points(frame, max_points=None, phase=0):
 
 # Coarser grid strides kept per keyframe for the capped visual mesh export.
 VISUAL_LODS = (4, 8)
+# Depth-grid stride feeding the 4 cm VoxelMap. Its integrate loop is per-voxel Python under
+# MapState.lock, so stride 2 (~12k samples/frame on 256x192 LiDAR) blocked ingest ~100 ms/frame
+# and up to ~700 ms under GIL contention. Stride 4 spaces samples ~4 cm at 2 m, matching the
+# voxel size; fine detail comes from the dense map.
+VOXEL_POINT_STRIDE = 4
 
 
 def grid_mesh(positions, colors, usable, depths):
@@ -184,11 +189,12 @@ def grid_mesh(positions, colors, usable, depths):
             indices.astype(np.uint32).reshape(-1, 3))
 
 
-def reconstruct(frame, stride=2, min_confidence=1, lods=()):
+def reconstruct(frame, stride=2, min_confidence=1, lods=(), point_stride=None):
     """Project measured samples and build triangles only across observed surfaces.
 
     With `lods`, also returns {stride: mesh} triangulated from coarser samplings of
     the same grid (same depth-edge rule), for a connected low-detail visual export.
+    `point_stride` samples the returned points more coarsely than the mesh.
     """
     usable = valid_depth(frame.depth, near=0.15, far=8, edge_ratio=0.12)
     usable &= frame.confidence >= min_confidence
@@ -197,6 +203,8 @@ def reconstruct(frame, stride=2, min_confidence=1, lods=()):
                            usable[::step, ::step], frame.depth[::step, ::step])
     positions, colors, fine, depths = sample(stride)
     mesh = grid_mesh(positions, colors, fine, depths)
+    point_positions, point_colors, point_usable, _ = sample(point_stride) if point_stride else (positions, colors, fine, None)
+    points, point_colors = point_positions[point_usable], point_colors[point_usable]
     if not lods:
-        return positions[fine], colors[fine], mesh
-    return positions[fine], colors[fine], mesh, {step: grid_mesh(*sample(step)) for step in lods}
+        return points, point_colors, mesh
+    return points, point_colors, mesh, {step: grid_mesh(*sample(step)) for step in lods}
