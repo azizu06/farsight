@@ -31,6 +31,8 @@ pub struct DensifyOptions {
     /// Extend dominant planes across in-footprint gaps.
     pub plane_fill: bool,
     /// Marching-front fill for curved / non-dominant surfaces (also upsamples).
+    /// Off by default: swept-front fills hurt precision more than they help;
+    /// keep for explicit opt-in only.
     pub crust_fill: bool,
     /// Minimum inlier count for a dominant plane instance.
     pub min_plane_points: usize,
@@ -52,7 +54,7 @@ impl Default for DensifyOptions {
             mls_iters: 1,
             fit_k: 20,
             plane_fill: true,
-            crust_fill: true,
+            crust_fill: false,
             min_plane_points: 1500,
             edge_deg: 55.0,
             color_from_capture: true,
@@ -228,7 +230,9 @@ pub fn run(cloud: &PointCloud, capture: Option<&Capture>, opts: &DensifyOptions)
     out.pos.extend_from_slice(&fpos);
     out.col.extend_from_slice(&fcol);
     out.nrm.extend_from_slice(&fnrm);
-    out.weight.extend(fsup.iter().map(|&s| (1.0 - 0.85 * (s / reach).min(1.0)).clamp(0.12, 0.95)));
+    // Flat, sub-measured confidence: fills are priors — they must never
+    // out-vote noisy measured neighbours in the mesher's sign field.
+    out.weight.extend(fsup.iter().map(|_| 0.35f32));
     out.radius.extend(std::iter::repeat(ts).take(n_fill));
     out.flags.extend(std::iter::repeat(FLAG_INTERPOLATED).take(n_fill));
     out.validate();
@@ -333,8 +337,9 @@ fn mls_pass(cur: &mut PointCloud, ts: f32, k: usize) -> f64 {
                     if dot(n, n0) < 0.0 {
                         n = scale(n, -1.0);
                     }
-                    // Cap the snap at 2 sigma-ish so outliers don't lurch.
-                    let d = f.signed_dist(*p).clamp(-3.0 * ts, 3.0 * ts);
+                    // Cap the snap well below the noise sigma so measured
+                    // points stay within their own uncertainty.
+                    let d = f.signed_dist(*p).clamp(-0.008, 0.008);
                     (sub(*p, scale(n, d)), n)
                 }
                 None => (*p, n0),

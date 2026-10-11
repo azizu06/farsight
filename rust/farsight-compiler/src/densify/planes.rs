@@ -76,8 +76,13 @@ pub fn detect(cloud: &PointCloud, min_inliers: usize, eps: f32, normal_cos: f32)
             let center_off = (acc as f64 / tot as f64 + 0.5) * bin_w as f64;
             let nrm = normalize(buckets[&key].1);
             let fit = refine(cloud, nrm, center_off as f32, eps, normal_cos);
+            // Drop planes whose refit residual is too large: a composite
+            // "plane" through two or more real surfaces has high rms and its
+            // raster would emit a diagonal sheet through free space.
             if let Some(f) = fit {
-                planes.push(Plane { fit: f, inliers: tot as usize });
+                if f.rms <= 0.6 * eps {
+                    planes.push(Plane { fit: f, inliers: tot as usize });
+                }
             }
             i = j;
         }
@@ -156,16 +161,73 @@ pub fn fill(
     // Inlier tolerance must swallow depth noise (~sigma ~ 1.5 cm at 3 m) plus
     // quantisation, or genuinely measured wall cells look like gaps.
     let eps_inlier = (4.0 * ts).max(0.04);
+    // Emit fills no denser than the measured surface: median nearest-neighbour
+    // spacing over a strided sample.
+    let mut nn = Vec::with_capacity(512);
+    let mut buf: Vec<(u32, f32)> = Vec::new();
+    for i in (0..cloud.len()).step_by((cloud.len() / 512).max(1)) {
+        buf.clear();
+        meas_grid.knn(cloud.pos[i], 2, ts * 8.0, &mut buf);
+        if buf.len() == 2 {
+            nn.push(buf[1].1);
+        }
+    }
+    nn.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let local_ts = if nn.is_empty() { ts } else { nn[nn.len() / 2] };
+    let emit_ts = ts.max(local_ts);
+    let emit_cells = (emit_ts * inv).round().max(1.0) as i32;
 
+    // Cross-plane clipping: for each detected plane, a coarse occupied-uv
+    // footprint plus the sign of its room-interior side (the side facing the
+    // cloud centroid). A fill on plane A that lands BEHIND a non-parallel
+    // plane B inside B's measured footprint is extrapolated — walls stop at
+    // neighbouring walls, the floor stops at walls, everything stops where
+    // another measured surface is in front.
+    let mut centroid = [0.0f32; 3];
+    for p in &cloud.pos {
+        centroid[0] += p[0];
+        centroid[1] += p[1];
+        centroid[2] += p[2];
+    }
+    for c in &mut centroid {
+        *c /= cloud.len().max(1) as f32;
+    }
+    let fp_cell = 4.0 * ts;
+    let mut footprints: Vec<FxHashSet<(i32, i32)>> = Vec::with_capacity(planes.len());
+    let mut fside: Vec<f32> = Vec::with_capacity(planes.len());
+    let mut fbasis: Vec<(V3, V3)> = Vec::with_capacity(planes.len());
     for plane in planes {
+        let f = &plane.fit;
+        let (u, v) = tangent_basis(f.n);
+        let mut set: FxHashSet<(i32, i32)> = FxHashSet::default();
+        for i in 0..cloud.len() {
+            if f.signed_dist(cloud.pos[i]).abs() > eps_inlier
+                || dot(cloud.nrm[i], f.n).abs() < 0.5
+            {
+                continue;
+            }
+            let d = sub(cloud.pos[i], f.c);
+            set.insert((
+                (dot(d, u) / fp_cell).floor() as i32,
+                (dot(d, v) / fp_cell).floor() as i32,
+            ));
+        }
+        footprints.push(set);
+        fside.push(if f.signed_dist(centroid) >= 0.0 { 1.0 } else { -1.0 });
+        fbasis.push((u, v));
+    }
+
+    for (pi, plane) in planes.iter().enumerate() {
         let f = &plane.fit;
         let (u, v) = tangent_basis(f.n);
         // Gather inliers of this plane and their uv coords.
         let mut uvs: Vec<(f32, f32)> = Vec::new();
+        let mut sdfs: Vec<f32> = Vec::new();
         let mut uvmin = [f32::INFINITY; 2];
         let mut uvmax = [f32::NEG_INFINITY; 2];
         for i in 0..cloud.len() {
-            if f.signed_dist(cloud.pos[i]).abs() > eps_inlier || dot(cloud.nrm[i], f.n).abs() < 0.5 {
+            let s = f.signed_dist(cloud.pos[i]);
+            if s.abs() > eps_inlier || dot(cloud.nrm[i], f.n).abs() < 0.5 {
                 continue;
             }
             let d = sub(cloud.pos[i], f.c);
@@ -175,6 +237,7 @@ pub fn fill(
             uvmax[0] = uvmax[0].max(uu);
             uvmax[1] = uvmax[1].max(vv);
             uvs.push((uu, vv));
+            sdfs.push(s);
         }
         if uvs.is_empty() {
             continue;
@@ -192,12 +255,25 @@ pub fn fill(
             continue;
         }
         // Occupancy + chamfer distance (two-pass, 8-connected, unit/diagonal 1.5).
+        // Per-inlier-cell mean signed offset from the fitted plane rides along
+        // so fill cells can sit on the LOCAL measured surface rather than the
+        // global fit (kills fit bias at the coverage corners).
         let mut dist = vec![i32::MAX / 4; w * h];
-        for &(uu, vv) in &uvs {
+        let mut cell_off = vec![0.0f32; w * h];
+        let mut cell_cnt = vec![0u16; w * h];
+        for (&(uu, vv), &s) in uvs.iter().zip(sdfs.iter()) {
             let i = (uu * inv).floor() as i32 - ext_i0;
             let j = (vv * inv).floor() as i32 - ext_j0;
             if i >= 0 && j >= 0 && (i as usize) < w && (j as usize) < h {
-                dist[(j as usize) * w + i as usize] = 0;
+                let idx = (j as usize) * w + i as usize;
+                dist[idx] = 0;
+                cell_off[idx] += s;
+                cell_cnt[idx] += 1;
+            }
+        }
+        for idx in 0..w * h {
+            if cell_cnt[idx] > 0 {
+                cell_off[idx] /= cell_cnt[idx] as f32;
             }
         }
         // Forward pass.
@@ -272,30 +348,183 @@ pub fn fill(
                 }
                 let idx = (nj as usize) * w + ni as usize;
                 // Flood only through cells well clear of inliers: cells within
-                // ~2.5 cells of a measured point act as barrier so sparse rim
+                // ~4 cells of a measured point act as barrier so sparse rim
                 // sampling cannot leak the flood into an enclosed gap.
-                if !open[idx] && dist[idx] > 25 {
+                if !open[idx] && dist[idx] > 40 {
                     open[idx] = true;
                     queue.push(nj * w as i32 + ni);
                 }
             }
         }
-        // Emit: unreachable (enclosed) cells within reach.
+        // Label enclosed components and measure each rim: a real hole is
+        // ringed by measured inlier cells; sparse-region pockets and voids
+        // between objects are bounded mostly by near-inlier cells. Small
+        // pockets fill anyway (harmless densification); large components must
+        // prove a measured rim.
+        let mut comp = vec![-1i32; w * h];
+        let mut comp_size: Vec<i32> = Vec::new();
+        let mut comp_edge: Vec<i32> = Vec::new();
+        let mut comp_rim: Vec<i32> = Vec::new();
+        let mut comp_border: Vec<bool> = Vec::new();
+        for j in 0..h as i32 {
+            for i in 0..w as i32 {
+                let idx = (j as usize) * w + i as usize;
+                if dist[idx] == 0 || open[idx] || comp[idx] >= 0 {
+                    continue;
+                }
+                let cid = comp_size.len() as i32;
+                let (mut size, mut edge, mut rim) = (0i32, 0i32, 0i32);
+                let mut border = false;
+                let mut q2 = vec![(j, i)];
+                comp[idx] = cid;
+                while let Some((cj, ci)) = q2.pop() {
+                    size += 1;
+                    if cj == 0 || ci == 0 || cj == h as i32 - 1 || ci == w as i32 - 1 {
+                        border = true;
+                    }
+                    let mut on_edge = false;
+                    for (dj, di) in [(1i32, 0i32), (-1, 0), (0, 1), (0, -1)] {
+                        let (nj, ni) = (cj + dj, ci + di);
+                        if nj < 0 || ni < 0 || nj >= h as i32 || ni >= w as i32 {
+                            on_edge = true;
+                            continue;
+                        }
+                        let nidx = (nj as usize) * w + ni as usize;
+                        if dist[nidx] == 0 {
+                            rim += 1;
+                            on_edge = true;
+                        } else if open[nidx] {
+                            on_edge = true;
+                        } else if comp[nidx] < 0 {
+                            comp[nidx] = cid;
+                            q2.push((nj, ni));
+                        }
+                    }
+                    if on_edge {
+                        edge += 1;
+                    }
+                }
+                comp_size.push(size);
+                comp_edge.push(edge);
+                comp_rim.push(rim);
+                comp_border.push(border);
+            }
+        }
+
+        // Nearest-inlier offset field: sweep along the chamfer gradient so
+        // every empty cell knows the mean surface offset of its closest
+        // measured cell.
+        let mut src = vec![0.0f32; w * h];
+        for idx in 0..w * h {
+            if dist[idx] == 0 {
+                src[idx] = cell_off[idx];
+            }
+        }
+        for j in 0..h {
+            for i in 0..w {
+                let idx = j * w + i;
+                if dist[idx] == 0 {
+                    continue;
+                }
+                let mut best = dist[idx];
+                let mut boff = src[idx];
+                for (dj, di) in [(0i32, -1i32), (-1, 0), (-1, -1), (-1, 1)] {
+                    let (nj, ni) = (j as i32 + dj, i as i32 + di);
+                    if nj < 0 || ni < 0 || nj >= h as i32 || ni >= w as i32 {
+                        continue;
+                    }
+                    let nidx = (nj as usize) * w + ni as usize;
+                    if dist[nidx] < best {
+                        best = dist[nidx];
+                        boff = src[nidx];
+                    }
+                }
+                src[idx] = boff;
+            }
+        }
+        for j in (0..h).rev() {
+            for i in (0..w).rev() {
+                let idx = j * w + i;
+                if dist[idx] == 0 {
+                    continue;
+                }
+                let mut best = dist[idx];
+                let mut boff = src[idx];
+                for (dj, di) in [(0i32, 1i32), (1, 0), (1, 1), (1, -1)] {
+                    let (nj, ni) = (j as i32 + dj, i as i32 + di);
+                    if nj < 0 || ni < 0 || nj >= h as i32 || ni >= w as i32 {
+                        continue;
+                    }
+                    let nidx = (nj as usize) * w + ni as usize;
+                    if dist[nidx] < best {
+                        best = dist[nidx];
+                        boff = src[nidx];
+                    }
+                }
+                src[idx] = boff;
+            }
+        }
+
+        // Emit: enclosed cells within reach whose component is verifiably
+        // rimmed by measured cells — fills go only inside detected holes, we
+        // do not densify sparse measured regions.
         let reach10 = reach_cells * 10;
         for j in 0..h as i32 {
             for i in 0..w as i32 {
                 let idx = (j as usize) * w + i as usize;
                 let d = dist[idx];
-                if d == 0 || open[idx] || d > reach10 {
+                // Inset 2 cells: the measured sheet stays authoritative at the
+                // rim — fills starting deeper inside the hole don't conflict
+                // with noisy inlier normals in the mesher's sign field.
+                if d < 20 || open[idx] || d > reach10 {
+                    continue;
+                }
+                let cid = comp[idx];
+                if cid < 0 || comp_border[cid as usize] {
+                    continue;
+                }
+                let rim_frac = comp_rim[cid as usize] as f32
+                    / (2.0 * comp_edge[cid as usize].max(1) as f32);
+                if rim_frac < 0.25 {
                     continue;
                 }
                 let gi = i + ext_i0;
                 let gj = j + ext_j0;
+                // Emit at the coarser of target and local measured spacing.
+                if gi.rem_euclid(emit_cells) != 0 || gj.rem_euclid(emit_cells) != 0 {
+                    continue;
+                }
                 let pu = (gi as f32 + 0.5) * ts;
                 let pv = (gj as f32 + 0.5) * ts;
-                let p = add(f.c, add(scale(u, pu), scale(v, pv)));
+                // Blend from the local rim offset at the boundary to the global
+                // plane deep inside the hole.
+                let blend = (1.0 - d as f32 / (reach10 as f32 * 0.5)).clamp(0.0, 1.0);
+                let p = add(f.c, add(scale(u, pu), add(scale(v, pv), scale(f.n, src[idx] * blend))));
+                // Clip behind neighbouring measured surfaces.
+                let mut blocked = false;
+                for bi in 0..planes.len() {
+                    if bi == pi || dot(planes[bi].fit.n, f.n).abs() > 0.87 {
+                        continue;
+                    }
+                    let bf = &planes[bi].fit;
+                    if bf.signed_dist(p) * fside[bi] > -fp_cell {
+                        continue;
+                    }
+                    let dp = sub(p, bf.c);
+                    let key = (
+                        (dot(dp, fbasis[bi].0) / fp_cell).floor() as i32,
+                        (dot(dp, fbasis[bi].1) / fp_cell).floor() as i32,
+                    );
+                    if footprints[bi].contains(&key) {
+                        blocked = true;
+                        break;
+                    }
+                }
+                if blocked {
+                    continue;
+                }
                 // Skip if a measured point already covers this spot.
-                if meas_grid.nearest(p, ts * 0.8).is_some() {
+                if meas_grid.nearest(p, emit_ts * 0.8).is_some() {
                     continue;
                 }
                 let key = (
@@ -353,8 +582,9 @@ mod tests {
             occ.insert(((p[0] / ts).floor() as i32, (p[1] / ts).floor() as i32, (p[2] / ts).floor() as i32));
         }
         let fill = fill(&planes, &cloud, ts, 0.4, &mut occ, &grid);
-        // Enclosure semantics: exactly the ~400 enclosed hole cells fill.
-        assert!(fill.pos.len() >= 350, "filled {}", fill.pos.len());
+        // Enclosure semantics: the enclosed hole fills, inset two cells from
+        // the measured rim (~324 of the 400 hole cells emit).
+        assert!(fill.pos.len() >= 300, "filled {}", fill.pos.len());
         // All fills on the plane and inside the hole square-ish region.
         assert!(fill.pos.iter().all(|p| p[2].abs() < 0.015));
         assert!(fill.pos.iter().any(|p| p[0].abs() < 0.1 && p[1].abs() < 0.1));
