@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Farsight — Splat walkthrough</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #080f16; overflow: hidden; color: #d7e2ea; font: 14px/1.4 system-ui, sans-serif; }
+      canvas { display: block; }
+      .splat-bar {
+        position: fixed; left: 12px; top: 12px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+        background: rgba(0, 0, 0, 0.55); padding: 8px 10px; border-radius: 8px; max-width: calc(100vw - 48px);
+      }
+      .splat-bar button, .splat-bar label { font: inherit; color: inherit; background: #1d2a36; border: 1px solid #3a4b5c; border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+      .splat-bar input[type=file] { display: none; }
+      .splat-status { font: 12px/1.3 ui-monospace, monospace; }
+      .splat-help { position: fixed; left: 12px; top: 64px; font-size: 12px; background: rgba(0, 0, 0, 0.45); padding: 4px 8px; border-radius: 6px; }
+    </style>
+  </head>
+  <body>
+    <div class="splat-bar">
+      <button id="splat-reset" type="button">Reset view</button>
+      <button id="splat-flip" type="button">Flip upright</button>
+      <label>Open file<input id="splat-file" type="file" accept=".ply,.splat,.ksplat,.spz" /></label>
+      <span class="splat-status" id="splat-status">No scene: add ?scene=&lt;url&gt; or open a file</span>
+    </div>
+    <div class="splat-help">VR: left stick walks · right stick snap-turns · A or X resets the view. Desktop: drag to orbit, scroll to zoom.</div>
+    <script type="module" src="/src/splat-viewer.ts"></script>
+  </body>
+</html>
