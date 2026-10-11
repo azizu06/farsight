@@ -3,6 +3,8 @@ pub mod config;
 pub mod message;
 pub mod slot;
 pub mod train_stream;
+#[cfg(not(target_family = "wasm"))]
+pub mod kernel_profile;
 
 pub use brush_vfs::DataSource;
 pub type ProcessDevice = burn::tensor::Device;

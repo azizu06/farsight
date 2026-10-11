@@ -38,6 +38,11 @@ pub struct ProcessConfig {
         default_value = "./{dataset}_exports/"
     )]
     pub export_path: String,
+    /// Dump a per-kernel GPU timing table to this JSON path after training.
+    /// Resolved device timestamps serialize kernel launches — profiling
+    /// runs only, never alongside a wall-clock budget.
+    #[arg(long, help_heading = "Process options", value_name = "FILE")]
+    pub profile: Option<std::path::PathBuf>,
     /// Filename of exported ply file
     #[arg(
         long,

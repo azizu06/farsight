@@ -251,6 +251,14 @@ pub(crate) async fn train_stream(
         log::info!("Warmup done in {:?}", warm.elapsed());
     }
 
+    // --profile: resolved per-kernel GPU timestamps for the whole run.
+    // Serializes launches — profiling runs only, not timed budgets.
+    #[cfg(not(target_family = "wasm"))]
+    let kernel_profile = process_config
+        .profile
+        .as_ref()
+        .map(|_| crate::kernel_profile::start_kernel_profile());
+
     log::info!("Start training loop.");
     for iter in process_config.start_iter..train_stream_config.train_config.total_iters() {
         let target_lod = if lod_levels == 0 || iter < training_steps {
@@ -564,6 +572,15 @@ pub(crate) async fn train_stream(
             break;
         }
         brush_async::yield_now().await;
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    if let (Some(profile), Some(path)) = (kernel_profile, process_config.profile.as_ref()) {
+        if let Err(e) = profile.write_json(path) {
+            log::warn!("kernel profile dump failed: {e}");
+        } else {
+            log::info!("kernel profile written to {}", path.display());
+        }
     }
 
     emitter

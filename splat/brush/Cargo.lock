@@ -1129,6 +1129,7 @@ dependencies = [
  "brush-train",
  "brush-vfs",
  "burn",
+ "burn-cubecl",
  "burn-wgpu",
  "clap",
  "getrandom 0.4.3",
