@@ -12,7 +12,7 @@
 // original five-second guards and revision-equality suppression exactly.
 export const MAP_TRANSFER_INTERVAL_MS = 5000;
 export const MAP_AUTHORITY_INTERVAL_MS = 2000;
-export const DELTA_TRANSFER_INTERVAL_MS = 300;
+export const DELTA_TRANSFER_INTERVAL_MS = 150;
 /** @param {{ needed: boolean, busy: boolean, now: number, lastStarted: number, pointsOnly: boolean,
  *   view: string, triangles: number, pointsTransport?: string, pointRevision: unknown,
  *   meshRevision: unknown, appliedPoints: unknown, appliedMesh: unknown, capped?: boolean,
