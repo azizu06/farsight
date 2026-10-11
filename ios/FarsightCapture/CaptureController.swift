@@ -78,7 +78,7 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate, AV
     private var withDepth = false
     private var helloSent = false
     private var inFlight = false
-    private var lastCapture = -Double.infinity
+    private var cadence = CaptureCadence()
     private var frameID = 0
     private var sentCount = 0
     private var skippedCount = 0
@@ -196,7 +196,7 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate, AV
         withDepth = depth
         helloSent = false
         inFlight = false
-        lastCapture = -.infinity
+        cadence = CaptureCadence()
         frameID = 0
         sentCount = 0
         skippedCount = 0
@@ -430,13 +430,13 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate, AV
             skippedCount += 1
             return
         }
-        let fps = withDepth ? 6.0 : 15.0
-        guard captureTime - lastCapture >= 1 / fps else { return }
+        let fps = withDepth ? CaptureCadence.depthFPS : CaptureCadence.rgbFPS
+        guard cadence.isDue(at: captureTime) else { return }
         if withDepth && frame?.sceneDepth == nil {
             publish(id) { $0.status = "Waiting for same-frame LiDAR depth; no synthetic depth is sent" }
             return
         }
-        lastCapture = captureTime
+        cadence.didCapture(at: captureTime, fps: fps)
         inFlight = true
         do {
             let image = CIImage(cvPixelBuffer: pixels)
