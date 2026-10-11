@@ -41,6 +41,11 @@ class CrowdTests(unittest.TestCase):
         self.assertEqual(crowds.bootstrap_parameters(config), dict(people_map_width=16., people_map_height=8.,
                          people_map_resolution=.125, people_map_origin_x=-4., people_map_origin_y=1.))
 
+    def test_custom_file_omitted_geometry_matches_nav2_defaults(self):
+        config = {"global_costmap": {"global_costmap": {"ros__parameters": {}}}}
+        self.assertEqual(crowds.bootstrap_parameters(config), dict(people_map_width=5., people_map_height=5.,
+                         people_map_resolution=.1, people_map_origin_x=0., people_map_origin_y=0.))
+
     def test_real_costmaps_compose_people_after_measured_layer_before_inflation(self):
         directory = Path(__file__).resolve().parents[1] / "config"
         params = yaml.safe_load((directory / "nav2_params.yaml").read_text())

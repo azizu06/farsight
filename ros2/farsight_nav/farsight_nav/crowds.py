@@ -14,8 +14,10 @@ import numpy as np
 def bootstrap_parameters(params):
     """Match the initial semantic map to the selected Nav2 global map geometry."""
     grid = params["global_costmap"]["global_costmap"]["ros__parameters"]
+    # Omitted fields use Costmap2DROS defaults, not this project's explicit
+    # 40 m YAML values; otherwise a custom file could be resized on startup.
     return {"people_map_" + name: float(grid.get(name, default)) for name, default in
-            (("width", 40), ("height", 40), ("resolution", .05), ("origin_x", -20), ("origin_y", -20))}
+            (("width", 5), ("height", 5), ("resolution", .1), ("origin_x", 0), ("origin_y", 0))}
 
 
 def capture_identity(key):
