@@ -357,6 +357,44 @@ fn d6(a: [f64; 6], b: [f64; 6]) -> f64 {
     a.iter().zip(b.iter()).map(|(x, y)| (x - y).powi(2)).sum::<f64>().sqrt()
 }
 
+/// Copy every non-frame entry of the capture (LiDAR seed ply, dot clouds,
+/// masks/, ...) so pointers inside transforms.json keep resolving.
+fn copy_aux(in_dir: &Path, out_dir: &Path) -> Result<()> {
+    fs::create_dir_all(out_dir)?;
+    for ent in fs::read_dir(in_dir)? {
+        let ent = ent?;
+        let name = ent.file_name();
+        if name == "transforms.json"
+            || name == "transforms_val.json"
+            || name == "views_meta.json"
+            || name == "images"
+        {
+            continue;
+        }
+        let dst = out_dir.join(&name);
+        let ft = ent.file_type()?;
+        if ft.is_dir() {
+            for sub in fs::read_dir(ent.path())? {
+                let sub = sub?;
+                let dd = dst.join(sub.file_name());
+                if sub.file_type()?.is_dir() {
+                    fs::create_dir_all(&dd)?;
+                    for leaf in fs::read_dir(sub.path())? {
+                        let leaf = leaf?;
+                        fs::copy(leaf.path(), dd.join(leaf.file_name()))?;
+                    }
+                } else {
+                    fs::create_dir_all(&dst)?;
+                    fs::copy(sub.path(), dd.join(sub.file_name()))?;
+                }
+            }
+        } else if ft.is_file() {
+            fs::copy(ent.path(), &dst)?;
+        }
+    }
+    Ok(())
+}
+
 /// Emit a self-contained capture dir: transforms.json (train subset),
 /// transforms_val.json (eval set) and images/ links (hardlink, fallback copy).
 fn write_capture(
@@ -367,6 +405,7 @@ fn write_capture(
     train_idx: &[usize],
     eval_idx: &[usize],
 ) -> Result<()> {
+    copy_aux(in_dir, out_dir)?;
     fs::create_dir_all(out_dir.join("images"))?;
     let frames_arr = json["frames"].as_array().unwrap();
 
@@ -654,6 +693,7 @@ fn cmd_exposure(
             fs::write(dest, serde_json::to_string_pretty(&obj)?)?;
             Ok(())
         };
+        copy_aux(in_dir, out_dir)?;
         fs::create_dir_all(out_dir.join("images"))?;
         link(&frames, &json, &out_dir.join("transforms.json"))?;
         if !vframes.is_empty() {
@@ -675,8 +715,12 @@ fn cmd_exposure(
     // Reference tone = median of per-image channel means/stds.
     let mut stats = Vec::with_capacity(frames.len());
     for f in frames.iter() {
-        let (w, h, rgb) = decode_small(&in_dir.join(&f.file_path), 320)?;
-        stats.push(chan_stats(w as usize, h as usize, &rgb));
+        match decode_small(&in_dir.join(&f.file_path), 320) {
+            Ok((w, h, rgb)) => stats.push(chan_stats(w as usize, h as usize, &rgb)),
+            Err(e) => {
+                eprintln!("warn: {}: {e:#}; copying unnormalised", f.file_path)
+            }
+        }
     }
     let mut refm = [0f64; 3];
     let mut refs = [0f64; 3];
@@ -689,12 +733,22 @@ fn cmd_exposure(
         refs[c] = ss[ss.len() / 2];
     }
 
+    copy_aux(in_dir, out_dir)?;
     fs::create_dir_all(out_dir.join("images"))?;
 
     let write = |fj: &mut Value, frame: &Frame, half_fit: bool| -> Result<()> {
         let src = in_dir.join(&frame.file_path);
         let bytes = fs::read(&src)?;
-        let img = image::load_from_memory(&bytes)?.to_rgb8();
+        let name = Path::new(&frame.file_path)
+            .file_name()
+            .context("frame name")?;
+        let Ok(img) = image::load_from_memory(&bytes).map(|i| i.to_rgb8()) else {
+            let dst = out_dir.join("images").join(name);
+            if fs::hard_link(&src, &dst).is_err() {
+                fs::copy(&src, &dst).context("copy undecodable frame")?;
+            }
+            return Ok(());
+        };
         let (w, h) = (img.width() as usize, img.height() as usize);
         let raw = img.as_raw();
         // Fit region: full image, or top half for the eval-fair variant.
