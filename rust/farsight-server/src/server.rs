@@ -549,9 +549,16 @@ pub fn start_services(state: &Arc<AppState>) {
         // --sim-world: poses at 30 Hz, frames at 10 Hz (sim/stream.py).
         crate::sim::spawn_world_stream(state.mapping.clone(), state.camera.clone(), feed);
     } else if state.demo {
-        // #59 parity: 15 Hz synthetic camera with bounded 5 Hz fusion —
-        // capture cadence is independent of map work; busy fusion skips
-        // candidates so queued geometry never goes stale.
+        // #59 parity: 15 Hz synthetic camera with bounded fusion — capture
+        // cadence is independent of map work; busy fusion skips candidates so
+        // queued geometry never goes stale. Python fused at 5 Hz to spare the
+        // CPU; Rust fusion is cheap, so the default is the full capture rate.
+        // FARSIGHT_DEMO_FUSION_HZ restores any tighter bound.
+        let fusion_hz: f64 = std::env::var("FARSIGHT_DEMO_FUSION_HZ")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|h: &f64| h.is_finite() && *h > 0.0)
+            .unwrap_or(15.0);
         let mapping = state.mapping.clone();
         let camera = state.camera.clone();
         let busy = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -584,7 +591,7 @@ pub fn start_services(state: &Arc<AppState>) {
                     && !busy.swap(true, std::sync::atomic::Ordering::SeqCst)
                 {
                     let (mapping, busy) = (mapping.clone(), busy.clone());
-                    next_fusion = captured + 0.2;
+                    next_fusion = captured + 1.0 / fusion_hz;
                     std::thread::spawn(move || {
                         let _ = mapping.process(&mut frame);
                         busy.store(false, std::sync::atomic::Ordering::SeqCst);
