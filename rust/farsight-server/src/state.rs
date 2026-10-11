@@ -42,12 +42,10 @@ pub use crate::geometry::rigid_transform;
 type PoseIdentity = (i64, String, [f64; 16]);
 
 pub struct Inner {
-    pub cloud: VoxelMap,
     /// Measured dense cloud, swapped whole on reset/session change — a
     /// running visual job retains the old Arc and its stale generation
     /// fails the worker's current() check (7ca27e0 swap-in-new-cloud).
     pub dense: Arc<DenseMap>,
-    pub surfaces: SurfaceMap,
     pub connected: bool,
     pub identity: Option<Identity>,
     pub device: String,
@@ -85,9 +83,21 @@ pub struct Inner {
 /// Exact Python reason when --fusion-bypass is set (state.py FUSION_BYPASSED).
 const FUSION_BYPASSED: &str = "Geometry lane external; fusion bypassed";
 
+/// Fused map geometry behind its own mutex. The voxel+surface integrate
+/// used to run under `inner`, stalling every `inner` reader
+/// (observe_pose, status, packet encoders) for the whole integration.
+/// Lock order: `inner` before `geometry` — never hold `geometry` while
+/// acquiring `inner`.
+struct Geometry {
+    cloud: VoxelMap,
+    surfaces: SurfaceMap,
+}
+
 pub struct MapState {
     pub demo: bool,
     pub inner: Arc<Mutex<Inner>>,
+    /// Heavy-write geometry lane (fused cloud + surfaces); see Geometry.
+    geometry: Mutex<Geometry>,
     /// Bounded latest-only measured visual worker (dense_worker.py port).
     pub dense_worker: DenseWorker,
     /// Encoded packet cache keyed on (generation, frames, keyframe count).
@@ -119,8 +129,6 @@ pub struct MapState {
 impl MapState {
     pub fn new(demo: bool) -> Self {
         let inner = Inner {
-            cloud: VoxelMap::default(),
-            surfaces: SurfaceMap::default(),
             connected: demo,
             identity: if demo { Some(("simulated-room".into(), 1)) } else { None },
             device: if demo { "Ray-cast room".into() } else { "No sensor".into() },
@@ -166,6 +174,10 @@ impl MapState {
         Self {
             demo,
             inner,
+            geometry: Mutex::new(Geometry {
+                cloud: VoxelMap::default(),
+                surfaces: SurfaceMap::default(),
+            }),
             dense_worker,
             packets: Mutex::new(None),
             frame_observers: Mutex::new(Vec::new()),
@@ -177,12 +189,22 @@ impl MapState {
         }
     }
 
+    /// Fused-cloud cell count (geometry lane) for tests/introspection.
+    pub fn cloud_cells(&self) -> usize {
+        self.geometry.lock().unwrap().cloud.cells.len()
+    }
+
+    /// Fused-surface triangle count (geometry lane) for tests/introspection.
+    pub fn surfaces_count(&self) -> usize {
+        self.geometry.lock().unwrap().surfaces.count
+    }
+
     /// Capped-export flags for the /map/status 'capped' label.
     pub fn visual_capped(&self) -> (bool, bool) {
-        let s = self.inner.lock().unwrap();
+        let g = self.geometry.lock().unwrap();
         (
-            self.points_cap > 0 && s.cloud.cells.len() > self.points_cap,
-            self.triangles_cap > 0 && s.surfaces.count > self.triangles_cap,
+            self.points_cap > 0 && g.cloud.cells.len() > self.points_cap,
+            self.triangles_cap > 0 && g.surfaces.count > self.triangles_cap,
         )
     }
 
@@ -196,7 +218,8 @@ impl MapState {
     pub fn start_session(&self, identity: Identity, device: String) -> u64 {
         let mut s = self.inner.lock().unwrap();
         if s.identity.as_ref() != Some(&identity) {
-            Self::clear_locked(&mut s);
+            let mut g = self.geometry.lock().unwrap();
+            Self::clear_locked(&mut s, &mut g);
             s.identity = Some(identity);
             s.pose = IDENTITY;
             s.jpeg = None;
@@ -222,8 +245,8 @@ impl MapState {
         s.socket_generation
     }
 
-    fn clear_locked(s: &mut Inner) {
-        s.cloud.clear();
+    fn clear_locked(s: &mut Inner, g: &mut Geometry) {
+        g.cloud.clear();
         // A running visual job retains the old cloud, never the new epoch.
         // Swapping avoids waiting for its integration/delta lock on reset.
         s.dense = Arc::new(DenseMap::new(true));
@@ -232,9 +255,9 @@ impl MapState {
             None => Value::Null,
         });
         if s.scan.is_some() {
-            s.cloud = VoxelMap::default(); // restore phone fusion's voxel size/budget
+            g.cloud = VoxelMap::default(); // restore phone fusion's voxel size/budget
         }
-        s.surfaces.clear();
+        g.surfaces.clear();
         s.generation += 1;
         s.processing_generation += 1;
         s.revision += 1;
@@ -244,15 +267,17 @@ impl MapState {
 
     pub fn clear(&self) {
         let mut s = self.inner.lock().unwrap();
-        Self::clear_locked(&mut s);
+        let mut g = self.geometry.lock().unwrap();
+        Self::clear_locked(&mut s, &mut g);
         let _ = self.revision_tx.send(s.revision);
     }
 
     /// Replace, never stitch separate rover origins or mix with ARKit geometry.
     pub fn install_scan(&self, cloud: VoxelMap, metadata: Value) {
         let mut s = self.inner.lock().unwrap();
-        Self::clear_locked(&mut s);
-        s.cloud = cloud;
+        let mut g = self.geometry.lock().unwrap();
+        Self::clear_locked(&mut s, &mut g);
+        g.cloud = cloud;
         s.scan = Some(metadata);
         s.paused = true;
         s.reason = Some("Camera-only snapshot retained; estimated metric depth".into());
@@ -460,16 +485,31 @@ impl MapState {
         let (points, colors, mesh, lods) =
             crate::phone::reconstruct_lods(frame, 2, 1, &crate::phone::VISUAL_LODS);
         let point_count = points.len();
+        // Admit under `inner`, then take `geometry` while still holding it
+        // (lock order inner -> geometry) so a reset/disconnect cannot clear
+        // the cloud between the check and the integrate. The heavy
+        // voxel+surface integrate then runs under `geometry` alone —
+        // observe_pose/status/packet lanes no longer stall behind it.
+        let mut g = {
+            let s = self.inner.lock().unwrap();
+            if generation != s.processing_generation
+                || !s.connected
+                || s.paused
+                || s.tracking != "normal"
+            {
+                return Ok(());
+            }
+            self.geometry.lock().unwrap()
+        };
+        g.cloud.integrate(&points, &colors);
+        g.surfaces.integrate(mesh, &frame.transform, lods);
+        drop(g);
         let mut s = self.inner.lock().unwrap();
-        if generation != s.processing_generation
-            || !s.connected
-            || s.paused
-            || s.tracking != "normal"
-        {
+        if generation != s.processing_generation {
+            // A reset/disconnect won the race while the integrate ran: its
+            // clear already owns or wipes these points — don't count it.
             return Ok(());
         }
-        s.cloud.integrate(&points, &colors);
-        s.surfaces.integrate(mesh, &frame.transform, lods);
         s.frames += 1;
         s.revision += 1;
         let _ = self.revision_tx.send(s.revision);
@@ -487,6 +527,7 @@ impl MapState {
 
     pub fn status(&self) -> Value {
         let s = self.inner.lock().unwrap();
+        let g = self.geometry.lock().unwrap();
         let age = if s.last_received != 0.0 { Some(monotonic() - s.last_received) } else { None };
         let fresh = s.connected && age.map(|a| a < 2.0).unwrap_or(false);
         let reason = if s.scan.is_some() {
@@ -513,16 +554,16 @@ impl MapState {
             "map_epoch": map_epoch,
             "generation": s.generation,
             "revision": s.revision,
-            "mesh_revision": s.surfaces.revision,
+            "mesh_revision": g.surfaces.revision,
             "paused": s.paused,
             "tracking": if fresh { s.tracking.clone() } else { "stale".into() },
-            "points": s.cloud.cells.len(),
-            "triangles": s.surfaces.count,
-            "capped": (self.points_cap > 0 && s.cloud.cells.len() > self.points_cap)
-                || (self.triangles_cap > 0 && s.surfaces.count > self.triangles_cap),
+            "points": g.cloud.cells.len(),
+            "triangles": g.surfaces.count,
+            "capped": (self.points_cap > 0 && g.cloud.cells.len() > self.points_cap)
+                || (self.triangles_cap > 0 && g.surfaces.count > self.triangles_cap),
             "fusion_bypass": self.fusion_bypass,
             "dense_worker": self.dense_worker.status(),
-            "keyframes": s.surfaces.keyframes.len(),
+            "keyframes": g.surfaces.keyframes.len(),
             "frames": s.frames,
             "rejected": s.rejected,
             "dropped": s.dropped,
@@ -532,7 +573,7 @@ impl MapState {
             "position": [pose[0][3], pose[1][3], pose[2][3]],
             "transform": flatten_f(&pose).to_vec(),
             "scan": s.scan.clone().unwrap_or(Value::Null),
-            "voxel_m": s.cloud.size,
+            "voxel_m": g.cloud.size,
             "depth_range": s.depth_range,
             "reason": reason,
             "camera": fresh,
@@ -566,14 +607,15 @@ impl MapState {
     /// Cache slot for one encoded resource with lazy compressed variants.
     fn packet_cached(&self) -> std::sync::MutexGuard<'_, Option<PacketCache>> {
         let s = self.inner.lock().unwrap();
-        let key = (s.generation, s.frames, s.surfaces.keyframes.len());
+        let g = self.geometry.lock().unwrap();
+        let key = (s.generation, s.frames, g.surfaces.keyframes.len());
         let mut cache = self.packets.lock().unwrap();
         let stale = cache.as_ref().map(|c| c.key != key).unwrap_or(true);
         if stale {
-            // Snapshot under the lock, encode after releasing it — the
+            // Snapshot under the locks, encode after releasing them — the
             // 16 B/point byte expansion must not stall frame fusion.
-            let (points, colors) = s.cloud.snapshot();
-            let mesh = s.surfaces.encode();
+            let (points, colors) = g.cloud.snapshot();
+            let mesh = g.surfaces.encode();
             // Connected coarse keyframes at cap (bd28508 parity): when the
             // wire cap bites, serve the finest stored LOD level at which all
             // keyframes fit, else the newest whole keyframes at stride 8 —
@@ -581,15 +623,16 @@ impl MapState {
             // Keyframes without stored LODs keep the stride fallback. Runs
             // under the same lock that already owns the encode() copy.
             let (mesh, visual_packed) = if self.triangles_cap > 0
-                && self.triangles_cap < s.surfaces.count
+                && self.triangles_cap < g.surfaces.count
             {
-                match s.surfaces.visual(self.triangles_cap) {
+                match g.surfaces.visual(self.triangles_cap) {
                     Some(meshes) => (crate::surfaces::SurfaceMap::pack(&meshes), true),
                     None => (mesh, false),
                 }
             } else {
                 (mesh, false)
             };
+            drop(g);
             drop(s);
             // Visual wire caps bound only the exported payload; the
             // internal map keeps full resolution (board-agreed 30k/40k
@@ -653,8 +696,7 @@ impl MapState {
     }
 
     pub fn ply(&self) -> Vec<u8> {
-        let s = self.inner.lock().unwrap();
-        let (points, colors) = s.cloud.snapshot();
+        let (points, colors) = self.geometry.lock().unwrap().cloud.snapshot();
         export_ply(&points, &colors)
     }
 
@@ -835,8 +877,39 @@ mod tests {
         let colors: Vec<[u8; 3]> = (0..300)
             .map(|i| [(i % 256) as u8, (i % 128) as u8, 42])
             .collect();
-        map.inner.lock().unwrap().cloud.integrate(&points, &colors);
+        map.geometry.lock().unwrap().cloud.integrate(&points, &colors);
         map
+    }
+
+    /// Fusion's voxel+surface integrate runs under `geometry`, not `inner`:
+    /// pose/status-lane calls must not stall behind a mid-flight commit
+    /// (the 323 ms Python stall this split removes).
+    #[test]
+    fn inner_lane_not_blocked_by_geometry_integrate() {
+        let map = Arc::new(MapState::new(true));
+        let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let worker = {
+            let map = map.clone();
+            std::thread::spawn(move || {
+                let _g = map.geometry.lock().unwrap();
+                held_tx.send(()).unwrap();
+                // Hold the geometry lock like a slow voxel+surface integrate.
+                let _ = release_rx.recv();
+            })
+        };
+        held_rx.recv().unwrap(); // integrate is mid-flight
+        let t = Instant::now();
+        map.observe_pose(&json!({}), &IDENTITY, None, None).unwrap();
+        let _ = map.camera_snapshot();
+        map.note_dropped();
+        let _ = map.capture_diagnostics();
+        assert!(
+            t.elapsed() < std::time::Duration::from_millis(500),
+            "inner-lane calls stalled on the geometry lock"
+        );
+        release_tx.send(()).unwrap();
+        worker.join().unwrap();
     }
 
     #[test]
