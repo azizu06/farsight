@@ -26,12 +26,14 @@ impl CompileOptions {
             "fast" => {
                 o.densify.target_spacing = 0.02;
                 o.surface.voxel = 0.04;
-                o.mesh.max_triangles = 300_000;
+                o.mesh.max_triangles = 150_000;
                 o.mesh.smooth_iters = 2;
                 o.texture.texel_m = 0.01;
                 o.texture.max_atlas = 4096;
             }
-            "balanced" => {}
+            "balanced" => {
+                o.mesh.max_triangles = 400_000;
+            }
             "ultra" => {
                 o.densify.target_spacing = 0.006;
                 o.surface.voxel = 0.012;
