@@ -128,15 +128,12 @@ controller_server:
         mode: 0
     RPP:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-      desired_linear_vel: 0.30        # the loaded profile's top at AUTONOMY_MAX_PWM 255 (0.304 m/s, PWM 255): full power, as
-                                      # manual (captain, 2026-10-11). At 0.95 the speed clamps cut v to 0.304 but kept
-                                      # RPP's w = 0.95 * curvature, so arcs turned ~3x tighter than planned
+      desired_linear_vel: 0.95        # the profile's top at AUTONOMY_MAX_PWM 255: full power, as manual (captain, 2026-10-11)
       lookahead_dist: 0.35            # short: pure pursuit cuts corners by about the lookahead
       min_lookahead_dist: 0.2
       max_lookahead_dist: 0.5         # 0.9 cut the sim deadend divider corner at 0.7 m/s
       lookahead_time: 0.6
-      rotate_to_heading_angular_vel: 1.0   # PWM ~148/141 loaded. 2.2 saturated at 255/243 and the loaded rover spun ~5.7 rad/s:
-                                           # it overshot and reversed every 0.3 s and ARKit lost track (floor test 2026-10-11 07:39Z)
+      rotate_to_heading_angular_vel: 2.2
       transform_tolerance: 0.3
       use_velocity_scaled_lookahead_dist: true
       min_approach_linear_velocity: 0.45   # Explore goals are waypoints: never crawl into them (Sai, 2026-10-11)
@@ -319,8 +316,8 @@ behavior_server:
     robot_base_frame: base_link
     transform_tolerance: 0.3
     simulate_ahead_time: 1.5
-    max_rotational_vel: 1.0
-    min_rotational_vel: 1.0            # PWM ~148/141 on the loaded profile, like RPP's in-place turn; PWM 80 did not break the loaded rover free
+    max_rotational_vel: 2.2
+    min_rotational_vel: 2.2            # PWM 109/104 like RPP's in-place turn; 1.5 (PWM 80) did not break the loaded rover free
     rotational_acc_lim: 4.0
 
 lifecycle_manager_navigation:
