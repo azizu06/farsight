@@ -5,6 +5,7 @@ import math
 from pathlib import Path
 import sys
 import threading
+import time
 from types import ModuleType, SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -206,6 +207,124 @@ class BridgeAuthorityTests(unittest.TestCase):
                 patch.object(module, "NavigateToPose", SimpleNamespace(Goal=lambda: SimpleNamespace(pose=None))):
             Bridge.send_goal(self.node, "seek-2", dict(x=2., y=0.))
         self.assertEqual(sends, [])
+
+
+class ExploreStallTests(unittest.TestCase):
+    """Explore stall/skip rules on a bare node: a goal mid-turn is not dropped,
+    a shrinking heading counts as progress, and a fresh skip favours forward."""
+
+    def make_node(self):
+        node = Bridge.__new__(Bridge)
+        node.lock = threading.RLock()
+        node.generation = node.goal_generation = 2
+        node.intent_active, node.intent_goal_id = True, None
+        node.exploring, node.explore = True, True
+        node.explore_session, node.explore_seq = 1, 0
+        node.explore_target, node.explore_since = None, time.monotonic()
+        node.explore_fallback, node.explore_blocked, node.explore_finished = False, False, False
+        node.explore_stall_s, node.explore_goal_timeout_s = 3.0, 25.0
+        node.explore_blacklist_s, node.explore_escape_m = 30.0, 1.5
+        node.explore_stall_heading_rad, node.explore_skip_forward_rad = 1.0, math.radians(60)
+        node.explore_config = frontiers.ExploreConfig()
+        # The measured-approach scorer rejects everything here so ticks land on
+        # the geometric fallback chooser, where the stall/skip rules are visible.
+        node.explorer = SimpleNamespace(choose=lambda *a, **k: None, release=lambda: None,
+                                      committed=None)
+        node.swept = frontiers.SweptFootprint(0.35)
+        node.progress = frontiers.ProgressWindow()
+        node.progress_best, node.progress_at = math.inf, time.monotonic()
+        node.heading_best = math.inf
+        node.blacklist = []
+        node.escape_from, node.escape_until = None, 0.0
+        node.no_frontier_since = None
+        node.frontiers, node.frontiers_odom = [], []
+        node.local_support, node.depth_snapshot = None, None
+        node.robot = (2.5, 2.5, 0.0)
+        now = time.monotonic()
+        node.pose_at = node.depth_at = node.global_grid_at = now
+        node.goal_handle, node.goal_pending, node.goal_sent_at = Handle(), False, now
+        node.goal_seq, node.goal_id = 1, "explore-1"
+        node.goal_state, node.goal_message, node.path = "driving", "", []
+        node.nav_command, node.nav_command_at = None, -math.inf
+        node.inactive_since, node.inactive_cancel_s = None, 0.3
+        node.map_frame, node.odom_frame = "map", "odom"
+        node.ready = lambda: True
+        node.get_logger = lambda: SimpleNamespace(warning=lambda *a, **k: None,
+                                                  error=lambda *a, **k: None)
+        node.send = lambda message: None
+        node.goals = []
+        node.send_goal = lambda goal_id, goal, explore_session=None: node.goals.append((goal_id, goal)) or True
+        node.global_grid = SimpleNamespace(
+            info=SimpleNamespace(resolution=0.05, height=100, width=100,
+                                 origin=SimpleNamespace(position=SimpleNamespace(x=0.0, y=0.0))),
+            data=[0] * (100 * 100))
+        return node
+
+    def tick(self, node, found):
+        with patch.object(frontiers, "find", return_value=found):
+            node.explore_tick()
+
+    def test_goal_behind_the_rover_is_not_blacklisted_mid_turn(self):
+        node = self.make_node()
+        node.explore_target = (0.5, 2.5)                       # dead astern: heading error pi
+        node.progress_at = time.monotonic() - 10.0           # 10 s without 0.3 m of progress
+        ahead = frontiers.Frontier((4.5, 2.5), (4.5, 2.5), 1.0)
+        self.tick(node, [ahead])
+        self.assertEqual(node.blacklist, [])                 # mid-turn is not a stall
+        self.assertEqual(node.goals[-1][1]["x"], 4.5)        # and a forward frontier was sent
+
+        node2 = self.make_node()
+        node2.explore_target = (0.5, 2.5)
+        node2.robot = (2.5, 2.5, math.pi)                    # now facing the goal
+        node2.progress_at = time.monotonic() - 10.0
+        self.tick(node2, [ahead])
+        self.assertEqual(len(node2.blacklist), 1)            # facing it with no progress: stalled
+        self.assertAlmostEqual(node2.blacklist[0][0], 0.5)
+        self.assertAlmostEqual(node2.blacklist[0][1], 2.5)
+
+    def test_closing_heading_counts_as_progress(self):
+        node = self.make_node()
+        node.robot = (2.5, 2.5, math.pi - 2.0)               # 2.0 rad off the astern target
+        node.explore_target = (0.5, 2.5)
+        node.heading_best = 2.9                              # the turn is closing in
+        node.progress_at = time.monotonic() - 10.0
+        self.tick(node, [frontiers.Frontier((4.5, 2.5), (4.5, 2.5), 1.0)])
+        self.assertGreater(node.progress_at, time.monotonic() - 1.0)
+        self.assertEqual(node.blacklist, [])
+
+    def test_a_turn_that_stops_closing_is_still_a_stall(self):
+        node = self.make_node()
+        node.explore_target = (0.5, 2.5)
+        node.heading_best = math.pi
+        node.progress_at = time.monotonic() - 4.0
+        self.tick(node, [frontiers.Frontier((4.5, 2.5), (4.5, 2.5), 1.0)])
+        self.assertEqual(len(node.blacklist), 1)
+        self.assertAlmostEqual(node.blacklist[0][0], 0.5)
+
+    def test_oscillating_heading_does_not_renew_progress(self):
+        node = self.make_node()
+        node.explore_target = (0.5, 2.5)
+        node.robot = (2.5, 2.5, math.pi - 2.0)
+        node.heading_best = 1.9
+        node.progress_at = time.monotonic() - 4.0
+        self.tick(node, [frontiers.Frontier((4.5, 2.5), (4.5, 2.5), 1.0)])
+        self.assertEqual(len(node.blacklist), 1)
+        self.assertAlmostEqual(node.blacklist[0][0], 0.5)
+
+    def test_after_a_skip_the_pick_prefers_the_heading_cone(self):
+        east = frontiers.Frontier((4.5, 2.5), (4.5, 2.5), 0.5)                    # dead ahead
+        flank = frontiers.Frontier((3.02, 4.43), (3.02, 4.43), 4.0)               # ~75 deg off, broader
+
+        skipped = self.make_node()
+        skipped.blacklist = [(9.9, 9.9, time.monotonic())]     # a goal was just dropped
+        self.tick(skipped, [east, flank])
+        self.assertAlmostEqual(skipped.goals[-1][1]["x"], 4.5)
+        self.assertAlmostEqual(skipped.goals[-1][1]["y"], 2.5)
+
+        fresh = self.make_node()                               # no recent skip: broad flank wins
+        self.tick(fresh, [east, flank])
+        self.assertAlmostEqual(fresh.goals[-1][1]["x"], 3.02, places=2)
+        self.assertAlmostEqual(fresh.goals[-1][1]["y"], 4.43, places=2)
 
 
 if __name__ == "__main__":
