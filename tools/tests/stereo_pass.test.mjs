@@ -116,6 +116,7 @@ test("canvas LOD preserves coded metadata only for a uniform scale; malformed di
   assert.equal(result.metadata.eye_width, 960); assert.equal(result.metadata.eye_height, 1080);
   assert.deepEqual(renderer.renders.map(frame => frame.viewport), [[0, 0, 480, 540], [480, 0, 480, 540]]);
   for (const size of [{ ...dims, codedWidth: 1281 }, { ...dims, height: 0 }, { ...dims, width: Infinity },
+    { width: 1282, height: 720, codedWidth: 1282, codedHeight: 720 },
     { ...dims, codedWidth: 1920, codedHeight: 720 }]) {
     const fresh = setup(); assert.throws(() => fresh.pass.render(fresh.scene, eyes(), size));
     assert.equal(fresh.renderer.renders.length, 0);

@@ -30,8 +30,8 @@ const counters = renderer => Object.fromEntries(["calls", "points", "triangles",
 
 function dimensions(width, height, codedWidth, codedHeight) {
   if (![width, height, codedWidth, codedHeight].every(value => Number.isSafeInteger(value) && value > 0) ||
-      codedWidth % 2 || codedHeight % 2 || width * codedHeight !== height * codedWidth)
-    throw new Error("Stereo dimensions require positive integers, even coded size and one uniform scale");
+      codedWidth % 4 || codedHeight % 2 || width * codedHeight !== height * codedWidth)
+    throw new Error("Stereo dimensions require positive integers, even-width eyes, even height and one uniform scale");
   return { stereo: true, layout: SBS_LAYOUT, width: codedWidth, height: codedHeight,
     eye_width: codedWidth / 2, eye_height: codedHeight };
 }
