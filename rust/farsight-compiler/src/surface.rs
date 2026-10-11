@@ -4,8 +4,8 @@
 //! polygonisation, support trimming, per-vertex normals/colours/support.
 //!
 //! Pipeline inside this stage:
-//!   1. mark: cells containing points, dilated `band_m` shells (narrow band)
-//!      plus `bridge_m` extra reach into unobserved space (hole bridging).
+//!   1. mark: cells containing points, dilated `band_vox` shells (narrow band)
+//!      plus `dilate_vox` extra shells into unobserved space (hole bridging).
 //!   2. observe: per band cell a weighted point-to-plane signed-distance
 //!      estimate, colour and `support` seed (distance to nearest *measured*
 //!      contributor).
@@ -34,13 +34,12 @@ pub struct SurfaceOptions {
     pub voxel: f32,
     /// Remove surface farther than this from any *measured* sample (metres).
     pub trim_m: f32,
-    /// Narrow-band half-thickness in metres: cells within this distance of an
-    /// occupied cell receive real observations (TSDF truncation).
-    pub band_m: f32,
-    /// How far (metres) the implicit field is extrapolated beyond the band
-    /// into unobserved space; upwind-Laplacian fill bridges gaps up to
-    /// roughly twice this across when bounded on both sides.
-    pub bridge_m: f32,
+    /// Narrow-band half-thickness in voxels: points contribute to cells within
+    /// this distance and observed samples are evaluated inside it.
+    pub band_vox: f32,
+    /// Extra dilation shells (voxels) beyond the band into unobserved space;
+    /// the implicit function is Laplacian-filled there (small-gap bridging).
+    pub dilate_vox: usize,
     /// Screened-Poisson smoothing iterations over the whole cell set.
     pub smooth_iters: usize,
     /// Screening strength: 0 keeps observations verbatim, higher smooths more.
@@ -51,16 +50,11 @@ pub struct SurfaceOptions {
     /// extrapolation is clamped to solid so no phantom shells form outside
     /// the measured set.
     pub hole_reach: f32,
-    /// Minimum cumulative field weight for a triangle fully inside the
-    /// observed band: noise-driven sign pockets carry little weight, so
-    /// their membranes are dropped. Fill-region triangles are exempt
-    /// (their weight is always ~0).
-    pub min_weight: f32,
 }
 
 impl Default for SurfaceOptions {
     fn default() -> Self {
-        SurfaceOptions { voxel: 0.02, trim_m: 0.5, band_m: 0.06, bridge_m: 0.30, smooth_iters: 14, smooth_lambda: 0.6, hole_reach: 0.55, min_weight: 0.0 }
+        SurfaceOptions { voxel: 0.02, trim_m: 0.5, band_vox: 2.0, dilate_vox: 6, smooth_iters: 14, smooth_lambda: 0.6, hole_reach: 0.55 }
     }
 }
 
@@ -244,43 +238,6 @@ fn fallback_normals(cloud: &PointCloud, grid: &Grid, k: usize, max_r: f32) -> Ve
 // Cell marking + dilation
 // ---------------------------------------------------------------------------
 
-/// Median local point spacing from `cloud.radius` (measured points only).
-/// Falls back to a k-nearest-neighbour estimate when radius is unset.
-fn spacing_median(cloud: &PointCloud) -> Option<f32> {
-    if !cloud.radius.is_empty() {
-        let mut v: Vec<f32> = cloud
-            .radius
-            .iter()
-            .enumerate()
-            .filter(|(i, r)| r.is_finite() && **r > 0.0 && cloud.flag(*i) & FLAG_INTERPOLATED == 0)
-            .map(|(_, &r)| r)
-            .collect();
-        if !v.is_empty() {
-            v.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-            return Some(v[v.len() / 2]);
-        }
-    }
-    // Fallback: nearest-neighbour distance of a strided sample.
-    let n = cloud.len();
-    if n < 8 {
-        return None;
-    }
-    let grid = Grid::build(&cloud.pos, 0.05);
-    let mut ds: Vec<f32> = Vec::with_capacity(4096);
-    for i in (0..n).step_by((n / 4096).max(1)) {
-        let mut scratch: Vec<(u32, f32)> = Vec::new();
-        grid.knn(cloud.pos[i], 2, 0.5, &mut scratch);
-        if scratch.len() == 2 {
-            ds.push(scratch[1].1.sqrt());
-        }
-    }
-    if ds.is_empty() {
-        return None;
-    }
-    ds.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    Some(ds[ds.len() / 2])
-}
-
 /// Breadth-first dilation of the occupied-cell set. Returns `(keys, rounds)`
 /// where `rounds[i]` is the BFS shell the cell was added at: 0 means occupied,
 /// up to `band_rounds` is the narrow band receiving real observations, and
@@ -288,22 +245,11 @@ fn spacing_median(cloud: &PointCloud) -> Option<f32> {
 /// Keys are emitted in non-decreasing round order, so every fill cell's BFS
 /// parent has a smaller index, making round-wise initialisation well-defined.
 fn mark_cells(cloud: &PointCloud, voxel: f32, _band_rounds: usize, total_rounds: usize) -> (Vec<u64>, Vec<u8>) {
-
     let inv = 1.0 / voxel;
-    // Occupancy comes from measured points only: interpolated fills are
-    // themselves unobserved, so letting them mark cells would grow band (and
-    // membranes) inside free space.
     let mut occ: Vec<u64> = cloud
         .pos
         .par_iter()
-        .enumerate()
-        .filter_map(|(i, p)| {
-            if cloud.flag(i) & FLAG_INTERPOLATED != 0 {
-                None
-            } else {
-                Some(cell_key((p[0] * inv).floor() as i32, (p[1] * inv).floor() as i32, (p[2] * inv).floor() as i32))
-            }
-        })
+        .map(|p| cell_key((p[0] * inv).floor() as i32, (p[1] * inv).floor() as i32, (p[2] * inv).floor() as i32))
         .collect();
     occ.par_sort_unstable();
     occ.dedup();
@@ -445,11 +391,7 @@ fn observe(
         if t >= 1.0 {
             continue;
         }
-        // Interpolated fills are unobserved themselves: they may colour a
-        // vertex but never contribute a signed vote, otherwise their
-        // imperfect normals grow membranes around the real band.
-        let interp_scale = if cloud.flag(i as usize) & FLAG_INTERPOLATED != 0 { 0.0 } else { 1.0 };
-        let pw = cloud.weight(i as usize) * dens[i as usize] * interp_scale;
+        let pw = cloud.weight(i as usize) * dens[i as usize];
         let w = pw * (1.0 - t * t) * (1.0 - t * t);
         if w <= 0.0 {
             continue;
@@ -551,8 +493,6 @@ struct Centroid {
 fn polygonise_cube(
     field: &Field,
     brack: &[bool],
-    is_band: &[bool],
-    min_weight: f32,
     corner: &[u32; 8],
     corner_key: &[u64; 8],
     min_cell_key: u64,
@@ -583,21 +523,12 @@ fn polygonise_cube(
     // vertex sits on observation-anchored surface, not on an extrapolated
     // skirt boundary.
     let mut eanch = [false; 12];
-    // eweak[e] = both endpoint cells are observed-band cells carrying little
-    // cumulative weight — the vertex rides on a noise pocket, not a real
-    // observation. Fill cells (weight ~0) never count as weak here.
-    let mut eweak = [false; 12];
     for (e, &(a, b)) in CUBE_EDGES.iter().enumerate() {
         if inside[a as usize] == inside[b as usize] {
             continue;
         }
         has_vert[e] = true;
         eanch[e] = brack[corner[a as usize] as usize] && brack[corner[b as usize] as usize];
-        {
-            let (ca, cb) = (corner[a as usize] as usize, corner[b as usize] as usize);
-            eweak[e] = is_band[ca] && is_band[cb]
-                && (field.w[ca] + field.w[cb]) * 0.5 < min_weight;
-        }
         let (ia, ib) = (corner[a as usize] as usize, corner[b as usize] as usize);
         let (sa, sb) = (s[a as usize], s[b as usize]);
         let t = (sa / (sa - sb)).clamp(0.0, 1.0);
@@ -731,11 +662,6 @@ fn polygonise_cube(
             if !eanch[e0 as usize] && !eanch[e1 as usize] {
                 continue;
             }
-            // Noise-pocket fan tri: both edge vertices sit on low-weight
-            // band cells — drop it.
-            if eweak[e0 as usize] && eweak[e1 as usize] {
-                continue;
-            }
             tris.push((ckey, ekey[e0 as usize], ekey[e1 as usize]));
         }
     }
@@ -778,14 +704,9 @@ pub fn reconstruct(cloud: &PointCloud, opts: &SurfaceOptions) -> (Mesh, Stats) {
         return (mesh, serde_json::json!({ "empty": true }));
     }
     let voxel = opts.voxel.max(1e-3);
-    // Metre-scaled structure: band thickness and bridge reach are expressed
-    // in metres so finer voxels bridge the same physical gaps; the point-to-
-    // plane observation kernel is scaled to the LOCAL POINT SPACING (floor
-    // ~2.5x spacing), not the voxel — finer voxels average the same noise.
-    let spacing_m = spacing_median(cloud).unwrap_or(voxel * 2.0);
-    let band_rounds = (opts.band_m / voxel).ceil().max(1.0) as usize;
-    let total_rounds = band_rounds + (opts.bridge_m / voxel).ceil() as usize;
-    let obs_r = (2.5 * spacing_m).max(1.5 * voxel).max(opts.band_m * 0.5);
+    let band_rounds = opts.band_vox.max(1.0).round() as usize;
+    let total_rounds = band_rounds + opts.dilate_vox;
+    let obs_r = opts.band_vox.max(1.0) * voxel;
 
     // --- normals (fallback if upstream hasn't provided them) ---
     let grid_cell = obs_r.max(voxel * 1.5);
@@ -801,14 +722,11 @@ pub fn reconstruct(cloud: &PointCloud, opts: &SurfaceOptions) -> (Mesh, Stats) {
             scratch.clear();
             grid.radius(p, dens_r, scratch);
             let c = scratch.len() as f32 - 1.0;
-            // Hard gate: a real surface sample sits inside a dense sheet
-            // (tens of neighbours within a few cm); a scattered noise point
-            // has <~8 and its vote would grow a sign-pocket membrane.
-            if c < 8.0 { 0.0 } else { (c / 24.0).clamp(0.0, 1.0) }
+            (c / 8.0).clamp(0.0, 1.0)
         })
         .collect();
     let nrm_fallback: Vec<V3>;
-    let nrm: &[V3] = if cloud.has_normals() && !std::env::var("FARSIGHT_FORCE_FALLBACK_NRM").is_ok() {
+    let nrm: &[V3] = if cloud.has_normals() {
         &cloud.nrm
     } else {
         let est_r = (voxel * 4.0).max(obs_r);
@@ -913,16 +831,10 @@ pub fn reconstruct(cloud: &PointCloud, opts: &SurfaceOptions) -> (Mesh, Stats) {
             .par_iter_mut()
             .enumerate()
             .for_each(|(i, out)| {
-                // Upwind Laplacian: only neighbours at the same or earlier
-                // BFS round feed this cell, so the field's sign extrapolates
-                // outward monotonically from observation instead of averaging
-                // toward ~0 in unobserved space (which would grow a phantom
-                // membrane on the far side of every observed sheet).
-                let ri = rounds[i];
                 let mut acc = 0.0f32;
                 let mut cnt = 0u32;
                 for &nb in field.nbr[i].iter() {
-                    if nb != MISSING && rounds[nb as usize] <= ri {
+                    if nb != MISSING {
                         acc += field.val[nb as usize];
                         cnt += 1;
                     }
@@ -1067,7 +979,7 @@ pub fn reconstruct(cloud: &PointCloud, opts: &SurfaceOptions) -> (Mesh, Stats) {
                 field.keys[i011 as usize],
                 field.keys[i111 as usize],
             ];
-            polygonise_cube(&field, &brack, &is_band, opts.min_weight, &corner, &corner_key, key, voxel, &mut out.tris, &mut out.centroids);
+            polygonise_cube(&field, &brack, &corner, &corner_key, key, voxel, &mut out.tris, &mut out.centroids);
             #[cfg(test)]
             debug_check_cube(&field, &corner, &corner_key, i);
             out
@@ -1195,7 +1107,7 @@ mod tests {
     #[test]
     fn sphere_is_closed_and_near_surface() {
         let cloud = sphere_cloud(0.3, 6000);
-        let opts = SurfaceOptions { voxel: 0.02, bridge_m: 0.04, ..Default::default() };
+        let opts = SurfaceOptions { voxel: 0.02, dilate_vox: 2, ..Default::default() };
         let (m, _) = reconstruct(&cloud, &opts);
         assert!(m.triangles() > 500, "tris {}", m.triangles());
         // all verts near the sphere
@@ -1218,7 +1130,7 @@ mod tests {
     #[test]
     fn plane_stays_flat_and_oriented() {
         let cloud = plane_cloud(40, 40);
-        let opts = SurfaceOptions { voxel: 0.02, bridge_m: 0.02, ..Default::default() };
+        let opts = SurfaceOptions { voxel: 0.02, dilate_vox: 1, ..Default::default() };
         let (m, _) = reconstruct(&cloud, &opts);
         assert!(m.triangles() > 100);
         // vertices lie on cell edges: within ~1.5 voxels of the plane at the
@@ -1244,7 +1156,7 @@ mod tests {
                 cloud.nrm.push([0.0, 0.0, 1.0]);
             }
         }
-        let opts = SurfaceOptions { voxel: 0.01, band_m: 0.02, bridge_m: 0.16, ..Default::default() };
+        let opts = SurfaceOptions { voxel: 0.01, band_vox: 2.0, dilate_vox: 8, ..Default::default() };
         let (m, _) = reconstruct(&cloud, &opts);
         // some triangle vertex should land inside the gap band |x|<0.03, |y|<0.3
         let covered = m.pos.iter().any(|p| p[0].abs() < 0.03 && p[1].abs() < 0.25 && p[2].abs() < 0.01);
@@ -1254,7 +1166,7 @@ mod tests {
     #[test]
     fn deterministic_output() {
         let cloud = sphere_cloud(0.3, 3000);
-        let opts = SurfaceOptions { voxel: 0.02, bridge_m: 0.04, smooth_iters: 3, ..Default::default() };
+        let opts = SurfaceOptions { voxel: 0.02, dilate_vox: 2, smooth_iters: 3, ..Default::default() };
         let (a, _) = reconstruct(&cloud, &opts);
         let (b, _) = reconstruct(&cloud, &opts);
         assert_eq!(a.pos, b.pos);
@@ -1267,9 +1179,9 @@ mod tests {
         let scan = crate::synth::simulate(&scene, &crate::synth::ScanOptions { seed: 7, ..Default::default() });
         let opts = SurfaceOptions::default();
         let voxel = opts.voxel;
-        let band_rounds = (opts.band_m / voxel).ceil().max(1.0) as usize;
-        let total_rounds = band_rounds + (opts.bridge_m / voxel).ceil() as usize;
-        let obs_r = opts.band_m * 0.5;
+        let band_rounds = opts.band_vox.max(1.0).round() as usize;
+        let total_rounds = band_rounds + opts.dilate_vox;
+        let obs_r = opts.band_vox.max(1.0) * voxel;
         let grid = Grid::build(&scan.cloud.pos, obs_r.max(voxel * 1.5));
         let nrm_fb = fallback_normals(&scan.cloud, &grid, 16, (voxel * 4.0).max(obs_r));
         let nrm: &[V3] = &nrm_fb;
@@ -1368,7 +1280,7 @@ mod tests {
                 cloud.nrm.push([0.0, 0.0, 1.0]);
             }
         }
-        let opts = SurfaceOptions { voxel: 0.01, bridge_m: 0.04, smooth_iters: 3, ..Default::default() };
+        let opts = SurfaceOptions { voxel: 0.01, dilate_vox: 2, smooth_iters: 3, ..Default::default() };
         let (m, s) = reconstruct(&cloud, &opts);
         eprintln!("stats {s}");
         let mut bad = 0;
@@ -1397,7 +1309,7 @@ mod tests {
         // one-sided extrapolated fill (deep dilation off a lone sheet) must
         // never surface: it is not bracketed by observation on both sides
         let cloud = plane_cloud(30, 30);
-        let opts = SurfaceOptions { voxel: 0.02, bridge_m: 0.20, ..Default::default() };
+        let opts = SurfaceOptions { voxel: 0.02, dilate_vox: 10, ..Default::default() };
         let (m, _) = reconstruct(&cloud, &opts);
         for t in m.idx.chunks_exact(3) {
             let cy = (m.pos[t[0] as usize][1] + m.pos[t[1] as usize][1] + m.pos[t[2] as usize][1]) / 3.0;
@@ -1419,7 +1331,7 @@ mod tests {
                 cloud.nrm.push([0.0, 0.0, -1.0]);
             }
         }
-        let opts = SurfaceOptions { voxel: 0.02, bridge_m: 0.16, trim_m: 0.10, ..Default::default() };
+        let opts = SurfaceOptions { voxel: 0.02, dilate_vox: 8, trim_m: 0.10, ..Default::default() };
         let (m, s) = reconstruct(&cloud, &opts);
         let emitted = s["tris_emitted"].as_u64().unwrap() as usize;
         let kept = s["tris_kept"].as_u64().unwrap() as usize;
