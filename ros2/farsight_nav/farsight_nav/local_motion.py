@@ -37,6 +37,7 @@ class LocalMotion:
         self.arc_since = None  # when the current passing arc side started holding steady
         self.arc_side = 0.0
         self.target = None  # (odom heading, set at) a depth frame confirmed open, off the current nose
+        self.spent = []  # target headings already reached without an open arc there (this look-around)
         self.settle_since = None  # reached the target: wait for one depth frame captured there
         self.blocked = {}  # why the straight arc failed on the last look-around tick (diagnostics only)
 
@@ -59,7 +60,8 @@ class LocalMotion:
         if (u < 0).any() or (u >= depth.shape[1]).any() or (v < 0).any() or (v >= depth.shape[0]).any():
             return False
         measured = depth[v, u]
-        return bool((np.isfinite(measured) & (measured >= z + 0.1) & (measured <= 4.0)).all())
+        # A return past the sample is measured open space at any range; no return (0) never is.
+        return bool((np.isfinite(measured) & (measured >= z + 0.1)).all())
 
     @staticmethod
     def depth_block_reasons(points, depth, header):
@@ -79,8 +81,7 @@ class LocalMotion:
         returned = inside & np.isfinite(measured) & (measured > 0)
         return {"behind": int(behind.sum()), "off view": int((~behind & ~inside).sum()),
                 "no return": int((inside & ~returned).sum()),
-                "past 4 m": int((returned & (measured > 4.0)).sum()),
-                "short": int((returned & (measured <= 4.0) & (measured < z + 0.1)).sum())}
+                "short": int((returned & (measured < z + 0.1)).sum())}
 
     @staticmethod
     def capture_yaw(header):
@@ -92,10 +93,12 @@ class LocalMotion:
     TARGET_OFFSETS = (-0.6, -0.3, 0.0, 0.3, 0.6)  # headings around the capture camera's nose, inside its view
     TARGET_S = 2.0       # a confirmed open heading is turned toward for at most this long
     TARGET_REACHED = 0.1  # rad: close enough that the normal arcs check it from the new nose
+    TARGET_SPACING = 0.2  # rad: a heading this close to one already tried is not tried again
     SETTLE_S = 0.5       # at the target, hold for a depth frame captured there (at most this long)
 
     def command(self, *, now, active, nav_command, nav_at, robot,
-                pose_at, depth, header, depth_at, support, resolution, origin, map_at, to_map=None, body_clear=None):
+                pose_at, depth, header, depth_at, support, resolution, origin, map_at, to_map=None, body_clear=None,
+                lethal=None, unseen=None):
         """SI (m/s, rad/s CCW). None means the existing Nav2 forwarding owns output.
 
         A fresh moving Nav2 command keeps its curvature while translation is
@@ -131,12 +134,17 @@ class LocalMotion:
         radius = self.min_width / 2
         x, y, yaw = robot
 
-        def supported(points):
+        def sample(grid, points):
+            """`grid` clearance (m) at each point, or None if any is off the map."""
             points = [to_map(*point)[:2] for point in points] if to_map else points
             rc = np.floor((np.asarray(points) - origin) / resolution).astype(int)[:, ::-1]
-            if (rc < 0).any() or (rc[:, 0] >= support.shape[0]).any() or (rc[:, 1] >= support.shape[1]).any():
-                return False
-            return bool((support[rc[:, 0], rc[:, 1]] >= radius).all())
+            if (rc < 0).any() or (rc[:, 0] >= grid.shape[0]).any() or (rc[:, 1] >= grid.shape[1]).any():
+                return None
+            return grid[rc[:, 0], rc[:, 1]]
+
+        def supported(points):
+            found = sample(support, points)
+            return found is not None and bool((found >= radius).all())
 
         valid = np.isfinite(depth) & (depth > 0.15) & (depth <= 4.0)
         if valid.sum() < 16:
@@ -155,19 +163,30 @@ class LocalMotion:
         obstacles = odom[body_height, :2]
         if not body_clear or near.any():
             # Something is inside the body disc: never freeze (captain's order). Back straight
-            # off over floor the costmap has seen or the rover has driven, then turn away from it.
+            # off over floor the costmap has seen or the rover has driven, then drive or turn away.
             if self.backoff_from is None:
                 self.backoff_from = (x, y)
+                if near.any():  # decided once per episode: re-deciding as the rover turned dithered
+                    dx, dy = (odom[near, :2] - (x, y)).T
+                    left = float(np.mean(-math.sin(yaw) * dx + math.cos(yaw) * dy))
+                    self.heading = -1.0 if left > 0 else 1.0  # obstacle on the left: turn right
+                    self.scan_dir = self.heading
             behind = [(x - d * math.cos(yaw), y - d * math.sin(yaw)) for d in np.arange(0.1, 0.51, 0.1)]
             if math.dist(self.backoff_from, (x, y)) < self.BACKOFF_M and supported(behind):
                 return -self.creep_mps, 0.0
-            if near.any():
-                dx, dy = (odom[near, :2] - (x, y)).T
-                left = float(np.mean(-math.sin(yaw) * dx + math.cos(yaw) * dy))
-                self.heading = -1.0 if left > 0 else 1.0  # obstacle on the left: turn right
-                self.scan_dir = self.heading
-            return 0.0, self.scan_turn()
-        self.backoff_from = None
+        else:
+            self.backoff_from = None
+        # Escape arcs, for when no arc keeps a body radius of free map: the rover sits inside
+        # Nav2's inflation (robot padding, not an object) or within a radius of a wall, where no
+        # turn in place changes anything (2026-10-11 wander sim: full turns for 25-90 s beside a
+        # box). They may cross inflation but never get closer to a lethal or unknown cell, or a
+        # measured depth point, than the rover already is, and still need the full depth check.
+        escape = None
+        if lethal is not None and unseen is not None:
+            here = [sample(grid, [(x, y)]) for grid in (lethal, unseen)]
+            if all(found is not None for found in here):
+                escape = tuple(min(radius, max(float(found[0]), resolution)) for found in here)
+        keep = np.minimum(radius, np.linalg.norm(obstacles - (x, y), axis=1))
         if self.scan_yaw is not None:
             delta = yaw - self.scan_yaw
             self.scan_angle += abs(math.atan2(math.sin(delta), math.cos(delta)))
@@ -176,7 +195,8 @@ class LocalMotion:
             self.scan_exhausted = self.scan_angle >= 2 * math.pi or now - self.scan_since >= self.scan_budget_s
         if self.scan_exhausted:  # a full look around found no open arc: start another, never stop
             self.scan_since, self.scan_yaw, self.scan_angle, self.scan_exhausted = None, None, 0.0, False
-        def clear_arc(start, angle, reasons=None):
+            self.spent = []
+        def clear_arc(start, angle, reasons=None, escaping=False):
             """Map clearance of a fully checked 0.9 m creep arc from heading `start`, else None."""
             angular = 0.5 * angle
 
@@ -190,13 +210,20 @@ class LocalMotion:
                 return np.array((x, y)) + rotation @ body, start + turn
 
             line = np.array([arc(d)[0] for d in np.arange(0.1, 0.91, 0.1)])
-            if not supported(line):
+            if escaping:
+                walls, unknown = sample(lethal, line), sample(unseen, line)
+                ok = (walls is not None and unknown is not None
+                      and bool((walls >= escape[0]).all() and (unknown >= escape[1]).all()))
+            else:
+                ok = supported(line)
+            if not ok:
                 if reasons is not None:
                     reasons["map"] = 1
                 return None
             # Every measured body-height point participates in collision checks,
             # including thin poles between the separate coverage probes.
-            if len(obstacles) and (np.linalg.norm(obstacles[:, None, :] - line[None, :, :], axis=2) < radius).any():
+            least = keep[:, None] if escaping else radius
+            if len(obstacles) and (np.linalg.norm(obstacles[:, None, :] - line[None, :, :], axis=2) < least).any():
                 if reasons is not None:
                     reasons["obstacle"] = 1
                 return None
@@ -215,19 +242,20 @@ class LocalMotion:
                     reasons.update({k: n for k, n in self.depth_block_reasons(points, depth, header).items() if n})
                 return None
             # Prefer the broadest known local corridor.
-            map_line = np.array([to_map(*point)[:2] for point in line]) if to_map else line
-            rc = np.floor((map_line - origin) / resolution).astype(int)[:, ::-1]
-            return float(support[rc[:, 0], rc[:, 1]].min())
+            return float(np.minimum(walls, unknown).min() if escaping else sample(support, line).min())
 
         choices = []
         # Wander: with or without a frontier, creep along the most open measured arc.
-        for angle in (-0.4, -0.2, 0.0, 0.2, 0.4):
-            width = clear_arc(yaw, angle)
-            if width is not None:
-                # ... then smooth heading.
-                choices.append((width - 0.3 * abs(angle) - 0.5 * abs(angle - self.heading), angle))
+        for escaping in (False, True) if escape is not None else (False,):
+            for angle in (-0.4, -0.2, 0.0, 0.2, 0.4):
+                width = clear_arc(yaw, angle, escaping=escaping)
+                if width is not None:
+                    # ... then smooth heading.
+                    choices.append((width - 0.3 * abs(angle) - 0.5 * abs(angle - self.heading), angle))
+            if choices:
+                break
         if choices:
-            self.target, self.settle_since, self.blocked = None, None, {}
+            self.target, self.settle_since, self.blocked, self.spent = None, None, {}, []
             _, angle = max(choices)
             self.heading = angle
             # A passing arc does not flip the look-around. Only ~1 s of one side
@@ -250,17 +278,21 @@ class LocalMotion:
         # still only ever comes from the arcs above, checked from the nose the rover then has.
         self.arc_since, self.arc_side = None, 0.0
         captured = self.capture_yaw(header)
-        found = []
-        for offset in self.TARGET_OFFSETS:
-            heading = captured + offset
-            error = math.atan2(math.sin(heading - yaw), math.cos(heading - yaw))
-            if abs(error) < self.TARGET_REACHED:
-                continue  # that is the current nose, already checked above
-            width = clear_arc(heading, 0.0)
-            if width is not None:
-                found.append((width - 0.3 * abs(offset), heading))
-        if found:
-            self.target, self.settle_since = (max(found)[1], now), None
+        def turned(a, b):
+            return abs(math.atan2(math.sin(a - b), math.cos(a - b)))
+
+        if self.target is None:  # commit to one heading: re-picking every tick chased the next offset
+            found = []
+            for offset in self.TARGET_OFFSETS:
+                heading = captured + offset
+                if turned(heading, yaw) < self.TARGET_REACHED or any(
+                        turned(heading, old) < self.TARGET_SPACING for old in self.spent):
+                    continue  # the current nose (already checked above), or a heading already tried
+                width = clear_arc(heading, 0.0)
+                if width is not None:
+                    found.append((width - 0.3 * abs(offset), heading))
+            if found:
+                self.target, self.settle_since = (max(found)[1], now), None
         if self.target is not None and now - self.target[1] < self.TARGET_S:
             error = math.atan2(math.sin(self.target[0] - yaw), math.cos(self.target[0] - yaw))
             if abs(error) >= self.TARGET_REACHED:
@@ -270,6 +302,8 @@ class LocalMotion:
                 self.settle_since = now
             if now - self.settle_since < self.SETTLE_S and depth_at < self.settle_since:
                 return 0.0, 0.0  # facing it: one depth frame from here decides (the arcs above)
+        if self.target is not None:
+            self.spent.append(self.target[0])
         self.target, self.settle_since = None, None
         self.blocked = {}
         clear_arc(yaw, 0.0, self.blocked)

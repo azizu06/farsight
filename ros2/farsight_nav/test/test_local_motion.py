@@ -445,3 +445,84 @@ def test_look_around_records_why_the_nose_is_blocked():
     args = render(pitch_deg=0, wall=8.0)  # far wall past LiDAR range
     motion.command(now=0, pose_at=0, depth_at=0, map_at=0, **args)
     assert motion.blocked.get("no return", 0) > 0
+
+
+def walled(args, rows=None, cols=None, padding=0):
+    """A lethal map line beside the rover (rows: y cells, cols: x cells of the 0.1 m test map),
+    with `padding` cells of Nav2 inflation (cost 60, above FREE_MAX) around it, as the bridge passes them."""
+    grid = np.zeros((80, 100), np.int16)
+    for index, axis in ((rows, 0), (cols, 1)):
+        if index is None:
+            continue
+        for offset in range(-padding, padding + 1):
+            line = [slice(None), slice(None)]
+            line[axis] = index + offset
+            grid[tuple(line)] = np.maximum(grid[tuple(line)], 60)
+        line = [slice(None), slice(None)]
+        line[axis] = index
+        grid[tuple(line)] = 100
+    args.update(support=frontiers.clearance_map(~((grid >= 0) & (grid <= frontiers.FREE_MAX)), 0.1),
+                lethal=frontiers.clearance_map(grid >= 100, 0.1), unseen=frontiers.clearance_map(grid < 0, 0.1))
+    return args
+
+
+@pytest.mark.parametrize("padding", [0, 2])
+def test_within_a_radius_of_a_wall_drives_away_instead_of_turning_forever(padding):
+    # 2026-10-11 wander sim: beside a box, inside its inflation, every arc failed the map
+    # check and the look-around turned in place for 25-90 s; no turn changes that.
+    motion = local_motion.LocalMotion()
+    args = walled(scene(), cols=17, padding=padding)  # a wall 0.2-0.3 m behind, nothing measured ahead
+    linear, angular = motion.command(now=0, pose_at=0, depth_at=0, map_at=0, **args)
+    assert linear >= local_motion.LocalMotion.MIN_TRANSLATION_MPS
+
+
+@pytest.mark.parametrize("padding", [0, 2])
+def test_beside_a_wall_never_arcs_closer_to_it(padding):
+    motion = local_motion.LocalMotion()
+    args = walled(scene(), rows=42, padding=padding)  # a wall 0.2-0.3 m to the left
+    linear, angular = motion.command(now=0, pose_at=0, depth_at=0, map_at=0, **args)
+    assert linear >= local_motion.LocalMotion.MIN_TRANSLATION_MPS and angular <= 0  # along or away, never into it
+
+
+def test_facing_a_wall_inside_its_inflation_still_turns():
+    motion = local_motion.LocalMotion()
+    args = walled(scene(), cols=23, padding=2)  # the wall 0.3 m ahead
+    linear, angular = motion.command(now=0, pose_at=0, depth_at=0, map_at=0, **args)
+    assert linear == 0 and angular != 0
+
+
+def test_escape_arcs_never_enter_unknown_cells():
+    motion = local_motion.LocalMotion()
+    args = walled(scene(), cols=17, padding=2)
+    grid = np.zeros((80, 100), np.int16)
+    grid[:, 17] = 100
+    grid[:, 22:] = -1  # unknown from 0.2 m ahead
+    args.update(support=frontiers.clearance_map(~((grid >= 0) & (grid <= frontiers.FREE_MAX)), 0.1),
+                lethal=frontiers.clearance_map(grid >= 100, 0.1), unseen=frontiers.clearance_map(grid < 0, 0.1))
+    linear, angular = motion.command(now=0, pose_at=0, depth_at=0, map_at=0, **args)
+    assert linear == 0
+
+
+def test_a_heading_reached_without_an_open_arc_is_not_chased_again():
+    motion = local_motion.LocalMotion()
+    args = scene_depth(wall=3.0)
+    open_depth = args["depth"]
+    lagged(args, 0.6)
+    motion.command(now=0, pose_at=0, depth_at=0, map_at=0, **args)
+    tried = motion.target[0]
+    args.update(depth=np.full((80, 120), 0.4))  # from there the newest frame shows a wall
+    lagged(args, 0.02)
+    motion.command(now=0.2, pose_at=0.2, depth_at=0.1, map_at=0.2, **args)
+    motion.command(now=0.4, pose_at=0.4, depth_at=0.35, map_at=0.4, **args)
+    assert motion.target is None
+    args.update(depth=open_depth)  # an older-looking open frame confirms the same heading again
+    lagged(args, 0.6)
+    motion.command(now=0.5, pose_at=0.5, depth_at=0.5, map_at=0.5, **args)
+    assert motion.target is None or abs(motion.target[0] - tried) >= motion.TARGET_SPACING
+
+
+def test_a_measured_return_past_four_metres_is_open_space():
+    motion = local_motion.LocalMotion()
+    args = render(pitch_deg=0, wall=4.1, max_range=5.0)  # far wall measured inside the LiDAR's 5 m
+    linear, angular = motion.command(now=0, pose_at=0, depth_at=0, map_at=0, **args)
+    assert linear >= local_motion.LocalMotion.MIN_TRANSLATION_MPS

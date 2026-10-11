@@ -60,8 +60,13 @@ ros2 launch farsight_nav nav.launch.py                 # or the farsight-nav sys
     the time spent rotating in place.
     Explore never ends on its own (captain's order, 2026-10-10). Planning gaps,
     and stretches with no frontier at all, creep along the most open
-    measured arc; with no open arc it turns in place to look, restarting after
-    each full turn, and re-scores frontiers every 0.5 s. A detected
+    measured arc. With no open arc from the current nose it runs the same
+    checks from the latest depth frame's capture heading (±0.3 and ±0.6 rad,
+    since a fast turn outruns the depth stream), turns straight to the best
+    confirmed heading and waits up to 0.5 s for one depth frame from there.
+    Only when no heading is confirmed does it turn in place to look, restarting
+    after each full turn. It re-scores frontiers every 0.5 s, and the status
+    names why the nose is blocked (map, obstacle, no return, short). A detected
     person never switches Explore to Seek: people are moving obstacles in the
     LiDAR costmaps. Seek runs only when the operator selects it.
     The 20 Hz motion arbiter forwards Nav2 whenever its command is moving.
