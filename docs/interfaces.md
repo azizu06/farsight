@@ -1093,6 +1093,19 @@ The viewer finds a frame's render pose by the echoed `pose_id`, or failing
 that by an exact `sent_mono_ms`. It sizes the picture from the echoed
 `video_segment.fov_y_deg`, which defaults to 50.
 
+### Standalone VR exploration
+
+The standalone `quest/explore.html` viewer uses these same visual sockets and
+version-1 poses, with packed stereo by default. It sends `stereo: true` with a
+labeled pair; desktop eyes use illustrative 64 mm spacing, while immersive eyes
+come from that XR frame. It opens no rover socket and downloads no geometry.
+The Mac adds optional `video_segment.map.scene` metadata: `{floor_y, center[3],
+span}` in AR-map metres, estimated from at most 4,096 retained point samples
+once a second. This positions the virtual floor and first desktop view; it
+is a display anchor, not a reconstructed floor mesh. Optional `map.session_id`
+and `map.map_epoch` identify the anchor's world. Existing consumers ignore
+these fields; point, pose and stereo formats remain unchanged.
+
 ### Optional read-only native RGB-D preview
 
 `FARSIGHT_RAW_CAPTURE=1` enables `GET /phone/frame.bin`; default off. It returns

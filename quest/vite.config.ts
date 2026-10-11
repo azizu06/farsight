@@ -7,6 +7,7 @@ export default defineConfig({
         main: "index.html",
         macview: "macview.html",
         splat: "splat.html",
+        explore: "explore.html",
       },
     },
   },
