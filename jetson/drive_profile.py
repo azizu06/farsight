@@ -15,7 +15,7 @@ import json
 import math
 import statistics
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 SCHEMA_VERSION = 1
@@ -200,6 +200,19 @@ class DriveProfile:
         left = self._wheel_speed(left_pwm, self.min_pwm_left, self.trim_left)
         right = self._wheel_speed(right_pwm, self.min_pwm_right, self.trim_right)
         return (left + right) / 2, (right - left) / (2 * self.half_track_m)
+
+    def scale_linear(self, factor, evidence):
+        """The same calibration with every linear speed multiplied by ``factor``.
+
+        For a rover that, loaded, covers ``factor`` of the profiled ground speed at the
+        same PWM (measured from ARKit while driving). PWM points, per-side floors, trim,
+        the spin floor and the angular curve stay; ``evidence`` is recorded in meta.
+        """
+        if not (math.isfinite(factor) and 0.05 <= factor <= 2):
+            raise ValueError("Linear speed scale must be within 0.05..2")
+        meta = dict(self.meta, linear_scale=dict(factor=factor, evidence=evidence,
+                                                 unscaled_mps=list(self.linear_mps)))
+        return replace(self, linear_mps=tuple(v * factor for v in self.linear_mps), meta=meta)
 
     # -- persistence -------------------------------------------------------
     def to_dict(self):

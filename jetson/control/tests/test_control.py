@@ -544,6 +544,31 @@ class DemoModeTests(unittest.TestCase):
         self.assertTrue(explore(True, 60000)[0])
         self.assertEqual(explore(False, 900), (False, "video_stale"))  # strict mode keeps the 500 ms gate
 
+    def test_reactive_autonomy_never_creeps_under_the_translation_floor(self):
+        from jetson.drive_profile import DriveProfile
+        loaded = DriveProfile(max_pwm=255, min_pwm_left=70, min_pwm_right=40, linear_pwm=(80, 120, 160, 255),
+                              linear_mps=(0.086, 0.133, 0.188, 0.304), angular_pwm=(80, 120, 160),
+                              angular_radps=(0.82, 2.5, 3.83), half_track_m=0.166)
+        for profile in (None, loaded):
+            state = ControlState(clock=self.clock, proximity_stop=False, demo_mode=True, camera_ready=lambda: True,
+                                 detections=lambda: {}, drive_profile=profile, min_pwm=70, max_pwm=255)
+            state.set_connected(True)
+            session = state.begin()
+            for seq, deadman in ((1, False), (2, True)):
+                permit = state.status(issue_permit=True)["permit"]
+                state.accept({"session_id": session, "permit": permit, "seq": seq, "deadman": deadman, "v": 0,
+                              "w": 0, "pan": 0, "mode": "explore", "video_fresh": True, "video_age_ms": 0}, session)
+            floor = (round(70 + 185 * 0.15 / 0.45) if profile is None
+                     else max(map(abs, loaded.wheel_pwm(0.15, 0))))
+            for command, wheels in (((0.02, 0), (floor, floor)), ((0, 0.35), None), ((0.5, 0), (162, 162))):
+                with self.subTest(profile=profile is not None, command=command):
+                    state.autonomy.step = lambda *_, command=command: command
+                    left, right, _ = state.output()
+                    if wheels:
+                        self.assertEqual((left, right), wheels)
+                    else:  # an in-place turn stays a turn: exact zero translation is not raised
+                        self.assertEqual((left, right), (round(70 + 185 * 0.35), -round(70 + 185 * 0.35)))
+
     def test_protocol_faults_and_releases_still_latch(self):
         self.assertTrue(self.send())
         self.assertFalse(self.send(v=5))

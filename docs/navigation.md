@@ -95,7 +95,7 @@ ros2 launch farsight_nav nav.launch.py                 # or the farsight-nav sys
   refused with `409`, and Explore/Seek hold still (zero output) instead of running the
   reactive policy, which cannot see obstacles without the ultrasonic. Holding the deadman
   resumes once the bridge is back. Without `--nav2` the reactive policy still runs.
-- **Sensor gate:** Nav2 drives only with a normal-tracking ARKit pose (at most 0.5 s
+- **Sensor gate:** Nav2 drives only with a normal-tracking ARKit pose (at most 1.0 s
   old) and LiDAR depth (at most 1 s old) from the current phone session. There is no
   dead reckoning. Losing either stops the rover and needs a new deadman press after
   recovery; a new phone session or map epoch disarms the goal and resets Nav2.
@@ -196,6 +196,30 @@ the goal.
   with a 0.13 m radius RPP clipped a wall end.
 - **Planner:** `SmacPlanner2D`, `allow_unknown` (goals are often in unseen space),
   0.25 m tolerance.
+- **Translation floor:** in Explore the server raises any moving forward Nav2
+  translation slower than 0.15 m/s (`NavService.MIN_LINEAR_MPS`) to 0.15 m/s on the
+  same arc (the turn rate scales with it, then the server clamps it). Reverse, Seek and
+  Goto stay as Nav2 sent them: Goto is kept exactly as before for the demo while the
+  dead-end go-to scenario is flaky on main (it failed there too on 2026-10-11). The bridge's
+  local Explore motion applies the same floor, and so does the reactive policy without
+  Nav2 (`ControlState._reactive_floor`). Exact zero (an in-place turn or a stop) stays zero.
+  The floor holds at the real speed only with a drive profile that matches the loaded
+  rover (see [drive calibration](drive-calibration.md#loaded-rover)).
+- **Explore speed follows clearance:** the bridge caps every Explore command
+  (`farsight_nav/speed.py`) by the distance from the rover centre to the nearest measured
+  lethal map cell. With nothing within `speed_open_clearance_m` (0.8 m) it drives at the
+  server's top speed: the drive profile's `max_linear_mps` (0.304 m/s loaded, PWM 255),
+  else `speed_mps * max_v`. It slows linearly to the 0.15 m/s floor at
+  `speed_tight_clearance_m` (0.3 m). The turn rate stays as Nav2 sent it, like the
+  server's own speed clamp, so the slower rover turns more sharply; scaling the turn with
+  the speed kept RPP's wider arc and hit simulated walls. Off-map space never slows it.
+  RPP's own cost-regulated scaling stays off: it only sees the 0.22 m inflation.
+  Before, RPP asked for the same speed everywhere (captain, 2026-10-11: "it should go
+  fast in open space and slower in tight corners").
+  Simulated Explore (2026-10-11): forward median 0.30 m/s with clearance over 1 m (main
+  0.273), 0.176 m/s under 0.5 m (main 0.236); 90% of the floor in 160.9 s (main 91% in
+  145.4 s), 0 collisions, minimum clearance 0.32 m (main 0.20 m). With 0.4/1.0 m bands it
+  took 240 s to reach 88%.
 - **Controller:** Regulated Pure Pursuit by default (20 Hz, 0.95 m/s, never under
   0.45 m/s on approach; tight arcs still slow to 0.25 m/s, because a 0.45 m/s arc floor
   cut the simulated dead-end divider), 0.2-0.5 m
@@ -203,7 +227,8 @@ the goal.
   arc). RPP raises an in-place turn by at most `max_angular_accel` per step above the
   *measured* yaw rate, so it is 60 rad/s^2: at 8 the first step was 0.4 rad/s (PWM 80),
   the loaded rover never broke free and sat for 27 s (floor test, 2026-10-11); now the
-  first step is the full 2.2 rad/s (PWM 109/104). A 3.0 rad/s turn banged between
+  first step is the full 2.2 rad/s (PWM 109/104 on the unloaded profile, 255/243 on the
+  loaded one). A 3.0 rad/s turn banged between
   directions every 0.2 s in the simulated dead end and hit its walls. Or MPPI
   with `controller:=mppi` (1000 samples, 2 s horizon, `vx_max` 0.95 m/s, `wz_max`
   2.5 rad/s). These are full power for `FARSIGHT_AUTONOMY_MAX_PWM=255` on the 2026-10-10 drive

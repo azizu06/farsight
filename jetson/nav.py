@@ -182,6 +182,8 @@ class NavService:
     POSE_TTL = 1.0     # Nav2 motion needs a normal-tracking ARKit pose at least this fresh (0.5 tripped on
                        # the rig's 500-750 ms camera stalls every ~5 s and cut AUTO into 0.75 s runs) ...
     DEPTH_TTL = 1.0    # ... and measured depth of the same sensor session at least this fresh
+    MIN_LINEAR_MPS = 0.15  # every moving forward Explore translation is at least this; zero, reverse,
+                           # Seek and Goto stay as Nav2 sent them (Goto as on main for the demo, 2026-10-11)
 
     def __init__(self, mapping, *, speed_mps=0.45, turn_radps=3.0, max_v=0.7, max_w=0.8,
                  camera_height=0.15, backed_modes=NAV_MODES, standoff=0.8, clock=time.monotonic,
@@ -655,6 +657,11 @@ class NavService:
                 if self.mode in ("goto", "seek") and message.get("goal_id") != goal_id:
                     self.bridge_seen = now
                     return  # computed for an earlier goal
+                if self.mode == "explore" and 0 < linear < self.MIN_LINEAR_MPS:
+                    # Raise a slow forward translation to the floor at the same curvature, so the
+                    # rover still follows the planned arc (the server clamps the turn rate).
+                    angular *= self.MIN_LINEAR_MPS / linear
+                    linear = self.MIN_LINEAR_MPS
                 # ROS angular.z is counter-clockwise (left); ControlState positive w turns right.
                 v = max(-self.max_v, min(self.max_v, linear / self.speed_mps))
                 w = max(-self.max_w, min(self.max_w, -angular / self.turn_radps))
