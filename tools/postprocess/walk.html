@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Farsight Walkthrough</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@800&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: full-bleed first-person stage; title strip top, controls card bottom-left, minimap bottom-right. */
+:root{--bg:#0b0f0e;--panel:rgba(16,22,20,.86);--fg:#e4ebe7;--muted:#90a19a;--line:#2a3532;--accent:#45d19f;--path:#f2b84b;
+  --display:"Archivo",system-ui,sans-serif;--mono:"IBM Plex Mono",ui-monospace,monospace;color-scheme:dark}
+html,body{height:100%}
+body{background:var(--bg);color:var(--fg);font-family:var(--mono);overflow:hidden;user-select:none}
+#stage{position:fixed;inset:0;cursor:grab}
+#stage:active{cursor:grabbing}
+.bar{position:fixed;left:0;right:0;top:0;padding:calc(10px + env(safe-area-inset-top,0px)) 16px 10px;display:flex;flex-wrap:wrap;gap:6px 16px;align-items:baseline;background:linear-gradient(var(--bg),transparent);pointer-events:none;z-index:2}
+.bar h1{font-family:var(--display);font-weight:800;font-size:1.15rem;margin:0}
+.bar span{font-size:.74rem;color:var(--muted)}
+.dock{position:fixed;left:16px;bottom:calc(16px + env(safe-area-inset-bottom,0px));background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 12px;display:grid;gap:8px;z-index:2;max-width:calc(100vw - 32px)}
+.t{font-size:.68rem;letter-spacing:.09em;text-transform:uppercase;color:var(--muted)}
+.keys{font-size:.78rem;line-height:1.6}
+kbd{font-family:var(--mono);border:1px solid var(--line);border-radius:4px;padding:0 5px;font-size:.74rem}
+.btns{display:flex;gap:6px;flex-wrap:wrap}
+button{font:inherit;font-size:.8rem;background:transparent;color:var(--fg);border:1px solid var(--line);border-radius:5px;padding:6px 11px;cursor:pointer}
+button:hover,button:focus-visible{border-color:var(--accent);outline:none}
+button[aria-pressed="true"]{border-color:var(--accent);color:var(--accent)}
+#map{position:fixed;right:16px;bottom:calc(16px + env(safe-area-inset-bottom,0px));width:170px;height:170px;background:var(--panel);border:1px solid var(--line);border-radius:8px;z-index:2}
+#status[hidden]{display:none}
+#status{position:fixed;inset:0;display:grid;place-items:center;color:var(--muted);font-size:.9rem;z-index:1;pointer-events:none}
+.pad{position:fixed;right:16px;bottom:calc(200px + env(safe-area-inset-bottom,0px));display:grid;grid-template-columns:repeat(3,56px);gap:8px;z-index:2}
+.pad button{font-size:1.1rem}
+.pad button{padding:10px 0}
+@media (pointer:coarse){.keys{display:none}}
+</style>
+</head><body>
+<div id="stage"></div>
+<div id="status">Loading the room…</div>
+<div class="bar"><h1>Farsight walkthrough</h1><span id="sub">One continuous rover drive</span></div>
+<div class="dock">
+  <div class="t">Walk</div>
+  <div class="keys"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> or arrows to walk · drag to look · <kbd>Q</kbd>/<kbd>E</kbd> up/down · <kbd>Shift</kbd> faster</div>
+  <div class="btns"><button id="bStart">Back to start</button><button id="bTour" aria-pressed="false">Ride the rover's path</button></div>
+</div>
+<div class="pad" aria-label="Touch movement">
+  <button data-k="ArrowLeft" aria-label="Turn left">↺</button><button data-k="KeyW" aria-label="Forward">▲</button><button data-k="ArrowRight" aria-label="Turn right">↻</button>
+  <button data-k="KeyA" aria-label="Step left">◀</button><button data-k="KeyS" aria-label="Back">▼</button><button data-k="KeyD" aria-label="Step right">▶</button>
+</div>
+<canvas id="map" width="340" height="340" aria-label="Top-down map of the rover path"></canvas>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"}}</script>
+<script type="module">
+import * as THREE from "three";
+import * as GS from "https://cdn.jsdelivr.net/npm/@mkkellogg/gaussian-splats-3d@0.4.7/build/gaussian-splats-3d.module.js";
+// walk.html?scene=<.ply|.splat URL>[&transforms=<transforms.json URL>][&info=<caption>]
+// Without transforms the walk starts at the origin, looking down -Z (ARKit world, Y up).
+const Q=new URLSearchParams(location.search);
+const D={scene:Q.get('scene'),info:Q.get('info')||'Post-run splat walkthrough',path:[[0,0,0,0]]};
+if(Q.get('transforms')){const t=await (await fetch(Q.get('transforms'))).json();
+  D.path=t.frames.map(f=>{const m=f.transform_matrix;return [m[0][3],m[1][3],m[2][3],Math.atan2(m[0][2],m[2][2])]})
+    .filter((p,i,a)=>!i||Math.hypot(p[0]-a[i-1][0],p[2]-a[i-1][2])>0.05||Math.abs(p[3]-a[i-1][3])>0.1);}
+document.getElementById('sub').textContent=D.info;
+const path=D.path, eye=path.reduce((s,p)=>s+p[1],0)/path.length;
+const cam=new THREE.PerspectiveCamera(70,innerWidth/innerHeight,0.02,200);
+const viewer=new GS.Viewer({rootElement:document.getElementById('stage'),camera:cam,useBuiltInControls:false,
+  sharedMemoryForWorkers:false,dynamicScene:false,sphericalHarmonicsDegree:0,antialiased:true});
+let yaw=0,pitch=0,touring=false,tourT=0;
+function place(i){const p=path[i];cam.position.set(p[0],p[1],p[2]);yaw=p[3];pitch=0;}
+place(0);
+const keys=new Set();
+addEventListener('keydown',e=>{keys.add(e.code);if(e.code.startsWith('Arrow'))e.preventDefault();if(['KeyW','KeyA','KeyS','KeyD','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code))stopTour();});
+addEventListener('keyup',e=>keys.delete(e.code));
+document.querySelectorAll('.pad button').forEach(b=>{const k=b.dataset.k;
+  b.addEventListener('pointerdown',e=>{e.preventDefault();keys.add(k);stopTour()});['pointerup','pointerleave','pointercancel'].forEach(t=>b.addEventListener(t,()=>keys.delete(k)));});
+let drag=null;const stage=document.getElementById('stage');
+stage.addEventListener('pointerdown',e=>{drag=[e.clientX,e.clientY];stage.setPointerCapture(e.pointerId)});
+stage.addEventListener('pointermove',e=>{if(!drag)return;yaw-=(e.clientX-drag[0])*0.004;pitch=Math.max(-1.2,Math.min(1.2,pitch-(e.clientY-drag[1])*0.004));drag=[e.clientX,e.clientY]});
+stage.addEventListener('pointerup',()=>drag=null);
+const tourBtn=document.getElementById('bTour');
+function stopTour(){touring=false;tourBtn.setAttribute('aria-pressed','false')}
+tourBtn.onclick=()=>{touring=!touring;tourBtn.setAttribute('aria-pressed',String(touring));if(touring)tourT=0};
+document.getElementById('bStart').onclick=()=>{stopTour();place(0)};
+const fwd=new THREE.Vector3(),right=new THREE.Vector3();let last=performance.now();
+function lerpAng(a,b,t){let d=b-a;while(d>Math.PI)d-=2*Math.PI;while(d<-Math.PI)d+=2*Math.PI;return a+d*t}
+function tick(now){
+  const dt=Math.min(0.05,(now-last)/1000);last=now;
+  if(touring){tourT+=dt*2.0;const i=Math.floor(tourT);if(i>=path.length-1){stopTour()}else{const a=path[i],b=path[i+1],f=tourT-i;
+    cam.position.set(a[0]+(b[0]-a[0])*f,a[1]+(b[1]-a[1])*f,a[2]+(b[2]-a[2])*f);yaw=lerpAng(a[3],b[3],f);pitch*=0.9;}}
+  const sp=(keys.has('ShiftLeft')||keys.has('ShiftRight')?2.4:0.9)*dt;
+  fwd.set(-Math.sin(yaw),0,-Math.cos(yaw));right.set(Math.cos(yaw),0,-Math.sin(yaw));
+  if(keys.has('KeyW')||keys.has('ArrowUp'))cam.position.addScaledVector(fwd,sp);
+  if(keys.has('KeyS')||keys.has('ArrowDown'))cam.position.addScaledVector(fwd,-sp);
+  if(keys.has('KeyD'))cam.position.addScaledVector(right,sp);
+  if(keys.has('KeyA'))cam.position.addScaledVector(right,-sp);
+  if(keys.has('ArrowLeft'))yaw+=1.6*dt; if(keys.has('ArrowRight'))yaw-=1.6*dt;
+  if(keys.has('KeyE'))cam.position.y+=sp; if(keys.has('KeyQ'))cam.position.y-=sp;
+  cam.rotation.set(pitch,yaw,0,'YXZ');
+  drawMap();requestAnimationFrame(tick);
+}
+const mc=document.getElementById('map').getContext('2d');
+const xs=path.map(p=>p[0]),zs=path.map(p=>p[2]);
+const minX=Math.min(...xs)-1,maxX=Math.max(...xs)+1,minZ=Math.min(...zs)-1,maxZ=Math.max(...zs)+1,sc=300/Math.max(maxX-minX,maxZ-minZ);
+const mx=x=>20+(x-minX)*sc,mz=z=>20+(z-minZ)*sc;
+function drawMap(){mc.clearRect(0,0,340,340);
+  mc.strokeStyle=getComputedStyle(document.documentElement).getPropertyValue('--path');mc.lineWidth=3;mc.beginPath();
+  path.forEach((p,i)=>i?mc.lineTo(mx(p[0]),mz(p[2])):mc.moveTo(mx(p[0]),mz(p[2])));mc.stroke();
+  const x=mx(cam.position.x),z=mz(cam.position.z);mc.fillStyle='#45d19f';mc.beginPath();mc.arc(x,z,8,0,7);mc.fill();
+  mc.strokeStyle='#45d19f';mc.lineWidth=3;mc.beginPath();mc.moveTo(x,z);mc.lineTo(x-Math.sin(yaw)*22,z-Math.cos(yaw)*22);mc.stroke();}
+addEventListener('resize',()=>{cam.aspect=innerWidth/innerHeight;cam.updateProjectionMatrix()});
+(async()=>{
+  try{
+    if(!D.scene)throw new Error('add ?scene=<url of a .ply or .splat> to the address');
+    const fmt=/\.splat(\?|$)/i.test(D.scene)?GS.SceneFormat.Splat:GS.SceneFormat.Ply;
+    await viewer.addSplatScene(D.scene,{format:fmt,showLoadingUI:false,progressiveLoad:false});
+    viewer.start();document.getElementById('status').hidden=true;window.__ready=true;requestAnimationFrame(tick);
+  }catch(e){document.getElementById('status').textContent='Could not load the room: '+e.message;window.__ready=true;}
+})();
+</script>
+</body></html>
