@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {DRIVE,ForwardRamp,JOYSTICK_PACE,STEER,forwardGain,joystickDrive,manualDrive,steerCurve} from '../src/manual-drive.js';
+import {DRIVE,DriveRamp,JOYSTICK_PACE,STEER,joystickDrive,manualDrive,steerCurve} from '../src/manual-drive.js';
 const root=fileURLToPath(new URL('../../',import.meta.url));
 const python=`${root}.venv/bin/python`;
 function motorOutputs(inputs) {
@@ -54,7 +54,7 @@ test('forward stick stays full power with the new steering: straight push is str
 test('rover.ts feeds raw stick axes to the steering curve, joystick capped, keyboard uncapped',async()=>{
   const {readFileSync}=await import('node:fs');
   const source=readFileSync(new URL('../src/rover.ts',import.meta.url),'utf8');
-  assert.match(source,/joystickDrive\(forward, steerCurve\(stickX, stickY\)\)/);
+  assert.match(source,/steerCurve\(stickX, stickY\), now\);\s*const drive = joystickDrive\(eased\.v, eased\.w\)/);
   assert.match(source,/manualDrive\(Number\(this\.keys\.has\("KeyW"\)\)/,'keyboard keeps full authority');
 });
 test("joystick pace: full stick matches Dechante's manual run (181 straight, ±181 spin, 255/0 arc)",()=>{
@@ -67,49 +67,52 @@ test("joystick pace: full stick matches Dechante's manual run (181 straight, ±1
   assert.deepEqual(joystickDrive(0,steerCurve(0.2,0)),{v:0,w:0});
   assert.ok(!Object.is(joystickDrive(-0,-0).v,-0)&&!Object.is(joystickDrive(-0,-0).w,-0),'no -0');
   assert.deepEqual(joystickDrive(NaN,Infinity),{v:0,w:0});
-  const close=(a,b)=>assert.ok(Math.abs(a-b)<1e-12,`${a} vs ${b}`);
-  close(joystickDrive(forwardGain(.3),0).v,JOYSTICK_PACE);
 });
 
-test('forward ease-in: no step at the first push, full after 0.1 s (arrow-key feel)',()=>{
+test('drive ramp: speed builds over 0.7 s and a release slows to rest over 0.25 s (captain, 057)',()=>{
   const close=(a,b,m,eps=1e-9)=>assert.ok(Math.abs(a-b)<eps,`${m}: ${a} vs ${b}`);
-  assert.deepEqual(DRIVE,{onsetGain:1,onsetSeconds:0.1,climbSeconds:0.1,maxStep:0.1});
-  const ramp=new ForwardRamp(),out=[];
-  for(let t=0;t<=2600;t+=10)out.push([t,ramp.step(1,t)]);
-  const at=ms=>out.find(([t])=>t===ms)[1];
-  assert.equal(at(0),0,'first tick from rest moves nothing');
-  close(at(50),0.5,'onset rises over 0.1 s (no step)');
-  close(at(100),1,'full demand at the end of the onset');
-  close(at(300),1,'stays full while held');
-  assert.equal(at(2600),1,'never above the stick demand');
-  for(let i=1;i<out.length;i++)assert.ok(out[i][1]>=out[i-1][1]-1e-12,'monotonic while held');
-  // Partial stick: the same gain applies to the demand.
-  const half=new ForwardRamp();half.step(-0.5,0);for(let t=10;t<=300;t+=10)half.step(-0.5,t);close(half.v,-0.5,'reverse half stick eases in too');
-  // A stalled frame cannot skip the ease-in.
-  const stalled=new ForwardRamp();stalled.step(1,0);close(stalled.step(1,5000),forwardGain(DRIVE.maxStep),'gap capped');
+  assert.deepEqual(DRIVE,{accelSeconds:0.7,decelSeconds:0.25,steerSeconds:0.3,steerReleaseSeconds:0.15,maxStep:0.1});
+  // Sampled at the 50 ms control pump: no command step is larger than 1/14 of full demand.
+  const ramp=new DriveRamp(),out=[];
+  for(let t=0;t<=1000;t+=50)out.push(ramp.step(1,0,t).v);
+  assert.equal(out[0],0,'first tick from rest moves nothing');
+  close(out[7],0.5,'half demand after 0.35 s');
+  close(out[14],1,'full demand after 0.7 s');assert.equal(out.at(-1),1,'never above the stick demand');
+  for(let i=1;i<out.length;i++){assert.ok(out[i]>=out[i-1]);assert.ok(out[i]-out[i-1]<=0.05/0.7+1e-12,'no big steps');}
+  // Release: slows over 0.25 s, still moving (motion intent) until it reaches rest.
+  close(ramp.step(0,0,1050).v,0.8,'release is not instant');assert.equal(ramp.moving,true);
+  for(let t=1100;t<=1250;t+=50)ramp.step(0,0,t);
+  assert.equal(ramp.v,0,'at rest 0.25 s after release');assert.equal(ramp.moving,false);
+  // Partial and reverse demand ramp the same way; a stalled frame cannot skip the ramp.
+  const back=new DriveRamp();back.step(-0.5,0,0);for(let t=50;t<=400;t+=50)back.step(-0.5,0,t);close(back.v,-0.5,'reverse half stick');
+  const stalled=new DriveRamp();stalled.step(1,0,0);close(stalled.step(1,0,5000).v,DRIVE.maxStep/DRIVE.accelSeconds,'gap capped');
 });
-test('forward ease-in: easing off, release, reversal and stops are immediate and restart it',()=>{
-  const ramp=new ForwardRamp();
-  for(let t=0;t<=3000;t+=10)ramp.step(1,t);
-  assert.equal(ramp.v,1);
-  assert.equal(ramp.step(0.4,3010),0.4,'easing off applies at once');
-  assert.equal(ramp.step(0,3020),0,'release stops at once');
-  assert.equal(ramp.step(1,3030),0,'and the next push starts the ease-in again');
-  for(let t=3040;t<=6000;t+=10)ramp.step(1,t);
-  assert.equal(ramp.step(-1,6010),0,'reversal passes through rest at once, then eases in the other way');
-  assert.ok(ramp.step(-1,6060)<0&&ramp.step(-1,6060)>-0.6);
-  for(let t=6120;t<=9000;t+=10)ramp.step(-1,t);
-  ramp.reset();assert.equal(ramp.v,0,'B / stop / deadman reset to rest');
-  assert.equal(ramp.step(-1,9010),0,'next push eases in again');
-  assert.equal(ramp.step(NaN,9020),0,'invalid demand is rest');
-  for(let held=0;held<=3;held+=0.05)assert.ok(forwardGain(held)<=1,'gain never exceeds 1');
+test('drive ramp: reversal slows through rest, steering is rate-limited, reset is an instant stop',()=>{
+  const close=(a,b,m,eps=1e-9)=>assert.ok(Math.abs(a-b)<eps,`${m}: ${a} vs ${b}`);
+  const ramp=new DriveRamp();
+  for(let t=0;t<=1000;t+=50)ramp.step(1,0,t);
+  const reverse=[];for(let t=1050;t<=2000;t+=50)reverse.push(ramp.step(-1,0,t).v);
+  close(reverse[4],0,'decelerates to rest in 0.25 s first');
+  assert.ok(reverse[5]<0&&reverse[5]>-0.1,'then builds up in reverse');
+  for(let i=1;i<reverse.length;i++)assert.ok(reverse[i]<=reverse[i-1],'no bounce through zero');
+  close(reverse.at(-1),-1,'full reverse 0.7 s after rest');
+  const turn=new DriveRamp(),at=(goal,from,to)=>{let w;for(let t=from;t<=to;t+=25)w=turn.step(0,goal,t).w;return w;};
+  turn.step(0,1,0);
+  close(at(1,25,150),0.5,'half pivot after 0.15 s');close(at(1,175,300),1,'full pivot after 0.3 s');
+  close(at(0,325,375),0.5,'steering returns twice as fast');close(at(0,400,450),0,'straight after 0.15 s');
+  for(let t=0;t<=1000;t+=50)ramp.step(1,1,t+3000);
+  ramp.reset();assert.deepEqual({v:ramp.v,w:ramp.w,moving:ramp.moving},{v:0,w:0,moving:false},'B / stop / deadman: instant rest');
+  assert.deepEqual(ramp.step(1,1,9000),{v:0,w:0},'next push ramps again');
+  assert.deepEqual(ramp.step(NaN,Infinity,9050),{v:0,w:0},'invalid demand is rest');
+  assert.ok(!Object.is(new DriveRamp().step(-0,-0,0).v,-0),'no -0');
 });
-test('rover.ts eases only the Quest stick forward demand and resets on every stop path',async()=>{
+test('rover.ts ramps only the Quest stick, keeps intent while slowing, and resets on every stop path',async()=>{
   const {readFileSync}=await import('node:fs');
   const source=readFileSync(new URL('../src/rover.ts',import.meta.url),'utf8');
-  assert.match(source,/this\.forwardRamp\.step\(-stick\(stickY, XR_STICK_DEADZONE\), now\)/);
-  assert.match(source,/joystickDrive\(forward, steerCurve\(stickX, stickY\)\)/);
-  assert.match(source,/stop\(reason: string, hard = false\) \{\s*this\.forwardRamp\.reset\(\);/);
-  assert.match(source,/if \(!moving\) this\.forwardRamp\.reset\(\);/);
-  assert.match(source,/if \(!tracked\) \{\s*this\.forwardRamp\.reset\(\);/);
+  assert.match(source,/this\.driveRamp\.step\(-stick\(stickY, XR_STICK_DEADZONE\), steerCurve\(stickX, stickY\), now\)/);
+  assert.match(source,/joystickDrive\(eased\.v, eased\.w\)/);
+  assert.match(source,/\|\| this\.driveRamp\.moving;/);
+  assert.match(source,/stop\(reason: string, hard = false\) \{\s*this\.driveRamp\.reset\(\);/);
+  assert.match(source,/if \(!moving\) this\.driveRamp\.reset\(\);/);
+  assert.match(source,/if \(!tracked\) \{\s*this\.driveRamp\.reset\(\);/);
 });

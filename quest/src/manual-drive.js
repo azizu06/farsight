@@ -39,43 +39,49 @@ export function steerCurve(x, y) {
   return Math.sign(x) * shaped ** STEER.expo;
 }
 
-/** Quest right-stick forward ease-in (captain: start ~10% softer, then build up so it never jerks). */
+/** Quest right-stick acceleration (captain, 057): speed builds instead of jumping 0 -> full, and
+ * releasing the stick slows down quickly but not instantly. Overrides Dechante's 0.1 s ease-in (79fef73).
+ * Rates are for full-scale demand ([-1, 1], before JOYSTICK_PACE); a partial push gets there sooner. */
 export const DRIVE = {
-  /** Gain reached at the end of the onset rise, from rest. */
-  onsetGain: 1, // arrow-key run hit full speed at once (was 0.9)
-  /** Onset rise (s): the gain climbs from 0 to onsetGain, so there is no step at the first push. */
-  onsetSeconds: 0.1, // was 0.3
-  /** Then, while forward is still held, the gain climbs smoothly from onsetGain to 1 over this long (s). */
-  climbSeconds: 0.1, // was 2; no slow climb after the onset
-  /** Longest frame gap credited to the ease-in (s), so a stalled frame cannot skip it. */
+  /** Rest to full forward (or reverse) demand (s). */
+  accelSeconds: 0.7,
+  /** Full demand to rest when the stick is eased off, released or reversed (s). */
+  decelSeconds: 0.25,
+  /** Steering: no turn to a full pivot (s), and a full pivot back to straight (s). */
+  steerSeconds: 0.3,
+  steerReleaseSeconds: 0.15,
+  /** Longest frame gap credited to the ramps (s), so a stalled frame cannot skip them. */
   maxStep: 0.1,
 };
 
-/** Forward gain after `held` seconds of continuous forward (or reverse) demand. */
-export function forwardGain(held) {
-  const t = Number.isFinite(held) && held > 0 ? held : 0;
-  if (t < DRIVE.onsetSeconds) return DRIVE.onsetGain * t / DRIVE.onsetSeconds;
-  const k = Math.min(1, (t - DRIVE.onsetSeconds) / DRIVE.climbSeconds);
-  return DRIVE.onsetGain + (1 - DRIVE.onsetGain) * k * k * (3 - 2 * k);
+/** Move `value` toward `goal`: speeding up (same sign, larger) at `up` per s, anything else at `down` per s. */
+function slew(value, goal, dt, upSeconds, downSeconds) {
+  const speedingUp = Math.sign(goal) !== 0 && Math.sign(goal) === Math.sign(value || goal) && Math.abs(goal) > Math.abs(value);
+  // Slowing toward rest, or reversing: never cross zero faster than the decel rate allows.
+  const limit = dt / (speedingUp ? upSeconds : downSeconds);
+  const target = !speedingUp && Math.sign(goal) !== 0 && Math.sign(goal) !== Math.sign(value) && value !== 0 ? 0 : goal;
+  const next = value + Math.max(-limit, Math.min(limit, target - value));
+  return Math.abs(next) < 1e-9 ? 0 : next; // snap float residue (and -0) to rest
 }
 
 /**
- * Eases forward/back demand in from rest. Output never exceeds the stick's demand, so
- * easing off, release, B, deadman and a reversal (through zero) all apply immediately;
- * returning to center or reversing restarts the ease-in.
+ * Rate-limits Quest stick demand: forward/reverse builds over DRIVE.accelSeconds, easing off or
+ * releasing decays over DRIVE.decelSeconds, and steering changes over DRIVE.steerSeconds. A reversal
+ * slows through rest first. reset() is the hard stop (B, deadman, tracking loss, faults): output 0 at once.
  */
-export class ForwardRamp {
+export class DriveRamp {
   constructor() { this.reset(); }
-  reset() { this.v = 0; this.held = 0; this.sign = 0; this.at = null; }
-  /** @param {number} demand stick demand in [-1, 1] @param {number} now ms */
-  step(demand, now) {
-    const goal = Number.isFinite(demand) ? Math.max(-1, Math.min(1, demand)) : 0;
+  reset() { this.v = 0; this.w = 0; this.at = null; }
+  /** Still moving (decelerating after a release keeps the motion intent until it reaches rest). */
+  get moving() { return this.v !== 0 || this.w !== 0; }
+  /** @param {number} forward stick demand in [-1, 1] @param {number} steering in [-1, 1] @param {number} now ms */
+  step(forward, steering, now) {
+    const v = Number.isFinite(forward) ? Math.max(-1, Math.min(1, forward)) : 0;
+    const w = Number.isFinite(steering) ? Math.max(-1, Math.min(1, steering)) : 0;
     const dt = this.at === null || !Number.isFinite(now) ? 0 : Math.min(Math.max(0, (now - this.at) / 1000), DRIVE.maxStep);
     this.at = Number.isFinite(now) ? now : null;
-    const sign = Math.sign(goal);
-    if (sign === 0 || sign !== this.sign) { this.held = 0; this.sign = sign; }
-    else this.held += dt;
-    this.v = goal * forwardGain(this.held) + 0; // never -0
-    return this.v;
+    this.v = slew(this.v, v, dt, DRIVE.accelSeconds, DRIVE.decelSeconds);
+    this.w = slew(this.w, w, dt, DRIVE.steerSeconds, DRIVE.steerReleaseSeconds);
+    return { v: this.v, w: this.w };
   }
 }
