@@ -349,13 +349,14 @@ impl TrainConfig {
         if self.sh_unlock_at.is_empty() {
             self.sh_unlock_at = vec![0.15, 0.3, 0.5];
         }
-        self.sparse_adam = true;
+        // sparse_adam stays off in the bundle until the visible-index
+        // starvation bug in step_sparse is fixed (see schedule.md).
         self.ssim_weight = 0.2;
         if self.ema_decay == 0.0 {
-            self.ema_decay = 0.999;
+            self.ema_decay = 0.95;
         }
-        self.seeded_mean_lr_scale = 0.5;
-        self.seeded_early_boost = 1.5;
+        self.seeded_mean_lr_scale = 0.75;
+        self.seeded_early_boost = 1.25;
     }
 
     pub fn total_iters(&self) -> u32 {

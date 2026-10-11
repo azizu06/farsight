@@ -419,6 +419,7 @@ impl SplatTrainer {
         ) else {
             return splats.clone();
         };
+
         if t.dims() != splats.transforms.dims() {
             return splats.clone();
         }
@@ -753,14 +754,16 @@ impl SplatTrainer {
         // step (union over the batch's views). One small D2H sync per step;
         // on unified-memory GPUs the indices are nearly free.
         let vis_inds = if self.config.sparse_adam {
-            Some(
+            Some(if std::env::var_os("BRUSH_SPARSE_ALL").is_some() {
+                Tensor::arange(0..(splats.transforms.dims()[0] as i64), &opt_device)
+            } else {
                 visible
                     .clone()
                     .greater_elem(0.5)
                     .argwhere_async()
                     .await
-                    .squeeze_dim::<1>(1),
-            )
+                    .squeeze_dim::<1>(1)
+            })
         } else {
             None
         };
