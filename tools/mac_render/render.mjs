@@ -28,6 +28,7 @@ import { mapResponseRevision } from "/quest/src/map-response.js";
 import { DenseCloudState, DenseCloudReceiver, DenseGpuChunks } from "./dense-cloud.mjs";
 import { StereoPass, SBS_LAYOUT } from "./stereo-pass.mjs";
 import { DesktopPreviewCamera } from "./desktop-preview.mjs";
+import { sceneAnchor } from "./scene-anchor.mjs";
 import { measuredSurfaceLayer, measuredSurfaceOptions } from "./measured-surface.mjs";
 
 const params = new URLSearchParams(location.search);
@@ -314,6 +315,7 @@ function uploadMesh(data) {
 }
 
 function clearGeometry() {
+  sceneView = null; sceneAnchorAt = -Infinity;
   cloudMerger.clear();
   cloudMerger.sync(cloudGeometry, cloudAttribute);
   cloudCount = cloudHalf = cloudQuarter = 0;
@@ -526,6 +528,7 @@ import("/dense-layer/raw-texture-layer.mjs")
   .catch(() => {});
 
 const mapStatusView = {};
+let sceneAnchorAt = -Infinity, sceneView = null;
 let bannerText = "";
 let cloudShown = -1;
 let trisShown = -1;
@@ -551,11 +554,19 @@ function exposeMap() {
   mac.mapError = mapError;
   mac.lod = lodView;
   if (status) {
+    const now = performance.now();
+    if (now - sceneAnchorAt >= 1000) {
+      sceneAnchorAt = now;
+      sceneView = sceneAnchor(denseState.chunks, cloudGeometry.getAttribute("position")?.array, cloudCount);
+    }
     mapStatusView.source = status.source;
     mapStatusView.geometry_source = status.geometry_source ?? null;
     mapStatusView.points = status.points;
     mapStatusView.triangles = status.triangles;
     mapStatusView.generation = status.generation;
+    mapStatusView.session_id = status.session_id ?? null;
+    mapStatusView.map_epoch = status.map_epoch ?? null;
+    mapStatusView.scene = sceneView;
     mapStatusView.revision = status.revision;
     mapStatusView.mesh_revision = status.mesh_revision;
     mapStatusView.applied_points_revision = appliedPoints;
