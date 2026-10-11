@@ -10,9 +10,19 @@ class VoxelMap:
             raise ValueError("Voxel size and capacity must be positive")
         self.size, self.capacity = size, capacity
         self.cells = OrderedDict()
+        # Mirror wire-ready values in bounded buffers. Snapshot never walks the
+        # Python cells; order tracks the same least-recently-updated iteration.
+        self._rows = {}
+        self._xyz = np.empty((capacity, 3), np.float32)
+        self._rgb = np.empty((capacity, 3), np.uint8)
+        self._order = np.empty(0, np.intp)
+        self._touched = np.zeros(capacity, bool)
+        self._sequence = np.empty(capacity, np.intp)
 
     def clear(self):
         self.cells.clear()
+        self._rows.clear()
+        self._order = np.empty(0, np.intp)
 
     def integrate(self, points, colors):
         if not len(points):
@@ -41,16 +51,37 @@ class VoxelMap:
             xyz[present] = old_xyz * (1 - alpha) + xyz[present] * alpha
             rgb[present] = old_rgb * (1 - alpha) + rgb[present] * alpha
             weights[present] = np.minimum(old_weights + 1, 30)
-        for key, position, color, weight in zip(keys, xyz, rgb, weights):
+        # Callers may raise the visual capacity before integration.
+        if self.capacity > len(self._xyz):
+            extra = self.capacity - len(self._xyz)
+            self._xyz = np.concatenate((self._xyz, np.empty((extra, 3), np.float32)))
+            self._rgb = np.concatenate((self._rgb, np.empty((extra, 3), np.uint8)))
+            self._touched = np.zeros(self.capacity, bool)
+            self._sequence = np.empty(self.capacity, np.intp)
+        touched = []
+        clipped = np.clip(rgb, 0, 255).astype(np.uint8)
+        for i, (key, position, color, weight) in enumerate(zip(keys, xyz, rgb, weights)):
+            row = self._rows.get(key)
+            if row is None:
+                if len(self._rows) == self.capacity:
+                    oldest, _ = self.cells.popitem(last=False)
+                    row = self._rows.pop(oldest)
+                else:
+                    row = len(self._rows)
+                self._rows[key] = row
+            self._xyz[row], self._rgb[row] = position, clipped[i]
+            self._sequence[row] = i
+            touched.append(row)
             # A retained voxel owns its small arrays, never an entire capture batch.
             self.cells[key] = (position.copy(), color.copy(), int(weight))
             self.cells.move_to_end(key)
-        while len(self.cells) > self.capacity:
-            self.cells.popitem(last=False)
+        # A capture larger than capacity can recycle a row more than once.
+        # Keep only its last write, in exactly the OrderedDict's final order.
+        updated = np.unique(np.asarray(touched, dtype=np.intp))
+        updated = updated[np.argsort(self._sequence[updated])]
+        self._touched[updated] = True
+        self._order = np.concatenate((self._order[~self._touched[self._order]], updated))
+        self._touched[updated] = False
 
     def snapshot(self):
-        if not self.cells:
-            return np.empty((0, 3), np.float32), np.empty((0, 3), np.uint8)
-        values = list(self.cells.values())
-        return (np.array([v[0] for v in values], np.float32),
-                np.clip([v[1] for v in values], 0, 255).astype(np.uint8))
+        return self._xyz[self._order], self._rgb[self._order]
