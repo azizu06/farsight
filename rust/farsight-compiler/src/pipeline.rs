@@ -2,7 +2,7 @@
 //! own module; wire new options through their `*Options` struct (serde default).
 
 use crate::core::{Capture, Mesh, PointCloud};
-use crate::{clean, densify, export, meshops, normals, planes, surface, texture, Stats};
+use crate::{clean, densify, export, learned, meshops, normals, planes, surface, texture, Stats};
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
@@ -12,6 +12,7 @@ pub struct CompileOptions {
     pub clean: clean::CleanOptions,
     pub normals: normals::NormalOptions,
     pub planes: planes::PlaneOptions,
+    pub learned: learned::LearnedOptions,
     pub densify: densify::DensifyOptions,
     pub surface: surface::SurfaceOptions,
     pub mesh: meshops::MeshOptions,
@@ -79,7 +80,21 @@ pub fn compile(mut cloud: PointCloud, capture: Option<&Capture>, opts: &CompileO
     cloud.validate();
     timed(&mut report, "normals", || ((), normals::estimate(&mut cloud, &opts.normals)));
     cloud.validate();
-    let dense = timed(&mut report, "densify", || densify::run(&cloud, capture, &opts.densify));
+    // Learned depth completion (Neural Engine / ONNX). Skips fast when no
+    // model is configured; maps are consumed by densify (W3 contract:
+    // Option<&[DepthMap]> inserted before `opts`).
+    let lopts = opts.learned.resolve();
+    let mut depth_maps: Vec<learned::DepthMap> = Vec::new();
+    if let (Some(cap), false) = (capture, lopts.depth_model.is_empty()) {
+        timed(&mut report, "learned", || {
+            depth_maps = learned::complete_depth_opts(cap, &cloud, &lopts);
+            let v = depth_maps.len();
+            let rmse: f32 = if v == 0 { 0.0 } else { depth_maps.iter().map(|m| m.fit_rmse).sum::<f32>() / v as f32 };
+            ((), serde_json::json!({"views": v, "mean_fit_rmse_m": (rmse * 1000.0).round() / 1000.0}))
+        });
+    }
+    let depths_arg = (!depth_maps.is_empty()).then_some(depth_maps.as_slice());
+    let dense = timed(&mut report, "densify", || densify::run(&cloud, capture, depths_arg, &opts.densify));
     dense.validate();
     let mut mesh = timed(&mut report, "surface", || surface::reconstruct(&dense, &opts.surface));
     mesh.validate();

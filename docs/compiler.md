@@ -88,3 +88,28 @@ frame, projects the measured cloud into the view (atomic z-buffer), fits
 (fit quality × local measured density). Views with fewer than `min_pairs`
 measured samples are skipped. Missing model or missing `onnx` feature →
 returns `[]`, so the pipeline just runs without the prior.
+
+Fetch the model and run it (it is wired as pipeline stage `learned`; the maps
+go to `densify::run` as `Option<&[DepthMap]>`):
+
+```sh
+tools/compiler/fetch_models.sh                       # -> models/compiler/depth_anything_v2_small.onnx (sha256-verified)
+export FARSIGHT_DEPTH_MODEL=models/compiler/depth_anything_v2_small.onnx
+farsight-compile compile --input cloud.ply --capture capture --out out
+```
+
+On the Mac (ANE + GPU, CoreML EP):
+
+```sh
+pip install onnxruntime            # macOS wheel ships the CoreML EP
+export LD_LIBRARY_PATH="$VENV/lib/python3.*/site-packages/onnxruntime/capi"
+cargo build --release -p farsight-compiler --features coreml
+farsight-compile compile --input cloud.ply --capture capture --out out
+# or DYLD_FALLBACK_LIBRARY_PATH=<.../capi> if SIP blocks LD_LIBRARY_PATH
+```
+
+CPU-EP reference numbers (Linux VM, DAV2-Small fp32, 518² input, ~500k-point
+synth capture): ~350-400 ms per view end-to-end; Huber fit residual
+(fit_rmse) 0.02-0.13 m vs the measured cloud; median |depth − GT| 15-72 mm
+per view vs the synthetic ground truth. `FARSIGHT_LEARNED_DUMP=<dir>` dumps
+`depth_<i>.f32` maps + `meta` for offline eval.

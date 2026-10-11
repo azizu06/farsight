@@ -48,22 +48,50 @@ impl Default for LearnedOptions {
     }
 }
 
+impl LearnedOptions {
+    /// `self` patched by env: `FARSIGHT_DEPTH_MODEL` (model path) and
+    /// `FARSIGHT_LEARNED` (JSON object patch over every field).
+    pub fn resolve(&self) -> Self {
+        let mut o = self.clone();
+        if let Ok(m) = std::env::var("FARSIGHT_DEPTH_MODEL") {
+            o.depth_model = m;
+        }
+        if let Ok(patch) = std::env::var("FARSIGHT_LEARNED") {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&patch) {
+                let _ = serde_json::from_value::<LearnedOptions>(merge(
+                    serde_json::to_value(&o).unwrap_or_default(),
+                    v,
+                ))
+                .map(|p| o = p);
+            }
+        }
+        o
+    }
+}
+
 /// Options from `FARSIGHT_DEPTH_MODEL` + `FARSIGHT_LEARNED` JSON patch.
 pub fn options() -> LearnedOptions {
-    let mut o = LearnedOptions::default();
-    if let Ok(m) = std::env::var("FARSIGHT_DEPTH_MODEL") {
-        o.depth_model = m;
+    LearnedOptions::default().resolve()
+}
+
+/// Optional diagnostics: `FARSIGHT_LEARNED_DUMP=<dir>` writes each map as
+/// `depth_<camera>.f32` (width*height metres) plus `meta.txt` per view.
+pub fn dump_depths(maps: &[DepthMap], dir: &Path) {
+    use std::io::Write;
+    if std::fs::create_dir_all(dir).is_err() {
+        return;
     }
-    if let Ok(patch) = std::env::var("FARSIGHT_LEARNED") {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&patch) {
-            let _ = serde_json::from_value::<LearnedOptions>(merge(
-                serde_json::to_value(&o).unwrap_or_default(),
-                v,
-            ))
-            .map(|p| o = p);
+    for m in maps {
+        let p = dir.join(format!("depth_{}.f32", m.camera));
+        let mut buf = Vec::with_capacity(m.depth.len() * 4);
+        for v in &m.depth {
+            buf.extend_from_slice(&v.to_le_bytes());
         }
+        let _ = std::fs::write(&p, buf);
+        let mut meta = Vec::new();
+        let _ = writeln!(meta, "camera={} w={} h={} a={} b={} pairs={} fit_rmse={}", m.camera, m.width, m.height, m.scale, m.shift, m.pairs, m.fit_rmse);
+        let _ = std::fs::write(dir.join(format!("depth_{}.meta", m.camera)), meta);
     }
-    o
 }
 
 fn merge(mut base: serde_json::Value, patch: serde_json::Value) -> serde_json::Value {
@@ -108,7 +136,14 @@ pub fn complete_depth_opts(capture: &Capture, cloud: &PointCloud, opts: &Learned
     #[cfg(feature = "onnx")]
     {
         match onnx::run(capture, cloud, opts) {
-            Ok(maps) => return maps,
+            Ok(maps) => {
+                if let Ok(d) = std::env::var("FARSIGHT_LEARNED_DUMP") {
+                    if !d.is_empty() {
+                        dump_depths(&maps, Path::new(&d));
+                    }
+                }
+                return maps;
+            }
             Err(e) => {
                 eprintln!("learned: onnx inference failed ({e}); skipping depth completion");
                 return Vec::new();
@@ -536,14 +571,17 @@ mod onnx {
         let mut out = Vec::new();
         for i in 0..n {
             let (Some(cam), Some(img)) = (capture.cameras.get(i), capture.images.get(i)) else { continue };
+            let t = std::time::Instant::now();
             let (rel, rw, rh) = infer(&mut session, img, opts).with_context(|| format!("frame {i}"))?;
             // rescale relative map to camera resolution
             let rel_full = resize_rel(&rel, rw, rh, cam.width as usize, cam.height as usize);
             let vz = project_view(cam, cloud);
+            let ms = t.elapsed().as_secs_f64() * 1e3;
             if let Some(dm) = finish_view(&rel_full, cam, i, &vz, opts) {
+                eprintln!("learned: frame {i}: {ms:.0} ms, pairs={}, fit_rmse={:.3} m, a={:.4} b={:.4}", dm.pairs, dm.fit_rmse, dm.scale, dm.shift);
                 out.push(dm);
             } else {
-                eprintln!("learned: frame {i}: insufficient measured pairs, skipped");
+                eprintln!("learned: frame {i}: {ms:.0} ms, insufficient measured pairs, skipped");
             }
         }
         Ok(out)

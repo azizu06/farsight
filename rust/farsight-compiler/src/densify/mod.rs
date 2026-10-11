@@ -66,7 +66,10 @@ impl Default for DensifyOptions {
 
 /// Stage entry: cleaned cloud (normals/radius optional — estimated locally if
 /// absent) -> measured (optionally MLS-denoised) + interpolated fill points.
-pub fn run(cloud: &PointCloud, capture: Option<&Capture>, opts: &DensifyOptions) -> (PointCloud, Stats) {
+/// `depths` = learned per-view metric depth maps (learned::complete_depth);
+/// consumed by hole filling (W3 contract: Option<&[DepthMap]> before `opts`).
+pub fn run(cloud: &PointCloud, capture: Option<&Capture>, depths: Option<&[crate::learned::DepthMap]>, opts: &DensifyOptions) -> (PointCloud, Stats) {
+    let _ = depths; // TODO(W3): guide plane_fill/crust_fill by learned depth
     let ts = opts.target_spacing.max(0.002);
     let reach = (opts.max_gap * 0.5).max(2.0 * ts);
     let edge_cos = opts.edge_deg.to_radians().cos();
@@ -393,7 +396,7 @@ mod tests {
                 c.col.push([100, 120, 140]);
             }
         }
-        let (out, st) = run(&c, None, &DensifyOptions::default());
+        let (out, st) = run(&c, None, None, &DensifyOptions::default());
         out.validate();
         let interp = out.interpolated_count();
         assert!(interp > 1000, "interp={interp} stats={st}");
