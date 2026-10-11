@@ -51,9 +51,8 @@ ros2 launch farsight_nav nav.launch.py                 # or the farsight-nav sys
     In demo mode a pose, depth or camera stall shorter than 2 s only holds the
     motors at zero: the goal, frontier and Nav2 intent stay, and the rover drives
     on when the sensors are fresh. The Quest's viewer-video age never stops demo
-    AUTO, and the pose may be 1.0 s old (`DEMO_POSE_TTL`; strict mode keeps 0.5 s, which
-    tripped on the rig's 500-750 ms camera stalls every ~5 s; 2026-10-11 01:53Z, 22 drops
-    in 150 s, median AUTO run 0.75 s).
+    AUTO, and `POSE_TTL` is 1.0 s (0.5 s tripped on the rig's 500-750 ms camera
+    stalls every ~5 s; 2026-10-11 01:53Z, 22 drops in 150 s, median AUTO run 0.75 s).
     A server stop that re-arms Explore within 2 s resumes the same frontier,
     blacklist and progress window. Before, each
     blip restarted Explore and the rover turned in place to face a new goal: on
@@ -96,8 +95,8 @@ ros2 launch farsight_nav nav.launch.py                 # or the farsight-nav sys
   refused with `409`, and Explore/Seek hold still (zero output) instead of running the
   reactive policy, which cannot see obstacles without the ultrasonic. Holding the deadman
   resumes once the bridge is back. Without `--nav2` the reactive policy still runs.
-- **Sensor gate:** Nav2 drives only with a normal-tracking ARKit pose (at most 0.5 s
-  old, 1.0 s in demo mode) and LiDAR depth (at most 1 s old) from the current phone session. There is no
+- **Sensor gate:** Nav2 drives only with a normal-tracking ARKit pose (at most 1.0 s
+  old) and LiDAR depth (at most 1 s old) from the current phone session. There is no
   dead reckoning. Losing either stops the rover and needs a new deadman press after
   recovery; a new phone session or map epoch disarms the goal and resets Nav2.
 - **Gating:** the bridge is not a controller. Nav2's `cmd_vel` only moves the rover

@@ -1072,15 +1072,6 @@ class DemoSensorPauseTests(unittest.TestCase):
         status = self.state.status()
         self.assertEqual((status["reason"], status["requires_release"]), ("nav_pose_lost", True))
 
-    def test_a_750_ms_old_pose_drives_in_demo_but_stops_strict_mode(self):
-        self.assertGreater(self.drive()[0], 0)
-        self.nav.mapping.last_received = time.monotonic() - 0.75
-        self.assertGreater(self.state.output()[0], 0)
-        self.assertEqual(self.state.status()["reason"], "active")
-        self.state.demo_mode = False
-        self.assertEqual(self.state.output()[:2], (0, 0))
-        self.assertEqual(self.state.status()["reason"], "nav_pose_lost")
-
 
 class TranslationFloorTests(unittest.TestCase):
     """A moving Nav2/Explore translation is never slower than MIN_LINEAR_MPS; exact zero stays zero."""

@@ -179,9 +179,8 @@ class GoalRequest(BaseModel):
 class NavService:
     CMD_TTL = 0.25     # a velocity command older than one control lease stops the rover
     BRIDGE_TTL = 1.5   # no bridge status for this long: Nav2 is unavailable, use the fallback
-    POSE_TTL = 0.5     # Nav2 motion needs a normal-tracking ARKit pose at least this fresh ...
-    DEMO_POSE_TTL = 1.0  # ... or this in demo control: 0.5 tripped on the rig's 500-750 ms camera
-                         # stalls every ~5 s and cut AUTO into 0.75 s runs (floor test 2026-10-11) ...
+    POSE_TTL = 1.0     # Nav2 motion needs a normal-tracking ARKit pose at least this fresh (0.5 tripped on
+                       # the rig's 500-750 ms camera stalls every ~5 s and cut AUTO into 0.75 s runs) ...
     DEPTH_TTL = 1.0    # ... and measured depth of the same sensor session at least this fresh
     MIN_LINEAR_MPS = 0.15  # every moving Nav2/Explore translation is at least this; exact zero stays zero
 
@@ -449,8 +448,7 @@ class NavService:
         received, connected = mapping.last_received, mapping.connected
         scan, demo, identity = mapping.scan, mapping.demo, mapping.identity
         age = time.monotonic() - received if received else None
-        ttl = self.DEMO_POSE_TTL if getattr(self.control, "demo_mode", False) else self.POSE_TTL
-        if not connected or age is None or age >= ttl or scan or identity is None:
+        if not connected or age is None or age >= self.POSE_TTL or scan or identity is None:
             return None, tracking, "lost", age
         if tracking != "normal":
             return None, tracking, "limited", age

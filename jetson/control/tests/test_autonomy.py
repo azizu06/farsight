@@ -114,7 +114,7 @@ class AutonomyControlTests(unittest.TestCase):
 
     def test_seek_uses_control_ceiling_and_stick_override_latches_teleop(self):
         self.assertTrue(self.send())
-        self.assertEqual(self.state.output()[:2], (24, 24))
+        self.assertEqual(self.state.output()[:2], (27, 27))  # seek's 0.3 raised to the 0.15 m/s floor (0.15 / 0.45)
         self.assertEqual(self.state.status()["mode"], "seek")
         self.send(v=-.5)
         self.assertEqual(self.state.output()[:2], (-40, -40))
@@ -131,8 +131,8 @@ class AutonomyControlTests(unittest.TestCase):
         self.state.set_connected(True)
         self.session = self.state.begin()
         self.send(deadman=False)
-        self.assertTrue(self.send())  # seek at v = 0.3
-        self.assertEqual(self.state.output()[:2], (79, 79))  # 70 + (100 - 70) * 0.3
+        self.assertTrue(self.send())  # seek at v = 0.3, raised to the 0.15 m/s floor (0.15 / 0.45)
+        self.assertEqual(self.state.output()[:2], (80, 80))  # 70 + (100 - 70) / 3
         self.send(v=-.5)  # stick override: teleop gets the full ceiling
         self.assertEqual(self.state.output()[:2], (-162, -162))  # 70 + (255 - 70) * 0.5
         self.assertEqual(self.state.status()["max_pwm"], 255)
