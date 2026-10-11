@@ -271,4 +271,57 @@ mod tests {
         let pc2 = read_cloud(&body, "mesh.bin", &dense_opts).unwrap();
         assert!(pc2.len() > 3); // area 0.5 m² * 40 = 20 extra samples
     }
+
+    #[test]
+    fn export_ply_roundtrip() {
+        use crate::core::{Mesh, PointCloud};
+        let cloud = PointCloud {
+            pos: vec![[0.1, 0.2, 0.3], [-1.0, 2.0, -3.0], [4.0, 5.0, 6.0]],
+            col: vec![[10, 20, 30], [40, 50, 60], [70, 80, 90]],
+            ..Default::default()
+        };
+        let body = crate::export::ply::points(&cloud);
+        let pc = ply::read_points(&body).unwrap();
+        assert_eq!(pc.len(), 3);
+        assert_eq!(pc.pos[1], [-1.0, 2.0, -3.0]);
+        assert_eq!(pc.col[2], [70, 80, 90]);
+
+        let mesh = Mesh {
+            pos: cloud.pos.clone(),
+            col: cloud.col.clone(),
+            idx: vec![0, 1, 2],
+            ..Default::default()
+        };
+        let body = crate::export::ply::mesh(&mesh);
+        let opts = IoOptions { ply_sample_faces: true, mesh_sample_density: 20.0, ..Default::default() };
+        let pc = read_cloud(&body, "export.ply", &opts).unwrap();
+        assert!(pc.len() >= 3, "vertices + face samples, got {}", pc.len());
+    }
+
+    #[test]
+    fn capture_parity() {
+        use crate::core::{Camera, Capture, Image};
+        let dir = std::env::temp_dir().join(format!("farsight-io-test-{}-cap", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let img = |v: u8| Image { width: 8, height: 6, rgb: vec![v; 8 * 6 * 3] };
+        let cap = Capture {
+            cameras: vec![
+                Camera::look_at([0.0, 0.5, 1.0], [0.0, 0.0, 0.0], 8, 6, 60.0),
+                Camera::look_at([1.0, 0.5, 0.0], [0.0, 0.0, 0.0], 8, 6, 60.0),
+            ],
+            images: vec![img(40), img(200)],
+        };
+        crate::synth::write_capture(&dir, &cap).unwrap();
+        let got = load_capture(&dir).unwrap();
+        assert_eq!(got.cameras.len(), 2);
+        assert_eq!(got.images.len(), 2);
+        for (a, b) in cap.cameras.iter().zip(&got.cameras) {
+            assert!((a.fx - b.fx).abs() < 1e-3 && (a.cx - b.cx).abs() < 1e-3);
+            assert!((a.c2w[0][3] - b.c2w[0][3]).abs() < 1e-5 && (a.c2w[2][2] - b.c2w[2][2]).abs() < 1e-5);
+        }
+        // JPEG is lossy on flat fills but stays close to the source value.
+        assert!((got.images[0].rgb[0] as i32 - 40).abs() < 30);
+        assert!((got.images[1].rgb[100] as i32 - 200).abs() < 30);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
