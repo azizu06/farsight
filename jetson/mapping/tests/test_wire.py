@@ -1,5 +1,7 @@
 import os
 import struct
+import threading
+from concurrent.futures import ThreadPoolExecutor
 import unittest
 from unittest.mock import patch
 
@@ -90,6 +92,33 @@ class RouteTests(unittest.TestCase):
             state.surfaces.integrate(grid_mesh(120, 100, .01, (i * 1.5, 0, 0)), pose)
         state.revision += 1
         return state
+
+    def test_health_remains_responsive_while_points_are_encoded(self):
+        app = create_app(detector="none", map_points_cap=0)
+        state = app.state.mapping
+        state.cloud.integrate(np.array([[.25, .5, .75]]), np.array([[10, 20, 30]], np.uint8))
+        state.revision += 1
+        encoding, release = threading.Event(), threading.Event()
+
+        def blocked_encode(*args):
+            encoding.set()
+            release.wait(3)
+            return encode_points(*args)
+
+        with TestClient(app) as client, ThreadPoolExecutor(2) as pool:
+            with patch("jetson.mapping.state.encode_points", side_effect=blocked_encode):
+                points = pool.submit(client.get, "/map/points.bin")
+                try:
+                    self.assertTrue(encoding.wait(2), "Point encoder did not start")
+                    health = pool.submit(client.get, "/health")
+                    self.assertEqual(health.result(timeout=.5).json()["points"], 1)
+                    reset = pool.submit(client.post, "/map/reset")
+                    self.assertEqual(reset.result(timeout=.5).json()["points"], 0)
+                finally:
+                    release.set()
+                self.assertEqual(points.result().content, encode_points(
+                    np.array([[.25, .5, .75]], np.float32), np.array([[10, 20, 30]], np.uint8)))
+                self.assertEqual(client.get("/map/points.bin").content, struct.pack("<I", 0))
 
     def test_capped_routes_status_and_full_internal_map(self):
         app = create_app(detector="none", map_points_cap=5000, map_triangles_cap=20000)

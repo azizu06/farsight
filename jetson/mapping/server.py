@@ -316,10 +316,12 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
     def map_version():
         return state.generation, state.revision, state.surfaces.revision
 
-    def map_response(route, packet, accept_encoding, headers=None):
+    def map_response(route, packet, accept_encoding, headers=None, snapshot=None):
         def build():
-            with state.lock:  # version and bytes from the same fused frame
-                return map_version(), packet()
+            with state.lock:  # version and captured data from the same fused frame
+                version = map_version()
+                captured = snapshot() if snapshot else packet()
+            return version, packet(captured) if snapshot else captured
         body, coding = map_cache.get(route, map_version, build, accept_encoding)
         headers = dict(headers or {}, Vary="Accept-Encoding")
         if coding:
@@ -329,7 +331,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
     @app.get("/map/points.bin")
     async def points(request: Request):
         return await asyncio.to_thread(map_response, "points", state.point_packet,
-                                       request.headers.get("accept-encoding"))
+                                       request.headers.get("accept-encoding"), snapshot=state.point_snapshot)
 
     @app.get("/map/dense.bin")
     async def dense(request: Request, epoch: str | None = None, after: int = 0,
@@ -357,7 +359,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
     @app.get("/map/export.ply")
     async def export(request: Request):
         return await asyncio.to_thread(map_response, "ply", state.ply, request.headers.get("accept-encoding"),
-                                       {"Content-Disposition": 'attachment; filename="farsight-scan.ply"'})
+                                       {"Content-Disposition": 'attachment; filename="farsight-scan.ply"'}, state.point_snapshot)
 
     @app.post("/map/reset")
     async def reset():
@@ -625,7 +627,8 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                     elif status["revision"] != revision:
                         def snapshot():
                             with state.lock:
-                                return state.status(), state.point_packet()
+                                status, captured = state.status(), state.point_snapshot()
+                            return status, state.point_packet(captured)
                         status, packet = await asyncio.to_thread(snapshot)
                         await ws.send_json(status)
                         async def send_packet(payload):
