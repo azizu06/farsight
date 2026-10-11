@@ -65,11 +65,16 @@ or every victim is found, it is
 `{time_s, found, total, estops_avoided, found_at_s, breadcrumb}`.
 
 Optional `face_detector: bool` and `face_error: string|null` appear in `/health` and
-in `GET`/`POST /mission/drill`. The drill scores only `cls:"face"` boxes, which exist
-only when the rover runs with `--face-model`. `face_detector` is true once that model
-loaded; false means a drill can never score. `face_error` names why a given model
-failed to load (a bad path disables only the face pass; `detector_error` stays
-null and the primary detector keeps running) and is null otherwise. Replay servers
+in `GET`/`POST /mission/drill`. The drill scores only `cls:"face"` boxes, which appear
+only while a drill runs. By default (`--face-detector pose`) each is a square around a
+YOLO11-pose person's head: 1.4x the horizontal span (at least 8 px) of at least 3
+nose/eye/ear keypoints with confidence above 0.5, centred on them, so it needs
+`--detector pose`. `--face-detector ultraface
+--face-model PATH` restores the CPU UltraFace pass. Both emit the same box fields.
+`face_detector` is true once the face source loaded; false means a drill can never
+score. `face_error` names why (the pose detector is not in use, or a bad UltraFace
+path, which disables only the face pass; `detector_error` stays null and the primary
+detector keeps running) and is null otherwise. Replay servers
 omit both. The Quest drill HUD and the settings drill line show "No face model:
 victims cannot be found" when `face_detector` is false; absent means no warning.
 
@@ -1126,6 +1131,12 @@ the marked desktop frames, including any that accidentally match their session;
 the desktop canvas can display them. Geometry source/age/counts are unchanged.
 This works even when an unworn headset keeps its visual pose socket connected.
 It does not qualify headset stereo, tracking or pose-to-photon latency.
+
+Before any tracked pose, a mono desktop overview fits the measured dense cloud
+after bootstrap. Existing chunk bounds select the camera target and distance;
+geometry and RGB are unchanged. Manual camera changes relinquish overview
+ownership. Capture metadata optionally includes `sceneOverview` with `active`
+and `target`. Tracked pose handling and packed stereo preview remain unchanged.
 
 The Mac server's packed mode is explicit: `--stereo sbs-left-right`, default
 coded size 1920×1080 (960×1080 per eye); `--width 1280 --height 720` selects the

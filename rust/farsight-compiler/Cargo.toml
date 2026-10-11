@@ -1,0 +1,48 @@
+[package]
+name = "farsight-compiler"
+version = "0.1.0"
+edition = "2021"
+description = "Mac-side point cloud -> photoreal 3D environment compiler (interpolating reconstruction, texturing, GLB/splat export)"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "farsight-compile"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+rayon = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+flate2 = "1"
+brotli = "7"
+ureq = "2"
+meshopt = "0.4"
+bytemuck = { version = "1", features = ["derive"] }
+rustc-hash = "2"
+tiny_http = "0.12"
+ort = { version = "2.0.0-rc.13", optional = true, default-features = false, features = ["load-dynamic"] }
+futures-channel = { version = "0.3", optional = true }
+pollster = { version = "0.4", optional = true }
+wgpu = { version = "24", optional = true }
+
+[features]
+default = []
+# CPU ONNX Runtime everywhere (no ANE/GPU requirement).
+onnx = ["dep:ort"]
+# Apple Neural Engine + GPU via CoreML execution provider (macOS only).
+coreml = ["onnx", "ort/coreml"]
+# GPU compute layer (src/accel). On Linux/Windows enable with `--features gpu`;
+# on macOS the deps below are unconditional so it is always compiled.
+gpu = ["dep:wgpu", "dep:pollster", "dep:futures-channel"]
+
+# wgpu is always present on Apple platforms (Metal), so `gpu` is effectively
+# default-on there; elsewhere it is opt-in.
+[target.'cfg(target_os = "macos")'.dependencies]
+wgpu = "24"
+pollster = "0.4"
+futures-channel = "0.3"

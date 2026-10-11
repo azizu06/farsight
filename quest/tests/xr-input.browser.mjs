@@ -94,13 +94,10 @@ try {
   });
   assert.deepEqual(result.initial,{auto:false,mode:'teleop'});
   assert.equal(result.manual.deadman,true,'joystick drives with trigger released');
-  // Full forward plus .625 stick steering (32 degrees, past the straight-ahead lock) becomes
-  // v=1 and w=.5^2.5: half-way past the .25 deadzone, through the steering expo curve.
-  // Preserve forward authority instead of restoring the old diagonal-to-pivot mapping.
-  // Forward eases in from rest (manual-drive.js ForwardRamp): the first sampled push sends no forward
-  // step; steering is not eased and keeps its curve.
-  assert.equal(result.manual.v,0,'forward eases in from rest instead of stepping to full');
-  assert.ok(Math.abs(result.manual.w-.6*.5)<1e-9,'steering uses its dead-zoned, linear (expo 1) demand, capped to the 0.6 joystick pace');
+  // Full forward plus .625 stick steering (32 degrees, past the straight-ahead lock). Both forward and
+  // steering ramp from rest (manual-drive.js DriveRamp), so the first sampled push sends no step.
+  assert.equal(result.manual.v,0,'forward ramps from rest instead of stepping to full');
+  assert.equal(result.manual.w,0,'steering ramps from rest too');
   assert.equal(result.centered.deadman,false);assert.equal(result.centered.v,0);assert.equal(result.centered.w,0);
   assert.equal(result.autoOnPress,true);assert.equal(result.auto.deadman,true);assert.equal(result.auto.mode,'explore');assert.equal(result.auto.v,0);assert.equal(result.auto.w,0);
   assert.deepEqual(result.heldA,{auto:true,menu:false});

@@ -56,10 +56,30 @@ Same room, same 1,454,055-dot seed, same 90 held-out photos, separate full runs 
 |---|---|---|---|
 | 2,000 | **81 s** | 19.0 dB | 16× faster, −2.9 dB |
 | 5,000 | **174 s** | **20.4 dB** | 7.6× faster, −1.5 dB |
-| 10,000 | pending | pending | |
+| 10,000 | **382 s** | 20.97 dB | 3.5× faster, −0.9 dB |
 | 30,000 | 1,325 s | 21.9 dB | baseline |
 
 Sai's `farsight-compiler` (dots + painted photos, no training) on the same run and photos: **12.3 dB**, 61 s on an
 M2 8 GB CPU. So even a 2k-step seeded splat beats the untrained textured mesh by ~6.7 dB.
 
 Run a fast room directly: `brush_app <dataset> --total-steps 5000 --export-every 5000 --eval-every 5000 --eval-split-every 8 --eval-save-to-disk --export-path out-fast` (`train_job.ps1` hard-codes 30k).
+
+## Everything in this folder
+
+| File | What it does |
+|---|---|
+| `find_drives.py` | Finds continuous drives in a capture and cuts one out |
+| `seed_from_dots.py` | Rover dots → Brush `init.ply` seed, wired into `transforms.json` |
+| `train_job.ps1` | 30k-step seeded Brush run on the PC, checkpoints every 5k, held-out eval |
+| `train_steps.ps1` | Same room at 2k / 5k / 10k steps (the fast-mode table above) |
+| `launch_detached.ps1` | Starts a PC job so it survives the SSH session closing |
+| `score_heldout.py` | PSNR of eval renders vs the real photos |
+| `compare_grid.py` | Labeled photo vs splat vs other-method image with per-image PSNR |
+| `render_glb_from_cameras.html` | Renders a `.glb` (e.g. `farsight-compiler` output) from the held-out cameras for scoring |
+| `render_from_camera.html` | Renders dots / Poisson surface from a photo's camera |
+| `walk.html` | First-person walk: WASD/drag/buttons, **traces the rover path** on a minimap and **rides it** from `transforms.json` |
+| `dots_viewer.html` | Orbit viewer for dots, Jetson walls and the rebuilt surface |
+| `ply2splat.py` | Brush `.ply` → `.splat` |
+| `poisson.py`, `surface.mjs` | Dots → solid surface (Open3D Poisson / team #201 builder) |
+| `faces/vision_vs_ultraface.py`, `faces/six_way.py` | Face detector comparison on rover frames (UltraFace, Apple Vision, YOLO11n-face, SCRFD-500M/10G, pose-keypoint heads) |
+| `cull.py`, `clean_splat.py`, `refine.py` | Tried and not recommended (see above) |

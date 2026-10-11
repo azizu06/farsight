@@ -47,3 +47,6 @@ The console-only `window.__canvasLab.stats()` also exposes these measurements.
 `?source=live&upstream=http://127.0.0.1:8092` uses that server's configured map
 upstream. This reuses the existing live cloud's capacity and receiver; the
 20-million fixture ceiling does not change live retention, the Jetson, or VR.
+The live canvas targets the measured cloud's bounds after bootstrap and follows
+new scene bounds until you drag, zoom, or pan. Interaction keeps your chosen
+camera target. The synthetic fixture keeps its existing framing and orbit.

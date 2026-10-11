@@ -42,12 +42,13 @@ class BuildArgsTests(unittest.TestCase):
             self.assertEqual(args[i:i + 2], pair)
 
     def test_face_video_triage_and_simulation_map_to_server_flags(self):
-        env = {"FARSIGHT_FACE_MODEL": "/m/version-RFB-320.onnx", "FARSIGHT_VIDEO_FPS": "15",
+        env = {"FARSIGHT_FACE_MODEL": "/m/version-RFB-320.onnx", "FARSIGHT_FACE_DETECTOR": "ultraface",
+               "FARSIGHT_VIDEO_FPS": "15",
                "FARSIGHT_VIDEO_BITRATE": "800000", "FARSIGHT_TRIAGE_INTERVAL": "4.5",
                "FARSIGHT_PIPER_MODEL_ES": "/m/es.onnx", "FARSIGHT_SPEAKER_CMD": "aplay -q",
                "FARSIGHT_SIMULATE_ROVER": "yes"}
         args = launch.build_args(env)
-        for pair in (["--face-model", "/m/version-RFB-320.onnx"], ["--video-fps", "15"],
+        for pair in (["--face-model", "/m/version-RFB-320.onnx"], ["--face-detector", "ultraface"], ["--video-fps", "15"],
                      ["--video-bitrate", "800000"], ["--triage-interval", "4.5"],
                      ["--piper-model-es", "/m/es.onnx"], ["--speaker-cmd", "aplay -q"]):
             i = args.index(pair[0])

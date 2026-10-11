@@ -1,5 +1,6 @@
 import { OrbitControls } from '/quest/node_modules/three/examples/jsm/controls/OrbitControls.js';
 import { createCanvasFixture, MAX_CANVAS_POINTS } from './canvas-lab-scene.mjs';
+import { fitSceneBounds } from './scene-framing.mjs';
 
 const params = new URLSearchParams(location.search);
 const stage = document.querySelector('#stage');
@@ -20,7 +21,9 @@ const fixture = live ? null : createCanvasFixture({ points });
 const frameTimes = new Float64Array(600);
 const renderTimes = new Float64Array(600);
 let frameCount = 0, sampleCount = 0, previousFrame = 0, frameStarted = 0, lastTick = 0;
-let context, controls, captureCalls = 0, autoOrbit = true;
+let context, controls, captureCalls = 0, autoOrbit = true, followScene = live;
+let fitAt = -Infinity, fitEpoch = null;
+let fittedBounds, fitAspect, fitFov, fitAutoOrbit;
 const originalCapture = window.__macCapture;
 window.__macCapture = (...args) => { captureCalls++; return originalCapture(...args); };
 const percentile = (samples, fraction) => {
@@ -31,6 +34,7 @@ const percentile = (samples, fraction) => {
 window.__macRegisterLayer({
   init(ctx) {
     context = ctx;
+    fittedBounds = new ctx.THREE.Box3();
     stage.prepend(ctx.renderer.domElement);
     ctx.root.children.filter(child => child.type === 'GridHelper').forEach(child => { child.visible = true; });
     const framing = Math.max(1, 1 / ctx.camera.aspect);
@@ -42,7 +46,7 @@ window.__macRegisterLayer({
     controls.autoRotate = true;
     controls.autoRotateSpeed = .65;
     controls.addEventListener('change', ctx.requestFrame);
-    controls.addEventListener('start', () => setAutoOrbit(false));
+    controls.addEventListener('start', () => { followScene = false; setAutoOrbit(false); });
     controls.update();
     const gl = ctx.renderer.getContext();
     const extension = gl.getExtension('WEBGL_debug_renderer_info');
@@ -58,6 +62,21 @@ window.__macRegisterLayer({
   },
   poll(ctx, now) {
     frameStarted = performance.now();
+    if (followScene && !window.__mac.poseValid && ctx.sceneBootstrapComplete() &&
+        (now - fitAt >= 1000 || fitEpoch !== ctx.sceneEpoch())) {
+      fitAt = now;
+      const bounds = ctx.getSceneBounds();
+      if (!bounds.isEmpty() && (!bounds.equals(fittedBounds) || fitEpoch !== ctx.sceneEpoch() ||
+          fitAspect !== ctx.camera.aspect || fitFov !== ctx.camera.getEffectiveFOV() || fitAutoOrbit !== autoOrbit)) {
+        const frame = fitSceneBounds(ctx.THREE, ctx.camera, bounds, 1.12,
+          ctx.camera.position.clone().sub(controls.target), autoOrbit);
+        ctx.camera.position.copy(frame.position); controls.target.copy(frame.target);
+        fittedBounds.copy(bounds); fitEpoch = ctx.sceneEpoch();
+        fitAspect = ctx.camera.aspect; fitFov = ctx.camera.getEffectiveFOV();
+        fitAutoOrbit = autoOrbit;
+        ctx.requestFrame();
+      }
+    }
     const changed = controls.update(lastTick ? (now - lastTick) / 1000 : 1 / 60);
     lastTick = now;
     return changed || autoOrbit;
@@ -106,7 +125,8 @@ function stats() {
     canvas_width: context.renderer.domElement.width, canvas_height: context.renderer.domElement.height,
     antialias: context.renderer.getContext().getContextAttributes().antialias,
     preserve_drawing_buffer: context.renderer.getContext().getContextAttributes().preserveDrawingBuffer,
-    source_mode: live ? 'live' : 'fixture', scope: 'Direct desktop GPU canvas; no encode, headset, or physical latency measurement' };
+    source_mode: live ? 'live' : 'fixture', follows_scene: followScene,
+    scope: 'Direct desktop GPU canvas; no encode, headset, or physical latency measurement' };
 }
 Object.assign(window.__canvasLab, { ready: true, stats, setPointCount, setAutoOrbit });
 window.addEventListener('pagehide', () => fixture?.dispose());

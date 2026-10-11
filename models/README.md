@@ -91,6 +91,13 @@ including its current host load, rather than target Jetson performance.
 
 ## Optional rescue-drill face detector (Hugging Face Hub)
 
+Rescue-drill faces now come from the pose detector by default (`--face-detector pose`,
+`jetson/face.py` `keypoint_faces`): a square 1.4x the horizontal span (at least 8 px) of
+at least 3 nose/eye/ear keypoints above 0.5 confidence, centred on them, no extra model. Over the 715 upright frames of run
+094259 it caught 100 of 134 faces that at least 3 of 6 methods agreed on; UltraFace
+caught 55. UltraFace stays as the rollback, `--face-detector ultraface` (env
+`FARSIGHT_FACE_DETECTOR=ultraface`) plus `--face-model`:
+
 - Hub repo: [`onnxmodelzoo/version-RFB-320`](https://huggingface.co/onnxmodelzoo/version-RFB-320).
 - File: `version-RFB-320.onnx`, revision `6fd293d22b523ec88959f104b8eef5395e3adfbc` (1.27 MB).
 - License: the model card's License section and SPDX header say **MIT**;
@@ -107,11 +114,11 @@ url = 'https://huggingface.co/onnxmodelzoo/version-RFB-320/resolve/6fd293d22b523
 with open('models/version-RFB-320.onnx', 'xb') as target:
     target.write(urlopen(url).read())
 PY
-python -m jetson.server --face-model models/version-RFB-320.onnx
+python -m jetson.server --face-detector ultraface --face-model models/version-RFB-320.onnx
 ```
 
-`--face-model PATH` enables an extra pass alongside HOG, YOLO detection or pose;
-with `--detector none` it runs face-only. Omit the flag to keep it off (default).
+With `--face-detector ultraface`, `--face-model PATH` enables an extra pass alongside
+HOG, YOLO detection or pose; with `--detector none` it runs face-only.
 The model path is configurable; no runtime download or shared-model-folder writes.
 Normalized `cls: "face"` boxes join the existing detection packet and receive
 stable, class-separated track IDs. No new packet fields or interface changes.

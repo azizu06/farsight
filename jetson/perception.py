@@ -70,7 +70,8 @@ def yolo_boxes(prediction, original_shape, side=640, confidence=.35, labels=None
 class PerceptionService:
     REBUILD_INTERVAL = 5.0  # seconds between GPU engine re-creations after a CUDA fault
 
-    def __init__(self, camera, model=None, mode="hog", fps=3, on_detection=None, face_model=None, annotate=None):
+    def __init__(self, camera, model=None, mode="hog", fps=3, on_detection=None, face_model=None, annotate=None,
+                 face_source="pose"):
         self.camera, self.mode, self.model, self.fps = camera, mode, model, fps
         self.on_detection = on_detection
         # annotate(boxes, camera_frame) -> boxes, e.g. depth-backed 3D person positions.
@@ -80,10 +81,12 @@ class PerceptionService:
         self.engine = None
         self.hog = None
         self.pose = None
+        # "pose": face boxes from YOLO11-pose head keypoints; "ultraface": the face_model ONNX pass.
+        self.face_source = face_source
         self.face_model = face_model
         self.face = None
         self.face_error = None
-        # The server points this at the rescue drill, so the face pass only costs CPU while a drill runs.
+        # The server points this at the rescue drill, so face boxes only appear while a drill runs.
         self.face_wanted = lambda: True
         self.error = None
         self._rebuild = None  # callable that builds a fresh TensorRT detector, set by _setup
@@ -95,7 +98,9 @@ class PerceptionService:
         self.labels = None
 
     def _setup(self):
-        if self.face_model:
+        if self.face_source == "pose" and self.mode != "pose":
+            self.face_error = "Keypoint faces need the YOLO11-pose detector (--detector pose)"
+        if self.face_source == "ultraface" and self.face_model:
             # A bad face model disables only the face pass; primary detection still starts.
             try:
                 from .face import FaceDetector
@@ -136,8 +141,12 @@ class PerceptionService:
         if image is None:
             raise ValueError("Invalid detector camera image")
         boxes = self._detect_primary(image)
-        if self.face is not None and self.face_wanted():
-            boxes.extend(self.face.detect(image))
+        if self.face_wanted():
+            if self.face is not None:
+                boxes.extend(self.face.detect(image))
+            elif self.face_source == "pose" and self.pose is not None:
+                from .face import keypoint_faces
+                boxes.extend(keypoint_faces(boxes, image.shape[1], image.shape[0]))
         return boxes
 
     def _recover_gpu(self, exc):
@@ -299,7 +308,8 @@ class PerceptionService:
 
     def face_status(self):
         """Whether the cls==face pass the rescue drill scores on is loaded."""
-        return dict(face_detector=self.face is not None, face_error=self.face_error)
+        loaded = self.pose is not None if self.face_source == "pose" else self.face is not None
+        return dict(face_detector=loaded, face_error=self.face_error)
 
     def health(self):
         """Detector fields for GET /health: mode, concrete backend, error, and live fps/latency."""
