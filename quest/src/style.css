@@ -509,6 +509,11 @@ canvas:focus-visible {
 .view-options .selected { background: #223044; border-color: #668abb; color: #e0ebfc; }
 .settings > p, .settings dt, .settings .panel-note { color: #a2a9b3; }
 .settings input[type="checkbox"] { accent-color: #8ab4f8; }
+#mac-render-canvas { width: 100%; height: 100%; }
+#mac-origin-form label { display: grid; gap: 8px; font-size: 11px; }
+#mac-origin-form input { width: 100%; padding: 8px; background: #14171b; color: #e4e7eb; border: 1px solid #3b4048; }
+#mac-origin-form button { width: 100%; margin: 10px 0; }
+#mac-preview-settings a { color: #8ab4f8; font-size: 11px; }
 .immersive .desktop-controls-toggle { display: none; }
 @media (max-width: 600px) {
   .viewport:not([data-scene-view="camera"]) .cloud-status { right: 18px; top: 38px; }

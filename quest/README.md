@@ -1,10 +1,28 @@
 # Quest operator app
 
-The default page opens the live rover camera. `?view=map` opens the retained 3D
-map. All requests use the page origin, so the headset stays on the MacBook's USB
+The default page opens the live rover camera. `?view=map` opens the actual Mac
+renderer output in the clean desktop canvas; `?view=map&local=1` opens retained
+local geometry. Requests use the page origin, so the headset stays on the MacBook's USB
 relay instead of trying to reach the Jetson directly.
 
-The desktop map is a bare canvas for the incoming 3D points: right-drag orbits,
+The Mac preview decodes `/ws/macview` directly into the canvas. It automatically
+tries flat and packed side-by-side streams; for SBS it shows the actual left-eye
+image at its original aspect ratio. Mouse inspection works without a headset and
+owns `/ws/macview-pose`
+when available, using an illustrative 64 mm desktop eye separation for SBS;
+it never opens `/ws/control` or downloads geometry. An existing headset pose
+owner remains authoritative, and the desktop mirrors that output. Disable
+**Inspect with mouse** or use `&inspect=0` for an explicitly receive-only preview. Escape opens
+preview settings, including source/counts, decoded picture age, renderer origin
+and a receive-only toggle. No diagnostic text covers the picture.
+
+Use the operator relay's `--render-upstream http://127.0.0.1:8091` for the real
+renderer, or `?view=map&mac=http://localhost:8091` for a direct local connection.
+`&stereo=1` pins packed stereo, `&stereo=0` pins flat; without either, the preview
+negotiates by trying the two existing stream routes. A disconnected renderer
+shows only the subtle waiting grid; it never substitutes a simulated scene.
+
+The local desktop map is a bare canvas for the incoming 3D points: right-drag orbits,
 left-drag pans, scroll zooms, and F frames the scan. **Escape** opens settings;
 **Controls** inside settings opens rover actions and source, connection and stop
 details. Escape closes the controls again. Opening controls or changing views
