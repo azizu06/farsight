@@ -383,3 +383,127 @@ fn nav_lane_arrays_only_on_change_with_refresh() {
     let plain = json!({"type": "control_status"});
     assert_eq!(lane.apply(&plain, now.get()), plain);
 }
+
+// ---- #175: demo-autonomy sensor stalls pause instead of stopping ----
+
+use farsight_server::control::{Clock as CtrlClock, ControlState as CtrlState};
+use std::sync::Mutex as StdMutex;
+
+fn pause_fixture(demo: bool) -> (
+    Arc<NavService>,
+    Arc<MapState>,
+    Arc<CtrlState>,
+    String,
+    Arc<StdMutex<f64>>,
+) {
+    let (service, mapping) = nav();
+    let now = Arc::new(StdMutex::new(10.0f64));
+    let n = now.clone();
+    let clock: CtrlClock = Arc::new(move || *n.lock().unwrap());
+    let detections: farsight_server::control::Detections = Arc::new(|| json!([]));
+    let control = Arc::new(
+        CtrlState::new(
+            false, 0, 100, None, Some(detections), Some(clock), None, false, true,
+            "servo", None, Some(service.clone()), demo,
+        )
+        .unwrap(),
+    );
+    service.attach(&control);
+    service.connect_bridge_for_test();
+    control.set_connected(true, None);
+    let session = control.begin().unwrap();
+    control.update_range(100.0);
+    (service, mapping, control, session, now)
+}
+
+fn feed_sensors(mapping: &MapState, service: &NavService, frame_id: i64) {
+    // Fresh normal-tracking measured frame fused into the map, then offered to
+    // the NavService depth observer (same recipe as the goto wire tests).
+    mapping.start_session(("test".to_string(), 1), "synthetic fixture".into());
+    let mut f = frame(8, 6);
+    f.header = json!({
+        "version": 1, "type": "frame", "session_id": "test", "map_epoch": 1,
+        "frame_id": frame_id, "t_capture": 1.0, "tracking": "normal",
+        "transform": farsight_server::geometry::flatten_f(&IDENTITY).to_vec(),
+    });
+    mapping.process(&mut f).unwrap();
+    service.offer_frame(&f);
+}
+
+fn explore_hb(session: &str, permit: &str, seq: i64) -> Value {
+    json!({
+        "session_id": session, "permit": permit, "seq": seq,
+        "deadman": true, "v": 0.0, "w": 0.0, "pan": 0,
+        "mode": "explore", "video_fresh": true, "video_age_ms": 0,
+    })
+}
+
+#[test]
+fn demo_short_sensor_stall_holds_and_resumes_without_a_press() {
+    let (service, mapping, control, session, now) = pause_fixture(true);
+    // Drive engaged Explore with no pose: nav_pose_lost must pause, not stop.
+    let permit = control.status(true)["permit"].clone();
+    let mut release = explore_hb(&session, permit.as_str().unwrap(), 1);
+    release["deadman"] = json!(false);
+    release["mode"] = json!("teleop");
+    control.accept(&release, &session); // ordered release: first press needs one
+    assert!(control.accept(&explore_hb(&session, permit.as_str().unwrap(), 2), &session));
+    assert_eq!(control.output().0, 0); // paused: motors held
+    let st = control.status(false);
+    assert_eq!(st["reason"], "nav_pose_lost");
+    assert!(!st["requires_release"].as_bool().unwrap());
+    // Under 2 s the same stall still holds — a held heartbeat still lands
+    // (renews the lease) and session and goal are kept.
+    *now.lock().unwrap() += 1.5;
+    let permit = control.status(true)["permit"].clone();
+    assert!(control.accept(&explore_hb(&session, permit.as_str().unwrap(), 3), &session));
+    assert_eq!(control.output().0, 0);
+    let st = control.status(false);
+    assert!(!st["requires_release"].as_bool().unwrap());
+    // Fresh sensors: the same session drives again — no release or re-press.
+    feed_sensors(&mapping, &service, 1);
+    control.output();
+    let inner = control.inner.lock().unwrap();
+    assert!(inner.sensor_pause_since.is_none());
+    drop(inner);
+    let st = control.status(false);
+    assert!(!st["requires_release"].as_bool().unwrap());
+}
+
+#[test]
+fn demo_long_sensor_stall_still_stops() {
+    let (_service, _mapping, control, session, now) = pause_fixture(true);
+    let permit = control.status(true)["permit"].clone();
+    let mut release = explore_hb(&session, permit.as_str().unwrap(), 1);
+    release["deadman"] = json!(false);
+    release["mode"] = json!("teleop");
+    control.accept(&release, &session); // ordered release: first press needs one
+    assert!(control.accept(&explore_hb(&session, permit.as_str().unwrap(), 2), &session));
+    control.output(); // pause timer starts
+    // Held heartbeats keep the lease alive through the stall; the pause
+    // timer only clears on fresh sensors.
+    for (dt, seq) in [(1.2f64, 3i64), (1.2, 4)] {
+        *now.lock().unwrap() += dt;
+        let permit = control.status(true)["permit"].clone();
+        assert!(control.accept(&explore_hb(&session, permit.as_str().unwrap(), seq), &session));
+        control.output();
+    }
+    let st = control.status(false);
+    assert_eq!(st["reason"], "nav_pose_lost");
+    assert_eq!(st["mode"], "teleop"); // a real stop dropped the Explore session
+}
+
+#[test]
+fn strict_mode_sensor_stall_stops_at_once() {
+    let (_service, _mapping, control, session, _now) = pause_fixture(false);
+    let permit = control.status(true)["permit"].clone();
+    let mut release = explore_hb(&session, permit.as_str().unwrap(), 1);
+    release["deadman"] = json!(false);
+    release["mode"] = json!("teleop");
+    control.accept(&release, &session); // ordered release: first press needs one
+    assert!(control.accept(&explore_hb(&session, permit.as_str().unwrap(), 2), &session));
+    control.output();
+    let st = control.status(false);
+    assert_eq!(st["reason"], "nav_pose_lost");
+    assert!(st["requires_release"].as_bool().unwrap());
+}

@@ -38,8 +38,10 @@ pub const NAV_MODES: [&str; 3] = ["explore", "seek", "goto"];
 pub const CMD_TTL: f64 = 0.25;
 /// No bridge status for this long: Nav2 is unavailable, use the fallback.
 pub const BRIDGE_TTL: f64 = 1.5;
-/// Nav2 motion needs a normal-tracking ARKit pose at least this fresh ...
-pub const POSE_TTL: f64 = 0.5;
+/// Nav2 motion needs a normal-tracking ARKit pose at least this fresh (#175:
+/// 0.5 tripped on the rig's 500-750ms camera stalls every ~5s and cut AUTO
+/// into 0.75s runs) ...
+pub const POSE_TTL: f64 = 1.0;
 /// ... and measured depth of the same sensor session at least this fresh.
 pub const DEPTH_TTL: f64 = 1.0;
 /// Target unseen this long: Seek fails and stops.
