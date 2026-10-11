@@ -56,6 +56,13 @@ class RouteTests(unittest.TestCase):
     def test_map_routes_negotiate_and_decode_identical(self):
         app = create_app(demo=True)
         with TestClient(app) as client:
+            # Compare encodings of one fixed revision, not frames concurrently
+            # added by the demo producer between identity/br/gzip requests.
+            state = app.state.mapping
+            with state.lock:
+                state.paused = True
+                state.cloud.integrate(np.arange(300).reshape(-1, 3), np.full((100, 3), 123, np.uint8))
+                state.revision += 1
             for path in ("/map/points.bin", "/map/mesh.bin", "/map/export.ply"):
                 plain = client.get(path, headers={"Accept-Encoding": "identity"})
                 self.assertNotIn("content-encoding", plain.headers)

@@ -249,9 +249,14 @@ class MapState:
             return ((0 < self.points_cap < len(self.cloud.cells))
                     or (0 < self.triangles_cap < self.surfaces.count))
 
-    def point_packet(self):
+    def point_snapshot(self):
+        """Copy wire-ready arrays and the cap together; encode after unlocking."""
         with self.lock:
-            return decimate_points_bin(encode_points(*self.cloud.snapshot()), self.points_cap)
+            return self.cloud.snapshot(), self.points_cap
+
+    def point_packet(self, snapshot=None):
+        (points, colors), cap = self.point_snapshot() if snapshot is None else snapshot
+        return decimate_points_bin(encode_points(points, colors), cap)
 
     def mesh_packet(self):
         with self.lock:
@@ -262,11 +267,10 @@ class MapState:
             # Keyframes without stored LODs keep the stride fallback (Rust parity).
             return decimate_mesh_bin(self.surfaces.encode(), self.triangles_cap)
 
-    def ply(self):
+    def ply(self, snapshot=None):
         """Follows the capped points, like the Rust server's PLY derived from points.bin."""
-        with self.lock:
-            points, colors = self.cloud.snapshot()
-        n, cap = len(points), self.points_cap
+        (points, colors), cap = self.point_snapshot() if snapshot is None else snapshot
+        n = len(points)
         if 0 < cap < n:
             keep = np.arange(cap, dtype=np.int64) * n // cap
             points, colors = points[keep], colors[keep]

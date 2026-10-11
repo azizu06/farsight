@@ -175,6 +175,17 @@ retain native linear RGB without tone mapping, use a2px floor and64px ceiling,
 and upload no geometry when only the camera moves. This
 display footprint does not add measured points or fill missing depth triangles.
 
+While native textures are visible, the coarse and dense splats use the back of
+their display footprint for depth testing (half the splat diameter: 36mm and
+17.5mm at the default sizes). This prevents nearby, quantized point samples
+from painting discs over the finer RGB texture. Measured positions, uploaded
+buffers and point counts stay intact; foreground points beyond that footprint
+still occlude the texture. Hiding or expiring all native patches restores the
+original point depth. Capture metadata exposes `surfaceDisplay.coarse_depth_bias_m`
+and `surfaceDisplay.dense_depth_bias_m`. The production GPU regression is
+`node tools/tests/mac_render_texture_composition.browser.mjs`; its sloped plane,
+checkerboard and foreground point are explicitly simulated.
+
 Raw exports negotiate br/gzip and retain only the newest encoded packet variants. The relay owner must include `/phone/frame.bin` in its compression pass-through paths before this helps the tailnet hop. A recorded 270,259-byte physical packet compressed to 70,557 bytes with Brotli q4 in 3.1 ms on this Mac; that is a local compression measurement, not Jetson CPU or live link proof. Initial live uncompressed reads sometimes took 2.8 s and were rejected by the unchanged 2 s capture freshness limit. No service is restarted by the lab or adapter.
 
 A same-view recorded physical packet comparison (frame 1230, 2026-10-11 01:32 UTC, 640×480 JPEG / 256×192 native depth) kept 6,565 measured 1 cm cells and 83,709 supported triangles. Front-view canvas coverage rose from 0.78% with points alone to 2.05% with textured surfaces; side/above remained sparse. This is recorded desktop SwiftShader evidence, not live delivery, room completeness or headset FPS. Its source was visibly labelled RECORDED IPHONE LIDAR.

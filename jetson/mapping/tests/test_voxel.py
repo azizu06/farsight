@@ -80,6 +80,26 @@ class VoxelIntegrationTests(unittest.TestCase):
         self.assertLess(cloud.snapshot()[0].max(), 2)
         self.assertGreater(cloud.snapshot()[1].max(), 0)
 
+    def test_snapshot_matches_ordered_wire_values_after_recycling_and_reset(self):
+        cloud = VoxelMap(size=1, capacity=3)
+        for xs in ([.25, 1.25, 2.25], [.75], [1.75, 3.25], list(np.arange(9) + .25)):
+            points = np.column_stack((xs, np.zeros(len(xs)), np.zeros(len(xs))))
+            colors = np.column_stack((np.arange(len(xs)) * 70.5 - 1, xs, xs))
+            cloud.integrate(points, colors)
+            # Reference the original ordered-cell wire conversion, including
+            # float32 rounding, RGB clipping and truncation of averaged colors.
+            values = list(cloud.cells.values())
+            expected = (np.array([v[0] for v in values], np.float32),
+                        np.clip([v[1] for v in values], 0, 255).astype(np.uint8))
+            for actual, reference in zip(cloud.snapshot(), expected):
+                self.assertEqual(actual.tobytes(), reference.tobytes())
+        old = cloud.snapshot()
+        cloud.clear()
+        cloud.integrate(np.array([[20.25, 0, 0]]), np.array([[11, 22, 33]], np.uint8))
+        np.testing.assert_array_equal(cloud.snapshot()[0], [[20.25, 0, 0]])
+        np.testing.assert_array_equal(cloud.snapshot()[1], [[11, 22, 33]])
+        self.assertEqual(len(old[0]), 3)
+
     def test_empty_and_nonfinite_samples_do_not_change_existing_cells(self):
         cloud = VoxelMap(size=1)
         cloud.integrate(np.array([[.25, .25, .25]]), np.full((1, 3), 100, np.uint8))
