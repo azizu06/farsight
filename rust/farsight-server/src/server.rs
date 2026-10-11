@@ -1907,8 +1907,10 @@ where
         // heartbeats update tracking independently of fusion, and fusion
         // itself stays a bounded queue. Backpressure on any lane replaces
         // the unprocessed item instead of holding up the socket reader.
-        let fusion_q = Arc::new(LatestSlot::<(Vec<u8>, f64)>::new());
-        let camera_q = Arc::new(LatestSlot::<(Vec<u8>, f64)>::new());
+        // Bytes queues: the socket reader hands the frame buffer by
+        // refcount instead of copying every RGB-D packet.
+        let fusion_q = Arc::new(LatestSlot::<(Bytes, f64)>::new());
+        let camera_q = Arc::new(LatestSlot::<(Bytes, f64)>::new());
         let pose_q = Arc::new(LatestSlot::<(Value, crate::geometry::Mat4, f64)>::new());
         // Camera fast-lane: validate + publish the JPEG BEFORE offering the
         // same packet to fusion, so detection work can never hold up the
@@ -1928,7 +1930,7 @@ where
                     let (cam2, ident2, permits2) = (cam.clone(), ident.clone(), permits.clone());
                     let r = tokio::task::spawn_blocking(move || {
                         (
-                            cam2.accept_phone_rgbd(&packet, &ident2, previous, Some(received_at), Some(&permits2), Some(socket_generation)),
+                            cam2.accept_phone_rgbd(packet.as_ref(), &ident2, previous, Some(received_at), Some(&permits2), Some(socket_generation)),
                             packet,
                         )
                     })
@@ -2000,7 +2002,7 @@ where
             tokio::select! {
                 msg = rx.next() => match msg {
                     Some(Ok(Message::Binary(bytes))) => {
-                        if camera_q.offer((bytes.to_vec(), now_monotonic())).is_some() {
+                        if camera_q.offer((bytes, now_monotonic())).is_some() {
                             s.camera.note_ingest_dropped();
                         }
                     }
@@ -2164,7 +2166,7 @@ where
         permits_opt = Some(permits.clone());
         // Bounded latest-wins queue: the decoder always works on the newest
         // packet while the socket reader keeps flowing (#157 parity).
-        let queue = Arc::new(LatestSlot::<(Vec<u8>, f64)>::new());
+        let queue = Arc::new(LatestSlot::<(Bytes, f64)>::new());
         let mut consumer = {
             let (q, cam, session, permits) = (
                 queue.clone(),
@@ -2177,7 +2179,7 @@ where
                 while let Some((packet, received)) = q.wait().await {
                     let (c, sn, p) = (cam.clone(), session.clone(), permits.clone());
                     previous = tokio::task::spawn_blocking(move || {
-                        c.accept_phone_rgb(&packet, &sn, previous, Some(received), Some(&p))
+                        c.accept_phone_rgb(packet.as_ref(), &sn, previous, Some(received), Some(&p))
                     })
                     .await
                     .map_err(|_| "worker failed".to_string())??;
@@ -2189,7 +2191,7 @@ where
             tokio::select! {
                 message = rx.next() => match message {
                     Some(Ok(Message::Binary(packet))) => {
-                        if queue.offer((packet.to_vec(), now_monotonic())).is_some() {
+                        if queue.offer((packet, now_monotonic())).is_some() {
                             s.camera.note_ingest_dropped();
                         }
                     }
