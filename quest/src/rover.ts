@@ -614,6 +614,7 @@ export class RoverExperience {
     const session = this.renderer.xr.getSession();
     // Demo relaxations (demo-config.js) apply only while immersive; the desktop page keeps every guard.
     this.gate.demo = DEMO_MODE && xr;
+    this.gate.handsFree = this.gate.demo && this.auto && !this.autoArming;
     if (xr && session) {
       const sources = [...session.inputSources];
       const right = sources.find(source => source.handedness === "right" && source.gamepad);
@@ -1011,6 +1012,9 @@ export class RoverExperience {
       this.scanMessage = "Scan cancelled: release, stale view, or stick override";
       this.stop(this.scanMessage);
     }
+    // Demo AUTO hold: keep Explore heartbeats while the last permit may still be valid, then wait
+    // for a fresh one without sending a release (B or leaving AUTO is the only stop).
+    if (this.gate.holding && !this.gate.permitLive(now)) return;
     this.send(moving && !this.gate.needsRelease);
     if (this.scanArmed && moving && !this.input.v && !this.input.w) {
       this.scanArmed = false;

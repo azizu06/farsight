@@ -256,3 +256,45 @@ test("demo mode: stale video warns but does not block; transient stops resume wi
   gate.demo = false;
   assert.equal(gate.readiness(650, true, 650), "Camera stale: motion stopped", "?demo=0 restores the 500 ms block");
 });
+test("demo hands-free AUTO holds through a late status/permit; only an explicit stop releases", () => {
+  const gate = ready();
+  gate.demo = true; gate.handsFree = true;
+  assert.equal(gate.decide(true, 110, true, true, 110), true, "Explore heartbeats running");
+  // A ~0.5 s server stall: status and permit go late. No release, no latch, heartbeats continue.
+  for (const now of [320, 360, 450, 600]) {
+    assert.equal(gate.decide(true, now, true, true, now), true, `held at ${now}`);
+    assert.equal(gate.holding, true);
+    assert.equal(gate.needsRelease, false, "nothing to release");
+  }
+  assert.equal(gate.permitLive(300), true, "the last permit may still be valid: keep sending");
+  assert.equal(gate.permitLive(360), false, "a surely expired permit is not sent (it would only stop the rover)");
+  gate.acceptStatus(status, 610);
+  assert.equal(gate.decide(true, 615, true, true, 615), true, "fresh status: still moving, no re-arm");
+  assert.equal(gate.holding, false);
+  // B (or leaving AUTO) is a hard stop: it releases and needs a real re-arm.
+  gate.stop({ held: true, v: 0, w: 0 }, "Stopped: center the joystick", true);
+  assert.equal(gate.decide(true, 620, true, true, 620), false);
+  // Things the hold does not cover still stop as before.
+  const lost = ready(); lost.demo = true; lost.handsFree = true;
+  assert.equal(lost.decide(true, 110, false, true, 110), false, "disconnect is not held");
+  assert.equal(lost.needsRelease, true);
+});
+test("manual/teleop and non-demo keep the stale status/permit stop exactly", () => {
+  for (const [demo, handsFree] of [[true, false], [false, true], [false, false]]) {
+    const gate = ready();
+    gate.demo = demo; gate.handsFree = handsFree;
+    assert.equal(gate.decide(true, 110, true, true, 110), true);
+    assert.equal(gate.decide(true, 320, true, true, 320), false, `demo=${demo} handsFree=${handsFree} stops on a late permit`);
+    assert.equal(gate.holding, false);
+    assert.equal(gate.needsRelease, true);
+    assert.equal(gate.reason, "Waiting for fresh control permit");
+    assert.equal(gate.decide(true, 410, true, true, 410), false);
+    assert.equal(gate.reason, "Control status stale");
+  }
+});
+test("rover.ts holds only in demo XR AUTO after arming, and never sends a surely expired permit while holding", async () => {
+  const { readFileSync } = await import("node:fs");
+  const source = readFileSync(new URL("../src/rover.ts", import.meta.url), "utf8");
+  assert.match(source, /this\.gate\.handsFree = this\.gate\.demo && this\.auto && !this\.autoArming;/);
+  assert.match(source, /if \(this\.gate\.holding && !this\.gate\.permitLive\(now\)\) return;\s*this\.send\(moving && !this\.gate\.needsRelease\);/);
+});
