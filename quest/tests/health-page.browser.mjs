@@ -28,14 +28,17 @@ try {
     await page.route('**/camera.jpg', r => r.fulfill({ status: 503, body: '' }));
     await page.route('**/health', r => r.fulfill({ contentType: 'application/json', body: JSON.stringify(health) }));
     await page.goto(`${origin}${path}`);
-    // Health is polled every 2 s; cover the first answer and a repeat.
-    await page.waitForTimeout(5000);
-    assert.deepEqual(errors, [], `${path}: no page errors with a healthy /health`);
     if (path !== '/splat.html') {
-      const h264 = await page.evaluate(() => [...document.querySelectorAll('#settings label.check')]
-        .find(label => label.textContent.includes('H.264'))?.querySelector('input')?.checked);
-      assert.equal(h264, true, `${path}: the rover's H.264 offer is auto-selected after the voice check`);
+      // Auto-selection must happen after the voice check. Without frames it later falls back to
+      // JPEG (6 s), so wait for the selection itself rather than sampling at a fixed time.
+      const selected = await page.waitForFunction(() => [...document.querySelectorAll('#settings label.check')]
+        .find(label => label.textContent.includes('H.264'))?.querySelector('input')?.checked === true,
+        null, { timeout: 15000 }).then(() => true, () => false);
+      assert.equal(selected, true, `${path}: the rover's H.264 offer is auto-selected after the voice check`);
     }
+    // Health is polled every 2 s; cover a repeat poll after the first answer.
+    await page.waitForTimeout(2500);
+    assert.deepEqual(errors, [], `${path}: no page errors with a healthy /health`);
     await page.close();
   }
   console.log('health-page browser test passed');
