@@ -164,10 +164,11 @@ pub(crate) async fn train_stream(
     let mut eval_scene = dataset.eval;
 
     let mut train_duration = Duration::from_secs(0);
-    let mut dataloader = SceneLoader::new(
+    let mut dataloader = SceneLoader::with_device(
         &dataset.train,
         process_config.seed,
         &train_stream_config.load_config,
+        Some(device.clone().inner()),
     );
     // Per-train-view (world center, focal-px at native res) for the
     // Mip-Splatting 3D filter (always on).
@@ -277,10 +278,11 @@ pub(crate) async fn train_stream(
             // whole dataset, which at 100% scale buys nothing.
             if lod_img_pct < 100 {
                 let lod_scene = dataset.train.clone().with_image_scale(cumulative_scale);
-                dataloader = SceneLoader::new(
+                dataloader = SceneLoader::with_device(
                     &lod_scene,
                     process_config.seed,
                     &train_stream_config.load_config,
+                    Some(device.clone().inner()),
                 );
             }
 

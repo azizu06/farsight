@@ -1,5 +1,5 @@
 use brush_render::{AlphaMode, bounding_box::BoundingBox, camera::Camera};
-use burn::tensor::TensorData;
+use burn::tensor::{Int, Tensor, TensorData};
 use glam::{Affine3A, Vec3, vec3};
 use image::DynamicImage;
 use std::sync::Arc;
@@ -139,11 +139,20 @@ fn pack_rgba(img: &image::RgbaImage, premultiply: bool) -> Vec<i32> {
 pub struct SceneBatch {
     /// `[H, W]` u32, each entry packs `[r g b a]` u8.
     pub img_packed: TensorData,
+    /// The same packed image already resident on the GPU. Present when the
+    /// loader uploaded it during prefetch; the trainer then skips its
+    /// per-step host→device copy entirely. `None` falls back to uploading
+    /// `img_packed` at step time.
+    pub img_gpu: Option<Tensor<2, Int>>,
     /// True when the source image had an alpha channel that the trainer
     /// should consume (mask weight, alpha-matching loss, bg compositing).
     pub has_alpha: bool,
     pub alpha_mode: AlphaMode,
     pub camera: Camera,
+    /// Index of this view within its scene, or `u32::MAX` for synthetic /
+    /// unindexed batches. Per-view parameters (appearance affine, pose
+    /// deltas) are addressed by it.
+    pub view_index: u32,
 }
 
 impl SceneBatch {

@@ -231,9 +231,13 @@ impl SplatTrainer {
         // GT is pure data — never differentiated. Build it on the inner
         // backend so it doesn't inherit the autodiff device's residual
         // checkpointing flag (the LPIPS `unpack_gt_rgb` path, via
-        // `unwrap_wgpu_int`, expects a clean Wgpu tensor).
-        let gt_packed: Tensor<2, Int> =
-            Tensor::from_data(batch.img_packed, &device.clone().inner());
+        // `unwrap_wgpu_int`, expects a clean Wgpu tensor). When the loader
+        // uploaded the image during prefetch, reuse the resident tensor and
+        // skip the host→device copy entirely.
+        let gt_packed: Tensor<2, Int> = match batch.img_gpu {
+            Some(img) => img,
+            None => Tensor::from_data(batch.img_packed, &device.clone().inner()),
+        };
         let img_size = glam::uvec2(img_w as u32, img_h as u32);
         let base = &self.config.background_color;
         let base_bg = glam::Vec3::new(base[0], base[1], base[2]);

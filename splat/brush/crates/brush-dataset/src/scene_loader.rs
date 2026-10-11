@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use brush_async::Actor;
-use burn::tensor::TensorData;
+use burn::tensor::{Device, Tensor, TensorData};
 use rand::{SeedableRng, seq::SliceRandom};
 use tokio::sync::{Mutex, mpsc};
 
@@ -65,6 +65,18 @@ pub struct SceneLoader {
 
 impl SceneLoader {
     pub fn new(scene: &Scene, seed: u64, config: &LoadDatasetConfig) -> Self {
+        Self::with_device(scene, seed, config, None)
+    }
+
+    /// `device` enables GPU-resident images: each view is uploaded once at
+    /// decode time and the cached batch hands the trainer a ready tensor,
+    /// so a step costs zero decode and zero copy after the first epoch.
+    pub fn with_device(
+        scene: &Scene,
+        seed: u64,
+        config: &LoadDatasetConfig,
+        device: Option<Device>,
+    ) -> Self {
         // Prefetch buffer: at most 4 batches ahead of the trainer.
         // Two tasks per actor share this buffer so one task's I/O can
         // overlap with the other's decode + GPU upload.
@@ -86,6 +98,20 @@ impl SceneLoader {
             config.max_scene_batch_cache_size,
         )));
 
+        // Cold-start prefetch: partition view indices round-robin across all
+        // tasks so every view is decoded + packed exactly once, as early as
+        // the worker pool can get to it. Without this, each task shuffles
+        // independently and the same view is decoded several times during
+        // the first epochs — pure waste on phone-size captures where the
+        // whole dataset fits the cache. Once a task's stripe is drained it
+        // falls back to the infinite shuffled stream.
+        let n_tasks = (n_actors * TASKS_PER_ACTOR) as u64;
+        let inner_device = device.map(|d| d.inner());
+        let device = inner_device.filter(|_| {
+            // GPU residency is a native-only win; wasm keeps host batches.
+            !cfg!(target_family = "wasm")
+        });
+
         let mut task_idx: u64 = 0;
         let actors: Vec<Actor> = (0..n_actors)
             .map(|i| {
@@ -95,9 +121,13 @@ impl SceneLoader {
                     let cache = cache.clone();
                     let tx = tx.clone();
                     let task_seed = seed.wrapping_add(task_idx);
+                    let init: Vec<usize> = (0..views.len())
+                        .filter(|i| *i as u64 % n_tasks == task_idx)
+                        .collect();
+                    let device = device.clone();
                     task_idx += 1;
                     actor
-                        .run(move || run_loader(views, cache, tx, task_seed))
+                        .run(move || run_loader(views, cache, tx, task_seed, init, device))
                         .detach();
                 }
                 actor
@@ -123,16 +153,23 @@ async fn run_loader(
     cache: Arc<Mutex<BatchCache>>,
     tx: mpsc::Sender<SceneBatch>,
     seed: u64,
+    init: Vec<usize>,
+    device: Option<Device>,
 ) {
     let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
     let mut shuffled: Vec<usize> = Vec::new();
+    let mut init = init.into_iter();
 
     loop {
-        if shuffled.is_empty() {
-            shuffled = (0..views.len()).collect();
-            shuffled.shuffle(&mut rng);
-        }
-        let index = shuffled.pop().expect("Need at least one view in dataset");
+        let index = if let Some(i) = init.next() {
+            i
+        } else {
+            if shuffled.is_empty() {
+                shuffled = (0..views.len()).collect();
+                shuffled.shuffle(&mut rng);
+            }
+            shuffled.pop().expect("Need at least one view in dataset")
+        };
         let view = &views[index];
 
         let cached = cache.lock().await.get(index);
@@ -149,17 +186,26 @@ async fn run_loader(
                 .expect("Scene loader failed to load an image");
             let (img_packed, has_alpha) = view_to_packed_data(raw, view.image.alpha_mode());
             let mut batch = SceneBatch {
-                img_packed,
+                // Share the pixels up front: the cache copy, the GPU upload
+                // below and every later hit then cost a refcount instead of
+                // a copy of the whole image.
+                img_packed: share_packed(img_packed),
+                img_gpu: None,
                 has_alpha,
                 alpha_mode: view.image.alpha_mode(),
                 camera: view.camera,
+                view_index: index as u32,
             };
 
             let mut cache = cache.lock().await;
             if cache.admits(index, &batch) {
-                // Share the pixels before caching: this hand-off and every
-                // later hit then costs a refcount instead of a full copy.
-                batch.img_packed = share_packed(batch.img_packed);
+                if let Some(d) = device.as_ref() {
+                    // Upload once, at decode time: later epochs reuse the
+                    // resident tensor and the trainer never copies again.
+                    // The TensorData clone is a refcount bump on the shared
+                    // bytes, not a pixel copy.
+                    batch.img_gpu = Some(Tensor::from_data(batch.img_packed.clone(), d));
+                }
                 cache.insert(index, Arc::new(batch.clone()));
             }
             batch
