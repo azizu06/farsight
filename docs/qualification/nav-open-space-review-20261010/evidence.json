@@ -1,0 +1,68 @@
+{
+  "scope": "CPU fixtures only; no physical camera or driving qualification",
+  "production_baseline_sha": "1af477195155f3343d8d9a0d0c878d343bf275dd",
+  "pr_head_sha": "04602b0fa811a1274567a91c6f15d5e29072da35",
+  "pr_base_sha": "fa1a7a04ad78ae5fcd68093f1e5bd825f0a2db50",
+  "candidate_local_motion_blob": "42ca1a914979ac5ae930db543aa287fa8ad68a55",
+  "freshness": {
+    "now": 10,
+    "pose_at": 10,
+    "depth_at": 10,
+    "map_at": 9.9,
+    "map_age_s": 0.1,
+    "map_expiry_s": 2.5,
+    "map_formally_fresh": true,
+    "map_content": "previously observed free floor, superseded by current scene"
+  },
+  "same_20cm_obstacle_low_confidence": {
+    "1": {
+      "encoded_obstacle_m": 0.20000000298023224,
+      "baseline": [
+        -0.2,
+        0.0
+      ],
+      "proposed": [
+        -0.2,
+        0.0
+      ]
+    },
+    "0": {
+      "encoded_obstacle_m": 0.0,
+      "baseline": [
+        0.0,
+        0.82
+      ],
+      "proposed": [
+        0.2,
+        0.0
+      ]
+    }
+  },
+  "floor_drop": {
+    "camera_height_m": 0.08,
+    "drop_ahead_m": 0.6,
+    "valid_depth_pixels": 2880,
+    "baseline": [
+      0.0,
+      0.82
+    ],
+    "proposed": [
+      0.2,
+      0.0
+    ]
+  },
+  "invalid_upper_sample": {
+    "NaN": {
+      "baseline": false,
+      "proposed": true
+    },
+    "positive_inf": {
+      "baseline": false,
+      "proposed": true
+    },
+    "negative1": {
+      "baseline": false,
+      "proposed": true
+    }
+  }
+}
