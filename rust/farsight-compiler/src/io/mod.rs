@@ -44,6 +44,8 @@ pub struct IoOptions {
     pub ply_sample_faces: bool,
     /// Integer downscale factor applied to capture images and intrinsics.
     pub capture_downscale: u32,
+    /// Frame culling for capture loading (tracking/parked/blur/coverage).
+    pub capture_filter: capture::CaptureFilter,
     /// Bound on dense delta pages pulled from a live source.
     pub max_dense_pages: usize,
     /// Per-request timeout (seconds) for live HTTP sources.
@@ -58,6 +60,7 @@ impl Default for IoOptions {
             mesh_sample_density: 0.0,
             ply_sample_faces: true,
             capture_downscale: 1,
+            capture_filter: capture::CaptureFilter::default(),
             max_dense_pages: 4096,
             http_timeout_s: 20.0,
             http_max_mib: 1024,
