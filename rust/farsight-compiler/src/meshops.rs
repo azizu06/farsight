@@ -1579,6 +1579,12 @@ fn run_inner(mesh: &mut Mesh, cloud: &PointCloud, opts: &MeshOptions, planes_nd:
         let (creases, appended) = split_crease_normals(mesh, planes_nd, &fl2);
         s["crease_verts"] = creases.into();
         s["split_verts"] = appended.into();
+        s["plane_exact_normals"] = exact.into();
+        s["plane_projected"] = unambig.into();
+        // plane projection can collapse faces to zero area; atlas skips
+        // area<=0 faces in segment but still indexes them -> drop them here
+        let pd = drop_degenerate(mesh, opts.min_tri_area);
+        s["plane_degenerate"] = pd.into();
         s["planesplit_ms"] = serde_json::json!((t.elapsed().as_secs_f64() * 1e3).round() as u64);
     }
 
