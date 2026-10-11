@@ -2,6 +2,7 @@ use std::f32::consts::FRAC_1_SQRT_2;
 
 use crate::{
     adam_scaled::{AdamScaled, AdamState},
+    appearance::AppearanceBank,
     config::{RefineMode, TrainConfig},
     msg::{RefineStats, TrainStepStats},
     multinomial::multinomial_sample,
@@ -107,6 +108,8 @@ pub struct SplatTrainer {
     /// Currently installed SH scaling: `(locked_band_mask, tensor)` —
     /// rebuilt only when the set of locked bands changes.
     sh_scale_cur: Option<(u64, Tensor<3>)>,
+    /// Per-view appearance affine bank (T6); see `appearance.rs`.
+    appearance: AppearanceBank,
     #[cfg(not(target_family = "wasm"))]
     lpips: Option<lpips::LpipsModel>,
 }
@@ -231,6 +234,7 @@ impl SplatTrainer {
         config.growth_stop_iter = config.growth_stop_iter.min(config.total_train_iters);
         config.growth_start_iter = config.growth_start_iter.min(config.growth_stop_iter);
 
+        let (app_lr, app_reg) = (config.appearance_lr, config.appearance_reg);
         #[cfg(not(target_family = "wasm"))]
         let lpips = (config.lpips_loss_weight > 0.0).then(|| lpips::load_vgg_lpips(device));
 
@@ -251,6 +255,7 @@ impl SplatTrainer {
             seeded: false,
             sh_scale_base: None,
             sh_scale_cur: None,
+            appearance: AppearanceBank::new(app_lr, app_reg),
             #[cfg(not(target_family = "wasm"))]
             lpips,
         }
@@ -467,6 +472,16 @@ impl SplatTrainer {
                 .await;
 
             let pred_image = diff_out.img;
+            // Per-view appearance affine (T6): active after the warm-up
+            // fraction; the bank's params stay at identity before that.
+            let app_on = self.appearance.enabled()
+                && progress >= self.config.appearance_warmup_frac;
+            let pred_image = if app_on {
+                self.appearance
+                    .apply(batch.view_index, pred_image, &device)
+            } else {
+                pred_image
+            };
             let refine_weight_holder = diff_out.refine_weight_holder;
             counts_sum = Some(match counts_sum {
                 Some(c) => c + diff_out.counts,
@@ -520,6 +535,11 @@ impl SplatTrainer {
                     ) * self.config.lpips_loss_weight;
             }
 
+            if app_on {
+                view_loss = view_loss
+                    + self.appearance.penalty(batch.view_index, &device);
+            }
+
             loss = Some(match loss {
                 Some(l) => l + view_loss,
                 None => view_loss,
@@ -554,6 +574,7 @@ impl SplatTrainer {
         // scalar later without keeping the backward pass alive.
         let loss_inner = loss.clone().inner();
         let mut grads = splats.bwd_validate(loss).await;
+        self.appearance.step(&mut grads);
 
         let coeffs_grad_sq = coeffs_grad_sq_holder
             .grad_remove(&mut grads)

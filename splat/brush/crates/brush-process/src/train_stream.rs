@@ -391,6 +391,7 @@ pub(crate) async fn train_stream(
                 eval_scene,
                 save_path,
                 train_stream_config.rerun_config.rerun_max_img_size,
+                train_stream_config.train_config.appearance_lr > 0.0,
             )
             .await
             .with_context(|| format!("Failed evaluation at iteration {iter}"));
@@ -579,6 +580,7 @@ async fn run_eval(
     eval_scene: &Scene,
     save_path: Option<PathBuf>,
     rerun_max_img_size: u32,
+    appearance_eval: bool,
 ) -> Result<(), anyhow::Error> {
     if eval_scene.views.is_empty() {
         return Ok(());
@@ -587,6 +589,10 @@ async fn run_eval(
     let mut psnr = 0.0;
     let mut ssim = 0.0;
     let mut count = 0;
+    // T6: when the appearance bank is on, also score the fair variant —
+    // affine fit on the left half, applied to the right half.
+    let mut psnr_app = 0.0;
+    let mut count_app = 0usize;
     log::info!("Running evaluation for iteration {iter}");
 
     for (i, view) in eval_scene.views.iter().enumerate() {
@@ -599,6 +605,7 @@ async fn run_eval(
             eval_img,
             view.image.alpha_mode(),
             device,
+            appearance_eval,
         )
         .await
         .context("Failed to run eval for sample.")?;
@@ -606,6 +613,10 @@ async fn run_eval(
         count += 1;
         psnr += sample.psnr.clone().into_scalar_async::<f32>().await?;
         ssim += sample.ssim.clone().into_scalar_async::<f32>().await?;
+        if let Some(p) = sample.psnr_appearance.clone() {
+            psnr_app += p.into_scalar_async::<f32>().await?;
+            count_app += 1;
+        }
 
         #[cfg(not(target_family = "wasm"))]
         if let Some(path) = &save_path {
@@ -630,6 +641,12 @@ async fn run_eval(
     }
     psnr /= count as f32;
     ssim /= count as f32;
+    if count_app > 0 {
+        log::info!(
+            "Eval iter {iter}: PSNR (appearance-fair) {:.3}",
+            psnr_app / count_app as f32
+        );
+    }
     visualize.log_eval_stats(iter, psnr, ssim)?;
     emitter
         .emit(ProcessMessage::TrainMessage(TrainMessage::EvalResult {

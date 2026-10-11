@@ -15,6 +15,10 @@ pub struct EvalSample {
     pub gt_img: DynamicImage,
     pub rendered: Tensor<3>,
     pub psnr: Tensor<1>,
+    /// Appearance-fair PSNR (T6): per-channel affine fit on the left half
+    /// of the frame, applied to and scored on the right half. Present only
+    /// when `appearance_eval` is requested.
+    pub psnr_appearance: Option<Tensor<1>>,
     pub ssim: Tensor<1>,
     pub render_aux: RenderAux,
 }
@@ -25,6 +29,7 @@ pub async fn eval_stats(
     gt_img: DynamicImage,
     alpha_mode: AlphaMode,
     device: &Device,
+    appearance_eval: bool,
 ) -> Result<EvalSample> {
     let res = glam::uvec2(gt_img.width(), gt_img.height());
 
@@ -51,11 +56,19 @@ pub async fn eval_stats(
         .powi_scalar(2)
         .mean();
     let psnr = psnr_from_mse(mse);
-    let ssim = image_loss_eval(render_rgb.clone(), gt_packed, cfg(0.0, 1.0)).mean();
+    let ssim = image_loss_eval(render_rgb.clone(), gt_packed.clone(), cfg(0.0, 1.0)).mean();
+
+    let psnr_appearance = if appearance_eval {
+        let gt_rgb = brush_loss::unpack_gt_rgb(gt_packed, None);
+        crate::appearance::eval_appearance_psnr(render_rgb.clone(), gt_rgb)
+    } else {
+        None
+    };
 
     Ok(EvalSample {
         gt_img,
         psnr,
+        psnr_appearance,
         ssim,
         rendered: render_rgb,
         render_aux,

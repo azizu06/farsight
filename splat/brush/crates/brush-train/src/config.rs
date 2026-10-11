@@ -270,6 +270,23 @@ pub struct TrainConfig {
         value_parser = clap::value_parser!(u32).range(1..=16)
     )]
     pub views_per_step: u32,
+
+    /// Learning rate for the per-view appearance affine bank (RGB gain +
+    /// bias applied to the render before the loss; brush-train
+    /// `appearance.rs`). `0` disables it. Phone captures with per-frame
+    /// auto-exposure/white-balance typically want `5e-3`.
+    #[arg(long, help_heading = "Training options", default_value = "0.0")]
+    pub appearance_lr: f64,
+
+    /// Fraction of the schedule before the appearance bank activates;
+    /// params sit at identity until then so geometry locks in first.
+    #[arg(long, help_heading = "Training options", default_value = "0.05")]
+    pub appearance_warmup_frac: f32,
+
+    /// Identity-regulariser weight on the appearance affine
+    /// (`reg * (|gain - I|^2 + |bias|^2)` added to the view loss).
+    #[arg(long, help_heading = "Training options", default_value = "0.001")]
+    pub appearance_reg: f64,
 }
 
 impl Default for TrainConfig {

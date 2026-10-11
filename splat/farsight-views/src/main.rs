@@ -64,9 +64,15 @@ enum Cmd {
     /// dataset-wide tone. Eval images are copied unchanged by default;
     /// --eval-half-fit fits the affine on the top half only and applies it
     /// to the whole eval image (honest "appearance-fair" metric variant).
+    /// --mode picks ONE appearance strategy (they must not double-apply):
+    ///   offline = rewrite train images (this command);
+    ///   learned = copy frames unchanged, mark views_meta.json for the
+    ///             in-trainer affine bank (`brush-cli --appearance-lr`);
+    ///   none    = copy frames unchanged, no compensation.
     Exposure {
         #[arg(long)] in_dir: PathBuf,
         #[arg(long)] out_dir: PathBuf,
+        #[arg(long, default_value = "offline")] mode: String,
         #[arg(long, default_value_t = false)] eval_half_fit: bool,
         /// JPEG quality for rewritten train images.
         #[arg(long, default_value_t = 95)] jpeg_quality: u8,
@@ -483,7 +489,13 @@ fn chan_stats(w: usize, h: usize, rgb: &[u8]) -> ([f64; 3], [f64; 3]) {
     (mean, sd)
 }
 
-fn cmd_exposure(in_dir: &Path, out_dir: &Path, eval_half_fit: bool, q: u8) -> Result<()> {
+fn cmd_exposure(
+    in_dir: &Path,
+    out_dir: &Path,
+    mode: &str,
+    eval_half_fit: bool,
+    q: u8,
+) -> Result<()> {
     let (json, frames) = load_transforms(&in_dir.join("transforms.json"))?;
     let val_path = in_dir.join("transforms_val.json");
     let (vjson, vframes) = if val_path.exists() {
@@ -491,6 +503,58 @@ fn cmd_exposure(in_dir: &Path, out_dir: &Path, eval_half_fit: bool, q: u8) -> Re
     } else {
         (json.clone(), Vec::new())
     };
+
+    // Mode select: exactly one appearance strategy may be active.
+    if mode != "offline" {
+        if mode != "learned" && mode != "none" {
+            bail!("--mode must be offline|learned|none");
+        }
+        // Pass frames through unchanged; the marker tells downstream
+        // (bench_mac.sh / farsight-splat) which strategy was chosen.
+        let link = |frames: &[Frame], json: &Value, dest: &Path| -> Result<()> {
+            let arr = json["frames"].as_array().unwrap();
+            for f in frames {
+                let src = in_dir.join(&f.file_path);
+                let name = Path::new(&f.file_path).file_name().context("frame name")?;
+                let dst = out_dir.join("images").join(name);
+                if !dst.exists() && fs::hard_link(&src, &dst).is_err() {
+                    fs::copy(&src, &dst).context("copy frame")?;
+                }
+            }
+            let mut obj = json.clone();
+            let arr2: Vec<Value> = arr
+                .iter()
+                .map(|f| {
+                    let mut f = f.clone();
+                    let name = Path::new(f["file_path"].as_str().unwrap())
+                        .file_name()
+                        .unwrap();
+                    f["file_path"] =
+                        Value::String(format!("images/{}", name.to_string_lossy()));
+                    f
+                })
+                .collect();
+            obj["frames"] = Value::Array(arr2);
+            fs::write(dest, serde_json::to_string_pretty(&obj)?)?;
+            Ok(())
+        };
+        fs::create_dir_all(out_dir.join("images"))?;
+        link(&frames, &json, &out_dir.join("transforms.json"))?;
+        if !vframes.is_empty() {
+            link(&vframes, &vjson, &out_dir.join("transforms_val.json"))?;
+        }
+        let meta = serde_json::json!({
+            "appearance": mode,
+            "appearance_lr": if mode == "learned" { 0.005 } else { 0.0 },
+            "note": "exactly one appearance strategy per capture; learned = brush-cli --appearance-lr",
+        });
+        fs::write(
+            out_dir.join("views_meta.json"),
+            serde_json::to_string_pretty(&meta)?,
+        )?;
+        eprintln!("exposure: mode={mode}, {} frames passed through", frames.len());
+        return Ok(());
+    }
 
     // Reference tone = median of per-image channel means/stds.
     let mut stats = Vec::with_capacity(frames.len());
@@ -563,6 +627,16 @@ fn cmd_exposure(in_dir: &Path, out_dir: &Path, eval_half_fit: bool, q: u8) -> Re
             serde_json::to_string_pretty(&vobj)?,
         )?;
     }
+    let meta = serde_json::json!({
+        "appearance": "offline",
+        "appearance_lr": 0.0,
+        "eval_half_fit": eval_half_fit,
+        "note": "exactly one appearance strategy per capture; learned = brush-cli --appearance-lr",
+    });
+    fs::write(
+        out_dir.join("views_meta.json"),
+        serde_json::to_string_pretty(&meta)?,
+    )?;
     Ok(())
 }
 
@@ -603,9 +677,10 @@ fn main() -> Result<()> {
         Cmd::Exposure {
             in_dir,
             out_dir,
+            mode,
             eval_half_fit,
             jpeg_quality,
-        } => cmd_exposure(&in_dir, &out_dir, eval_half_fit, jpeg_quality),
+        } => cmd_exposure(&in_dir, &out_dir, &mode, eval_half_fit, jpeg_quality),
     }
     .or_else(|e| -> Result<()> { bail!("{e:#}") })
 }

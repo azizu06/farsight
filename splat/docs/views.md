@@ -53,12 +53,38 @@ kernel churn**: people ghosts simply stop contributing to the loss.
 
 ### exposure — per-view affine appearance compensation
 
-Per-channel affine `p → g·p + b` fitted so each train view's mean/std matches
-the dataset-median mean/std (per-channel, ghost-robust at 640 px). Applied to
-the **train images only**; eval is untouched by default so PSNR is measured
-against real camera output. `--eval-half-fit` fits each eval image's affine on
-its top half only, then applies it to the whole image — the honest
-"appearance-fair" variant for the +1–2 dB regime on auto-exposure captures.
+`--mode` picks **exactly one** appearance strategy (they must not
+double-apply); the choice is recorded in `views_meta.json` in the output dir
+for bench scripts:
+
+- **`offline`** (default): per-channel affine `p → g·p + b` fitted so each
+  train view's mean/std matches the dataset-median mean/std, baked into
+  rewritten train JPEGs. Eval untouched; `--eval-half-fit` fits each eval
+  image's affine on its top half only for the appearance-fair metric.
+- **`learned`**: frames passed through unchanged + `views_meta.json
+  {"appearance":"learned","appearance_lr":0.005}` — use with
+  `brush-cli --appearance-lr` (see below).
+- **`none`**: passthrough, no compensation.
+
+## Learned per-view affine (brush-train/appearance.rs, T6)
+
+`--appearance-lr 5e-3` enables a per-view `rgb' = rgb @ gain + bias`
+(3x3 + 3 = 12 params/view) applied to the **render** before `image_loss`.
+Params are autodiff leaves — their grads ride the shared
+`loss.backward()` and are stepped by a dedicated AdamScaled at
+`--appearance-lr` (low LR, default 0 = off). `--appearance-warmup-frac
+0.05` keeps the bank at identity for the first 5% of the schedule so
+geometry locks first; `--appearance-reg 0.001` adds
+`reg·(|gain−I|²+|bias|²)` to each view loss.
+
+Fair eval: with `--appearance-lr > 0`, `run_eval` also reports
+`PSNR (appearance-fair)` — per-channel affine LSQ-fitted on the **left**
+half of each eval frame, applied to and scored on the **right** half —
+alongside raw PSNR (`appearance::eval_appearance_psnr`).
+
+Verified on lavapipe (`/tmp/cap_sel`, 60 iters, `--appearance-lr 5e-3`):
+trained end-to-end with no grad/state errors, eval printed
+`PSNR (appearance-fair) 23.620` next to raw `PSNR 14.9956`.
 
 ## brush-dataset loader rework (commits f6d2287…)
 
@@ -97,13 +123,6 @@ for real PSNR-vs-seconds numbers once the harness lands.
 
 ## Design notes / not-yet-landed
 
-- **Learned per-view affine** (nerf-w style, 6 params/view applied to the
-  *render* before the loss): `view_index` is plumbed through `SceneBatch`;
-  remaining work is a per-view param bank in `SplatTrainer` (hook point:
-  `train.rs` `step()` right before `image_loss`). Needs an Adam slot in the
-  shared param table — coordinated with the brush-train owner before touching
-  the optimizer. Preprocessing-side normalization (above) captures most of
-  the auto-exposure win today.
 - **Per-view SE3 pose deltas**: Brush has **no** camera-pose gradients
   (`burn_glue.rs` produces only per-splat grads). Options: (a) 2.5D direct
   photometric alignment — median splat depth per view + GT gradients →
