@@ -46,6 +46,12 @@ image = { version = "0.25", default-features = false, features = [
 # which lets us decode large JPEGs at 1/2, 1/4, or 1/8 size.
 jpeg-decoder = "0.3"
 
+# splat-turbo: on Apple Silicon, compile cubecl kernels straight to MSL and
+# skip naga's WGSL->MSL pass: shader-build time (time-to-first-step) and
+# dispatch overhead both drop. macOS-only feature; enabled at build time via
+# `--features brush-cube/metal` (needs Apple7+ GPU and Metal >= 3.2, which the
+# M5 Pro satisfies). See splat/docs/perf.md.
+
 serde = { version = "1.0.215", default-features = false, features = [
     "derive",
     "alloc",
@@ -151,8 +157,18 @@ debug = 1
 [profile.dev.package."*"]
 debug = false
 
+# splat-turbo: tuned for Apple Silicon wall-clock, not link time.
+# fat LTO + single codegen unit maximises cross-crate inlining of the host
+# side of the pipeline (tensor bookkeeping, autodiff glue, burn dispatch),
+# which on wgpu is a real share of each step. panic=abort keeps the hot host
+# paths free of landing pads; brush-cli/brush-app have no FFI boundary to
+# protect. strip keeps binaries small.
 [profile.release]
-lto = "thin"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+opt-level = 3
 
 [workspace.lints.rust]
 future_incompatible = { level = "warn", priority = -1 }

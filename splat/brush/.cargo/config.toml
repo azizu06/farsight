@@ -1,3 +1,8 @@
 [target.wasm32-unknown-unknown]
 rustflags = ['--cfg', 'getrandom_backend="wasm_js"']
 runner = 'wasm-bindgen-test-runner'
+
+# splat-turbo: Apple Silicon builds compile for the host chip (M5 Pro →
+# apple-m5 scheduling). Only applies when targeting macOS on ARM.
+[target.aarch64-apple-darwin]
+rustflags = ['-C', 'target-cpu=native']
