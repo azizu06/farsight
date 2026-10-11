@@ -109,3 +109,25 @@ class CameraFastLaneTests(unittest.TestCase):
                 self.assertFalse(camera.status()["camera_drive_ready"])
         finally:
             release.set()
+
+    def test_bad_rgbd_packet_drops_one_frame_not_the_phone_session(self):
+        app = create_app(detector="none")
+        camera, state = app.state.camera, app.state.mapping
+        with TestClient(app) as client:
+            with client.websocket_connect("/phone") as phone:
+                phone.send_json(dict(version=1, type="hello", session_id="test", map_epoch=1,
+                                     supports_scene_depth=True))
+                frame = flat_frame()
+                frame.header.update(frame_id=5, t_capture=5)
+                phone.send_bytes(bundle(frame))
+                phone.send_bytes(b"not a packet")            # corrupt
+                frame.header.update(frame_id=3, t_capture=6)  # out of order
+                phone.send_bytes(bundle(frame))
+                frame.header.update(frame_id=6, t_capture=7)
+                phone.send_bytes(bundle(frame))
+                deadline = time.monotonic() + 2
+                while camera.status()["camera_frame"] != 6 and time.monotonic() < deadline:
+                    time.sleep(.01)
+                self.assertEqual(camera.status()["camera_frame"], 6)
+                with state.lock:
+                    self.assertGreaterEqual(state.rejected, 2)

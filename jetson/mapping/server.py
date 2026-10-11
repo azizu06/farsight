@@ -712,9 +712,14 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                 previous = -1
                 while True:
                     packet, received_at = await camera_queue.get()
-                    previous = await asyncio.to_thread(camera_service.accept_phone_rgbd, packet, identity,
-                                                       previous, received_at, permits,
-                                                       socket_generation=socket_generation)
+                    try:
+                        previous = await asyncio.to_thread(camera_service.accept_phone_rgbd, packet, identity,
+                                                           previous, received_at, permits,
+                                                           socket_generation=socket_generation)
+                    except (ValueError, TypeError, KeyError, ValidationError) as exc:
+                        # One bad packet drops that frame, never the phone session.
+                        await asyncio.to_thread(reject, exc)
+                        continue
                     # Offer only after camera publication, without waiting for fusion.
                     offer(queue, (packet, received_at))
 
