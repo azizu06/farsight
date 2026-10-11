@@ -12,6 +12,7 @@ import { askText } from "./ask-label.js";
 import { AutonomyIntent, autonomyLabel, containPoint, pickTarget, rayPanelPoint } from "./autonomy.js";
 import { PHRASE_LABELS, sbarLines, speakPhrase } from "./survivor-phrases.js";
 import { DRILL_TRAINS, DrillHud, endLines } from "./drill-hud.js";
+import { onRoverAiLine } from "./onrover-ai.js";
 import { DetectionCache, PACKET_FRESH_MS } from "./detection-match.js";
 import { IdentityCards } from "./identity-card.js";
 import { defaultH264, defaultMount, loadSettings, pageStorage, saveSettings } from "./viewer-settings.js";
@@ -1236,6 +1237,7 @@ export class RoverExperience {
     const link = linkHealth({ now, receivedAt: this.gate.receivedAt, connected: this.socket?.readyState === WebSocket.OPEN,
       linkMs: this.status?.link_ms, detFps: this.detections?.fps });
     const drill = this.drillLine(now);
+    const onRoverAi = onRoverAiLine((this.sourceTruth.health as { models?: unknown } | null)?.models);
     const intent = this.autonomy.mode === "seek" ? `Seek #${this.autonomy.targetId} armed` : this.autonomy.mode === "explore" ? "Explore armed" : "";
     const autonomy = [this.autonomy.mode === "goto" ? "Go-to armed" : intent, autonomyLabel(this.status)].filter(Boolean).join(" → ");
     const navText = [navLabel(this.nav), now - this.navMessageAt < 8000 ? this.navMessage : ""].filter(Boolean).join(" · ");
@@ -1245,7 +1247,7 @@ export class RoverExperience {
     this.navStatus.dataset.backend = this.nav?.backend ?? "none";
     this.navStatus.dataset.pathPoints = String(this.navOverlay.path.visible ? this.navOverlay.path.userData.points : 0);
     const panMode = this.digitalPan ? "Fixed camera · full frame" : `Servo pan ${Math.round(this.input.pan)}°`;
-    const detail = `${link.text} · ${this.frameSource} · ${panMode} · ${this.h264Enabled ? "H.264" : "JPEG"} video ${age} · ${ack} · ${range} · ${detection}${drill ? " · " + drill : ""}${this.h264Enabled && !this.h264.displayedFrame ? " · " + this.h264.state : ""} · ${this.scanMessage}`;
+    const detail = `${link.text} · ${this.frameSource} · ${panMode} · ${this.h264Enabled ? "H.264" : "JPEG"} video ${age} · ${ack} · ${range} · ${detection}${drill ? " · " + drill : ""}${this.h264Enabled && !this.h264.displayedFrame ? " · " + this.h264.state : ""} · ${this.scanMessage}${onRoverAi ? " · " + onRoverAi : ""}`;
     this.message.textContent = headline;
     this.message.dataset.state = moving ? "moving" : ready ? "unsafe" : "ready";
     this.details.textContent = `${autonomy ? autonomy + " · " : ""}${navText ? navText + " · " : ""}${detail}${this.status?.estop ? " · FORWARD BLOCKED" : ""}`;

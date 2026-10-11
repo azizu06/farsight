@@ -40,6 +40,7 @@ from jetson.phrases import PhraseSpeaker, SpeechError
 from jetson.triage import TriageBusy, TriageService
 from jetson.drive_profile import DriveProfile
 from jetson.scan import ScanService
+from jetson.models import inventory, unit_model
 from jetson.nav import NavService, disabled_router
 from jetson.bulk import BulkPacer, BulkPacketTooLarge
 from jetson.bulk_response import bulk_response, PacedStreamingResponse
@@ -182,6 +183,23 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
     scanner = ScanService(state, camera_service, control, perception, model=depth_model,
                           physical_pan=scan_pan, horizontal_fov=scan_fov,
                           intrinsics=scan_intrinsics, turn_dps=scan_turn_dps)
+    # llama-server and whisper-server are separate units; their model files are fixed at install time.
+    vision_file = (unit_model("farsight-llm.service", "FARSIGHT_SELECTED_LLM_MODEL") or "llama-server") if assistant_url else None
+    whisper_file = whisper_model or (unit_model("farsight-whisper.service", "FARSIGHT_SELECTED_WHISPER_MODEL")
+                                     or "whisper-server" if whisper_url else None)
+
+    def models(speech):
+        timings, detector_ms = assistant.last_timings, perception.health()["detector_inference_ms"]
+        loaded_detector = any(x is not None for x in (perception.pose, perception.engine, perception.net))
+        extra = [("depth", depth_model, scanner.depth is not None, None)]
+        if perception.face_source == "ultraface":
+            extra.append(("face", face_model, perception.face is not None, None))
+        return inventory(detector=(detector_model, loaded_detector, detector_ms) if detector_model else None,
+                         vision=(vision_file, assistant.vision_ok is not False, timings["vlm"]) if vision_file else None,
+                         whisper=(whisper_file, True, timings["stt"]) if whisper_file else None,
+                         voices=[("tts", piper_model, "en" in speech["voices"], timings["tts"]),
+                                 ("tts-es", piper_model_es, "es" in speech["voices"], None)],
+                         extra=extra)
 
     @asynccontextmanager
     async def lifespan(app):
@@ -284,6 +302,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                       assistant=dict(vision_model=bool(assistant_url), whisper=bool(whisper_url or (whisper_bin and whisper_model)),
                                      piper=bool(piper_model)),
                       speech=await asyncio.to_thread(phrases.status), triage=triage.status())
+        status["models"] = models(status["speech"])
         if nav is not None:  # absent without --nav2, like the Rust server
             status["nav"] = dict(enabled=True, available=nav.available())
         if sim is not None:
