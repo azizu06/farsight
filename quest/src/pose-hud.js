@@ -46,21 +46,6 @@ export function strokeSegments(ctx, segments, width, height, color, lineWidth) {
   ctx.stroke();
 }
 
-export const DOWN_COLOR = "#ff4d4d";
-
-/** Red thick frame plus a filled "PERSON DOWN" tag; `rect` is canvas pixels. */
-export function drawDownMarker(ctx, rect, canvasWidth, fontPx) {
-  ctx.strokeStyle = DOWN_COLOR; ctx.lineWidth = Math.max(4, canvasWidth / 120);
-  ctx.strokeRect(rect.x, rect.y, rect.w, rect.h);
-  const text = "PERSON DOWN";
-  ctx.font = `bold ${fontPx}px system-ui`;
-  const pad = fontPx * 0.4, tagW = ctx.measureText(text).width + pad * 2, tagH = fontPx + pad;
-  const x = Math.min(Math.max(0, rect.x), Math.max(0, canvasWidth - tagW));
-  const y = rect.y - tagH >= 0 ? rect.y - tagH : rect.y + rect.h;
-  ctx.fillStyle = DOWN_COLOR; ctx.fillRect(x, y, tagW, tagH);
-  ctx.fillStyle = "#fff"; ctx.fillText(text, x + pad, y + fontPx);
-}
-
 /** Link chip: red when the Jetson has not replied for 500 ms (or never connected). */
 export function linkHealth({ now, receivedAt, connected, linkMs, detFps }) {
   const age = connected && Number.isFinite(receivedAt) ? now - receivedAt : Infinity;

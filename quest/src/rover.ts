@@ -6,7 +6,7 @@ import { ForwardRamp, manualDrive, steerCurve } from "./manual-drive.js";
 import { H264Viewer } from "./h264";
 import { cameraCrop, croppedBox } from "./camera-view.js";
 import { VRActionMenu, type VRAction } from "./vr-actions";
-import { drawDownMarker, linkHealth, poseSegments, strokeSegments } from "./pose-hud.js";
+import { linkHealth, poseSegments, strokeSegments } from "./pose-hud.js";
 import { AssistantVoice } from "./assistant-voice";
 import { askText } from "./ask-label.js";
 import { AutonomyIntent, autonomyLabel, containPoint, pickTarget, rayPanelPoint } from "./autonomy.js";
@@ -1250,9 +1250,6 @@ export class RoverExperience {
       context.strokeRect(x, y, visibleBox.w * this.canvas.width, visibleBox.h * this.canvas.height);
       const id = Number.isSafeInteger(box.id) ? ` #${box.id}` : "";
       context.fillText(`${target ? "SEEK " : ""}${box.cls.slice(0, 30)}${id} ${Math.round(box.conf * 100)}%`, x + 4, Math.max(18, y - 5));
-      if (box.down === true) {
-        drawDownMarker(context, { x, y, w: visibleBox.w * this.canvas.width, h: visibleBox.h * this.canvas.height }, this.canvas.width, Math.max(16, this.canvas.width / 32));
-      }
       if (box.kpts) segments.push(...poseSegments(box.kpts, crop, width, height));
     }
     strokeSegments(context, segments, this.canvas.width, this.canvas.height, "#7fd4ff", Math.max(2, this.canvas.width / 240));
