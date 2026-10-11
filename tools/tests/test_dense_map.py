@@ -9,7 +9,7 @@ import numpy as np
 
 from jetson.mapping.dense import DenseMap, MAX_RECORDS, unpack
 from tools.dense_geometry import HEADER, GeometryConsumer, decode_geometry
-from tools.dense_map import MacCloud, mount
+from tools.dense_map import MacCloud, DenseAccumulator, mount
 from tools.operator_relay import create_app
 
 
@@ -23,6 +23,45 @@ def geometry_record(op, seq, anchor=b"a" * 16, xyz=None):
 
 
 class CloudTests(unittest.TestCase):
+    def test_retained_rgbd_survives_cache_expiry_and_same_epoch_bootstrap(self):
+        now = [0.]
+        accumulator = DenseAccumulator("http://localhost:8443")
+        accumulator.cloud = MacCloud(retained_history=True, clock=lambda: now[0])
+        metadata = dict(epoch="source-a", reset=True, source=["simulated-room", 1],
+                        points=1, cursor=1, snapshot=False)
+        accumulator.accept(metadata, [(10, 0, 0, 1, 2, 3, 1)])
+        epoch = accumulator.cloud.epoch
+        now[0] = 31.
+        accumulator.accept(dict(metadata, reset=False, points=0, cursor=2), [(10, 0, 0, 0, 0, 0, 0)])
+        self.assertEqual(len(accumulator.cloud.cells), 1)
+        accumulator.accept(dict(metadata, cursor=3), [(20, 0, 0, 4, 5, 6, 1)])
+        self.assertEqual(accumulator.cloud.epoch, epoch)
+        self.assertEqual(len(accumulator.cloud.cells), 2)
+        now[0] = 90000.
+        manifest = accumulator.cloud.manifest([0, 0, 0])
+        self.assertEqual(manifest["points"], 2)
+        self.assertTrue(manifest["retained_history"])
+        wire, rows = unpack(accumulator.cloud.delta())
+        self.assertTrue(wire["retained_history"])
+        self.assertEqual(len(rows), 2)
+        # A true capture/source epoch change removes the old room.
+        accumulator.accept(dict(metadata, epoch="source-b"), [(30, 0, 0, 7, 8, 9, 1)])
+        self.assertEqual(list(accumulator.cloud.cells), [(3, 0, 0)])
+        self.assertNotEqual(accumulator.cloud.epoch, epoch)
+
+    def test_history_capacity_evicts_and_bootstrap_snapshots_still_expire(self):
+        now = [0.]
+        cloud = MacCloud(retained_history=True, clock=lambda: now[0])
+        cloud.capacity = 2
+        cloud.apply([(x * 10, 0, 0, 1, 2, 3, 1) for x in range(3)])
+        self.assertEqual(list(cloud.cells), [(1, 0, 0), (2, 0, 0)])
+        metadata, _ = unpack(cloud.delta(limit=1))
+        self.assertTrue(cloud.snapshots)
+        now[0] = 31.
+        cloud.expire()
+        self.assertFalse(cloud.snapshots)
+        self.assertEqual(len(cloud.cells), 2)
+
     def test_mac_retains_multiple_jetson_caches_and_bounded_lod_real_samples(self):
         jetson = DenseMap(capacity=10, cache_only=True)
         mac = MacCloud()

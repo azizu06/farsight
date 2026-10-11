@@ -9,8 +9,10 @@ import argparse
 import asyncio
 from contextlib import suppress
 import gzip
+import json
 import math
 import ssl
+import struct
 import time
 import uuid
 
@@ -28,11 +30,42 @@ READ_ERRORS = (aiohttp.ClientError, OSError, ValueError, KeyError, TypeError,
 
 
 class MacCloud(DenseMap):
-    def __init__(self, **kwargs):
+    def __init__(self, retained_history=False, **kwargs):
+        self.retained_history = retained_history
+        if retained_history:
+            kwargs["ttl"] = 86400  # compatible legacy metadata; history is session-retained
         super().__init__(capacity=5_000_000, **kwargs)
         self.chunks = {}
         self.chunk_revisions = {}
         self.view_cache = {}
+
+    def expire(self):
+        if not self.retained_history:
+            return super().expire()
+        # Snapshot pages still have a short lifetime; observed room history does
+        # not. Source epoch resets and the capacity policy own its lifecycle.
+        with self.lock:
+            for saved in list(self.snapshots):
+                if self.clock() - self.snapshot_times[saved] > 30:
+                    del self.snapshots[saved]
+                    del self.snapshot_times[saved]
+
+    def apply(self, records):
+        if self.retained_history:
+            # RGB-D producer tombstones represent its expiring visual cache.
+            # They do not erase samples already observed by the Mac. Native
+            # geometry uses a separate cloud and retains its explicit deletes.
+            records = (record for record in records if record[6] != 0)
+        return super().apply(records)
+
+    def delta(self, *args, **kwargs):
+        body = super().delta(*args, **kwargs)
+        if not self.retained_history:
+            return body
+        size = struct.unpack_from("<I", body)[0]
+        metadata = json.loads(body[4:4 + size])
+        metadata["retained_history"] = True
+        return packet(metadata, (body[4 + size:],))
 
     def clear(self, source=None):
         super().clear(source)
@@ -95,7 +128,8 @@ class MacCloud(DenseMap):
             selected = {tuple(map(int, c["id"].split("_"))) for c in chunks}
             self.view_cache = {k: v for k, v in self.view_cache.items() if k in selected}
             return dict(epoch=self.epoch, source=self.source, points=len(self.cells),
-                        chunks=chunks, point_budget=VIEW_CHUNKS * MAX_RECORDS, ttl_s=self.ttl)
+                        chunks=chunks, point_budget=VIEW_CHUNKS * MAX_RECORDS, ttl_s=self.ttl,
+                        retained_history=self.retained_history)
 
 
 class DenseAccumulator:
@@ -103,7 +137,7 @@ class DenseAccumulator:
         from .operator_relay import upstream_origin
         self.upstream = upstream_origin(upstream)
         self.tls = ssl.create_default_context(cafile=ca_file) if ca_file else True
-        self.cloud = MacCloud()
+        self.cloud = MacCloud(retained_history=True)
         from .dense_geometry import GeometryConsumer
         from .geometry_relay import geometry_origin
         self.geometry_origin = geometry_origin(geometry_upstream) if geometry_upstream else None
@@ -199,7 +233,7 @@ class DenseAccumulator:
                         metadata, records = unpack(raw)
                         await asyncio.to_thread(self.accept, metadata, records)
                         self.error = None
-                        delay = .01 if metadata["more"] else .5
+                        delay = .01 if metadata["more"] else .1
                 except READ_ERRORS as exc:
                     self.error = f"{type(exc).__name__}: {exc}"
                     delay = 1
@@ -207,7 +241,9 @@ class DenseAccumulator:
 
     def accept(self, metadata, records):
         with self.cloud.lock:
-            if metadata["reset"] or metadata["epoch"] != self.upstream_epoch:
+            # A same-epoch reset only bootstraps the producer's bounded cache
+            # after a missed journal page. It cannot reconstruct older history.
+            if metadata["epoch"] != self.upstream_epoch:
                 self.cloud.clear(metadata.get("source"))
             self.upstream_epoch = metadata["epoch"]
             self.cloud.source = metadata.get("source")
@@ -222,6 +258,7 @@ class DenseAccumulator:
 
     def status(self):
         return dict(jetson_points=self.jetson_points, mac_points=len(self.cloud.cells),
+                    retained_history=self.cloud.retained_history,
                     tailnet_bytes=self.bytes,
                     tailnet_bytes_per_s=self.bytes / max(.001, time.monotonic() - self.started),
                     age_s=time.monotonic() - self.last_update if self.last_update else None,

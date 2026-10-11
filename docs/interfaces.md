@@ -835,7 +835,15 @@ A mismatched epoch or journal gap returns
 returns to its start anchor so normal deltas replay updates/removals concurrent
 with bootstrap. A transport reconnect alone never changes capture identity.
 Jetson working-cache budget eviction emits no deletion; expiry, explicit
-removal and reset do. Mac enforces its own retention/expiry bound.
+removal and reset do. Mac's RGB-D history pool keeps observed upserts across
+producer-cache expiry tombstones and same-epoch snapshot bootstraps, clearing
+on a true producer epoch change or local capacity eviction. Its optional
+`retained_history:true` manifest/delta field identifies historical visual
+geometry; `ttl_s:86400` preserves compatibility for older consumers. A consumer
+that supports the history flag retains the historical cloud across source
+disconnects and reports source age separately. Native geometry retains its
+explicit anchor-removal semantics. These history rules do not apply to rover
+camera/depth freshness or navigation geometry.
 
 The endpoints negotiate Brotli/gzip over bounded records; no complete
 multi-million-point body is transferred. Chunk replies use the same framing
