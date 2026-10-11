@@ -114,6 +114,26 @@ class ProfileTests(unittest.TestCase):
         self.assertLess(profile.wheel_pwm(0.10, 0)[1], 80)  # straight driving keeps its own floors
         self.assertEqual(profile.wheel_pwm(0, 0.82, max_pwm=75), (-75, 75))  # never above the cap
 
+    def test_loaded_scale_saturates_cruise_and_spins_and_keeps_floors(self):
+        # 2026-10-11 rig: loaded, ARKit showed 0.32 of the profiled speed at the same PWM.
+        profile = make_profile(max_pwm=255, min_pwm_left=70, min_pwm_right=40,
+                               linear_pwm=(80, 120, 160, 255), linear_mps=(0.268, 0.416, 0.588, 0.95),
+                               angular_pwm=(80, 120, 160), angular_radps=(0.82, 2.5, 3.83),
+                               half_track_m=0.166, trim_left=0.975, trim_right=1.025)
+        self.assertEqual(profile.wheel_pwm(0, 2.2), (-109, 104))  # what the floor test spun at
+        loaded = profile.scale_linear(0.32, "navwatch2-0232")
+        self.assertGreaterEqual(min(map(abs, loaded.wheel_pwm(0.45, 0))), 240)
+        self.assertGreaterEqual(min(map(abs, loaded.wheel_pwm(0, 2.2))), 240)
+        self.assertGreater(min(loaded.wheel_pwm(0.15, 0)), 120)  # the AUTO floor is well above the PWM floors
+        self.assertEqual(loaded.wheel_pwm(0, 0.3)[1], 80)  # the measured spin floor stays
+        self.assertEqual((loaded.min_pwm_left, loaded.min_pwm_right, loaded.linear_pwm, loaded.angular_radps),
+                         (70, 40, profile.linear_pwm, profile.angular_radps))
+        self.assertAlmostEqual(loaded.max_linear_mps(), 0.304)
+        self.assertEqual(DriveProfile.from_dict(loaded.to_dict()), loaded)
+        self.assertEqual(loaded.meta["linear_scale"]["unscaled_mps"], list(profile.linear_mps))
+        with self.assertRaises(ValueError):
+            profile.scale_linear(0, "none")
+
     def test_non_finite_rejected(self):
         with self.assertRaises(ValueError):
             make_profile().wheel_pwm(float("nan"), 0)

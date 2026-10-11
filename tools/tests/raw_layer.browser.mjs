@@ -21,7 +21,7 @@ import {rawTextureLayer} from '/layer/raw-texture-layer.mjs';
 const root=new THREE.Group(),scene=new THREE.Scene(),camera=new THREE.PerspectiveCamera(60,1,.01,20),renderer=new THREE.WebGLRenderer();scene.add(root);document.body.append(renderer.domElement);camera.position.set(0,0,2);
 let dirtied=0;const layer=rawTextureLayer();layer.init({root,requestFrame:()=>dirtied++});
 let disposed=false;renderer.setAnimationLoop(()=>{if(!disposed){layer.poll();renderer.render(scene,camera);}});
-window.layerTest={enable:()=>layer.setEnabled(true),disable:()=>layer.setEnabled(false),captureOnce:()=>layer.captureOnce(),stats:()=>({...layer.stats(),dirtied,children:root.children.length}),dispose:()=>{disposed=true;layer.dispose();renderer.setAnimationLoop(null);renderer.dispose();return root.children.length;}};
+window.layerTest={enable:()=>layer.setEnabled(true),disable:()=>layer.setEnabled(false),captureOnce:()=>layer.captureOnce(),stats:()=>({...layer.stats(),drawn_points:renderer.info.render.points,dirtied,children:root.children.length}),dispose:()=>{disposed=true;layer.dispose();renderer.setAnimationLoop(null);renderer.dispose();return root.children.length;}};
 </script>`;
 const server=createServer(async(req,res)=>{
  try{
@@ -45,12 +45,18 @@ try{
  });
  const stats=await page.evaluate(()=>window.layerTest.stats());assert.equal(stats.raw_triangles,70);assert.ok(stats.dirtied>0);assert.equal(stats.children,1);
  assert.equal(stats.raw_mode,'latest');assert.equal(stats.raw_point_capacity,48);assert.equal(stats.raw_point_transfer_bytes,48*24);assert.equal(stats.raw_poll_interval_ms,500);
- assert.equal(stats.raw_surface_history,true);assert.equal(stats.raw_surface_ttl_s,30);assert.equal(stats.raw_point_overlay,false);
+ assert.equal(stats.raw_surface_history,true);assert.equal(stats.raw_surface_ttl_s,30);assert.equal(stats.raw_point_overlay,true);
+ assert.equal(stats.raw_point_mode,'uncovered');assert.equal(stats.raw_fallback_points,0,'supported faces suppress duplicate native dots');
  allowed=2;await page.waitForFunction(()=>window.layerTest.stats().raw_frame===1);
+ await page.waitForFunction(()=>window.layerTest.stats().drawn_points===1);
  const moved=await page.evaluate(()=>window.layerTest.stats());assert.equal(moved.raw_points,47,'latest valid grid replaces prior viewpoint instead of accumulating it');
  assert.ok(moved.raw_triangles>70&&moved.raw_triangles<140,'retain the first surface but omit unsupported faces in the new one');assert.equal(moved.raw_patches,2);assert.equal(moved.raw_point_capacity,48);
+ assert.equal(moved.raw_fallback_points,1,'the isolated valid depth sample remains drawable when its triangles are unsupported');
+ assert.equal(moved.raw_point_draw_count,1);
+ assert.equal(moved.drawn_points,1,'WebGL actually draws the isolated fallback sample');
  await page.waitForFunction(()=>window.layerTest.stats().raw_points===0,null,{timeout:5000});
  assert.equal((await page.evaluate(()=>window.layerTest.stats())).raw_patches,2,'latest points expire without erasing recent camera textures');
+ assert.equal((await page.evaluate(()=>window.layerTest.stats())).raw_fallback_points,0,'expired point samples leave no drawable fallback');
  allowed=3;await page.waitForFunction(()=>window.layerTest.stats().raw_identity==='["test",2,1]');
  const reset=await page.evaluate(()=>window.layerTest.stats());assert.equal(reset.raw_points,48);assert.equal(reset.raw_frame,0);assert.equal(reset.raw_patches,1);
  await page.evaluate(()=>window.layerTest.disable());const stoppedCalls=calls;await page.waitForTimeout(300);assert.equal(calls,stoppedCalls,'disabling stops new capture requests');

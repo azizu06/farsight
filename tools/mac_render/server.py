@@ -473,10 +473,14 @@ def create_app(args, browser=None, page=None):
     web_app = web.Application()
     web_app["mac"] = app
     async def resources(application):
+        timeout = ClientTimeout(total=60, connect=5, sock_read=15)
         async with ClientSession(auto_decompress=False,
-                timeout=ClientTimeout(total=60, connect=5, sock_read=15),
-                connector=TCPConnector(limit=2)) as client:
+                timeout=timeout, connector=TCPConnector(limit=2)) as client, \
+                ClientSession(auto_decompress=False, timeout=timeout,
+                              connector=TCPConnector(limit=1)) as raw_client:
             application["map_client"] = client
+            # A one-shot native frame must not wait behind map bootstraps.
+            application["raw_client"] = raw_client
             try:
                 yield
             finally:
@@ -631,15 +635,17 @@ def raw_proxy(upstream):
         url = str(upstream_origin(upstream)) + "/phone/" + request.match_info["tail"]
         if request.query_string:
             url += "?" + request.query_string
-        async with request.app["map_client"].get(url,
-                headers={"Accept-Encoding": "identity"}, allow_redirects=False) as response:
+        async with request.app["raw_client"].get(url,
+                headers={"Accept-Encoding": request.headers.get("Accept-Encoding", "identity")},
+                allow_redirects=False) as response:
             body = bytearray()
             async for chunk in response.content.iter_chunked(65536):
                 body.extend(chunk)
                 if len(body) > 16 * 1024 * 1024:
                     raise web.HTTPBadGateway(text="Raw frame exceeds bounded size")
             headers = {key: value for key, value in response.headers.items()
-                       if key.lower() == "content-type" or key.lower().startswith("x-capture-")}
+                       if key.lower() in {"content-type", "content-encoding", "vary"}
+                       or key.lower().startswith("x-capture-")}
             headers["Cache-Control"] = "no-store"
             return web.Response(status=response.status, body=bytes(body), headers=headers)
     return send
