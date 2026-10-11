@@ -108,7 +108,13 @@ pub fn bake(mesh: &mut Mesh, cloud: &PointCloud, capture: Option<&Capture>, opts
 
     // 2. shared eval context
     let splat_r = if opts.splat_radius > 0.0 { opts.splat_radius } else { 6.0 * atlas.texel_m };
-    let capture = capture.filter(|c| !c.cameras.is_empty() && c.images.len() >= c.cameras.len());
+    let n_views = capture.map(|c| c.cameras.len().min(c.images.len())).unwrap_or(0);
+    let capture = if n_views > 0 {
+        capture.map(|c| Capture { cameras: c.cameras[..n_views].to_vec(), images: c.images[..n_views].to_vec() })
+    } else {
+        None
+    };
+    let capture = capture.as_ref();
     let depths = capture.map(|c| bake::depth_buffers(c, mesh, cloud, opts.depth_scale, opts.depth_dilate)).unwrap_or_default();
     let cands: Vec<Vec<(u32, f32)>> = match capture {
         Some(cap) => atlas.charts.par_iter().map(|c| bake::candidates(c, mesh, &cap.cameras, opts.candidate_views, atlas.texel_m, 4.0)).collect(),

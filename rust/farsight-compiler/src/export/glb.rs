@@ -71,8 +71,14 @@ pub fn scene(mesh: &Mesh, extras: serde_json::Value) -> Result<Vec<u8>> {
     }
     if mesh.col.len() == mesh.pos.len() {
         let mut b = Vec::with_capacity(mesh.col.len() * 4);
-        for c in &mesh.col {
-            b.extend_from_slice(&[c[0], c[1], c[2], 255]);
+        if mesh.texture.is_some() {
+            // COLOR_0 multiplies the texture in glTF; white keeps the baked
+            // colour unmodulated. Real vertex colours live in mesh.ply.
+            b.resize(mesh.col.len() * 4, 255);
+        } else {
+            for c in &mesh.col {
+                b.extend_from_slice(&[c[0], c[1], c[2], 255]);
+            }
         }
         attrs["COLOR_0"] = serde_json::json!(push(&b, Some(34962), 5121, "VEC4", mesh.col.len(), None, true));
     }
