@@ -83,7 +83,9 @@ ros2 launch farsight_nav nav.launch.py                 # or the farsight-nav sys
     legs and inside a small crowd is therefore occupied for navigation.
     Separate crowds leave wide aisles open. This layer contributes to both
     Nav2 costmaps before their existing inflation and to the bridge's Explore
-    map; it is never fused into measured reconstruction. Fresh snapshots replace
+    map. Nav2's mask filter runs through its Layer interface before inflation;
+    it samples occupancy without resizing the measured costmap or changing its
+    resolution. The mask is never fused into measured reconstruction. Fresh snapshots replace
     old positions; the detector's existing 1 s freshness expires the overlay.
     Phone session/epoch/socket changes clear it. People require depth-backed
     `world` coordinates and a matching native capture key; RGB-only boxes do not

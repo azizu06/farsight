@@ -52,16 +52,15 @@ class CrowdTests(unittest.TestCase):
         nvblox = yaml.safe_load((directory / "nvblox_overlay.yaml").read_text())
         for name, unknown in (("global_costmap", True), ("local_costmap", False)):
             grid = params[name][name]["ros__parameters"]
-            self.assertTrue(grid["use_maximum"])
-            self.assertEqual(grid["track_unknown_space"], unknown)
+            self.assertNotIn("use_maximum", grid)
+            self.assertEqual(grid.get("track_unknown_space", False), unknown)
             self.assertEqual(grid["plugins"][-2:], ["people_layer", "inflation_layer"])
             self.assertEqual(nvblox[name][name]["ros__parameters"]["plugins"][-2:],
                              ["people_layer", "inflation_layer"])
             layer = grid["people_layer"]
-            self.assertEqual(layer["plugin"], "nav2_costmap_2d::StaticLayer")
-            self.assertEqual(layer["map_topic"], "/farsight/people/map")
-            self.assertTrue(layer["map_subscribe_transient_local"])
-            self.assertFalse(layer["footprint_clearing_enabled"])
+            self.assertEqual(layer["plugin"], "nav2_costmap_2d::KeepoutFilter")
+            self.assertEqual(layer["filter_info_topic"], "/farsight/people/filter_info")
+            self.assertFalse(layer["override_lethal_cost"])
 
     def test_small_crowd_has_filled_interior_instead_of_individual_leg_routes(self):
         points = [(-.4, -.4), (.4, -.4), (.4, .4), (-.4, .4)]

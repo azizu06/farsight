@@ -26,6 +26,7 @@ def bridge_module():
         "rclpy.time": ("Time",), "action_msgs": (), "action_msgs.msg": ("GoalStatus",),
         "geometry_msgs": (), "geometry_msgs.msg": ("PoseStamped", "TransformStamped", "Twist"),
         "nav2_msgs": (), "nav2_msgs.action": ("NavigateToPose",),
+        "nav2_msgs.msg": ("CostmapFilterInfo",),
         "nav2_msgs.srv": ("ClearEntireCostmap",), "nav_msgs": (),
         "nav_msgs.msg": ("OccupancyGrid", "Odometry", "Path"), "sensor_msgs": (),
         "sensor_msgs.msg": ("CameraInfo", "Image", "PointCloud2", "PointField", "Range"),
@@ -73,7 +74,9 @@ class PeopleBridgeTests(unittest.TestCase):
         node.planar = lambda target, source: lambda x, y, yaw=0.: (x, y, yaw)
         node.get_clock = lambda: SimpleNamespace(now=lambda: SimpleNamespace(to_msg=lambda: "stamp"))
         self.published = []
-        node.people_pub = SimpleNamespace(publish=self.published.append)
+        node.people_pub = SimpleNamespace(publish=self.published.append, topic_name="/farsight/people/map")
+        self.info = []
+        node.people_info_pub = SimpleNamespace(publish=self.info.append)
 
     def grid(self):
         return SimpleNamespace(header=SimpleNamespace(), info=SimpleNamespace(
@@ -92,6 +95,14 @@ class PeopleBridgeTests(unittest.TestCase):
         self.assertEqual(message.header.frame_id, "map")
         self.assertEqual(len(self.published), 1)
         self.assertTrue((self.data() == -1).all())
+
+    def test_filter_info_binds_the_existing_mask_with_native_occupancy_values(self):
+        message = SimpleNamespace(header=SimpleNamespace())
+        with patch.object(BRIDGE_MODULE, "CostmapFilterInfo", return_value=message):
+            self.node.publish_people_info()
+        self.assertEqual(self.info, [message])
+        self.assertEqual((message.type, message.base, message.multiplier), (0, 0., 1.))
+        self.assertEqual(message.filter_mask_topic, "/farsight/people/map")
 
     def test_actual_detection_callback_replaces_body_and_publishes_expired_clear(self):
         packet = dict(sensor_key=["phone", 2, 7, 42, 100.], fresh=True, age_ms=0,

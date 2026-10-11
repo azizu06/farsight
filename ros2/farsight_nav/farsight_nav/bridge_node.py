@@ -29,6 +29,7 @@ from rclpy.time import Time
 from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PoseStamped, TransformStamped, Twist
 from nav2_msgs.action import NavigateToPose
+from nav2_msgs.msg import CostmapFilterInfo
 from nav2_msgs.srv import ClearEntireCostmap
 from nav_msgs.msg import OccupancyGrid, Odometry, Path
 from sensor_msgs.msg import CameraInfo, Image, PointCloud2, PointField, Range
@@ -160,6 +161,7 @@ class FarsightBridge(Node):
         latched = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                              durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.people_pub = self.create_publisher(OccupancyGrid, "farsight/people/map", latched)
+        self.people_info_pub = self.create_publisher(CostmapFilterInfo, "farsight/people/filter_info", latched)
         self.controller_pub = self.create_publisher(String, "controller_selector", latched)
         self.controller_pub.publish(String(data=self.controller))
         self.create_subscription(Twist, "cmd_vel", self.on_cmd_vel, 20)
@@ -238,8 +240,9 @@ class FarsightBridge(Node):
         self.explore_session = 0
         self.create_timer(p("explore_tick_s", 0.5).value, self.request_explore_tick)
         self.create_timer(0.05, self.motion_tick)
-        # A latched empty map lets Nav2 activate before the first detection or
-        # costmap arrives. The launch reads its geometry from the same params file.
+        # Sample the semantic mask into the existing master before inflation;
+        # unlike StaticLayer this does not resize the measured costmap.
+        self.publish_people_info()
         self.publish_people()
         self.create_timer(0.1, self.publish_people)
 
@@ -438,6 +441,14 @@ class FarsightBridge(Node):
             updated = self.people.update(packet)
         if updated:
             self.publish_people()
+
+    def publish_people_info(self):
+        message = CostmapFilterInfo()
+        message.header.stamp = self.get_clock().now().to_msg()
+        message.header.frame_id = self.map_frame
+        message.type, message.base, message.multiplier = 0, 0.0, 1.0
+        message.filter_mask_topic = self.people_pub.topic_name
+        self.people_info_pub.publish(message)
 
     def publish_people(self):
         """Replace the semantic map, including vacated cells; never mark floor free."""

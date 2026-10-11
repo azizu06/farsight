@@ -28,6 +28,7 @@ from geometry_msgs.msg import TransformStamped
 from lifecycle_msgs.msg import Transition
 from lifecycle_msgs.srv import ChangeState
 from nav2_msgs.action import ComputePathToPose
+from nav2_msgs.msg import CostmapFilterInfo
 from nav_msgs.msg import OccupancyGrid
 from tf2_ros import StaticTransformBroadcaster
 
@@ -41,6 +42,12 @@ class Probe(Node):
                          durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.floor_pub = self.create_publisher(OccupancyGrid, "/crowd_test/floor", qos)
         self.people_pub = self.create_publisher(OccupancyGrid, "/farsight/people/map", qos)
+        self.info_pub = self.create_publisher(CostmapFilterInfo, "/farsight/people/filter_info", qos)
+        info = CostmapFilterInfo()
+        info.header.frame_id, info.header.stamp = "map", self.get_clock().now().to_msg()
+        info.type, info.base, info.multiplier = 0, 0., 1.
+        info.filter_mask_topic = "/farsight/people/map"
+        self.info_pub.publish(info)
         self.maps = {}
         for name in ("local_costmap", "global_costmap"):
             self.create_subscription(OccupancyGrid, f"/{name}/costmap",
@@ -126,7 +133,10 @@ def main():
     params = copy.deepcopy(yaml.safe_load(source.read_text()))
     for name in ("local_costmap", "global_costmap"):
         costmap = params[name][name]["ros__parameters"]
-        assert costmap["use_maximum"] is True
+        assert costmap["people_layer"]["plugin"] == "nav2_costmap_2d::KeepoutFilter"
+        # Only the synthetic floor uses StaticLayer/max; production measured
+        # layers retain their own geometry and original parent settings.
+        costmap["use_maximum"] = True
         costmap["plugins"] = ["test_floor", "people_layer", "inflation_layer"]
         costmap["test_floor"] = dict(plugin="nav2_costmap_2d::StaticLayer", map_topic="/crowd_test/floor",
                                       map_subscribe_transient_local=True)

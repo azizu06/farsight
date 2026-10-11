@@ -60,7 +60,7 @@ def test_farsight_people_layer_survives_nvblox_before_existing_inflation():
         costmap = block(out, name)
         assert costmap["plugins"] == [LAYER_NAME, "people_layer", "inflation_layer"]
         assert costmap["people_layer"] == block(base, name)["people_layer"]
-        assert costmap["people_layer"]["map_topic"] == "/farsight/people/map"
+        assert costmap["people_layer"]["filter_info_topic"] == "/farsight/people/filter_info"
 
 
 def test_resolution_follows_the_voxel_size_only_when_given():
