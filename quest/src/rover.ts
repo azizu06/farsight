@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { SourceTruth } from "./source-banner.js";
 import { explainStop } from "./stop-reason.js";
 import { ControlSafety, stick } from "./control-safety.js";
+import { manualDrive } from "./manual-drive.js";
 import { H264Viewer } from "./h264";
 import { cameraCrop, croppedBox } from "./camera-view.js";
 import { VRActionMenu, type VRAction } from "./vr-actions";
@@ -707,18 +708,21 @@ export class RoverExperience {
           leftAxes.length >= 4 ? leftAxes[3] : leftAxes[1]);
       }
       this.lastRoamAt = this.auto ? now : -Infinity;
+      const drive = manualDrive(-stick(stickY, XR_STICK_DEADZONE), stick(stickX, XR_STICK_DEADZONE));
       this.input = { held,
-        v: this.auto ? 0 : -stick(stickY, XR_STICK_DEADZONE),
-        w: this.auto ? 0 : stick(stickX, XR_STICK_DEADZONE),
+        v: this.auto ? 0 : drive.v,
+        w: this.auto ? 0 : drive.w,
         pan: this.digitalPan ? 0 : this.panSmoother.step(-THREE.MathUtils.radToDeg(yaw), this.panDt()) };
       if (this.auto && this.autonomy.mode === "teleop") this.autonomy.toggleExplore();
 
     } else {
       this.inputValid = true;
+      const drive = manualDrive(Number(this.keys.has("KeyW")) - Number(this.keys.has("KeyS")),
+        Number(this.keys.has("KeyD")) - Number(this.keys.has("KeyA")));
       this.input = {
         held: this.keys.has("Space") || this.pointerHeld,
-        v: (Number(this.keys.has("KeyW")) - Number(this.keys.has("KeyS"))) * 0.35,
-        w: (Number(this.keys.has("KeyD")) - Number(this.keys.has("KeyA"))) * 0.45,
+        v: drive.v,
+        w: drive.w,
         pan: 0,
       };
     }
