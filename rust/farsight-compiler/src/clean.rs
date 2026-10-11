@@ -35,6 +35,12 @@ pub struct CleanOptions {
     pub fly_linearity: f32,
     /// Only neighbourhoods sparser than this multiple of local spacing qualify.
     pub fly_sparsity: f32,
+    /// Snap detected plane inliers exactly onto their plane when their
+    /// residual is below `snap_sigma` * plane RMS (plane RMS ~= sensor sigma).
+    /// Runs from the `planes` stage after normals; 0 disables.
+    pub snap_sigma: f32,
+    /// Also snap the point's stored normal to the plane normal.
+    pub snap_normals: bool,
 }
 
 impl Default for CleanOptions {
@@ -44,14 +50,57 @@ impl Default for CleanOptions {
             sor_k: 16,
             sor_std: 2.5,
             sor_max_r: 0.0,
-            iso_min: 3,
+            iso_min: 2,
             iso_r: 0.0,
             iso_factor: 3.0,
             fly_k: 16,
             fly_linearity: 0.9,
             fly_sparsity: 2.5,
+            snap_sigma: 2.5,
+            snap_normals: true,
         }
     }
+}
+
+/// Project plane inliers onto their detected plane: keeps perfectly flat
+/// surfaces (walls/floor/tabletops) mathematically flat for downstream
+/// surface/mesh stages. Only points with |residual| < `opts.snap_sigma` *
+/// plane.rms_m move — real geometry more than a few sigma off the plane
+/// (edges, clutter on a tabletop) is untouched. Deterministic, parallel.
+pub fn snap_to_planes(cloud: &mut PointCloud, planes: &crate::planes::Planes, opts: &CleanOptions) -> Stats {
+    if opts.snap_sigma <= 0.0 || planes.planes.is_empty() {
+        return serde_json::json!({ "snapped": 0 });
+    }
+    let has_nrm = cloud.has_normals() && opts.snap_normals;
+    let snapped = std::sync::atomic::AtomicUsize::new(0);
+    // Flip stored normals in a separate pass so the position loop stays lean.
+    if has_nrm {
+        cloud.nrm.par_iter_mut().enumerate().for_each(|(i, nr)| {
+            let l = planes.label[i];
+            if l == u32::MAX {
+                return;
+            }
+            let pl = &planes.planes[l as usize];
+            let r = crate::core::dot(pl.n, cloud.pos[i]) + pl.d;
+            if r.abs() < opts.snap_sigma * pl.rms_m {
+                let s = if crate::core::dot(*nr, pl.n) < 0.0 { -1.0 } else { 1.0 };
+                *nr = crate::core::scale(pl.n, s);
+            }
+        });
+    }
+    cloud.pos.par_iter_mut().enumerate().for_each(|(i, p)| {
+        let l = planes.label[i];
+        if l == u32::MAX {
+            return;
+        }
+        let pl = &planes.planes[l as usize];
+        let r = crate::core::dot(pl.n, *p) + pl.d;
+        if r.abs() < opts.snap_sigma * pl.rms_m {
+            *p = crate::core::sub(*p, crate::core::scale(pl.n, r));
+            snapped.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    });
+    serde_json::json!({ "snapped": snapped.load(std::sync::atomic::Ordering::Relaxed) })
 }
 
 /// 21-bit-biased cell key, same packing as spatial::ukey (BIAS = 2^20).
@@ -222,14 +271,21 @@ pub fn run(cloud: &mut PointCloud, opts: &CleanOptions) -> Stats {
         })
         .collect();
 
-    // global statistics over non-degenerate means
-    let finite: Vec<f32> = means.iter().copied().filter(|m| m.is_finite()).collect();
-    let (mu, sd) = if finite.is_empty() {
+    // global statistics over non-degenerate means (f32::MAX = "no neighbours")
+    let (mut sum, mut sum2, mut cnt) = (0.0f64, 0.0f64, 0usize);
+    for &m in &means {
+        if m < f32::MAX {
+            sum += m as f64;
+            sum2 += (m as f64) * (m as f64);
+            cnt += 1;
+        }
+    }
+    let (mu, sd) = if cnt == 0 {
         (f32::MAX, 0.0)
     } else {
-        let m = finite.iter().sum::<f32>() / finite.len() as f32;
-        let v = finite.iter().map(|x| (x - m) * (x - m)).sum::<f32>() / finite.len() as f32;
-        (m, v.sqrt())
+        let m = (sum / cnt as f64) as f32;
+        let v = ((sum2 / cnt as f64) - (m as f64) * (m as f64)).max(0.0);
+        (m, v.sqrt() as f32)
     };
 
     let iso_r2 = iso_r * iso_r;
@@ -307,7 +363,9 @@ pub fn run(cloud: &mut PointCloud, opts: &CleanOptions) -> Stats {
     cloud.retain_mask(&keep);
 
     // local spacing for downstream stages
-    fill_radius(cloud, (spacing * 2.0).max(0.01), 8);
+    if cloud.radius.len() != cloud.len() {
+        fill_radius(cloud, (spacing * 2.0).max(0.01), 8);
+    }
 
     serde_json::json!({
         "in": n0, "out": cloud.len(), "merged": merged,

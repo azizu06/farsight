@@ -2,7 +2,7 @@
 //! own module; wire new options through their `*Options` struct (serde default).
 
 use crate::core::{Capture, Mesh, PointCloud};
-use crate::{clean, densify, export, meshops, normals, surface, texture, Stats};
+use crate::{clean, densify, export, meshops, normals, planes, surface, texture, Stats};
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
@@ -11,6 +11,7 @@ use std::time::Instant;
 pub struct CompileOptions {
     pub clean: clean::CleanOptions,
     pub normals: normals::NormalOptions,
+    pub planes: planes::PlaneOptions,
     pub densify: densify::DensifyOptions,
     pub surface: surface::SurfaceOptions,
     pub mesh: meshops::MeshOptions,

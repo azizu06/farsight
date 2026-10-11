@@ -150,6 +150,68 @@ impl Scene {
     }
 
     pub fn in_hole(&self, p: V3) -> bool { self.holes.iter().any(|(c, r)| dist2(*c, p) < r * r) }
+
+    /// Exact ground-truth plane (n, d with n·x + d = 0) when `p` lies on a
+    /// planar face of any primitive within `eps` metres of the face plane.
+    /// Returns None on curved surfaces (sphere, cylinder side). Used by the
+    /// bench flatness metric (W2 planes contract).
+    pub fn planar_truth(&self, p: V3, eps: f32) -> Option<(V3, f32)> {
+        let mut best: Option<(f32, V3, f32)> = None;
+        let mut cand = |n: V3, d: f32| {
+            let dist = (dot(n, p) + d).abs();
+            if dist < eps && best.map_or(true, |(b, _, _)| dist < b) {
+                best = Some((dist, n, d));
+            }
+        };
+        for (prim, _) in &self.prims {
+            match *prim {
+                Prim::Room { min, max } => {
+                    // Interior faces: floor/ceiling/walls of the bounding box.
+                    for a in 0..3 {
+                        for (f, s) in [(min[a], 1.0f32), (max[a], -1.0f32)] {
+                            if (p[a] - f).abs() < eps
+                                && (0..3).all(|k| k == a || (p[k] >= min[k] - eps && p[k] <= max[k] + eps))
+                            {
+                                let mut n = [0.0f32; 3];
+                                n[a] = s;
+                                cand(n, -dot(n, {
+                                    let mut fp = [0.0f32; 3];
+                                    fp[a] = f;
+                                    fp
+                                }));
+                            }
+                        }
+                    }
+                }
+                Prim::Box { center, half } => {
+                    for a in 0..3 {
+                        for s in [-1.0f32, 1.0f32] {
+                            let f = center[a] + s * half[a];
+                            if (p[a] - f).abs() < eps
+                                && (0..3).all(|k| k == a || (p[k] - center[k]).abs() <= half[k] + eps)
+                            {
+                                let mut n = [0.0f32; 3];
+                                n[a] = s;
+                                cand(n, -f * s);
+                            }
+                        }
+                    }
+                }
+                Prim::Cylinder { base, radius, height } => {
+                    let radial = (p[0] - base[0]).hypot(p[2] - base[2]);
+                    if radial <= radius + eps {
+                        for (f, s) in [(base[1], -1.0f32), (base[1] + height, 1.0f32)] {
+                            if (p[1] - f).abs() < eps {
+                                cand([0.0, s, 0.0], -f * s);
+                            }
+                        }
+                    }
+                }
+                Prim::Sphere { .. } => {}
+            }
+        }
+        best.map(|(_, n, d)| (n, d))
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

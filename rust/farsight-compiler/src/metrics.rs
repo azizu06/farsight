@@ -65,3 +65,66 @@ pub fn color_error(mesh: &Mesh, truth_color: impl Fn(V3) -> [u8; 3] + Sync) -> f
     }).sum();
     e / mesh.pos.len() as f32
 }
+
+/// Flatness quality on ground-truth planar regions (W2 planes metric):
+/// `flat_rms_mm` = RMS distance of reconstructed points to the exact GT
+/// plane; `flat_normal_dev_deg` = mean |angle| between reconstructed and GT
+/// plane normals (area-weighted for meshes, per-point otherwise).
+#[derive(Clone, Debug, Serialize)]
+pub struct Flatness {
+    pub flat_rms_mm: f32,
+    pub flat_normal_dev_deg: f32,
+    /// Fraction of samples that matched a GT plane within `eps`.
+    pub planar_frac: f32,
+    pub samples: usize,
+}
+
+/// Flatness of a point set with optional normals (nrm empty -> dev is NaN).
+pub fn flatness_points(pos: &[V3], nrm: &[V3], scene: &crate::synth::Scene, eps: f32) -> Flatness {
+    let has_nrm = nrm.len() == pos.len() && !nrm.is_empty();
+    let (mut s2, mut dev, mut hit) = (0.0f64, 0.0f64, 0usize);
+    for (i, p) in pos.iter().enumerate() {
+        if let Some((n, d)) = scene.planar_truth(*p, eps) {
+            let r = dot(n, *p) + d;
+            s2 += (r as f64) * (r as f64);
+            hit += 1;
+            if has_nrm {
+                dev += dot(nrm[i], n).abs().clamp(-1.0, 1.0).acos().to_degrees() as f64;
+            }
+        }
+    }
+    Flatness {
+        flat_rms_mm: if hit > 0 { (s2 / hit as f64).sqrt() as f32 * 1000.0 } else { f32::NAN },
+        flat_normal_dev_deg: if has_nrm && hit > 0 { (dev / hit as f64) as f32 } else { f32::NAN },
+        planar_frac: if pos.is_empty() { 0.0 } else { hit as f32 / pos.len() as f32 },
+        samples: pos.len(),
+    }
+}
+
+/// Flatness of a mesh: per-vertex RMS distance to GT planes + area-weighted
+/// angle between geometric face normals and the GT plane normal. A face is
+/// evaluated when its centroid lands on a GT plane.
+pub fn flatness_mesh(mesh: &Mesh, scene: &crate::synth::Scene, eps: f32) -> Flatness {
+    let base = flatness_points(&mesh.pos, &[], scene, eps);
+    let (mut dev, mut area_sum, mut hit) = (0.0f64, 0.0f64, 0usize);
+    for t in mesh.idx.chunks_exact(3) {
+        let (a, b, c) = (mesh.pos[t[0] as usize], mesh.pos[t[1] as usize], mesh.pos[t[2] as usize]);
+        let centroid = scale(add(add(a, b), c), 1.0 / 3.0);
+        if let Some((gn, _)) = scene.planar_truth(centroid, eps.max(0.03)) {
+            let fn_ = cross(sub(b, a), sub(c, a));
+            let area = length(fn_) * 0.5;
+            if area > 1e-10 {
+                let ang = dot(normalize(fn_), gn).abs().clamp(-1.0, 1.0).acos().to_degrees() as f64;
+                dev += ang * area as f64;
+                area_sum += area as f64;
+                hit += 1;
+            }
+        }
+    }
+    Flatness {
+        flat_rms_mm: base.flat_rms_mm,
+        flat_normal_dev_deg: if area_sum > 0.0 { (dev / area_sum) as f32 } else { f32::NAN },
+        planar_frac: base.planar_frac,
+        samples: hit,
+    }
+}

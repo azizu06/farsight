@@ -138,8 +138,13 @@ fn main() -> Result<()> {
                 let c = scene.shade(p, scene.normal(p), id);
                 [linear_to_srgb(c[0]), linear_to_srgb(c[1]), linear_to_srgb(c[2])]
             });
+            let flat_in = metrics::flatness_points(&scan.cloud.pos, &[], &scene, 0.02);
+            let flat_dense = metrics::flatness_points(&result.cloud.pos, &result.cloud.nrm, &scene, 0.02);
+            let flat_mesh = metrics::flatness_mesh(&result.mesh, &scene, 0.02);
             let files = export::write_all(&out, &result.cloud, &result.mesh, &opts.export)?;
-            let q = serde_json::json!({ "input": input_q, "densified": cloud_q, "mesh": mesh_q, "mesh_vertex_color_err": color, "preset": preset, "seed": seed });
+            let q = serde_json::json!({ "input": input_q, "densified": cloud_q, "mesh": mesh_q,
+                "flat_input": flat_in, "flat_densified": flat_dense, "flat_mesh": flat_mesh,
+                "mesh_vertex_color_err": color, "preset": preset, "seed": seed });
             write_report(&out, &result, q.clone())?;
             println!("{}", serde_json::to_string_pretty(&q)?);
             for f in files { eprintln!("[bench] wrote {}", f.display()); }

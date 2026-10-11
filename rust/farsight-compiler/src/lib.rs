@@ -9,6 +9,7 @@ pub mod io;
 pub mod learned;
 pub mod clean;
 pub mod normals;
+pub mod planes;
 pub mod densify;
 pub mod surface;
 pub mod meshops;
