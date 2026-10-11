@@ -236,17 +236,41 @@ fn boundary_vertex_mask(nv: usize, idx: &[u32]) -> Vec<bool> {
 // `planes_nd` = (unit normal, offset d) with plane eqn n.x + d = 0.
 // `labels` = per-cloud-point plane id (u32::MAX = none).
 
-/// Per-face plane id from the cloud label of the nearest point to the
-/// face centroid. u32::MAX = unlabelled.
-fn face_plane_labels(pos: &[V3], idx: &[u32], g: &Grid, labels: &[u32], max_dist: f32) -> Vec<u32> {
+/// Nearest cloud index per query within `radius` (u32::MAX when none).
+/// Uses the wgpu kNN kernel when a GPU is compiled in and an adapter exists
+/// (Metal on the Mac), else the rayon `Grid` path — same result either way.
+fn nearest_ids(cloud_pos: &[V3], queries: &[V3], radius: f32) -> Vec<u32> {
+    if crate::accel::GPU_COMPILED && crate::accel::gpu().is_some() {
+        let mut pts = Vec::with_capacity(cloud_pos.len() * 3);
+        for p in cloud_pos {
+            pts.extend_from_slice(p);
+        }
+        let mut qs = Vec::with_capacity(queries.len() * 3);
+        for p in queries {
+            qs.extend_from_slice(p);
+        }
+        let (ids, _d2) = crate::accel::knn::knn(&pts, &qs, 1, radius);
+        return ids;
+    }
+    let g = Grid::build(cloud_pos, radius.max(0.02));
+    queries
+        .par_iter()
+        .map(|q| g.nearest(*q, radius).map(|(i, _)| i).unwrap_or(u32::MAX))
+        .collect()
+}
+
+/// Per-face plane id = cloud label of each centroid's nearest point.
+/// `near` = `nearest_ids` result over face centroids. u32::MAX = unlabelled.
+fn face_plane_labels(near: &[u32], labels: &[u32]) -> Vec<u32> {
+    near.par_iter()
+        .map(|&i| if i == u32::MAX { u32::MAX } else { labels[i as usize] })
+        .collect()
+}
+
+/// Face centroids in face order.
+fn face_centroids(pos: &[V3], idx: &[u32]) -> Vec<V3> {
     idx.par_chunks_exact(3)
-        .map(|t| {
-            let c = scale(add(add(pos[t[0] as usize], pos[t[1] as usize]), pos[t[2] as usize]), 1.0 / 3.0);
-            match g.nearest(c, max_dist) {
-                Some((i, _)) => labels[i as usize],
-                None => u32::MAX,
-            }
-        })
+        .map(|t| scale(add(add(pos[t[0] as usize], pos[t[1] as usize]), pos[t[2] as usize]), 1.0 / 3.0))
         .collect()
 }
 
@@ -1478,12 +1502,13 @@ fn run_inner(mesh: &mut Mesh, cloud: &PointCloud, opts: &MeshOptions, planes_nd:
 
     // plane assignment (face + vertex labels, crease mask) when planes given
     let t = Instant::now();
-    let lg = if planes_nd.is_empty() || cloud.pos.is_empty() {
+    let flabel = if planes_nd.is_empty() || labels.is_empty() {
         None
     } else {
-        Some(Grid::build(&cloud.pos, opts.plane_assign_dist.max(0.02)))
+        let cents = face_centroids(&mesh.pos, &mesh.idx);
+        let near = nearest_ids(&cloud.pos, &cents, opts.plane_assign_dist);
+        Some(face_plane_labels(&near, labels))
     };
-    let flabel = lg.as_ref().map(|g| face_plane_labels(&mesh.pos, &mesh.idx, g, labels, opts.plane_assign_dist));
     let vlabel = flabel.as_ref().map(|fl| vertex_plane_ids(&vf, fl));
     let pctx = match (&flabel, &vlabel) {
         (Some(fl), Some(vl)) => Some(PlaneCtx { planes_nd, assign: vl, flabel: fl }),
@@ -1548,8 +1573,9 @@ fn run_inner(mesh: &mut Mesh, cloud: &PointCloud, opts: &MeshOptions, planes_nd:
     // crisp plane shading: split crease verts, exact per-plane normals
     if opts.plane_normals && !planes_nd.is_empty() && !labels.is_empty() {
         let t = Instant::now();
-        let lg2 = Grid::build(&cloud.pos, opts.plane_assign_dist.max(0.02));
-        let fl2 = face_plane_labels(&mesh.pos, &mesh.idx, &lg2, labels, opts.plane_assign_dist);
+        let cents = face_centroids(&mesh.pos, &mesh.idx);
+        let near = nearest_ids(&cloud.pos, &cents, opts.plane_assign_dist);
+        let fl2 = face_plane_labels(&near, labels);
         let (creases, appended) = split_crease_normals(mesh, planes_nd, &fl2);
         s["crease_verts"] = creases.into();
         s["split_verts"] = appended.into();
