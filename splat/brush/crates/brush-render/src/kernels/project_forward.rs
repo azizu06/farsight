@@ -29,7 +29,6 @@ pub fn project_forward_kernel(
     depths: &mut Tensor<f32>,
     num_visible: &mut Tensor<Atomic<u32>>,
     intersect_counts: &mut Tensor<u32>,
-    num_intersections: &mut Tensor<Atomic<u32>>,
     max_radius: &mut Tensor<f32>,
     u: ProjectUniforms,
     #[comptime] mip_splatting: bool,
@@ -138,11 +137,13 @@ pub fn project_forward_kernel(
     let num_tiles_hit = count_contributing_tiles(bb, mean2d_x, mean2d_y, conic, power_threshold);
 
     intersect_counts[global_gid as usize] = num_tiles_hit;
-    Atomic::fetch_add(&num_intersections[0], num_tiles_hit);
 
     // Screen-space radius (pixels) for the small-splat prior.
     max_radius[global_gid as usize] = f32::max(ex / img_w_f, ey / img_h_f);
 
+    // num_intersections used to be accumulated here with a second global
+    // atomic per splat; the prefix scan over compact_counts already yields
+    // the same total (its last element), so counts.rs seals it for free.
     let write_id = Atomic::fetch_add(&num_visible[0], 1u32);
     global_from_compact_gid[write_id as usize] = global_gid;
     depths[write_id as usize] = mean_c.z();

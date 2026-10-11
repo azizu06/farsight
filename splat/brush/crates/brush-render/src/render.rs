@@ -124,14 +124,12 @@ impl SplatOps for CubeBackend {
             intersect_counts,
             max_radius,
             num_visible_buf,
-            num_intersections_buf,
         ) = {
             let project_uniforms: &shaders::helpers::ProjectUniforms = &project_uniforms;
             let _span = tracing::trace_span!("ProjectSplats").entered();
 
             let total_splats = project_uniforms.total_splats as usize;
             let num_visible_buf = Self::int_zeros([1].into(), &device, IntDType::U32);
-            let num_intersections_buf = Self::int_zeros([1].into(), &device, IntDType::U32);
             let intersect_counts = Self::int_zeros([total_splats].into(), &device, IntDType::U32);
             let max_radius = Self::float_zeros([total_splats].into(), &device, FloatDType::F32);
 
@@ -159,7 +157,6 @@ impl SplatOps for CubeBackend {
                 depths.clone().into_tensor_arg(),
                 num_visible_buf.clone().into_tensor_arg(),
                 intersect_counts.clone().into_tensor_arg(),
-                num_intersections_buf.clone().into_tensor_arg(),
                 max_radius.clone().into_tensor_arg(),
                 uniforms,
                 mip_splat,
@@ -175,7 +172,6 @@ impl SplatOps for CubeBackend {
                 intersect_counts,
                 max_radius,
                 num_visible_buf,
-                num_intersections_buf,
             )
         };
         profile_mark!("project_forward", client);
@@ -203,9 +199,7 @@ impl SplatOps for CubeBackend {
             CubeCount::Static(1, 1, 1),
             CubeDim::new_single(),
             num_visible_buf.clone().into_tensor_arg(),
-            num_intersections_buf.clone().into_tensor_arg(),
             counts.clone().into_tensor_arg(),
-            isect_cap,
         );
 
         // Kept capacity-sized: kernels take their bounds from `counts`.
@@ -233,6 +227,16 @@ impl SplatOps for CubeBackend {
         let compact_counts = Self::int_gather(0, intersect_counts, global_from_compact_gid.clone());
         let cum_tiles_hit =
             tracing::trace_span!("PrefixSumGaussHits").in_scope(|| prefix_sum(compact_counts));
+        // counts[1] = min(total isects, cap): the inclusive scan's last
+        // element is the total, no per-splat atomic needed in PF.
+        kernels::counts::seal_isects::launch(
+            &client,
+            CubeCount::Static(1, 1, 1),
+            CubeDim::new_single(),
+            cum_tiles_hit.clone().into_tensor_arg(),
+            counts.clone().into_tensor_arg(),
+            isect_cap,
+        );
         profile_mark!("gather+scan", client);
         let projected_splats = create_tensor(
             [total_splats as usize, kernels::helpers::PROJECTED_LANES_USIZE],

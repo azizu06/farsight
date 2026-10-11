@@ -57,11 +57,23 @@ pub fn rasterize_kernel(
     let max_useful_isect = Shared::<[Atomic<u32>]>::new_slice(1usize);
     let mut range = Shared::new_slice(2usize);
 
+    // bwd_info: per-pixel `visible[gid] = 1` writes would fire once per
+    // contributing (pixel, splat) pair — hundreds of millions of redundant
+    // global writes on dense scenes. Mark contributions in a shared bitmap
+    // instead and flush once per splat per tile (~isects writes, identical
+    // result). (TILE_SIZE/32) u32 words cover the batch.
+    let contrib_bm = Shared::<[Atomic<u32>]>::new_slice(comptime![
+        if bwd_info { TILE_SIZE / 32u32 } else { 1u32 }
+    ] as usize);
+
     let local_idx = UNIT_POS;
     if local_idx == 0u32 {
         range[0] = tile_offsets[(tile_id * 2u32) as usize];
         range[1] = tile_offsets[(tile_id * 2u32 + 1u32) as usize];
         Atomic::store(&num_done_atomic[0], 0u32);
+    }
+    if comptime![bwd_info] && local_idx < TILE_SIZE / 32u32 {
+        Atomic::store(&contrib_bm[local_idx as usize], 0u32);
     }
 
     // Uniform-marked loads so the loop bounds + early-exit don't trip
@@ -141,7 +153,10 @@ pub fn rasterize_kernel(
                     done = true;
                 } else {
                     if comptime![bwd_info] {
-                        visible[load_gid[t as usize] as usize] = 1.0f32;
+                        Atomic::fetch_or(
+                            &contrib_bm[(t / 32u32) as usize],
+                            1u32 << (t % 32u32),
+                        );
                     }
                     let vis = alpha_eff * t_acc;
                     pix_r += max(local_batch[dst_base + 6], 0.0f32) * vis;
@@ -155,6 +170,21 @@ pub fn rasterize_kernel(
         }
         if !was_done && done {
             Atomic::fetch_add(&num_done_atomic[0], 1u32);
+        }
+        if comptime![bwd_info] {
+            // Flush the contribution bitmap for this batch before the next
+            // iteration overwrites local_batch / load_gid. One global write
+            // per contributing splat per tile.
+            sync_cube();
+            let bits = Atomic::load(&contrib_bm[(local_idx / 32u32) as usize]);
+            let bit = (bits >> (local_idx % 32u32)) & 1u32;
+            if local_idx < remaining && bit == 1u32 {
+                visible[load_gid[local_idx as usize] as usize] = 1.0f32;
+            }
+            sync_cube();
+            if local_idx < TILE_SIZE / 32u32 {
+                Atomic::store(&contrib_bm[local_idx as usize], 0u32);
+            }
         }
         batch_start += TILE_SIZE;
     }
