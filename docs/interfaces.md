@@ -1021,3 +1021,19 @@ decoded eye assignment and actual headset acceptance remain separate gates.
 The viewer finds a frame's render pose by the echoed `pose_id`, or failing
 that by an exact `sent_mono_ms`. It sizes the picture from the echoed
 `video_segment.fov_y_deg`, which defaults to 50.
+
+### Optional read-only native RGB-D preview
+
+`FARSIGHT_RAW_CAPTURE=1` enables `GET /phone/frame.bin`; default off. It returns
+one accepted phone frame in the existing RGB-D packet layout (u32LE JSON length,
+JSON, native JPEG, float32LE metric depth, uint8 confidence), with optional
+`map_generation` and `capture_source` metadata. Native intrinsics/pose and JPEG
+are from that exact capture, before display rotation. Reset/socket/tracking/
+disconnect/pause/>2s age reject with 503; new session/epoch/generation clears the
+consumer's cloud. `X-Capture-Key` identifies session:epoch:generation:frame;
+`?after=KEY` returns 204 if unchanged. `X-Capture-Age-Ms` measures adjusted receipt
+age, not verified sensor latency. Responses use the existing bulk pacer. This
+GET takes no drive lease and opens no control socket. The existing Mac relay
+`/phone/` prefix forwards it without a relay restart; desktop lab proxy exposes
+it as `/capture/frame.bin` on :8086. See `docs/dense-viewer.md` for bounded
+worker reconstruction, lifecycle and measurement limits.
