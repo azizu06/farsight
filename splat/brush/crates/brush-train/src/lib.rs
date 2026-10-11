@@ -11,6 +11,6 @@ mod multinomial;
 mod quat_vec;
 mod stats;
 
-mod splat_init;
+pub mod splat_init;
 
 pub use splat_init::{RandomSplatsConfig, create_random_splats, to_init_splats};

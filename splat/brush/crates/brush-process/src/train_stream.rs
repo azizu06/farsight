@@ -99,15 +99,27 @@ pub(crate) async fn train_stream(
             .or(msg.meta.render_mode)
             .unwrap_or(SplatRenderMode::Default);
         let max_splats = train_stream_config.train_config.max_splats as usize;
+        let init_decimate = train_stream_config.train_config.init_decimate as usize;
         let original = msg.data.num_splats();
-        let data = msg.data.subsample(max_splats);
+        // T4: `init_decimate` decimates by KNN-spacing importance instead of
+        // the strided subsample — see brush-train::splat_init.
+        let data = if init_decimate > 0 && init_decimate < original {
+            brush_train::splat_init::decimate_splat_data(msg.data, init_decimate)
+        } else {
+            msg.data.subsample(max_splats)
+        };
         if data.num_splats() < original {
+            let how = if init_decimate > 0 {
+                format!("importance-decimated to {init_decimate} (--init-decimate)")
+            } else {
+                format!(
+                    "subsampled to {} (exceeds --max-splats {max_splats}); the remaining points were discarded. Raise --max-splats to keep more.",
+                    data.num_splats()
+                )
+            };
             emitter
                 .emit(ProcessMessage::Warning {
-                    error: anyhow::anyhow!(
-                        "Initial point cloud has {original} points, exceeding --max-splats ({max_splats}). Subsampled to {}; the remaining points were discarded. Raise --max-splats to keep more.",
-                        data.num_splats()
-                    ),
+                    error: anyhow::anyhow!("Initial point cloud has {original} points, {how}."),
                 })
                 .await;
         }
@@ -344,6 +356,8 @@ pub(crate) async fn train_stream(
                 num_split_high_grad: 0,
                 num_pruned: 0,
                 num_pruned_non_finite: 0,
+                num_relocated: 0,
+                num_pruned_low_contrib: 0,
                 total_splats: splats.num_splats(),
             }
         };

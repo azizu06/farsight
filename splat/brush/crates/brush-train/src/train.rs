@@ -2,7 +2,7 @@ use std::f32::consts::FRAC_1_SQRT_2;
 
 use crate::{
     adam_scaled::{AdamScaled, AdamState},
-    config::TrainConfig,
+    config::{RefineMode, TrainConfig},
     msg::{RefineStats, TrainStepStats},
     multinomial::multinomial_sample,
     quat_vec::quaternion_vec_multiply,
@@ -87,6 +87,9 @@ pub struct SplatTrainer {
     /// Mip-Splatting 3D filter. Empty disables it. The floor itself lives on
     /// the splats (recomputed at each refine), not here.
     view_cams: Vec<(glam::Vec3, f32)>,
+    /// `budget` mode: the splat count when the growth window opened — the
+    /// start of the target ramp. Lazily set on first use.
+    growth_anchor: Option<u32>,
     #[cfg(not(target_family = "wasm"))]
     lpips: Option<lpips::LpipsModel>,
 }
@@ -195,6 +198,7 @@ impl SplatTrainer {
             max_sh_degree: 0,
             rng: rand::rngs::StdRng::seed_from_u64(seed),
             view_cams: Vec::new(),
+            growth_anchor: None,
             #[cfg(not(target_family = "wasm"))]
             lpips,
         }
@@ -209,6 +213,29 @@ impl SplatTrainer {
     /// the Mip-Splatting 3D filter (gated on `config.min_scale_factor > 0`).
     pub fn set_view_cams(&mut self, view_cams: Vec<(glam::Vec3, f32)>) {
         self.view_cams = view_cams;
+    }
+
+    /// `budget` mode: the splat-count target at `iter` — the count ramped from
+    /// `growth_anchor` (the count when the ramp started, lazily pinned to the
+    /// first call's count) to `growth_target_splats` (default `max_splats`)
+    /// across `[growth_start_iter, growth_stop_iter)`. The `p^0.35` shape
+    /// front-loads the change: ~78% of the ramp completes in the first half of
+    /// the window, so an over-budget dense seed is paid down early and a
+    /// growing cloud reaches working size quickly.
+    fn growth_target_at(&mut self, iter: u32, cur: u32) -> u32 {
+        let anchor = *self.growth_anchor.get_or_insert(cur);
+        let target = self
+            .config
+            .growth_target_splats
+            .unwrap_or(self.config.max_splats) as f32;
+        let start = self.config.growth_start_iter;
+        let stop = self.config.growth_stop_iter.max(start + 1);
+        let p = ((iter.saturating_sub(start)) as f32 / (stop - start) as f32)
+            .clamp(0.0, 1.0)
+            .powf(0.35);
+        (anchor as f32 + (target - anchor as f32) * p)
+            .round()
+            .max(1.0) as u32
     }
 
     pub async fn step(&mut self, batch: SceneBatch, splats: Splats) -> (Splats, TrainStepStats) {
@@ -426,7 +453,12 @@ impl SplatTrainer {
             let record = self
                 .refine_record
                 .get_or_insert_with(|| RefineRecord::new(splats.num_splats(), &device));
-            record.gather_stats(refine_weight, visible.clone(), max_radius);
+            record.gather_stats(
+                refine_weight,
+                visible.clone(),
+                max_radius,
+                opacities.clone(),
+            );
         });
 
         // Noise uses the forward's floored opacities, without building an autodiff graph.
@@ -532,12 +564,76 @@ impl SplatTrainer {
             .bool_or(bound_mask)
             .bool_or(non_finite_mask);
 
-        let (mut splats, refiner, pruned_count) =
-            prune_points(splats, &mut optim, refiner, prune_mask).await;
+        let mode = self.config.refine_mode;
         let mut split_inds = HashSet::new();
+        let mut num_relocated = 0u32;
+        let mut num_pruned_low_contrib = 0u32;
 
-        // Always replace dead gaussians, so that the pruned budget is reused.
-        if pruned_count > 0 {
+        // Speedy-Splat contribution cull: inside the configured progress
+        // window, the lowest-contribution `prune_contrib_fraction` of splats
+        // also dies — relocated under `mcmc`, permanently pruned otherwise.
+        let contrib_kill = if self.config.prune_contrib_fraction > 0.0
+            && progress >= self.config.prune_contrib_start_frac
+            && progress < self.config.prune_contrib_end_frac
+        {
+            (splats.num_splats() as f32 * self.config.prune_contrib_fraction).round() as u32
+        } else {
+            0
+        };
+
+        let (mut splats, refiner, pruned_count) = if mode == RefineMode::Mcmc {
+            // MCMC: dead ∪ low-contribution splats are relocated onto live
+            // donors — the splat count never changes.
+            let mut relocate_mask = prune_mask;
+            if contrib_kill > 0 {
+                let extra =
+                    lowest_contrib_inds(&refiner.contrib, Some(&relocate_mask), contrib_kill).await;
+                if !extra.is_empty() {
+                    let mask = inds_to_mask(&extra, splats.num_splats(), &splats.device().inner());
+                    relocate_mask = relocate_mask.bool_or(mask);
+                    num_pruned_low_contrib = extra.len() as u32;
+                }
+            }
+            let (s, r, moved) = relocate_points(
+                splats,
+                &mut optim,
+                refiner,
+                relocate_mask,
+                &mut self.rng,
+                &self.config,
+            )
+            .await;
+            num_relocated = moved;
+            (s, r, 0)
+        } else {
+            let (mut splats, mut refiner, pruned_count) =
+                prune_points(splats, &mut optim, refiner, prune_mask).await;
+
+            // Permanent contribution removals: the Speedy-Splat fraction
+            // inside the window plus, in `budget` mode, any count over the
+            // ramp target — one ranked removal, never resampled.
+            let mut drop_n = contrib_kill;
+            if mode == RefineMode::Budget {
+                let target = self.growth_target_at(iter, splats.num_splats());
+                drop_n = drop_n.max(splats.num_splats().saturating_sub(target));
+            }
+            if drop_n > 0 {
+                let drop = lowest_contrib_inds(&refiner.contrib, None, drop_n).await;
+                if !drop.is_empty() {
+                    let mask = inds_to_mask(&drop, splats.num_splats(), &splats.device().inner());
+                    let (s, r, dropped) = prune_points(splats, &mut optim, refiner, mask).await;
+                    splats = s;
+                    refiner = r;
+                    num_pruned_low_contrib = dropped;
+                }
+            }
+            (splats, refiner, pruned_count)
+        };
+
+        // Replace dead gaussians so the pruned budget is reused — `brush`
+        // mode only (`mcmc` relocates in place; `budget` regrows to target
+        // by score below).
+        if mode == RefineMode::Brush && pruned_count > 0 {
             // Replacement weighting: opacity × visibility.
             let vis_f = refiner.vis_mask().float();
             let resampled_weights = splats.opacities() * vis_f.clone();
@@ -555,7 +651,12 @@ impl SplatTrainer {
         // Force-split splats that are too big on screen (every refine). Rather
         // than killing them (the old `kill_at_screen_size`), we split them and
         // shrink the children down to `split_at_screen_size` on screen — see
-        // `refine_splats`. Capped by the remaining `max_splats` budget.
+        // `refine_splats`. Capped by the remaining count budget (`max_splats`,
+        // or the `budget` mode ramp target).
+        let count_cap = match mode {
+            RefineMode::Budget => self.growth_target_at(iter, splats.num_splats()),
+            _ => self.config.max_splats,
+        };
         let pre_oversized = split_inds.len();
         if self.config.split_at_screen_size > 0.0 {
             let oversized = refiner.above_screen_size(self.config.split_at_screen_size);
@@ -568,10 +669,8 @@ impl SplatTrainer {
                     .expect("Failed to get oversized indices")
                     .try_into_vec::<i32>()
                     .expect("Failed to read oversized indices");
-                let mut budget = self
-                    .config
-                    .max_splats
-                    .saturating_sub(splats.num_splats() + split_inds.len() as u32);
+                let mut budget =
+                    count_cap.saturating_sub(splats.num_splats() + split_inds.len() as u32);
                 for ind in oversized_inds {
                     if budget == 0 {
                         break;
@@ -585,7 +684,10 @@ impl SplatTrainer {
         let num_split_oversized = (split_inds.len() - pre_oversized) as u32;
 
         let pre_high_grad = split_inds.len();
-        if iter >= self.config.growth_start_iter && iter < self.config.growth_stop_iter {
+        if iter >= self.config.growth_start_iter
+            && iter < self.config.growth_stop_iter
+            && mode != RefineMode::Mcmc
+        {
             let above_threshold = refiner.above_threshold(self.config.growth_grad_threshold);
 
             let threshold_count = above_threshold
@@ -596,28 +698,44 @@ impl SplatTrainer {
                 .await
                 .expect("Failed to get threshold") as u32;
 
-            let grow_count =
-                (threshold_count as f32 * self.config.growth_select_fraction).round() as u32;
-
-            let sample_high_grad = grow_count.saturating_sub(pruned_count);
-
-            // Saturating — cur_splats can exceed max_splats if the scene
-            // was loaded above cap, and the u32 underflow would request
-            // ~4B new splats.
             let cur_splats = splats.num_splats() + split_inds.len() as u32;
-            let headroom = self.config.max_splats.saturating_sub(cur_splats);
-            let grow_count = sample_high_grad.min(headroom);
+            // `budget` fills up to the ramp target by score; `brush` takes the
+            // classic `growth_select_fraction` of threshold-crossing splats.
+            let grow_count = if mode == RefineMode::Budget {
+                let target = self.growth_target_at(iter, splats.num_splats());
+                threshold_count.min(target.saturating_sub(cur_splats))
+            } else {
+                let grow_count =
+                    (threshold_count as f32 * self.config.growth_select_fraction).round() as u32;
+                grow_count
+                    .saturating_sub(pruned_count)
+                    .min(count_cap.saturating_sub(cur_splats))
+            };
 
-            // If still growing, sample from indices which are over the threshold.
             if grow_count > 0 {
-                let weights = above_threshold.float() * refiner.refine_weight_norm.clone();
-                let weights = weights
-                    .into_data_async()
-                    .await
-                    .expect("Failed to get weights")
-                    .try_into_vec::<f32>()
-                    .expect("Failed to read weights");
-                let growth_inds = multinomial_sample(&mut self.rng, &weights, grow_count);
+                // Sample within the threshold-crossing pool, weighted by the
+                // accumulated refine score. When the whole pool fits the
+                // budget take all of it — no sampling needed.
+                let growth_inds = if grow_count >= threshold_count {
+                    above_threshold
+                        .argwhere_async()
+                        .await
+                        .squeeze_dim::<1>(1)
+                        .into_data_async()
+                        .await
+                        .expect("Failed to get growth indices")
+                        .try_into_vec::<i32>()
+                        .expect("Failed to read growth indices")
+                } else {
+                    let weights = above_threshold.float() * refiner.refine_weight_norm.clone();
+                    let weights = weights
+                        .into_data_async()
+                        .await
+                        .expect("Failed to get weights")
+                        .try_into_vec::<f32>()
+                        .expect("Failed to read weights");
+                    multinomial_sample(&mut self.rng, &weights, grow_count)
+                };
                 split_inds.extend(growth_inds);
             }
         }
@@ -658,6 +776,8 @@ impl SplatTrainer {
                 num_split_high_grad,
                 num_pruned: pruned_count,
                 num_pruned_non_finite,
+                num_relocated,
+                num_pruned_low_contrib,
                 total_splats: splat_count,
             },
         )
@@ -818,6 +938,161 @@ fn map_splats_and_opt(
     splats.raw_opacities = splats.raw_opacities.map(map_opac);
     optim.opacities.map_momentum(map_opt_opac);
     splats
+}
+
+/// Indices of the `n` lowest-contribution splats, skipping rows marked in
+/// `excluded` (already-dead rows needn't be re-picked). One host readback.
+async fn lowest_contrib_inds(
+    contrib: &Tensor<1>,
+    excluded: Option<&Tensor<1, Bool>>,
+    n: u32,
+) -> Vec<i32> {
+    if n == 0 {
+        return Vec::new();
+    }
+    let score = match excluded {
+        Some(mask) => contrib.clone() + mask.clone().float().mul_scalar(f32::MAX),
+        None => contrib.clone(),
+    };
+    let scores = score
+        .into_data_async()
+        .await
+        .expect("Failed to read contrib")
+        .try_into_vec::<f32>()
+        .expect("Failed to convert contrib");
+    let mut order: Vec<(i32, f32)> = scores
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(i, s)| (i as i32, s))
+        .collect();
+    order.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+    order
+        .into_iter()
+        .take(n as usize)
+        .filter(|(_, s)| *s < f32::MAX)
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// Build a bool `[n]` mask with `inds` set, for feeding `prune_points`.
+fn inds_to_mask(inds: &[i32], n: u32, device: &Device) -> Tensor<1, Bool> {
+    let k = inds.len();
+    let idx = Tensor::from_data(TensorData::new(inds.to_vec(), [k]), device);
+    Tensor::<1>::zeros([n as usize], device)
+        .select_assign(0, idx, Tensor::<1>::ones([k], device), Assign)
+        .greater_elem(0.5)
+}
+
+/// MCMC-style relocation (3DGS-MCMC): every splat under `relocate_mask` is
+/// overwritten in place by a perturbed copy of a live donor sampled
+/// ∝ opacity·visibility. Count and array layout are preserved — dead rows are
+/// repurposed rather than removed, and their Adam momentum is zeroed.
+async fn relocate_points(
+    mut splats: Splats,
+    optim: &mut SplatOptim,
+    mut refiner: RefineRecord,
+    relocate_mask: Tensor<1, Bool>,
+    rng: &mut rand::rngs::StdRng,
+    config: &TrainConfig,
+) -> (Splats, RefineRecord, u32) {
+    let device = splats.device();
+    let dead_inds = relocate_mask.clone().argwhere_async().await.squeeze_dim(1);
+    let k = dead_inds.dims()[0] as u32;
+    if k == 0 {
+        return (splats, refiner, 0);
+    }
+
+    // Donor weights: opacity × visible, zeroed on dead rows so a dead splat
+    // can't be its own donor.
+    let weights =
+        splats.opacities() * refiner.vis_mask().float() * relocate_mask.bool_not().float();
+    let weights = weights
+        .into_data_async()
+        .await
+        .expect("Failed to get weights")
+        .try_into_vec::<f32>()
+        .expect("Failed to read weights");
+    let donors = multinomial_sample(rng, &weights, k);
+    if donors.is_empty() {
+        // No live donors to copy — leave the dead rows (they'll die on the
+        // next refine through the same mask) rather than empty the splats.
+        return (splats, refiner, 0);
+    }
+    let k = donors.len();
+    let donor_inds = Tensor::from_data(TensorData::new(donors, [k]), &device);
+    let dead_inds_host = dead_inds.clone();
+
+    let donor_t = splats.transforms.val().select(0, donor_inds.clone());
+    let donor_sh = splats.sh_coeffs.val().select(0, donor_inds.clone());
+    let donor_opac = splats.raw_opacities.val().select(0, donor_inds);
+
+    // Perturb positions by a fraction of the donor's own scale; the copied
+    // splat stays in the donor's neighborhood while free to re-fit.
+    let donor_scales = donor_t.clone().slice(s![.., 7..10]).exp();
+    let donor_max_scale = donor_scales.max_dim(1);
+    let noise = Tensor::random([k, 3], Distribution::Normal(0.0, 1.0), &device)
+        * donor_max_scale
+        * config.mcmc_noise_frac;
+    let new_means = donor_t.clone().slice(s![.., 0..3]) + noise;
+    let new_transforms = Tensor::cat(vec![new_means, donor_t.slice(s![.., 3..10])], 1);
+    let new_opac = if config.mcmc_opac_reset > 0.0 {
+        let p = config.mcmc_opac_reset.clamp(1e-6, 1.0 - 1e-6);
+        Tensor::<1>::ones([k], &device).mul_scalar((p / (1.0 - p)).ln())
+    } else {
+        donor_opac
+    };
+
+    splats.transforms = splats
+        .transforms
+        .map(|t| t.select_assign(0, dead_inds_host.clone(), new_transforms, Assign));
+    splats.sh_coeffs = splats
+        .sh_coeffs
+        .map(|t| t.select_assign(0, dead_inds_host.clone(), donor_sh, Assign));
+    splats.raw_opacities = splats
+        .raw_opacities
+        .map(|t| t.select_assign(0, dead_inds_host.clone(), new_opac, Assign));
+
+    // Zero Adam momentum for relocated rows — they're new samples.
+    let opt_inds = dead_inds_host.clone().to_device(&device.clone().inner());
+    optim.transforms.map_momentum(|x| {
+        let mut d = x.dims();
+        d[0] = k;
+        x.select_assign(0, opt_inds.clone(), Tensor::<2>::zeros(d, &device), Assign)
+    });
+    optim.sh_coeffs.map_momentum(|x| {
+        let mut d = x.dims();
+        d[0] = k;
+        x.select_assign(0, opt_inds.clone(), Tensor::<3>::zeros(d, &device), Assign)
+    });
+    optim.opacities.map_momentum(|x| {
+        let mut d = x.dims();
+        d[0] = k;
+        x.select_assign(0, opt_inds.clone(), Tensor::<1>::zeros(d, &device), Assign)
+    });
+
+    // Reset the refine stats for relocated rows — they're new samples and
+    // stale history would re-mark them for removal.
+    let zeros_k = Tensor::<1>::zeros([k], &device);
+    refiner.refine_weight_norm = refiner.refine_weight_norm.select_assign(
+        0,
+        dead_inds_host.clone(),
+        zeros_k.clone(),
+        Assign,
+    );
+    refiner.vis_weight =
+        refiner
+            .vis_weight
+            .select_assign(0, dead_inds_host.clone(), zeros_k.clone(), Assign);
+    refiner.max_screen_size =
+        refiner
+            .max_screen_size
+            .select_assign(0, dead_inds_host.clone(), zeros_k.clone(), Assign);
+    refiner.contrib = refiner
+        .contrib
+        .select_assign(0, dead_inds_host, zeros_k, Assign);
+
+    (splats, refiner, k as u32)
 }
 
 // Prunes points based on the given mask.

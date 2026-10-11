@@ -1,6 +1,23 @@
 use brush_render::gaussian_splats::SplatRenderMode;
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use serde::{Deserialize, Serialize};
+
+/// How the splat count is managed at refine time.
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RefineMode {
+    /// Upstream behaviour: threshold-driven growth + replace-pruned splits.
+    #[default]
+    Brush,
+    /// Taming-3DGS-style budgeted growth: a target count ramped to
+    /// `--growth-target-splats` linearly over the growth window
+    /// (`growth_start_iter`..`growth_stop_iter`). Over-target prunes the
+    /// lowest-contribution splats; under-target grows score-sampled splits.
+    Budget,
+    /// 3DGS-MCMC-style relocation: pruned splats are teleported onto donors
+    /// sampled ∝ opacity·visibility, keeping the count constant (no growth).
+    Mcmc,
+}
 
 #[derive(Clone, Parser, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -74,6 +91,46 @@ pub struct TrainConfig {
     /// Period after which splat growth stops.
     #[arg(long, help_heading = "Refine options", default_value = "15000")]
     pub growth_stop_iter: u32,
+
+    /// Splat-count management strategy (see `RefineMode`).
+    #[arg(long, help_heading = "Refine options", default_value = "brush")]
+    pub refine_mode: RefineMode,
+
+    /// `budget` mode: splat count at the end of the growth window. Defaults
+    /// to `max_splats`. With a dense seed larger than the target, count is
+    /// pruned down the ramp instead of grown.
+    #[arg(long, help_heading = "Refine options")]
+    pub growth_target_splats: Option<u32>,
+
+    /// Speedy-Splat contribution pruning: inside the progress window, each
+    /// refine drops this fraction of splats by accumulated contribution
+    /// (visible·opacity·screen-area). Never resampled — a permanent cut. 0 off.
+    #[arg(long, help_heading = "Refine options", default_value = "0.0")]
+    pub prune_contrib_fraction: f32,
+
+    /// Progress (0-1) at which contribution pruning starts.
+    #[arg(long, help_heading = "Refine options", default_value = "0.05")]
+    pub prune_contrib_start_frac: f32,
+
+    /// Progress (0-1) after which contribution pruning stops.
+    #[arg(long, help_heading = "Refine options", default_value = "0.6")]
+    pub prune_contrib_end_frac: f32,
+
+    /// Importance-decimate the initial point cloud to this count before
+    /// training (KNN-spacing score), instead of the strided subsample to
+    /// `max_splats`. 0 = off.
+    #[arg(long, help_heading = "Refine options", default_value = "0")]
+    pub init_decimate: u32,
+
+    /// `mcmc` mode: per-splat noise scale applied to relocated positions, as
+    /// a fraction of the donor's max axis. The MCMC paper's ε.
+    #[arg(long, help_heading = "Refine options", default_value = "0.3")]
+    pub mcmc_noise_frac: f32,
+
+    /// `mcmc` mode: opacity the relocated splat is re-initialized to
+    /// (sigmoid-space value). 0 keeps the donor's opacity.
+    #[arg(long, help_heading = "Refine options", default_value = "0.05")]
+    pub mcmc_opac_reset: f32,
 
     /// Split any splat whose max screen-space extent exceeds this fraction of
     /// the image dimension, shrinking the children so they land at (at most)

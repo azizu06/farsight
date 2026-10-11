@@ -39,6 +39,46 @@ pub async fn decimate_to_count(mut splats: Splats, scores: &[f32], target_count:
     splats
 }
 
+/// Final export prune (e.g. to the 300k Quest budget), on the cheap score.
+///
+/// Score each splat by the refine window's accumulated `contrib`
+/// (visible·opacity·radius² — what the loss actually gave it) when the
+/// caller still has the refine record around; otherwise fall back to the
+/// opacity·volume heuristic `tools/splat/prune.py` uses. Then
+/// [`decimate_to_count`] keeps the top `target_count`. Contrasts with
+/// [`compute_pup_scores`]: no per-view render+backward, so this costs one
+/// host readback.
+///
+/// `contrib` must be the same length as the splats — the trainer's window
+/// stat is only valid if no refine has touched the splats since; pass
+/// `None` when unsure.
+pub async fn export_prune(splats: Splats, contrib: Option<Tensor<1>>, target_count: u32) -> Splats {
+    let scores = match contrib {
+        Some(c) if c.dims()[0] as u32 == splats.num_splats() => c
+            .into_data_async()
+            .await
+            .expect("Failed to read contrib")
+            .try_into_vec::<f32>()
+            .expect("Failed to convert contrib"),
+        _ => {
+            // Fallback: opacity × area — the proven quality proxy.
+            let score = splats.opacities()
+                * splats
+                    .scales()
+                    .powi_scalar(2)
+                    .sum_dim(1)
+                    .squeeze_dim::<1>(1);
+            score
+                .into_data_async()
+                .await
+                .expect("Failed to read scores")
+                .try_into_vec::<f32>()
+                .expect("Failed to convert scores")
+        }
+    };
+    decimate_to_count(splats, &scores, target_count).await
+}
+
 /// Log-determinant of a 6x6 positive semi-definite matrix via Cholesky decomposition.
 /// Returns `f32::NEG_INFINITY` if the matrix is not positive definite.
 fn log_det_6x6(m: &[f32; 36]) -> f32 {

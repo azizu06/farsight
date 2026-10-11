@@ -10,6 +10,11 @@ pub(crate) struct RefineRecord {
     pub refine_weight_norm: Tensor<1>,
     pub vis_weight: Tensor<1>,
     pub max_screen_size: Tensor<1>,
+    /// Speedy-Splat-style accumulated contribution: `Σ_views visible·opacity·
+    /// r²` over the refine window, where `r` is the screen-space radius in px.
+    /// Approximates the per-pixel alpha·transmittance mass the rasterizer
+    /// assigns the splat without touching the kernels.
+    pub contrib: Tensor<1>,
 }
 
 impl RefineRecord {
@@ -18,6 +23,7 @@ impl RefineRecord {
             refine_weight_norm: Tensor::<1>::zeros([num_points as usize], device),
             vis_weight: Tensor::<1>::zeros([num_points as usize], device),
             max_screen_size: Tensor::<1>::zeros([num_points as usize], device),
+            contrib: Tensor::<1>::zeros([num_points as usize], device),
         }
     }
 
@@ -42,11 +48,13 @@ impl RefineRecord {
         refine_weight: Tensor<1>,
         visible: Tensor<1>,
         screen_radius: Tensor<1>,
+        opacities: Tensor<1>,
     ) {
         let _span = trace_span!("Gather stats").entered();
         self.refine_weight_norm = refine_weight.max_pair(self.refine_weight_norm.clone());
-        self.vis_weight = self.vis_weight.clone() + visible;
-        self.max_screen_size = screen_radius.max_pair(self.max_screen_size.clone());
+        self.vis_weight = self.vis_weight.clone() + visible.clone();
+        self.max_screen_size = screen_radius.clone().max_pair(self.max_screen_size.clone());
+        self.contrib = self.contrib.clone() + visible * opacities * screen_radius.powi_scalar(2);
     }
 
     pub(crate) fn vis_mask(&self) -> Tensor<1, Bool> {
@@ -57,7 +65,8 @@ impl RefineRecord {
         Self {
             refine_weight_norm: self.refine_weight_norm.select(0, indices.clone()),
             vis_weight: self.vis_weight.clone().select(0, indices.clone()),
-            max_screen_size: self.max_screen_size.select(0, indices),
+            max_screen_size: self.max_screen_size.select(0, indices.clone()),
+            contrib: self.contrib.select(0, indices),
         }
     }
 }

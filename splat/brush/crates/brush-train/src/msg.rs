@@ -10,6 +10,11 @@ pub struct RefineStats {
     pub num_pruned: u32,
     /// Subset of `num_pruned` whose params went non-finite (NaN/Inf).
     pub num_pruned_non_finite: u32,
+    /// `mcmc` mode: dead rows repurposed onto live donors (count-conserving).
+    pub num_relocated: u32,
+    /// Permanent removals ranked by accumulated contribution (Speedy-Splat
+    /// fraction + `budget` mode over-target cut).
+    pub num_pruned_low_contrib: u32,
     pub total_splats: u32,
 }
 

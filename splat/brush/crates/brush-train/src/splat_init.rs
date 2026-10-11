@@ -215,6 +215,133 @@ fn compute_knn_scales(pos_data: &[f32]) -> Vec<f32> {
     })
 }
 
+/// Importance-decimate a loaded point cloud to ~`target` points.
+///
+/// Coverage-preserving alternative to [`SplatData::subsample`]'s strided
+/// take for dense measured seeds (`LiDAR` dots): pick the voxel size whose
+/// occupancy is closest to `target` (binary search), then keep one
+/// representative point per occupied voxel — the point closest to the voxel
+/// centre. Uniform coverage beats strided subsampling whenever the file
+/// order clusters points (scan-line ordering), and sparse regions keep
+/// their few points rather than losing them to a stride.
+///
+/// O(n) hashing — no kNN tree — so a 1.45M-point seed decimates in well
+/// under a second. Runs on the host before any GPU upload.
+pub fn decimate_splat_data(data: SplatData, target: usize) -> SplatData {
+    let n = data.num_splats();
+    if target == 0 || n <= target {
+        return data;
+    }
+    let pos = &data.means;
+
+    // Scene bounds for the voxel-size search range.
+    let mut mn = [f32::MAX; 3];
+    let mut mx = [f32::MIN; 3];
+    for p in pos.chunks_exact(3) {
+        for a in 0..3 {
+            if p[a].is_finite() {
+                mn[a] = mn[a].min(p[a]);
+                mx[a] = mx[a].max(p[a]);
+            }
+        }
+    }
+    let extent = (mx[0] - mn[0]).max(mx[1] - mn[1]).max(mx[2] - mn[2]);
+    if !extent.is_finite() || extent <= 0.0 {
+        return data;
+    }
+
+    let key_of = |p: &[f32], cell: f32| -> u64 {
+        // Reinterpret-sign-bit packing; 21 bits/axis is plenty.
+        let ix = ((p[0] - mn[0]) / cell).floor() as i64;
+        let iy = ((p[1] - mn[1]) / cell).floor() as i64;
+        let iz = ((p[2] - mn[2]) / cell).floor() as i64;
+        ((ix as u64) << 42) | ((iy as u64) << 21) | (iz as u64)
+    };
+
+    let occupancy = |cell: f32| -> usize {
+        let mut set = hashbrown::HashSet::with_capacity(target + 1024);
+        for p in pos.chunks_exact(3) {
+            set.insert(key_of(p, cell));
+        }
+        set.len()
+    };
+
+    // Binary search: larger cell → fewer occupied cells. Find the size whose
+    // occupancy is closest to `target` (favour ≥target so the keep-pass can
+    // trim rather than pad).
+    let (mut lo, mut hi) = (extent / 8192.0, extent * 0.75);
+    let mut cell = hi;
+    for _ in 0..14 {
+        let mid = (lo * hi).sqrt(); // geometric — occupancy ∝ 1/cell³-ish
+        let occ = occupancy(mid);
+        cell = mid;
+        if (occ as i64 - target as i64).abs() <= 64 {
+            break;
+        }
+        if occ > target {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    // One refinement step toward whichever side sits closer to target.
+    let occ = occupancy(cell);
+    if occ < target {
+        let finer = (lo * cell).sqrt();
+        if occupancy(finer) as i64 - target as i64 > 0 {
+            cell = finer;
+        }
+    }
+
+    // Keep the point closest to its voxel centre in every occupied cell.
+    let mut best: hashbrown::HashMap<u64, (u32, f32)> =
+        hashbrown::HashMap::with_capacity(target + 1024);
+    for (i, p) in pos.chunks_exact(3).enumerate() {
+        let key = key_of(p, cell);
+        let cx = (((key >> 42) as i64) as f32 + 0.5) * cell + mn[0];
+        let cy = ((((key >> 21) & 0x1F_FFFF) as i64) as f32 + 0.5) * cell + mn[1];
+        let cz = (((key & 0x1F_FFFF) as i64) as f32 + 0.5) * cell + mn[2];
+        let d2 = (p[0] - cx).powi(2) + (p[1] - cy).powi(2) + (p[2] - cz).powi(2);
+        match best.entry(key) {
+            hashbrown::hash_map::Entry::Occupied(mut e) => {
+                if d2 < e.get().1 {
+                    e.insert((i as u32, d2));
+                }
+            }
+            hashbrown::hash_map::Entry::Vacant(e) => {
+                e.insert((i as u32, d2));
+            }
+        }
+    }
+    let mut keep: Vec<u32> = best.into_values().map(|(i, _)| i).collect();
+    keep.sort_unstable();
+    if keep.len() > target {
+        // Trim the excess uniformly so coverage stays even.
+        let step = keep.len() as f32 / target as f32;
+        keep = (0..target)
+            .map(|i| keep[(i as f32 * step) as usize])
+            .collect();
+    }
+
+    let gather = |v: &[f32], stride: usize| -> Vec<f32> {
+        keep.iter()
+            .flat_map(|&i| {
+                v[i as usize * stride..i as usize * stride + stride]
+                    .iter()
+                    .copied()
+            })
+            .collect()
+    };
+    let sh_stride = data.sh_coeffs.as_deref().map_or(0, |c| c.len() / n);
+    SplatData {
+        means: gather(&data.means, 3),
+        rotations: data.rotations.as_deref().map(|v| gather(v, 4)),
+        log_scales: data.log_scales.as_deref().map(|v| gather(v, 3)),
+        sh_coeffs: data.sh_coeffs.as_deref().map(|v| gather(v, sh_stride)),
+        raw_opacities: data.raw_opacities.as_deref().map(|v| gather(v, 1)),
+    }
+}
+
 pub fn to_init_splats(data: SplatData, mode: SplatRenderMode, device: &Device) -> Splats {
     let n_splats = data.num_splats();
 
