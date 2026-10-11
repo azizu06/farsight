@@ -89,6 +89,18 @@ pub fn decimate(pts: &[Vec3], weights: &[f32], max: usize, voxel0: f32) -> (Vec<
         pos = m.0;
         w = m.1;
     }
+    // Undershot hard? Refine once downward so the emitted count tracks the
+    // target (cell count scales ~1/v^3). Keep the refined merge only when it
+    // both adds points and stays in budget.
+    if pos.len() * 3 < max * 2 {
+        let v2 = v * (pos.len() as f32 / max as f32).powf(1.0 / 3.0);
+        let m = merge_voxels(pts, weights, v2.max(1e-4));
+        if m.0.len() > pos.len() && m.0.len() <= max {
+            pos = m.0;
+            w = m.1;
+            v = v2;
+        }
+    }
     (pos, w, v)
 }
 
