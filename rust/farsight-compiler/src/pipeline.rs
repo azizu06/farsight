@@ -100,9 +100,11 @@ pub fn compile(mut cloud: PointCloud, capture: Option<&Capture>, opts: &CompileO
     let depths_arg = (!depth_maps.is_empty()).then_some(depth_maps.as_slice());
     let dense = timed(&mut report, "densify", || densify::run(&cloud, capture, depths_arg, &opts.densify));
     dense.validate();
+    let pl = timed(&mut report, "planes", || planes::detect(&dense, &opts.planes));
     let mut mesh = timed(&mut report, "surface", || surface::reconstruct(&dense, &opts.surface));
     mesh.validate();
-    timed(&mut report, "meshops", || ((), meshops::run(&mut mesh, &dense, &opts.mesh)));
+    let pnd: Vec<(crate::core::V3, f32)> = pl.planes.iter().map(|p| (p.n, p.d)).collect();
+    timed(&mut report, "meshops", || ((), meshops::run_with_planes(&mut mesh, &dense, &opts.mesh, &pnd, &pl.label)));
     mesh.validate();
     // Refine seed is written here so Brush trains while texture bake runs (W6).
     let refine_handle = refine::start(&dense, &mesh, capture, &opts.refine);
