@@ -552,7 +552,20 @@ window.__viz = {
   files: () => state.assets.files.map((f) => f.name),
   info: () => ({ calls: renderer.info.render.calls, triangles: renderer.info.render.triangles,
     mode: state.mode, quality: state.quality, ms: msE, errors: [...errors] }),
-  _exportTarget: () => activeObj || state.meshGlb || state.points || state.splat || null,
+  _exportTarget: () => {
+    const geo = meshGeometry();
+    if (!geo) return state.meshGlb || state.points || null;
+    const src = state.meshGlb || new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true }));
+    // GLTFExporter only round-trips underscore custom attributes; the real
+    // export writes support as _SUPPORT, so mirror that in the fixture.
+    const clone = src.clone(true);
+    clone.traverse((o) => {
+      if (o.isMesh && o.geometry.getAttribute('support') && !o.geometry.getAttribute('_SUPPORT')) {
+        o.geometry.setAttribute('_SUPPORT', o.geometry.getAttribute('support'));
+      }
+    });
+    return clone;
+  },
 };
 
 // ---------- boot ----------
