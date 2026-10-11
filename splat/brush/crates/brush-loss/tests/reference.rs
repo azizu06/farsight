@@ -359,6 +359,7 @@ async fn ssim_bench() {
             let p = pred_host.clone().require_grad();
             let l = image_loss_partials(p.clone(), gt.clone(), cfg).sum();
             let _g = l.backward();
+            let _ = to_vec(l).await; // sync: without a read nothing executes
         }
         let fwdbwd = t0.elapsed().as_secs_f64() * 1e3 / ITERS as f64;
         println!("{h}x{w}: fwd {fwd:.3} ms, fwd+bwd {fwdbwd:.3} ms per call");
