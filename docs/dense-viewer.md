@@ -149,6 +149,13 @@ uses a 1.25 pixel floor for distant measured samples.
 
 The owner-mounted Mac adapter is `tools/dense_viewer/mac-layer.js`. Build it with `node quest/node_modules/vite/bin/vite.js build --config tools/dense_viewer/vite.layer.config.mjs`. The resulting `.cache/dense-layer-dist/raw-texture-layer.mjs` exports `rawTextureLayer({endpoint:'/phone/frame.bin',enabled:false,pollInterval:500,surfaceHistory:true})`; mount its adjacent `assets/` worker directory at the same origin, import it and pass the result to `window.__macRegisterLayer`. It shares the renderer's existing Three.js, uses `ctx.root` and `ctx.requestFrame()`, and exposes `layer.stats()`. Networking is default-off; only the runtime owner enables it in a qualified window with `layer.setEnabled(true)`. Disabling hides it and aborts an active HTTP pull. Stats expose mode, native point capacity, transferred point bytes, patch count and cadence. The production renderer includes these stats in capture metadata under `surfaceDisplay.raw`.
 
+`layer.captureOnce()` enables display and performs one explicit GET with polling
+off. The accepted texture stays visible with its normal 30s expiry; later render
+ticks start no new pulls. This supports a one-shot idle qualification without
+starting a raw stream. `layer.setPolling(false)` also pauses future pulls while
+keeping already accepted surfaces visible and expiring; stats expose
+`raw_polling`. Re-enable continuous pulls only in the owner's qualified window.
+
 The production Mac renderer draws measured surfaces before fallback points.
 Its coarse splats follow the map's advertised voxel spacing (1.8×voxel size,
 72mm at4cm cells, corrected for the camera projection/FOV); the1cm dense lane

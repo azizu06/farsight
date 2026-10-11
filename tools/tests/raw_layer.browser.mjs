@@ -21,7 +21,7 @@ import {rawTextureLayer} from '/layer/raw-texture-layer.mjs';
 const root=new THREE.Group(),scene=new THREE.Scene(),camera=new THREE.PerspectiveCamera(60,1,.01,20),renderer=new THREE.WebGLRenderer();scene.add(root);document.body.append(renderer.domElement);camera.position.set(0,0,2);
 let dirtied=0;const layer=rawTextureLayer();layer.init({root,requestFrame:()=>dirtied++});
 let disposed=false;renderer.setAnimationLoop(()=>{if(!disposed){layer.poll();renderer.render(scene,camera);}});
-window.layerTest={enable:()=>layer.setEnabled(true),disable:()=>layer.setEnabled(false),stats:()=>({...layer.stats(),dirtied,children:root.children.length}),dispose:()=>{disposed=true;layer.dispose();renderer.setAnimationLoop(null);renderer.dispose();return root.children.length;}};
+window.layerTest={enable:()=>layer.setEnabled(true),disable:()=>layer.setEnabled(false),captureOnce:()=>layer.captureOnce(),stats:()=>({...layer.stats(),dirtied,children:root.children.length}),dispose:()=>{disposed=true;layer.dispose();renderer.setAnimationLoop(null);renderer.dispose();return root.children.length;}};
 </script>`;
 const server=createServer(async(req,res)=>{
  try{
@@ -54,5 +54,11 @@ try{
  allowed=3;await page.waitForFunction(()=>window.layerTest.stats().raw_identity==='["test",2,1]');
  const reset=await page.evaluate(()=>window.layerTest.stats());assert.equal(reset.raw_points,48);assert.equal(reset.raw_frame,0);assert.equal(reset.raw_patches,1);
  await page.evaluate(()=>window.layerTest.disable());const stoppedCalls=calls;await page.waitForTimeout(300);assert.equal(calls,stoppedCalls,'disabling stops new capture requests');
- assert.equal(await page.evaluate(()=>window.layerTest.dispose()),0);assert.deepEqual(errors,[]);console.log(JSON.stringify({scope:'synthetic latest-grid Mac layer adapter; not live link or headset FPS',stats,moved,reset,default_off:true,disposed:true}));
+ allowed=4;await page.evaluate(()=>window.layerTest.captureOnce());
+ await page.waitForFunction(()=>window.layerTest.stats().raw_frame===3);
+ const once=await page.evaluate(()=>window.layerTest.stats()),onceCalls=calls;
+ assert.equal(onceCalls,stoppedCalls+1,'one-shot requests exactly one frame even within the polling interval');
+ assert.equal(once.raw_enabled,true);assert.equal(once.raw_polling,false);assert.equal(once.raw_patches,1);
+ await page.waitForTimeout(650);assert.equal(calls,onceCalls,'one-shot textures remain visible without starting continuous pulls');
+ assert.equal(await page.evaluate(()=>window.layerTest.dispose()),0);assert.deepEqual(errors,[]);console.log(JSON.stringify({scope:'synthetic latest-grid Mac layer adapter; not live link or headset FPS',stats,moved,reset,once,default_off:true,disposed:true}));
 }finally{await browser.close();await new Promise(r=>server.close(r));}
