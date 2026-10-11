@@ -1,0 +1,902 @@
+[
+  {
+    "capture": "<worktree>/.cache/autosplat/quality/latest-capture",
+    "out": "<worktree>/.cache/autosplat/quality/latest-bench-flat/turbo/b30",
+    "budget_s": 30.0,
+    "wall_s": 37.251002875,
+    "phases": {
+      "load_ms": 1,
+      "cull_ms": 1033,
+      "write_ms": 66,
+      "seed_ms": 25385,
+      "calib_ms": 0,
+      "train_ms": 9977,
+      "export_ms": 151,
+      "score_ms": 636
+    },
+    "frames_in": 715,
+    "frames_kept": 320,
+    "cull": {
+      "input": 715,
+      "kept": 320,
+      "dropped_tracking": 1,
+      "dropped_corrupt": 0,
+      "dropped_parked": 358,
+      "dropped_blur": 36,
+      "blur_cutoff": 71.4461835698838
+    },
+    "seed": {
+      "source": "farsight-seed",
+      "input_points": 0,
+      "kept_points": 0,
+      "ply": "<worktree>/.cache/autosplat/quality/latest-bench-flat/turbo/b30/seeded/seed.ply"
+    },
+    "calib_steps_per_s": null,
+    "plan_note": "schedule=budget train_budget=1.0s",
+    "train": {
+      "iters_done": 0,
+      "iters_planned": 1000000,
+      "train_seconds": 0.0,
+      "wall_seconds": 9.977672041,
+      "steps_per_s": 0.0,
+      "splats": 235307,
+      "eval_iter": 4,
+      "eval_psnr": 12.4284115,
+      "eval_ssim": 0.38891467,
+      "finished_schedule": false,
+      "stopped_at_deadline": true,
+      "eval_dir": "<worktree>/.cache/autosplat/quality/latest-bench-flat/turbo/b30/eval_4",
+      "warnings": []
+    },
+    "score": {
+      "views": 40,
+      "psnr_mean": 11.99716683626175,
+      "psnr_median": 12.4130277633667,
+      "psnr_min": 5.172115802764893,
+      "psnr_max": 17.358253479003906,
+      "per_view": [
+        {
+          "view": "images/000001.jpg",
+          "psnr": 9.631692886352539
+        },
+        {
+          "view": "images/000009.jpg",
+          "psnr": 8.068573951721191
+        },
+        {
+          "view": "images/000017.jpg",
+          "psnr": 12.998993873596191
+        },
+        {
+          "view": "images/000132.jpg",
+          "psnr": 10.351407051086426
+        },
+        {
+          "view": "images/000140.jpg",
+          "psnr": 12.536856651306152
+        },
+        {
+          "view": "images/000148.jpg",
+          "psnr": 13.196638107299805
+        },
+        {
+          "view": "images/000156.jpg",
+          "psnr": 12.362679481506348
+        },
+        {
+          "view": "images/000164.jpg",
+          "psnr": 13.064882278442383
+        },
+        {
+          "view": "images/000174.jpg",
+          "psnr": 11.700254440307617
+        },
+        {
+          "view": "images/000182.jpg",
+          "psnr": 12.797935485839844
+        },
+        {
+          "view": "images/000190.jpg",
+          "psnr": 12.80830192565918
+        },
+        {
+          "view": "images/000199.jpg",
+          "psnr": 12.595341682434082
+        },
+        {
+          "view": "images/000291.jpg",
+          "psnr": 15.574095726013184
+        },
+        {
+          "view": "images/000306.jpg",
+          "psnr": 12.4130277633667
+        },
+        {
+          "view": "images/000316.jpg",
+          "psnr": 13.275128364562988
+        },
+        {
+          "view": "images/000325.jpg",
+          "psnr": 11.772418975830078
+        },
+        {
+          "view": "images/000335.jpg",
+          "psnr": 13.974618911743164
+        },
+        {
+          "view": "images/000343.jpg",
+          "psnr": 8.461650848388672
+        },
+        {
+          "view": "images/000351.jpg",
+          "psnr": 12.613909721374512
+        },
+        {
+          "view": "images/000360.jpg",
+          "psnr": 15.881644248962402
+        },
+        {
+          "view": "images/000368.jpg",
+          "psnr": 17.358253479003906
+        },
+        {
+          "view": "images/000376.jpg",
+          "psnr": 15.8242826461792
+        },
+        {
+          "view": "images/000386.jpg",
+          "psnr": 12.133313179016113
+        },
+        {
+          "view": "images/000398.jpg",
+          "psnr": 11.042787551879883
+        },
+        {
+          "view": "images/000407.jpg",
+          "psnr": 12.72329330444336
+        },
+        {
+          "view": "images/000422.jpg",
+          "psnr": 12.163283348083496
+        },
+        {
+          "view": "images/000442.jpg",
+          "psnr": 11.619316101074219
+        },
+        {
+          "view": "images/000472.jpg",
+          "psnr": 12.018062591552734
+        },
+        {
+          "view": "images/000480.jpg",
+          "psnr": 12.309701919555664
+        },
+        {
+          "view": "images/000494.jpg",
+          "psnr": 11.572916030883789
+        },
+        {
+          "view": "images/000502.jpg",
+          "psnr": 12.43897533416748
+        },
+        {
+          "view": "images/000510.jpg",
+          "psnr": 13.63078498840332
+        },
+        {
+          "view": "images/000518.jpg",
+          "psnr": 13.11733627319336
+        },
+        {
+          "view": "images/000528.jpg",
+          "psnr": 12.450912475585938
+        },
+        {
+          "view": "images/000537.jpg",
+          "psnr": 11.46640682220459
+        },
+        {
+          "view": "images/000545.jpg",
+          "psnr": 5.172115802764893
+        },
+        {
+          "view": "images/000553.jpg",
+          "psnr": 6.627378463745117
+        },
+        {
+          "view": "images/000571.jpg",
+          "psnr": 10.396234512329102
+        },
+        {
+          "view": "images/000646.jpg",
+          "psnr": 9.815305709838867
+        },
+        {
+          "view": "images/000691.jpg",
+          "psnr": 9.925960540771484
+        }
+      ],
+      "ssim_mean": 0.391094833612442
+    },
+    "peak_mem_bytes": 410714112,
+    "scene_ply": "<worktree>/.cache/autosplat/quality/latest-bench-flat/turbo/b30/scene.ply",
+    "scene_splat": "<worktree>/.cache/autosplat/quality/latest-bench-flat/turbo/b30/scene.splat",
+    "run_json": null,
+    "backend": "metal Apple M5 Pro"
+  },
+  {
+    "capture": "<worktree>/.cache/autosplat/quality/latest-capture",
+    "out": "<worktree>/.cache/autosplat/quality/latest-bench-flat/turbo/b60",
+    "budget_s": 60.0,
+    "wall_s": 59.333109333,
+    "phases": {
+      "load_ms": 1,
+      "cull_ms": 2264,
+      "write_ms": 141,
+      "seed_ms": 32892,
+      "calib_ms": 0,
+      "train_ms": 23346,
+      "export_ms": 126,
+      "score_ms": 561
+    },
+    "frames_in": 715,
+    "frames_kept": 320,
+    "cull": {
+      "input": 715,
+      "kept": 320,
+      "dropped_tracking": 1,
+      "dropped_corrupt": 0,
+      "dropped_parked": 358,
+      "dropped_blur": 36,
+      "blur_cutoff": 71.4461835698838
+    },
+    "seed": {
+      "source": "farsight-seed",
+      "input_points": 0,
+      "kept_points": 0,
+      "ply": "<worktree>/.cache/autosplat/quality/latest-bench-flat/turbo/b60/seeded/seed.ply"
+    },
+    "calib_steps_per_s": null,
+    "plan_note": "schedule=budget train_budget=21.7s",
+    "train": {
+      "iters_done": 476,
+      "iters_planned": 1000000,
+      "train_seconds": 21.750568086,
+      "wall_seconds": 23.346095958,
+      "steps_per_s": 16.031035175493287,
+      "splats": 237958,
+      "eval_iter": 476,
+      "eval_psnr": 15.138301,
+      "eval_ssim": 0.44269195,
+      "finished_schedule": true,
+      "stopped_at_deadline": false,
+      "eval_dir": "<worktree>/.cache/autosplat/quality/latest-bench-flat/turbo/b60/eval_476",
+      "warnings": []
+    },
+    "score": {
+      "views": 40,
+      "psnr_mean": 15.0650324344635,
+      "psnr_median": 15.474184036254883,
+      "psnr_min": 5.795726299285889,
+      "psnr_max": 21.18347930908203,
+      "per_view": [
+        {
+          "view": "images/000001.jpg",
+          "psnr": 11.339054107666016
+        },
+        {
+          "view": "images/000009.jpg",
+          "psnr": 11.618511199951172
+        },
+        {
+          "view": "images/000017.jpg",
+          "psnr": 13.43910026550293
+        },
+        {
+          "view": "images/000132.jpg",
+          "psnr": 13.954422950744629
+        },
+        {
+          "view": "images/000140.jpg",
+          "psnr": 13.285274505615234
+        },
+        {
+          "view": "images/000148.jpg",
+          "psnr": 16.903270721435547
+        },
+        {
+          "view": "images/000156.jpg",
+          "psnr": 17.142688751220703
+        },
+        {
+          "view": "images/000164.jpg",
+          "psnr": 16.00234603881836
+        },
+        {
+          "view": "images/000174.jpg",
+          "psnr": 15.806446075439453
+        },
+        {
+          "view": "images/000182.jpg",
+          "psnr": 16.04697036743164
+        },
+        {
+          "view": "images/000190.jpg",
+          "psnr": 17.765954971313477
+        },
+        {
+          "view": "images/000199.jpg",
+          "psnr": 16.21808433532715
+        },
+        {
+          "view": "images/000291.jpg",
+          "psnr": 17.622817993164062
+        },
+        {
+          "view": "images/000306.jpg",
+          "psnr": 16.46748161315918
+        },
+        {
+          "view": "images/000316.jpg",
+          "psnr": 17.638916015625
+        },
+        {
+          "view": "images/000325.jpg",
+          "psnr": 11.839051246643066
+        },
+        {
+          "view": "images/000335.jpg",
+          "psnr": 17.24362564086914
+        },
+        {
+          "view": "images/000343.jpg",
+          "psnr": 11.166604042053223
+        },
+        {
+          "view": "images/000351.jpg",
+          "psnr": 13.139589309692383
+        },
+        {
+          "view": "images/000360.jpg",
+          "psnr": 18.52712059020996
+        },
+        {
+          "view": "images/000368.jpg",
+          "psnr": 20.62424087524414
+        },
+        {
+          "view": "images/000376.jpg",
+          "psnr": 21.18347930908203
+        },
+        {
+          "view": "images/000386.jpg",
+          "psnr": 14.749527931213379
+        },
+        {
+          "view": "images/000398.jpg",
+          "psnr": 14.26233959197998
+        },
+        {
+          "view": "images/000407.jpg",
+          "psnr": 15.887872695922852
+        },
+        {
+          "view": "images/000422.jpg",
+          "psnr": 15.474184036254883
+        },
+        {
+          "view": "images/000442.jpg",
+          "psnr": 15.460453987121582
+        },
+        {
+          "view": "images/000472.jpg",
+          "psnr": 14.516317367553711
+        },
+        {
+          "view": "images/000480.jpg",
+          "psnr": 13.693129539489746
+        },
+        {
+          "view": "images/000494.jpg",
+          "psnr": 14.783424377441406
+        },
+        {
+          "view": "images/000502.jpg",
+          "psnr": 18.438148498535156
+        },
+        {
+          "view": "images/000510.jpg",
+          "psnr": 17.91029167175293
+        },
+        {
+          "view": "images/000518.jpg",
+          "psnr": 16.62126350402832
+        },
+        {
+          "view": "images/000528.jpg",
+          "psnr": 15.900492668151855
+        },
+        {
+          "view": "images/000537.jpg",
+          "psnr": 15.23552417755127
+        },
+        {
+          "view": "images/000545.jpg",
+          "psnr": 5.795726299285889
+        },
+        {
+          "view": "images/000553.jpg",
+          "psnr": 6.778444766998291
+        },
+        {
+          "view": "images/000571.jpg",
+          "psnr": 14.385896682739258
+        },
+        {
+          "view": "images/000646.jpg",
+          "psnr": 13.44659423828125
+        },
+        {
+          "view": "images/000691.jpg",
+          "psnr": 14.286614418029785
+        }
+      ],
+      "ssim_mean": 0.4422903060913086
+    },
+    "peak_mem_bytes": 1167949824,
+    "scene_ply": "<worktree>/.cache/autosplat/quality/latest-bench-flat/turbo/b60/scene.ply",
+    "scene_splat": "<worktree>/.cache/autosplat/quality/latest-bench-flat/turbo/b60/scene.splat",
+    "run_json": null,
+    "backend": "metal Apple M5 Pro"
+  },
+  {
+    "capture": "<worktree>/.cache/autosplat/quality/latest-capture",
+    "out": "<worktree>/.cache/autosplat/quality/latest-bench-flat/turbo/b120",
+    "budget_s": 120.0,
+    "wall_s": 119.035035917,
+    "phases": {
+      "load_ms": 1,
+      "cull_ms": 1569,
+      "write_ms": 99,
+      "seed_ms": 34935,
+      "calib_ms": 0,
+      "train_ms": 81704,
+      "export_ms": 130,
+      "score_ms": 595
+    },
+    "frames_in": 715,
+    "frames_kept": 320,
+    "cull": {
+      "input": 715,
+      "kept": 320,
+      "dropped_tracking": 1,
+      "dropped_corrupt": 0,
+      "dropped_parked": 358,
+      "dropped_blur": 36,
+      "blur_cutoff": 71.4461835698838
+    },
+    "seed": {
+      "source": "farsight-seed",
+      "input_points": 0,
+      "kept_points": 0,
+      "ply": "<worktree>/.cache/autosplat/quality/latest-bench-flat/turbo/b120/seeded/seed.ply"
+    },
+    "calib_steps_per_s": null,
+    "plan_note": "schedule=budget train_budget=80.4s",
+    "train": {
+      "iters_done": 2126,
+      "iters_planned": 1000000,
+      "train_seconds": 80.25339017,
+      "wall_seconds": 81.704146542,
+      "steps_per_s": 16.95651295212965,
+      "splats": 242468,
+      "eval_iter": 2126,
+      "eval_psnr": 17.69296,
+      "eval_ssim": 0.49113217,
+      "finished_schedule": true,
+      "stopped_at_deadline": false,
+      "eval_dir": "<worktree>/.cache/autosplat/quality/latest-bench-flat/turbo/b120/eval_2126",
+      "warnings": []
+    },
+    "score": {
+      "views": 40,
+      "psnr_mean": 17.355086982250214,
+      "psnr_median": 17.38681983947754,
+      "psnr_min": 7.119431018829346,
+      "psnr_max": 24.378047943115234,
+      "per_view": [
+        {
+          "view": "images/000001.jpg",
+          "psnr": 15.268997192382812
+        },
+        {
+          "view": "images/000009.jpg",
+          "psnr": 16.669530868530273
+        },
+        {
+          "view": "images/000017.jpg",
+          "psnr": 16.790266036987305
+        },
+        {
+          "view": "images/000132.jpg",
+          "psnr": 17.82294464111328
+        },
+        {
+          "view": "images/000140.jpg",
+          "psnr": 15.962470054626465
+        },
+        {
+          "view": "images/000148.jpg",
+          "psnr": 19.430315017700195
+        },
+        {
+          "view": "images/000156.jpg",
+          "psnr": 17.008909225463867
+        },
+        {
+          "view": "images/000164.jpg",
+          "psnr": 17.924800872802734
+        },
+        {
+          "view": "images/000174.jpg",
+          "psnr": 17.773597717285156
+        },
+        {
+          "view": "images/000182.jpg",
+          "psnr": 17.24407958984375
+        },
+        {
+          "view": "images/000190.jpg",
+          "psnr": 21.09869384765625
+        },
+        {
+          "view": "images/000199.jpg",
+          "psnr": 18.03805923461914
+        },
+        {
+          "view": "images/000291.jpg",
+          "psnr": 17.664531707763672
+        },
+        {
+          "view": "images/000306.jpg",
+          "psnr": 19.374813079833984
+        },
+        {
+          "view": "images/000316.jpg",
+          "psnr": 18.33538055419922
+        },
+        {
+          "view": "images/000325.jpg",
+          "psnr": 12.67876148223877
+        },
+        {
+          "view": "images/000335.jpg",
+          "psnr": 21.151836395263672
+        },
+        {
+          "view": "images/000343.jpg",
+          "psnr": 17.311140060424805
+        },
+        {
+          "view": "images/000351.jpg",
+          "psnr": 14.06824779510498
+        },
+        {
+          "view": "images/000360.jpg",
+          "psnr": 20.571861267089844
+        },
+        {
+          "view": "images/000368.jpg",
+          "psnr": 21.238256454467773
+        },
+        {
+          "view": "images/000376.jpg",
+          "psnr": 24.378047943115234
+        },
+        {
+          "view": "images/000386.jpg",
+          "psnr": 16.30581283569336
+        },
+        {
+          "view": "images/000398.jpg",
+          "psnr": 14.387846946716309
+        },
+        {
+          "view": "images/000407.jpg",
+          "psnr": 16.34069061279297
+        },
+        {
+          "view": "images/000422.jpg",
+          "psnr": 17.38681983947754
+        },
+        {
+          "view": "images/000442.jpg",
+          "psnr": 17.631183624267578
+        },
+        {
+          "view": "images/000472.jpg",
+          "psnr": 15.100859642028809
+        },
+        {
+          "view": "images/000480.jpg",
+          "psnr": 16.07175636291504
+        },
+        {
+          "view": "images/000494.jpg",
+          "psnr": 17.93940544128418
+        },
+        {
+          "view": "images/000502.jpg",
+          "psnr": 20.43625259399414
+        },
+        {
+          "view": "images/000510.jpg",
+          "psnr": 18.51325035095215
+        },
+        {
+          "view": "images/000518.jpg",
+          "psnr": 18.506488800048828
+        },
+        {
+          "view": "images/000528.jpg",
+          "psnr": 17.220806121826172
+        },
+        {
+          "view": "images/000537.jpg",
+          "psnr": 16.949710845947266
+        },
+        {
+          "view": "images/000545.jpg",
+          "psnr": 15.859598159790039
+        },
+        {
+          "view": "images/000553.jpg",
+          "psnr": 7.119431018829346
+        },
+        {
+          "view": "images/000571.jpg",
+          "psnr": 17.949426651000977
+        },
+        {
+          "view": "images/000646.jpg",
+          "psnr": 15.502372741699219
+        },
+        {
+          "view": "images/000691.jpg",
+          "psnr": 17.176225662231445
+        }
+      ],
+      "ssim_mean": 0.4838206171989441
+    },
+    "peak_mem_bytes": 1168113664,
+    "scene_ply": "<worktree>/.cache/autosplat/quality/latest-bench-flat/turbo/b120/scene.ply",
+    "scene_splat": "<worktree>/.cache/autosplat/quality/latest-bench-flat/turbo/b120/scene.splat",
+    "run_json": null,
+    "backend": "metal Apple M5 Pro"
+  },
+  {
+    "capture": "<worktree>/.cache/autosplat/quality/latest-capture",
+    "out": "<worktree>/.cache/autosplat/quality/latest-bench-flat/turbo/b300",
+    "budget_s": 300.0,
+    "wall_s": 301.858119792,
+    "phases": {
+      "load_ms": 1,
+      "cull_ms": 1548,
+      "write_ms": 90,
+      "seed_ms": 50579,
+      "calib_ms": 0,
+      "train_ms": 247589,
+      "export_ms": 228,
+      "score_ms": 1819
+    },
+    "frames_in": 715,
+    "frames_kept": 320,
+    "cull": {
+      "input": 715,
+      "kept": 320,
+      "dropped_tracking": 1,
+      "dropped_corrupt": 0,
+      "dropped_parked": 358,
+      "dropped_blur": 36,
+      "blur_cutoff": 71.4461835698838
+    },
+    "seed": {
+      "source": "farsight-seed",
+      "input_points": 0,
+      "kept_points": 0,
+      "ply": "<worktree>/.cache/autosplat/quality/latest-bench-flat/turbo/b300/seeded/seed.ply"
+    },
+    "calib_steps_per_s": null,
+    "plan_note": "schedule=budget train_budget=244.8s",
+    "train": {
+      "iters_done": 5383,
+      "iters_planned": 1000000,
+      "train_seconds": 244.20402297,
+      "wall_seconds": 247.589652542,
+      "steps_per_s": 14.483333238127782,
+      "splats": 250606,
+      "eval_iter": 5383,
+      "eval_psnr": 18.611801,
+      "eval_ssim": 0.5158541,
+      "finished_schedule": true,
+      "stopped_at_deadline": false,
+      "eval_dir": "<worktree>/.cache/autosplat/quality/latest-bench-flat/turbo/b300/eval_5383",
+      "warnings": []
+    },
+    "score": {
+      "views": 40,
+      "psnr_mean": 18.28099365234375,
+      "psnr_median": 18.25477409362793,
+      "psnr_min": 12.600735664367676,
+      "psnr_max": 24.555870056152344,
+      "per_view": [
+        {
+          "view": "images/000001.jpg",
+          "psnr": 16.54867172241211
+        },
+        {
+          "view": "images/000009.jpg",
+          "psnr": 17.230806350708008
+        },
+        {
+          "view": "images/000017.jpg",
+          "psnr": 18.25477409362793
+        },
+        {
+          "view": "images/000132.jpg",
+          "psnr": 19.47369956970215
+        },
+        {
+          "view": "images/000140.jpg",
+          "psnr": 15.757373809814453
+        },
+        {
+          "view": "images/000148.jpg",
+          "psnr": 19.763641357421875
+        },
+        {
+          "view": "images/000156.jpg",
+          "psnr": 17.402481079101562
+        },
+        {
+          "view": "images/000164.jpg",
+          "psnr": 18.45546531677246
+        },
+        {
+          "view": "images/000174.jpg",
+          "psnr": 18.019367218017578
+        },
+        {
+          "view": "images/000182.jpg",
+          "psnr": 17.998586654663086
+        },
+        {
+          "view": "images/000190.jpg",
+          "psnr": 21.344743728637695
+        },
+        {
+          "view": "images/000199.jpg",
+          "psnr": 18.809370040893555
+        },
+        {
+          "view": "images/000291.jpg",
+          "psnr": 17.37364387512207
+        },
+        {
+          "view": "images/000306.jpg",
+          "psnr": 20.592300415039062
+        },
+        {
+          "view": "images/000316.jpg",
+          "psnr": 18.91199493408203
+        },
+        {
+          "view": "images/000325.jpg",
+          "psnr": 12.7915678024292
+        },
+        {
+          "view": "images/000335.jpg",
+          "psnr": 22.240610122680664
+        },
+        {
+          "view": "images/000343.jpg",
+          "psnr": 18.474035263061523
+        },
+        {
+          "view": "images/000351.jpg",
+          "psnr": 17.6052303314209
+        },
+        {
+          "view": "images/000360.jpg",
+          "psnr": 21.85674476623535
+        },
+        {
+          "view": "images/000368.jpg",
+          "psnr": 22.04082679748535
+        },
+        {
+          "view": "images/000376.jpg",
+          "psnr": 24.555870056152344
+        },
+        {
+          "view": "images/000386.jpg",
+          "psnr": 17.478790283203125
+        },
+        {
+          "view": "images/000398.jpg",
+          "psnr": 14.82017707824707
+        },
+        {
+          "view": "images/000407.jpg",
+          "psnr": 17.910348892211914
+        },
+        {
+          "view": "images/000422.jpg",
+          "psnr": 19.17881202697754
+        },
+        {
+          "view": "images/000442.jpg",
+          "psnr": 18.36475372314453
+        },
+        {
+          "view": "images/000472.jpg",
+          "psnr": 16.69084358215332
+        },
+        {
+          "view": "images/000480.jpg",
+          "psnr": 16.798656463623047
+        },
+        {
+          "view": "images/000494.jpg",
+          "psnr": 18.638477325439453
+        },
+        {
+          "view": "images/000502.jpg",
+          "psnr": 20.892179489135742
+        },
+        {
+          "view": "images/000510.jpg",
+          "psnr": 18.94167709350586
+        },
+        {
+          "view": "images/000518.jpg",
+          "psnr": 18.5494441986084
+        },
+        {
+          "view": "images/000528.jpg",
+          "psnr": 17.710432052612305
+        },
+        {
+          "view": "images/000537.jpg",
+          "psnr": 17.67656135559082
+        },
+        {
+          "view": "images/000545.jpg",
+          "psnr": 17.622575759887695
+        },
+        {
+          "view": "images/000553.jpg",
+          "psnr": 12.600735664367676
+        },
+        {
+          "view": "images/000571.jpg",
+          "psnr": 18.44098472595215
+        },
+        {
+          "view": "images/000646.jpg",
+          "psnr": 15.623678207397461
+        },
+        {
+          "view": "images/000691.jpg",
+          "psnr": 17.798812866210938
+        }
+      ],
+      "ssim_mean": 0.5081214308738708
+    },
+    "peak_mem_bytes": 1135755264,
+    "scene_ply": "<worktree>/.cache/autosplat/quality/latest-bench-flat/turbo/b300/scene.ply",
+    "scene_splat": "<worktree>/.cache/autosplat/quality/latest-bench-flat/turbo/b300/scene.splat",
+    "run_json": null,
+    "backend": "metal Apple M5 Pro"
+  }
+]
