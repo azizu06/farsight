@@ -6,6 +6,7 @@ All samples expire: an unsegmented moving body must never become permanent.
 """
 
 from collections import OrderedDict, deque
+import base64
 from bisect import bisect_right
 from itertools import islice
 import json
@@ -64,6 +65,12 @@ class DenseMap:
         self.source = None
         self.snapshots = OrderedDict()
         self.snapshot_times = {}
+        self.depth_view = None
+        self.view_key = None
+        self.view_received = 0.
+        self.view_revision = 0
+        self.authoritative_deletes = set()
+        self.revisited_cells = 0
 
     def clear(self, source=None):
         with self.lock:
@@ -74,15 +81,70 @@ class DenseMap:
             self.source = source
             self.snapshots.clear()
             self.snapshot_times.clear()
+            self.depth_view, self.view_key = None, None
+            self.authoritative_deletes.clear()
 
     def _change(self, record):
+        if self.journal and len(self.journal) == self.journal.maxlen:
+            self.authoritative_deletes.discard(self.journal[0][0])
         self.revision += 1
         self.journal.append((self.revision, record))
         return self.revision
 
-    def _delete(self, key):
+    def _delete(self, key, authoritative=False):
         self.cells.pop(key, None)
         self._change(RECORD.pack(*(v * 10 for v in key), 0, 0, 0, 0))
+        if authoritative:
+            self.authoritative_deletes.add(self.revision)
+
+    def publish_view(self, view, received_at=None):
+        """Carry native revisit evidence independently of coalesced point changes."""
+        metadata = view.to_metadata()
+        key = json.dumps(metadata["sensor_key"], separators=(",", ":"))
+        with self.lock:
+            self.depth_view, self.view_key = metadata, key
+            self.view_received = self.clock() if received_at is None else received_at
+            self.view_revision = self.revision
+
+    def reconcile(self, view, *, keys=None, protected=()):
+        """Delete contradicted foreground, with projection outside the cloud lock.
+
+        The Mac's spatial chunks select only the current view's possible region.
+        A cached cell updated during projection is retained for the next view.
+        """
+        far = float(view.depth_mm.max()) * .001
+        if not far:
+            return 0
+        k, pose = view.calibration, view.transform
+        rays = np.asarray([[(u - k.cx) * far / k.fx, -(v - k.cy) * far / k.fy, -far]
+                           for u in (-.5, view.width - .5) for v in (-.5, view.height - .5)])
+        corners = np.vstack((rays @ pose[:3, :3].T + pose[:3, 3], pose[:3, 3]))
+        low, high = np.floor(corners.min(axis=0) * .5).astype(int), np.floor(corners.max(axis=0) * .5).astype(int)
+        with self.lock:
+            epoch = self.epoch
+            if keys is not None:
+                keys = list(keys)
+            elif hasattr(self, "chunks"):
+                keys = [key for chunk, members in self.chunks.items()
+                        if all(low[i] <= chunk[i] <= high[i] for i in range(3)) for key in members]
+            else:
+                keys = list(self.cells)
+            entries = [(key, self.cells[key]) for key in keys if key in self.cells and key not in protected]
+        if not entries:
+            return 0
+        records = np.frombuffer(b"".join(value[1] for _, value in entries), _RECORD_DTYPE)
+        removed = np.flatnonzero(view.contradicted(records["xyz"].astype(np.float64) * .001))
+        with self.lock:
+            if self.epoch != epoch:
+                return 0
+            count = 0
+            for index in removed:
+                key, value = entries[index]
+                if self.cells.get(key) is value:
+                    self._delete(key, authoritative=True)
+                    count += 1
+            self.revisited_cells += count
+            return count
 
     def expire(self):
         with self.lock:
@@ -143,7 +205,7 @@ class DenseMap:
                 else:
                     self._delete(key)
 
-    def delta(self, epoch=None, after=0, snapshot=False, limit=MAX_RECORDS, anchor=None):
+    def delta(self, epoch=None, after=0, snapshot=False, limit=MAX_RECORDS, anchor=None, *, view_after=None):
         with self.lock:
             self.expire()
             limit = max(1, min(limit, MAX_RECORDS))
@@ -176,8 +238,22 @@ class DenseMap:
             more = len(rows) > limit
             rows = rows[:limit]
             cursor = rows[-1][0] if more else anchor if snapshot else self.revision
-            return packet(dict(format="xyz_mm_rgb8_op", epoch=self.epoch,
+            metadata = dict(format="xyz_mm_rgb8_op", epoch=self.epoch,
                                source=self.source, cursor=cursor, reset=reset,
                                snapshot=snapshot and more, more=more, anchor=anchor,
-                               points=len(self.cells), voxel_m=.01, ttl_s=self.ttl),
-                          [record for _, record in rows])
+                               points=len(self.cells), voxel_m=.01, ttl_s=self.ttl)
+            if self.depth_view is not None and (reset or self.view_key != view_after):
+                metadata["view"] = dict(self.depth_view, key=self.view_key,
+                                        age_ms=round(max(0, self.clock() - self.view_received) * 1000, 1))
+            if self.authoritative_deletes:
+                mask = np.asarray([revision in self.authoritative_deletes for revision, _ in rows], np.uint8)
+                if mask.any():
+                    metadata["authoritative_deletes"] = base64.b64encode(
+                        np.packbits(mask, bitorder="little").tobytes()).decode("ascii")
+            if self.depth_view is not None:
+                newer = np.asarray([revision > self.view_revision and record[-1] == 1
+                                    for revision, record in rows], np.uint8)
+                if newer.any():
+                    metadata["newer_than_view"] = base64.b64encode(
+                        np.packbits(newer, bitorder="little").tobytes()).decode("ascii")
+            return packet(metadata, [record for _, record in rows])

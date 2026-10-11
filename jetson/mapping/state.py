@@ -191,12 +191,13 @@ class MapState:
             self.fps = round(1 / max(duration, 1e-4), 1)
             return
         points, colors, mesh, lods = reconstruct(frame, lods=VISUAL_LODS, point_stride=VOXEL_POINT_STRIDE)
+        revisit = self.surfaces.prepare_revisit(frame)
         with self.lock:
             if (generation != self.processing_generation or not self.connected
                     or self.paused or self.tracking != "normal"):
                 return
             self.cloud.integrate(points, colors)
-            self.surfaces.integrate(mesh, frame.transform, lods)
+            self.surfaces.integrate(mesh, frame.transform, lods, revisit=revisit)
             self.frames += 1
             self.revision += 1
             duration = time.monotonic() - started

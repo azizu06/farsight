@@ -350,12 +350,13 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
 
     @app.get("/map/dense.bin")
     async def dense(request: Request, epoch: str | None = None, after: int = 0,
-                    snapshot: bool = False, anchor: int | None = None, limit: int = 8192):
+                    snapshot: bool = False, anchor: int | None = None, limit: int = 8192,
+                    view_after: str | None = None):
         if after < 0 or limit < 1:
             raise HTTPException(400, "Invalid dense cursor or limit")
         def build_dense():
             try:
-                body = state.dense.delta(epoch, after, snapshot, limit, anchor)
+                body = state.dense.delta(epoch, after, snapshot, limit, anchor, view_after=view_after)
             except ValueError as exc:
                 raise HTTPException(400, str(exc)) from exc
             coding = negotiate(request.headers.get("accept-encoding"))
