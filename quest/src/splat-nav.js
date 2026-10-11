@@ -48,14 +48,23 @@ export function walkInputs(session, gamepads = []) {
 }
 
 /** Captures use row-major OpenGL camera-to-world matrices in the scene's Y-up metres.
- * The first camera is an observed interior start; bounds are the fallback for bare PLYs.
+ * Match walk.html's recorded path (5 cm / 0.1 rad samples). Start at its first X/Z
+ * and heading, with the mean path camera Y as eye height; bounds are the bare-PLY fallback.
  */
 export function sceneStart(transforms, bounds, flip = false) {
+  const cameras = [];
+  const sign = flip ? -1 : 1;
   for (const frame of transforms?.frames ?? []) {
     const m = frame.transform_matrix;
     if (!Array.isArray(m) || m.length !== 4 || !m.every(row => Array.isArray(row) && row.length === 4 && row.every(Number.isFinite))) continue;
-    const sign = flip ? -1 : 1;
-    return { eye: [m[0][3], sign * m[1][3], sign * m[2][3]], yaw: Math.atan2(m[0][2], sign * m[2][2]), source: "capture" };
+    cameras.push([m[0][3], m[1][3], m[2][3], Math.atan2(m[0][2], sign * m[2][2])]);
+  }
+  const path = cameras.filter((p, i, a) => !i || Math.hypot(p[0] - a[i-1][0], p[2] - a[i-1][2]) > .05 || Math.abs(p[3] - a[i-1][3]) > .1);
+  if (path.length) {
+    const first = path[0];
+    const eyeY = path.reduce((sum, p) => sum + p[1], 0) / path.length;
+    return { eye: [first[0], sign * eyeY, sign * first[2]],
+      yaw: first[3], source: "capture" };
   }
   if (bounds && bounds.min.x <= bounds.max.x) {
     const { min, max } = bounds;

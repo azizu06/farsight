@@ -57,13 +57,15 @@ function resetView() {
   navigation.reset();
 }
 
-/** A scene-specific sidecar wins; a dataset may also keep transforms.json beside its PLY. */
+/** Explicit transforms= wins, then scene-specific or adjacent dataset sidecars. */
 async function loadTransforms(url?: string) {
   if (!url) return null;
   const sceneUrl = new URL(url, location.href);
   const sidecar = new URL(sceneUrl.href);
   sidecar.pathname = sidecar.pathname.replace(/\.[^/.]+$/, "") + ".transforms.json";
-  for (const candidate of [sidecar, new URL("transforms.json", sceneUrl)]) {
+  const explicit = new URLSearchParams(location.search).get("transforms");
+  const candidates = explicit ? [new URL(explicit, location.href)] : [sidecar, new URL("transforms.json", sceneUrl)];
+  for (const candidate of candidates) {
     try {
       const response = await fetch(candidate);
       if (response.ok) return await response.json();

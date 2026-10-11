@@ -65,6 +65,11 @@ test("start at a captured camera eye and yaw, or inside the room bounds", () => 
   close(pose.eye[0],1,"centre x");close(pose.eye[1],1.2,"eye above floor");close(pose.eye[2],-2,"centre z");
   assert.equal(pose.source,"bounds");
   assert.deepEqual(sceneStart(null,null),{eye:[0,1.6,0],yaw:0,source:"default"});
+  const path={frames:[
+    {transform_matrix:[[1,0,0,2],[0,1,0,1.2],[0,0,1,-3],[0,0,0,1]]},
+    {transform_matrix:[[1,0,0,2.1],[0,1,0,1.6],[0,0,1,-3],[0,0,0,1]]},
+  ]};
+  assert.deepEqual(sceneStart(path,null),{eye:[2,1.4,-3],yaw:0,source:"capture"},"first X/Z and mean path eye height");
 });
 
 test("scene URL, format, flip and start pose come from the page URL", () => {

@@ -276,8 +276,10 @@ Touch pads are XR input sources and are not returned by `navigator.getGamepads()
 the flat panel cannot read their sticks when Quest Browser does not expose them.
 
 The scene uses ARKit's Y-up world, matching the [capture format](../docs/postrun-capture.md).
-The first camera in `<room>.transforms.json` (preferred) or `transforms.json`
-beside the scene supplies the initial eye and heading. Without a sidecar, start
+`&transforms=scenes/transforms-094259.json` selects an explicit capture manifest.
+Otherwise `<room>.transforms.json` (preferred) or `transforms.json` beside the scene
+supplies it. Start at the first path X/Z and recorded yaw, at the mean path camera Y.
+This matches the path sampling in Dechante's `walk.html`. Without a sidecar, start
 at the bounds centre in X/Z, at eye height above the bottom of the bounds.
 `flip=1`/Flip upright rotates a Y-down scene; `pos=x,y,z` (floor position) and
 `yaw=degrees` override the start. Reset and VR entry use the same interior start.

@@ -27,10 +27,14 @@ try {
     splat.fill(255,i*32+24,i*32+28);splat.set([255,128,128,128],i*32+28);
   });
   await page.route(url=>url.pathname==='/fixtures/room.splat',r=>r.fulfill({body:splat}));
-  await page.route(url=>url.pathname==='/fixtures/room.transforms.json',r=>r.fulfill({json:{frames:[{transform_matrix:[[1,0,0,2],[0,1,0,1.4],[0,0,1,-3],[0,0,0,1]]}]}}));
-  await page.goto(`${origin}/splat.html?scene=/fixtures/room.splat`);
+  await page.route(url=>url.pathname==='/fixtures/capture.json',r=>r.fulfill({json:{frames:[
+    {transform_matrix:[[1,0,0,2],[0,1,0,1.2],[0,0,1,-3],[0,0,0,1]]},
+    {transform_matrix:[[1,0,0,2.1],[0,1,0,1.6],[0,0,1,-3],[0,0,0,1]]},
+  ]}}));
+  await page.goto(`${origin}/splat.html?scene=/fixtures/room.splat&transforms=/fixtures/capture.json`);
   await page.waitForFunction(()=>globalThis.__splatStats?.splats===4);
   assert.equal(await page.evaluate(()=>globalThis.__splatStats.start.source),'capture');
+  assert.deepEqual(await page.evaluate(()=>globalThis.__splatStats.start.eye),[2,1.4,-3]);
   await page.evaluate(()=>globalThis.flatPad.axes[1]=-1);
   await page.waitForFunction(()=>globalThis.__splatStats.eye[2]<-3.2);
   await page.evaluate(()=>{globalThis.flatPad.axes[1]=0;globalThis.flatPad.buttons[0].pressed=true;});
