@@ -999,7 +999,8 @@ fn cmd_pose_refine(
                 intrs[j][3] * h as f64 / intrs[j][5],
             );
             for p in &pts {
-                let q = wmat.transform_vector(&Vector3::from_column_slice(&p.p));
+                let q4 = wmat * nalgebra::Vector4::new(p.p[0], p.p[1], p.p[2], 1.0);
+                let q = Vector3::new(q4.x, q4.y, q4.z);
                 if q.z <= 0.05 {
                     continue;
                 }
@@ -1057,7 +1058,8 @@ fn cmd_pose_refine(
         let mut pts3: Vec<(Vector3<f64>, f64)> = Vec::new();
         let mut proj: Vec<(f64, f64, f64, f64)> = Vec::new(); // u,v + gx,gy? no
         for (p, col) in pool.iter().take(if ply_rgb { max_anchors * 4 } else { pool.len() }) {
-            let q = wmat0.transform_vector(p);
+            let q4 = wmat0 * nalgebra::Vector4::new(p.x, p.y, p.z, 1.0);
+            let q = Vector3::new(q4.x, q4.y, q4.z);
             if q.z <= 0.05 {
                 continue;
             }
@@ -1080,7 +1082,8 @@ fn cmd_pose_refine(
             let mut c = 0.0;
             let mut m = 0usize;
             for (p, col) in pts3.iter() {
-                let q = wmat.transform_vector(p);
+                let q4 = wmat * nalgebra::Vector4::new(p.x, p.y, p.z, 1.0);
+                let q = Vector3::new(q4.x, q4.y, q4.z);
                 if q.z <= 0.05 {
                     continue;
                 }
@@ -1105,7 +1108,8 @@ fn cmd_pose_refine(
             let mut hmat: nalgebra::Matrix6<f64> = nalgebra::Matrix6::zeros();
             let mut g: Vector6<f64> = Vector6::zeros();
             for (p, col) in pts3.iter() {
-                let q = wmat.transform_vector(p);
+                let q4 = wmat * nalgebra::Vector4::new(p.x, p.y, p.z, 1.0);
+                let q = Vector3::new(q4.x, q4.y, q4.z);
                 if q.z <= 0.05 {
                     continue;
                 }
