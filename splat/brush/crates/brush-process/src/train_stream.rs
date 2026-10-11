@@ -318,17 +318,23 @@ pub(crate) async fn train_stream(
 
         let step_time = Instant::now();
 
-        let batch = dataloader
-            .next_batch()
-            .instrument(trace_span!("Wait for next data batch"))
-            .await;
+        let views_per_step = train_stream_config.train_config.views_per_step as usize;
+        let mut batches = Vec::with_capacity(views_per_step);
+        for _ in 0..views_per_step {
+            batches.push(
+                dataloader
+                    .next_batch()
+                    .instrument(trace_span!("Wait for next data batch"))
+                    .await,
+            );
+        }
 
         // Lift splats onto the autodiff graph for this step, run training,
         // then strip back to inner so the viewer slot sees plain splats.
         // `step` immediately replaces `splats` with the returned value, so we
         // can move it here instead of cloning every iteration.
         let diff_splats = splats.train();
-        let (new_diff_splats, stats) = trainer.step(batch, diff_splats).await;
+        let (new_diff_splats, stats) = trainer.step_multi(&batches, diff_splats).await;
         splats = new_diff_splats.valid();
 
         // Phase-local iteration for refine gating
