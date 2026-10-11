@@ -9,8 +9,11 @@ This checklist does not itself qualify hardware or authorize a second control se
 ## 1. Pin the exact running candidate
 
 Firstmate must name the combined renderer/API and same-page Quest SHAs before
-deployment. `bc155e8` was a partial renderer checkpoint; the announced
-`RoverExperience` embed behind `?macview=1` needs its own published/served SHA.
+deployment. The paired renderer is implemented by `85c7253`, with software
+raster/codec evidence in `docs/qualification/mac-render-stereo-20261010` and
+continuous-player evidence in `docs/qualification/mac-render-sbs-stream-20261010`.
+Those checks do not qualify the actual Quest or the current served bundle. Pin
+the latest integrated controls, HUD and offload repairs as well.
 Use the operator's existing checkout/runtime and preserve its dirty files. The
 commands assume an activated Python environment. For the standard repository
 setup, activate it first; use Firstmate's selected equivalent if it differs:
@@ -71,7 +74,7 @@ python -m tools.dense_map --upstream "$jetson_origin" --port 8080 \
 
 # Terminal 2: actual mapped room, not --sim-world.
 python -m tools.mac_render --upstream http://127.0.0.1:8080 --port 8091 \
-  --width 1280 --height 720 --fps 30 --hardware videotoolbox
+  --stereo sbs-left-right --width 1920 --height 1080 --fps 30 --hardware videotoolbox
 ```
 
 `jetson_origin` must be the actual existing upstream, set by Firstmate; it is not
@@ -85,25 +88,43 @@ and positive renderer `/health` counters under `dense` must agree: `retained_cel
 count alone does not prove dense ingestion. Missing Python/browser
 dependencies are setup failures; `--no-browser` is not a working visual stream.
 
-## 3. Verify the proxy without sending pose or motion
+## 3. Connect the paired headset before receive-only transport checks
 
 The renderer supports multiple receive-only viewers with independent keyframe-safe
-queues, but only one visual pose writer. Prefer running checks before the headset
-session to keep qualification load explicit. A receive-only checker does not move
-the view; a browser or `--probe-pose` sender does. Density GET checks can run during
-a session.
+queues, but only one visual pose writer. Run transport checks before the timed
+single-viewer baseline, while the headset supplies its own paired pose. A
+receive-only checker does not move the view; a browser or `--probe-pose` sender
+does. Density GET checks can run during a session.
+
+A packed producer requires a fresh ordered left/right eye pair. Before the
+headset enters AUTO, `ready:false` can mean it is waiting for that pair, rather
+than a broken encoder. Keep exactly one existing Quest Browser control page at
+`http://localhost:8080/?macview=1&stereo=1&diag=1`, enter its immersive session,
+and select AUTO using A. The actual XR pose sender supplies both eyes; do not
+invent a desktop pair or add another pose writer. Only reverse 8080 is needed.
+Confirm `configured_layout:sbs-left-right`, `stereo:true`, advancing pair/frame
+identity and the selected source on the running renderer.
 
 ```sh
+adb reverse tcp:8080 tcp:8080
+adb reverse --list > "$run_dir/adb-reverse-after.txt"
+# With the headset's paired pose writer active, observe one hop at a time.
 python -m tools.qualify_macview --origin http://127.0.0.1:8091 \
-  --segments 30 --timeout 20 --output "$run_dir/direct-stream.json"
+  --layout sbs-left-right --segments 30 --timeout 20 --output "$run_dir/direct-stream.json"
 python -m tools.qualify_macview --origin http://127.0.0.1:8080 \
-  --segments 30 --timeout 20 --output "$run_dir/relay-stream.json"
+  --layout sbs-left-right --segments 30 --timeout 20 --output "$run_dir/relay-stream.json"
 python -m tools.inspect_map_density --operator http://127.0.0.1:8080 \
   --geometry http://127.0.0.1:8484 --renderer http://127.0.0.1:8091 \
   --timeout 5 > "$run_dir/density.json"
-adb reverse tcp:8080 tcp:8080
-adb reverse --list > "$run_dir/adb-reverse-after.txt"
 ```
+
+These extra receive-only streams add encode/network/USB load; record that
+condition, then close them before measuring the normal single-viewer headset
+baseline. They do not create a control session or send a pose. SBS transport
+checks reject the mono `--probe-pose` option. The configured total dimensions
+must divide into two halves; the example uses 960×1080 per eye. If the owner
+selects 1280×720 total, record its 640×720 per-eye dimensions and qualify visual
+quality at that resolution rather than describing it as 1080p per eye.
 
 The checker is receive-only by default. Do **not** use `--probe-pose` while someone
 uses the headset: it changes the render camera. Do not run the older pose-writing
@@ -118,9 +139,10 @@ from unique measured points. Older Python deployments fall back from operator
 evidence URL. Other failures remain failures. A failed hop still writes JSON
 with its error.
 
-For an isolated desktop check of the **standalone** page before an occupied
-headset session, the browser helper records decoding, source/stereo declarations,
-errors, seeking events, actual graphics backend and a screenshot:
+For a separate **mono** checkpoint only, run the standalone browser helper
+against an explicitly mono producer. The standalone page rejects packed stereo;
+do not point this command at the SBS runtime. The helper records decoding, errors,
+seeking events, graphics backend and a screenshot:
 
 ```sh
 node tools/qualify_macview_browser.mjs \
@@ -134,9 +156,9 @@ minimum callback rate is only a decode sanity check: compare measured cadence an
 stalls with the configured stream rate before claiming smooth playback. A private
 seek-suppression experiment is not proof of the deployed viewer.
 
-Only reverse 8080 is needed for the same-origin proxy. Keep one existing Quest
-Browser control page at `http://localhost:8080/?macview=1`. Add `&diag=1` for
-measurement, then remove diagnostics for the minimal-HUD capture. Firstmate must
+Keep the same paired Quest page with `?macview=1&stereo=1` for the actual
+headset acceptance. Add `&diag=1` for measurement, then remove diagnostics for
+the minimal-HUD capture. Firstmate must
 confirm the served revision implements that flag; a URL is not implementation
 evidence. Refresh/navigate the current page rather than opening a second control
 tab. If the embed is absent, stop final integration acceptance and report it.
@@ -176,11 +198,15 @@ curl --fail --max-time 3 http://127.0.0.1:8080/map/status > "$run_dir/map-status
 ## 5. Same-page control and stereo completion gates
 
 Aziz runs controls on the safely prepared real rig. Record PASS/FAIL and video or
-control-log evidence for default MANUAL right-trigger/right-stick, A → AUTO,
-virtual movement without a physical stick override, and A → MANUAL cancellation
-with fresh release/press before motion. Confirm one `/ws/control` owner throughout.
-Check tracking loss, trigger release, stale camera, disconnect and re-arm using
-the existing owner-approved rig procedure; keep actual guards/settings visible.
+control-log evidence for default MANUAL direct right-stick driving at full
+configured motor demand, centered-stick stopping, A → AUTO, virtual movement
+without a physical stick override, and A → MANUAL cancellation. The latest
+requested two-mode interface uses the joystick as motion intent rather than an
+extra trigger requirement; qualify the actual served implementation. Confirm one
+active `/ws/control` owner throughout, separately from cumulative reconnect count.
+Record B/STOP, tracking loss, stale-camera behavior, disconnect and recovery under
+the selected demo profile using the rig owner’s procedure; keep the applied
+settings visible and do not infer their values from defaults.
 
 Quest should perform tracking/input, decoding and minimal presentation. Geometry
 accumulation/decompression and dense rendering belong on Mac; Jetson retains

@@ -386,8 +386,8 @@ export class RoverExperience {
   /** Prefer H.264 when the rover offers it and the operator has not chosen; bonded JPEG still wins. */
   private applyRoverVideo() {
     if (this.stopped) return;
-    if (this.settings.origin.h264 === "rover" && this.h264Enabled && !this.h264.displayedFrame &&
-        performance.now() - this.roverVideoAt > 6000) {
+    if (this.settings.origin.h264 === "rover" && this.h264Enabled && !this.h264.hasVerifiedFrame &&
+        !this.h264.displayedFrame && performance.now() - this.roverVideoAt > 6000) {
       // Auto-selected H.264 never produced a verified frame here: fall back to JPEG for this page.
       this.settings.origin.h264 = "fallback";
       this.setVideo(false, false);

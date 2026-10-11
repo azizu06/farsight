@@ -2,6 +2,8 @@
 
 Default is receive-only. --probe-pose changes the render camera and belongs on
 an isolated desk run, not while someone is using the headset.
+--layout sbs-left-right receives packed stereo only; it requires the existing
+viewer to supply valid tracked eyes and never creates a pose writer.
 """
 import argparse
 import asyncio
@@ -15,6 +17,8 @@ import time
 import aiohttp
 
 from tools.geometry_relay import geometry_origin
+from tools.mac_render.protocol import eye_views
+from tools.mac_render.stereo import SBS
 
 MAX_MESSAGE = 4_000_000
 
@@ -29,6 +33,44 @@ def integer(value, name):
     if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value < 2**53:
         raise ValueError(f'{name} must be an unsigned safe integer')
     return value
+
+
+def stereo_format(packet, initialization=None):
+    """Validate declared packing and pose metadata, not stereo pixel content."""
+    if packet.get('stereo') is not True or packet.get('layout') != SBS:
+        raise ValueError('SBS requires stereo:true and layout:sbs-left-right')
+    if initialization is None:
+        width, height = (integer(packet.get(key), key) for key in ('width', 'height'))
+        if width <= 0 or width % 4 or height <= 0 or height % 2:
+            raise ValueError('SBS dimensions need two even-width eyes and even height')
+    else:
+        width, height = initialization['width'], initialization['height']
+        for key, expected in (('width', width), ('height', height)):
+            if key in packet and integer(packet[key], key) != expected:
+                raise ValueError('SBS dimensions changed without initialization')
+    eye_width = integer(packet.get('eye_width'), 'eye_width')
+    eye_height = integer(packet.get('eye_height'), 'eye_height')
+    if eye_width <= 0 or eye_width * 2 != width or eye_height != height:
+        raise ValueError('SBS eye dimensions do not match the packed frame')
+    if initialization is not None:
+        if eye_width != initialization['eye_width'] or eye_height != initialization['eye_height']:
+            raise ValueError('SBS eye dimensions changed without initialization')
+        pose = packet.get('pose')
+        if not isinstance(pose, dict):
+            raise ValueError('SBS fragment needs rendered eye-pair pose metadata')
+        views = eye_views(pose.get('eyes'), require_pair=True)
+        if 'session_id' in pose:
+            session = pose['session_id']
+            if (not isinstance(session, str) or not 1 <= len(session) <= 128
+                    or not session.isascii() or any(not (c.isalnum() or c in '_-') for c in session)):
+                raise ValueError('SBS pose session is invalid')
+        for key in ('frame_id', 'pose_id'):
+            if key in pose:
+                integer(pose[key], f'pose.{key}')
+        if 'frame_id' in pose and 'pose_id' in pose and pose['frame_id'] != pose['pose_id']:
+            raise ValueError('SBS pose frame aliases disagree')
+        return views
+    return None
 
 
 def boxes(body):
@@ -70,7 +112,7 @@ async def no_redirect(_session, _context, _params):
     raise ValueError('WebSocket redirects are not allowed')
 
 
-async def probe(client, origin, count, send_pose, report):
+async def probe(client, origin, count, send_pose, report, layout=None):
     stream = pose_socket = None
     evidence = report['evidence']
     try:
@@ -82,7 +124,10 @@ async def probe(client, origin, count, send_pose, report):
                         head=dict(position=[0, 1.6, 0], quaternion=[0, 0, 0, 1]), ray=None)
             evidence['probe_pose_sent_mono_ms'] = pose['sent_mono_ms']
             await pose_socket.send_json(pose)
-        stream = await client.ws_connect(origin.with_path('/ws/macview'), max_msg_size=MAX_MESSAGE)
+        stream_url = origin.with_path('/ws/macview')
+        if layout is not None:
+            stream_url = stream_url.with_query(layout=layout)
+        stream = await client.ws_connect(stream_url, max_msg_size=MAX_MESSAGE)
         init = pending = None
         initialized = False
         outstanding, samples = {}, []
@@ -117,9 +162,12 @@ async def probe(client, origin, count, send_pose, report):
                     for key in ('width', 'height', 'fps'):
                         if number(packet.get(key), key) <= 0:
                             raise ValueError(f'{key} must be positive')
+                    if layout == SBS:
+                        stereo_format(packet)
                     init = packet
                     evidence['init'] = {key: packet.get(key) for key in
-                                        ('mime', 'width', 'height', 'fps', 'stereo', 'source')}
+                                        ('mime', 'width', 'height', 'fps', 'stereo', 'source',
+                                         'layout', 'eye_width', 'eye_height')}
                 elif kind == 'video_segment':
                     if not initialized or pending is not None:
                         raise ValueError('Segment metadata outside the init/binary sequence')
@@ -136,6 +184,8 @@ async def probe(client, origin, count, send_pose, report):
                         raise ValueError('Negative render age')
                     if packet.get('stereo') is not init['stereo']:
                         raise ValueError('Stereo layout changed without initialization')
+                    if layout == SBS:
+                        stereo_format(packet, init)
                     frame_id = integer(packet.get('frame_id'), 'frame_id')
                     if samples and frame_id <= samples[-1]['frame_id']:
                         raise ValueError('Render frame IDs are not advancing')
@@ -165,6 +215,14 @@ async def probe(client, origin, count, send_pose, report):
                             receipt_age_bound_ms=pending['age_ms'] + request_ms)
                 if isinstance(pending.get('pose'), dict):
                     item['echoed_pose_sent_mono_ms'] = pending['pose'].get('sent_mono_ms')
+                if layout == SBS:
+                    item['layout'] = pending['layout']
+                    item['eye_width'], item['eye_height'] = pending['eye_width'], pending['eye_height']
+                    # These are renderer declarations, not independently verified eye pixels.
+                    item['declared_eye_views'] = eye_views(pending['pose']['eyes'], require_pair=True)
+                    item['declared_pose_identity'] = {key: pending['pose'][key]
+                                                     for key in ('session_id', 'frame_id', 'pose_id')
+                                                     if key in pending['pose']}
                 samples.append(item)
                 evidence['samples'] = samples
                 pending = None
@@ -192,16 +250,21 @@ async def probe(client, origin, count, send_pose, report):
                     await asyncio.wait_for(socket.close(), .3)
 
 
-async def qualify(origin='http://127.0.0.1:8090', segments=12, timeout=10, probe_pose=False):
+async def qualify(origin='http://127.0.0.1:8090', segments=12, timeout=10, probe_pose=False, layout=None):
     report = dict(qualified=False, evidence={}, errors=[], limitations=[
         'Transport/MP4-envelope evidence only: no codec decode, headset FPS, stereo quality or pose-to-photon proof.',
         'Receipt age uses server-reported render age plus local request time; it is not physical sensor/camera age.',
         'Source labels and encoder performance are not independently verified by this checker.',
         'Pose probe is opt-in and changes the render camera; use it only on an isolated desk test.',
+        'SBS validates declared packing and rendered eye-pair metadata only; the existing viewer must provide tracked poses.',
     ])
     started = time.monotonic()
     try:
         origin = geometry_origin(origin)
+        if layout not in (None, SBS):
+            raise ValueError('Unsupported requested layout')
+        if layout == SBS and probe_pose:
+            raise ValueError('SBS cannot use --probe-pose; use the existing tracked viewer pose writer')
         if not isinstance(segments, int) or isinstance(segments, bool) or not 2 <= segments <= 200:
             raise ValueError('segments must be between 2 and 200')
         if number(timeout, 'timeout') <= 0 or timeout > 120:
@@ -210,7 +273,7 @@ async def qualify(origin='http://127.0.0.1:8090', segments=12, timeout=10, probe
         trace.on_request_redirect.append(no_redirect)
         async with aiohttp.ClientSession(trace_configs=[trace], trust_env=False,
                                        timeout=aiohttp.ClientTimeout(total=None, sock_connect=min(timeout, 3))) as client:
-            await asyncio.wait_for(probe(client, origin, segments, probe_pose, report), timeout)
+            await asyncio.wait_for(probe(client, origin, segments, probe_pose, report, layout), timeout)
     except asyncio.TimeoutError:
         report['errors'].append('Overall stream qualification deadline expired')
     except (ValueError, aiohttp.ClientError, OSError) as exc:
@@ -225,9 +288,10 @@ def main(argv=None):
     parser.add_argument('--segments', type=int, default=12)
     parser.add_argument('--timeout', type=float, default=10)
     parser.add_argument('--probe-pose', action='store_true', help='Stationary render-camera probe; isolated desk runs only')
+    parser.add_argument('--layout', choices=(SBS,), help='Receive packed stereo from an already tracked viewer; incompatible with --probe-pose')
     parser.add_argument('--output', type=Path)
     args = parser.parse_args(argv)
-    report = asyncio.run(qualify(args.origin, args.segments, args.timeout, args.probe_pose))
+    report = asyncio.run(qualify(args.origin, args.segments, args.timeout, args.probe_pose, args.layout))
     text = json.dumps(report, indent=2, allow_nan=False) + '\n'
     if args.output:
         args.output.write_text(text)
