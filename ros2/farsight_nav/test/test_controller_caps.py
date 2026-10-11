@@ -21,4 +21,3 @@ class ControllerCapTests(unittest.TestCase):
         # clamps the final motor command to the loaded profile and AUTO PWM cap.
         self.assertAlmostEqual(parameter("MPPI", "vx_max"), 0.95)
         self.assertAlmostEqual(parameter("RPP", "desired_linear_vel"), 0.95)
-
