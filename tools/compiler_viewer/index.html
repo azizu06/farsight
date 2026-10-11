@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>farsight-compile · environment viewer</title>
+<style>
+  :root { --bg:#0b0e12; --panel:#141922e6; --line:#2a3442; --fg:#dfe7f0; --dim:#8a97a8; --acc:#59d8ff; --acc2:#ffb454; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--fg);
+    font:13px/1.45 -apple-system,BlinkMacSystemFont,"SF Mono",Menlo,Consolas,monospace; overflow:hidden; }
+  #view { position:fixed; inset:0; display:block; }
+  .panel { position:fixed; background:var(--panel); border:1px solid var(--line); border-radius:10px;
+    backdrop-filter:blur(8px); padding:10px 12px; z-index:10; }
+  #hud { top:12px; left:12px; min-width:210px; }
+  #hud h1 { font-size:13px; margin:0 0 6px; letter-spacing:.4px; font-weight:600; }
+  #hud h1 .sub { color:var(--dim); font-weight:400; font-size:11px; display:block; margin-top:1px; }
+  #stat { color:var(--dim); font-size:11px; white-space:pre; }
+  #stat b { color:var(--fg); font-weight:600; }
+  .row { display:flex; flex-wrap:wrap; gap:4px; margin-top:8px; }
+  .row .lbl { width:100%; color:var(--dim); font-size:10px; text-transform:uppercase; letter-spacing:.8px; margin-bottom:1px; }
+  button { background:#1c2431; color:var(--fg); border:1px solid var(--line); border-radius:6px;
+    padding:3px 8px; font:inherit; font-size:11px; cursor:pointer; }
+  button:hover { border-color:var(--acc); }
+  button.on { background:#123549; border-color:var(--acc); color:var(--acc); }
+  button.on.warm { border-color:var(--acc2); color:var(--acc2); background:#3a2a12; }
+  #report { top:12px; right:12px; max-width:320px; max-height:82vh; overflow:auto; }
+  #report h2 { font-size:11px; margin:0 0 6px; color:var(--dim); text-transform:uppercase; letter-spacing:.8px; }
+  #report table { border-collapse:collapse; width:100%; font-size:11px; }
+  #report td { padding:1px 4px; color:var(--dim); }
+  #report td:last-child { text-align:right; color:var(--fg); }
+  #report .kv td:first-child { color:var(--fg); }
+  #report .bar { height:5px; background:#1c2431; border-radius:3px; margin:2px 0 6px; overflow:hidden; }
+  #report .bar i { display:block; height:100%; background:var(--acc); }
+  #files { margin-top:6px; }
+  #files .f { display:flex; justify-content:space-between; gap:8px; color:var(--dim); font-size:11px; padding:1px 0; }
+  #files .f span:last-child { color:var(--fg); }
+  #help { bottom:12px; left:12px; color:var(--dim); font-size:11px; max-width:46vw; }
+  #help b { color:var(--fg); font-weight:600; }
+  #msg { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; z-index:20;
+    color:var(--dim); font-size:13px; pointer-events:none; text-align:center; }
+  #msg .box { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:18px 26px; }
+  #msg .err { color:#ff7a7a; white-space:pre-wrap; max-width:70vw; text-align:left; }
+  .hidden { display:none !important; }
+</style>
+</head>
+<body>
+<canvas id="view"></canvas>
+<div id="hud" class="panel">
+  <h1>farsight-compile<span class="sub">point cloud &rarr; 3D environment</span></h1>
+  <div id="stat">loading&hellip;</div>
+  <div class="row" id="modes">
+    <span class="lbl">mode</span>
+  </div>
+  <div class="row" id="quality">
+    <span class="lbl">quality</span>
+    <button data-q="high">high</button><button data-q="medium">med</button><button data-q="low">low</button>
+  </div>
+  <div class="row" id="cams">
+    <span class="lbl">camera</span>
+    <button data-c="orbit">orbit</button><button data-c="human">human 1.6m</button><button data-c="rover">rover 0.3m</button>
+  </div>
+</div>
+<div id="report" class="panel hidden"></div>
+<div id="help" class="panel">
+  <b>1-8</b> mode &nbsp;<b>Q</b> quality &nbsp;<b>C</b> camera &nbsp;<b>WASD</b>+<b>drag</b> look (walk) / orbit &nbsp;<b>Space/Ctrl</b> up/down &nbsp;<b>Shift</b> boost &nbsp;<b>R</b> reset &nbsp;<b>F</b> frame scene
+</div>
+<div id="msg"><div class="box">loading artefacts&hellip;</div></div>
+<script type="importmap">
+{ "imports": {
+    "three": "/viewer/vendor/three/three.module.js",
+    "three/addons/": "/viewer/vendor/three/addons/"
+} }
+</script>
+<script type="module" src="/viewer/viewer.js"></script>
+</body>
+</html>
