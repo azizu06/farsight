@@ -625,7 +625,7 @@ async fn relay_ws(local: WebSocket, s: Arc<AppState>, target: &str, control: boo
                         if tokio::time::timeout(deadline, async move {
                             rtx.lock()
                                 .await
-                                .send(tokio_tungstenite::tungstenite::Message::Binary(bytes.to_vec().into()))
+                                .send(tokio_tungstenite::tungstenite::Message::Binary(bytes))
                                 .await
                         })
                         .await
@@ -746,7 +746,7 @@ async fn relay_ws(local: WebSocket, s: Arc<AppState>, target: &str, control: boo
                         let ltx = local_tx.clone();
                         let send_began = Instant::now();
                         if tokio::time::timeout(deadline, async move {
-                            ltx.lock().await.send(Message::Binary(bytes.to_vec().into())).await
+                            ltx.lock().await.send(Message::Binary(bytes)).await
                         })
                         .await
                         .is_err()
