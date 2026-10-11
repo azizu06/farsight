@@ -56,14 +56,22 @@ variation. 6 held-out eval views (eval-split-every 8).
 Seed stage timings (150k dots, 16-core x86): clean+decimate+PCA+colour+emit
 ≈ **0.5–0.7 s total** — negligible vs one training step on the M5.
 
-| config | steps | lavapipe wall | eval PSNR | SSIM |
-|---|---|---|---|---|
-| raw dots (init.ply as-is) | 200 | 93 s | 20.47 | 0.770 |
-| farsight-seed | 200 | 112 s | **24.32** | **0.846** |
+| steps | raw-dot PSNR | seeded PSNR | Δ PSNR | raw SSIM | seeded SSIM |
+|---|---|---|---|---|---|
+| 50 | 17.12 | 22.90 | **+5.77** | 0.584 | 0.780 |
+| 150 | 19.41 | 23.89 | **+4.48** | 0.732 | 0.832 |
+| 200 | 20.47 | 24.32 | **+3.85** | 0.770 | 0.846 |
+| 400 | 25.18 | 26.23 | +1.05 | 0.854 | 0.876 |
+| 800 | 26.93 | 27.73 | +0.80 | 0.885 | 0.890 |
 
-**+3.85 dB at equal step count.** Step-budget sweep (50/150/400/800) is
-running; table updates on landing. Depth-loss row pending T2/T3 wiring —
-export format is stable (`depth/` above), loss side unchanged.
+Wall time per run (incl. ~20 s startup/autotune): raw 25/71/208/487 s, seed
+28/80/221/486 s — equal wall-time comparisons also favour the seed at every
+budget. The advantage is largest early (+5.8 dB @ 50 steps) and decays as
+training converges, which is exactly the profile needed for the 60 s goal:
+**the seed buys quality where the budget is tightest**.
+
+Seed-vs-depth row pending T2's expected-depth render output (rasterizer has
+no depth channel — only alpha in rgba; flagged to orchestrator).
 
 ### Notes / caveats
 
