@@ -67,8 +67,9 @@ or every victim is found, it is
 Optional `face_detector: bool` and `face_error: string|null` appear in `/health` and
 in `GET`/`POST /mission/drill`. The drill scores only `cls:"face"` boxes, which appear
 only while a drill runs. By default (`--face-detector pose`) each is a square around a
-YOLO11-pose person's head: 1.4x the extent of at least 3 nose/eye/ear keypoints with
-confidence above 0.5, so it needs `--detector pose`. `--face-detector ultraface
+YOLO11-pose person's head: 2.8x the extent of at least 3 nose/eye/ear keypoints with
+confidence above 0.5 (half-side 1.4x), at least half the person's width, so it needs
+`--detector pose`. `--face-detector ultraface
 --face-model PATH` restores the CPU UltraFace pass. Both emit the same box fields.
 `face_detector` is true once the face source loaded; false means a drill can never
 score. `face_error` names why (the pose detector is not in use, or a bad UltraFace

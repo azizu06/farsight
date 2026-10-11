@@ -13,16 +13,16 @@ W, H = 640, 480
 HEAD = [(320, 110), (330, 100), (310, 100), (350, 105), (290, 105)]
 
 
-def person(head_conf, width=W, height=H):
-    """Packet-form person box whose first five normalized keypoints are HEAD."""
+def person(head_conf, width=W, height=H, w=.05):
+    """Packet-form person box (32 px wide by default) whose first five normalized keypoints are HEAD."""
     kpts = [[x / width, y / height, c] for (x, y), c in zip(HEAD, head_conf)] + [[.5, .5, .9]] * 12
-    return dict(cls="person", class_id=0, conf=.9, x=.4, y=.2, w=.2, h=.6, down=False, kpts=kpts)
+    return dict(cls="person", class_id=0, conf=.9, x=.45, y=.2, w=w, h=.6, down=False, kpts=kpts)
 
 
-def test_head_keypoints_give_a_square_1_4x_their_span():
+def test_head_keypoints_give_a_square_2_8x_their_span():
     (face,) = keypoint_faces([person([.9, .8, .8, .7, .7])], W, H)
     assert face.pop("cls") == "face"
-    side = 1.4 * 60  # the wider extent wins; the box is square in pixels
+    side = 2.8 * 60  # the wider extent wins; the box is square in pixels, half-side 1.4x
     assert face == pytest.approx(dict(conf=.78, x=(320 - side / 2) / W, y=(105 - side / 2) / H,
                                       w=side / W, h=side / H))
 
@@ -35,10 +35,16 @@ def test_fewer_than_three_confident_head_keypoints_give_no_face():
 def test_low_confidence_keypoints_are_ignored():
     # Only nose and both eyes (> 0.5) set the extent; the ears at 0.5 and 0.2 do not.
     (face,) = keypoint_faces([person([.9, .9, .9, .5, .2])], W, H)
-    side = 1.4 * 20
+    side = 2.8 * 20
     assert face["conf"] == .9
     assert face["w"] * W == pytest.approx(side) and face["h"] * H == pytest.approx(side)
     assert face["x"] * W == pytest.approx(320 - side / 2) and face["y"] * H == pytest.approx(105 - side / 2)
+
+
+def test_small_heads_get_half_the_person_width():
+    (face,) = keypoint_faces([person([.9, .9, .9, .5, .2], w=.25)], W, H)  # 160 px wide person, 20 px span
+    assert face["w"] * W == pytest.approx(80) and face["h"] * H == pytest.approx(80)
+    assert face["x"] * W + 40 == pytest.approx(320) and face["y"] * H + 40 == pytest.approx(105)
 
 
 def test_only_person_boxes_with_keypoints_count_and_edges_clip():
