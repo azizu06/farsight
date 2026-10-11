@@ -165,3 +165,10 @@ The exact 300k/SH1 candidate loaded in the locally served `/splat.html`: 300,000
 splats, reported load 265 ms, `error=null`, and zero page/unhandled-rejection
 errors. This was a desktop, non-XR browser sample; its instantaneous FPS is not
 a headset frame-budget qualification. The task tab was closed.
+
+## Native benchmark receipts
+
+The unmodified Sai benchmark at `0b82491`, its seed/layout caveats, per-budget
+stage table and untimed Metal kernel profile are preserved in
+[qualification/mac-20261011/README.md](qualification/mac-20261011/README.md).
+The newer-head confirmation was preempted when the live capture began.

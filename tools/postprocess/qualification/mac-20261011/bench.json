@@ -1,0 +1,75 @@
+{
+  "source_revision": "0b82491125396a9e405cb116b404f864b819736b",
+  "capture": "run-20261011T094259",
+  "host": "Apple M5 Pro 48 GB",
+  "method": "Unmodified splat/bench_mac.sh; flattened camera layout with ply_file_path init.ply; nice 19; local data; cold first arm; external background workloads uncontrolled",
+  "original_command_result": "No frames left after culling: root manifest.json has no frames; photos/transforms.json is nested",
+  "stock_30_result": "Calibration ran past budget; bench aborted before other stock budgets",
+  "rows": [
+    {
+      "arm": "turbo",
+      "budget_s": 30.0,
+      "prep_s": 26.485,
+      "train_s": 9.977,
+      "export_s": 0.151,
+      "score_s": 0.636,
+      "total_s": 37.251002875,
+      "steps": 0,
+      "splats": 235307,
+      "views": 40,
+      "psnr": 11.99716683626175,
+      "frames_kept": 320
+    },
+    {
+      "arm": "turbo",
+      "budget_s": 60.0,
+      "prep_s": 35.298,
+      "train_s": 23.346,
+      "export_s": 0.126,
+      "score_s": 0.561,
+      "total_s": 59.333109333,
+      "steps": 476,
+      "splats": 237958,
+      "views": 40,
+      "psnr": 15.0650324344635,
+      "frames_kept": 320
+    },
+    {
+      "arm": "turbo",
+      "budget_s": 120.0,
+      "prep_s": 36.604,
+      "train_s": 81.704,
+      "export_s": 0.13,
+      "score_s": 0.595,
+      "total_s": 119.035035917,
+      "steps": 2126,
+      "splats": 242468,
+      "views": 40,
+      "psnr": 17.355086982250214,
+      "frames_kept": 320
+    },
+    {
+      "arm": "turbo",
+      "budget_s": 300.0,
+      "prep_s": 52.218,
+      "train_s": 247.589,
+      "export_s": 0.228,
+      "score_s": 1.819,
+      "total_s": 301.858119792,
+      "steps": 5383,
+      "splats": 250606,
+      "views": 40,
+      "psnr": 18.28099365234375,
+      "frames_kept": 320
+    }
+  ],
+  "seed_input_note": "Stock raw-dot SOR rewrote the workspace capture seed through a prepared/init.ply hard link: 1454055 to 1395570 points. Subsequent turbo budgets consumed that 1395570-point cloud. The original saved init.ply was protected by an independent copy and remains unchanged.",
+  "original_seed_sha256": "3526d43fd3c60108814159db7e0c4514bf1d06bdb0625f12e7c1c439d2ca08b8",
+  "post_stock_workspace_seed_sha256": "c4ff6126c070b69d81997666431d166ca1e90d32c05cb2169ac922a25864e4d3",
+  "kernel_profile": "Separate untimed 200-step seed=none stock run on 320 selected frames / 1395570 initial splats; resolved GPU timestamps serialize launches; not a turbo timing baseline.",
+  "later_head_check": {
+    "revision": "f53fbfa99a8cbe3e24faede31190745bf39f8de7",
+    "stock_60_status": "not run; final link preempted for live capture at 14:37:18Z",
+    "original_split_comparisons": "prepared but never started; no score or timing result"
+  }
+}

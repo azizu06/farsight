@@ -1,0 +1,282 @@
+{
+  "brush_loss::kernels::image_loss_backward_kernel::ImageLossBackwardKernel<f32>": {
+    "launches": 200,
+    "total_ms": 413.731619,
+    "mean_ms": 2.068658,
+    "methods": {
+      "device": 200
+    }
+  },
+  "brush_loss::kernels::image_loss_forward_kernel::ImageLossForwardKernel<f32>": {
+    "launches": 280,
+    "total_ms": 594.497909,
+    "mean_ms": 2.123207,
+    "methods": {
+      "device": 280
+    }
+  },
+  "brush_render::bwd::kernels::project_backwards::project_backwards_kernel::ProjectBackwardsKernel": {
+    "launches": 200,
+    "total_ms": 1324.889415,
+    "mean_ms": 6.624447,
+    "methods": {
+      "device": 200
+    }
+  },
+  "brush_render::bwd::kernels::rasterize_backwards::rasterize_backwards_kernel::RasterizeBackwardsKernel<brush_render::bwd::kernels::rasterize_backwards::HfAtomicAdd>": {
+    "launches": 200,
+    "total_ms": 318.924337,
+    "mean_ms": 1.594622,
+    "methods": {
+      "device": 200
+    }
+  },
+  "brush_render::get_tile_offset::get_tile_offsets::GetTileOffsets": {
+    "launches": 240,
+    "total_ms": 109.132584,
+    "mean_ms": 0.454719,
+    "methods": {
+      "device": 240
+    }
+  },
+  "brush_render::kernels::counts::seal_isects::SealIsects": {
+    "launches": 240,
+    "total_ms": 96.700677,
+    "mean_ms": 0.402919,
+    "methods": {
+      "device": 240
+    }
+  },
+  "brush_render::kernels::counts::write_counts::WriteCounts": {
+    "launches": 240,
+    "total_ms": 193.764378,
+    "mean_ms": 0.807352,
+    "methods": {
+      "device": 240
+    }
+  },
+  "brush_render::kernels::map_gaussians::map_gaussians_to_intersect_kernel::MapGaussiansToIntersectKernel": {
+    "launches": 240,
+    "total_ms": 156.164623,
+    "mean_ms": 0.650686,
+    "methods": {
+      "device": 240
+    }
+  },
+  "brush_render::kernels::project_forward::project_forward_kernel::ProjectForwardKernel": {
+    "launches": 240,
+    "total_ms": 62.841796,
+    "mean_ms": 0.261841,
+    "methods": {
+      "device": 240
+    }
+  },
+  "brush_render::kernels::project_visible::project_visible_kernel::ProjectVisibleKernel": {
+    "launches": 240,
+    "total_ms": 89.666635,
+    "mean_ms": 0.373611,
+    "methods": {
+      "device": 240
+    }
+  },
+  "brush_render::kernels::rasterize::rasterize_kernel::RasterizeKernel": {
+    "launches": 240,
+    "total_ms": 311.468625,
+    "mean_ms": 1.297786,
+    "methods": {
+      "device": 240
+    }
+  },
+  "brush_scan::kernels::add_block_offsets_kernel::AddBlockOffsetsKernel": {
+    "launches": 480,
+    "total_ms": 135.553496,
+    "mean_ms": 0.282403,
+    "methods": {
+      "device": 480
+    }
+  },
+  "brush_scan::kernels::scan_blocks_kernel::ScanBlocksKernel": {
+    "launches": 720,
+    "total_ms": 890.964181,
+    "mean_ms": 1.23745,
+    "methods": {
+      "device": 720
+    }
+  },
+  "brush_sort::kernels::sort_count_kernel::SortCountKernel": {
+    "launches": 1440,
+    "total_ms": 408.315791,
+    "mean_ms": 0.283553,
+    "methods": {
+      "device": 1440
+    }
+  },
+  "brush_sort::kernels::sort_reduce_kernel::SortReduceKernel": {
+    "launches": 1440,
+    "total_ms": 451.548948,
+    "mean_ms": 0.313576,
+    "methods": {
+      "device": 1440
+    }
+  },
+  "brush_sort::kernels::sort_scan_add_kernel::SortScanAddKernel": {
+    "launches": 1440,
+    "total_ms": 327.56725,
+    "mean_ms": 0.227477,
+    "methods": {
+      "device": 1440
+    }
+  },
+  "brush_sort::kernels::sort_scan_kernel::SortScanKernel": {
+    "launches": 1440,
+    "total_ms": 577.286717,
+    "mean_ms": 0.400894,
+    "methods": {
+      "device": 1440
+    }
+  },
+  "brush_sort::kernels::sort_scatter_kernel::SortScatterKernel": {
+    "launches": 1440,
+    "total_ms": 198.373723,
+    "mean_ms": 0.13776,
+    "methods": {
+      "device": 1440
+    }
+  },
+  "burn_cubecl::kernel::binary::kernel_binop::KernelBinop<burn_cubecl::kernel::binary::AddOp>": {
+    "launches": 199,
+    "total_ms": 34.365918,
+    "mean_ms": 0.172693,
+    "methods": {
+      "device": 199
+    }
+  },
+  "burn_cubecl::kernel::binary::kernel_binop::KernelBinop<burn_cubecl::kernel::binary::DivOp>": {
+    "launches": 1,
+    "total_ms": 3.824834,
+    "mean_ms": 3.824834,
+    "methods": {
+      "device": 1
+    }
+  },
+  "burn_cubecl::kernel::binary::kernel_binop::KernelBinop<burn_cubecl::kernel::binary::MulOp>": {
+    "launches": 200,
+    "total_ms": 204.455081,
+    "mean_ms": 1.022275,
+    "methods": {
+      "device": 200
+    }
+  },
+  "burn_cubecl::kernel::binary::kernel_scalar_binop::KernelScalarBinop<burn_cubecl::kernel::binary::AddOp>": {
+    "launches": 1,
+    "total_ms": 9.294042,
+    "mean_ms": 9.294042,
+    "methods": {
+      "device": 1
+    }
+  },
+  "burn_cubecl::kernel::binary::kernel_scalar_binop::KernelScalarBinop<burn_cubecl::kernel::binary::DivOp>": {
+    "launches": 440,
+    "total_ms": 440.559491,
+    "mean_ms": 1.001272,
+    "methods": {
+      "device": 440
+    }
+  },
+  "burn_cubecl::kernel::binary::kernel_scalar_binop::KernelScalarBinop<burn_cubecl::kernel::binary::MulOp>": {
+    "launches": 41,
+    "total_ms": 9.104623,
+    "mean_ms": 0.222064,
+    "methods": {
+      "device": 41
+    }
+  },
+  "burn_cubecl::kernel::index::gather::gather_kernel::GatherKernel": {
+    "launches": 240,
+    "total_ms": 223.742467,
+    "mean_ms": 0.93226,
+    "methods": {
+      "device": 240
+    }
+  },
+  "burn_cubecl::kernel::index::slice::slice_kernel::SliceKernel": {
+    "launches": 724,
+    "total_ms": 3110.686405,
+    "mean_ms": 4.296528,
+    "methods": {
+      "device": 724
+    }
+  },
+  "burn_cubecl::kernel::index::slice_assign::slice_assign_kernel::SliceAssignKernel": {
+    "launches": 202,
+    "total_ms": 52.784334,
+    "mean_ms": 0.261309,
+    "methods": {
+      "device": 202
+    }
+  },
+  "burn_cubecl::kernel::unary_float::unary_float::UnaryFloat<burn_cubecl::kernel::unary_float::unary_basic::BasicFloatUnary>": {
+    "launches": 41,
+    "total_ms": 22.041669,
+    "mean_ms": 0.537602,
+    "methods": {
+      "device": 41
+    }
+  },
+  "burn_cubecl::kernel::unary_numeric::unary_numeric::UnaryNumeric<burn_cubecl::tensor::base::CubeTensor::copy::Copy>": {
+    "launches": 1,
+    "total_ms": 11.988625,
+    "mean_ms": 11.988625,
+    "methods": {
+      "device": 1
+    }
+  },
+  "burn_cubecl::ops::numeric::fill_device_dtype::full_kernel::FullKernel": {
+    "launches": 2080,
+    "total_ms": 1259.343714,
+    "mean_ms": 0.605454,
+    "methods": {
+      "device": 2080
+    }
+  },
+  "burn_cubecl_fusion::optim::elemwise::optimization::elemwise_fuse::ElemwiseFuse": {
+    "launches": 3283,
+    "total_ms": 4184.023049,
+    "mean_ms": 1.274451,
+    "methods": {
+      "device": 3283
+    }
+  },
+  "cubecl_std::tensor::contiguous::base::copy_kernel_pack::CopyKernelPack": {
+    "launches": 1,
+    "total_ms": 1.048917,
+    "mean_ms": 1.048917,
+    "methods": {
+      "device": 1
+    }
+  },
+  "cubek_random::base::prng_kernel::PrngKernel<cubek_random::normal::NormalFamily>": {
+    "launches": 200,
+    "total_ms": 152.471421,
+    "mean_ms": 0.762357,
+    "methods": {
+      "device": 200
+    }
+  },
+  "cubek_reduce::launch::base::reduce_kernel::ReduceKernel<cubek_reduce::components::args::TensorArgs>": {
+    "launches": 640,
+    "total_ms": 1031.530094,
+    "mean_ms": 1.611766,
+    "methods": {
+      "device": 640
+    }
+  },
+  "cubek_reduce::routines::shared_sum::shared_sum_kernel::SharedSumKernel": {
+    "launches": 200,
+    "total_ms": 123.456829,
+    "mean_ms": 0.617284,
+    "methods": {
+      "device": 200
+    }
+  }
+}
