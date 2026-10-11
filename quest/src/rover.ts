@@ -729,7 +729,7 @@ export class RoverExperience {
         this.stop("Stopped: center the joystick", true);
       }
       this.toggleDown = toggle; this.exploreDown = stop;
-      this.actionMenu.visible = false; this.pointer.visible = false;
+      this.actionMenu.visible = false; this.pointer.visible = this.aimedIntercom;
       this.navOverlay.setReticle(null);
       if (this.autoArming && !this.gate.needsRelease && this.status && !this.status.requires_release &&
           this.socket?.readyState === WebSocket.OPEN && now - this.gate.receivedAt < 200)
@@ -884,7 +884,6 @@ export class RoverExperience {
     if (this.bannerPending && (!painted || now - this.bannerPending.at > 100)) this.drawBanner();
   }
   private paintIdentity(now: number) {
-    if (this.renderer.xr.isPresenting) { this.identityPanel.visible = false; this.identityCanvas.hidden = true; return; }
     if (!this.identityCanvas || (!this.identityDirty && this.identityPaintSource === this.frameSource
         && now - this.lastIdentityPaint < 100)) return;
     const context = this.identityCanvas.getContext("2d")!;
@@ -894,7 +893,7 @@ export class RoverExperience {
     // Updating identity pixels never marks camera presentation or renews its age.
     if (count || this.identityPanel.visible || this.identityDirty) this.identityTexture.needsUpdate = true;
     this.identityPanel.visible = count > 0;
-    this.identityCanvas.hidden = count === 0;
+    this.identityCanvas.hidden = this.renderer.xr.isPresenting || count === 0;
     this.identityDirty = false; this.lastIdentityPaint = now;
     this.identityPaintSource = this.frameSource;
   }
