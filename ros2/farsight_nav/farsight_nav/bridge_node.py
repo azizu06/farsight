@@ -695,6 +695,9 @@ class FarsightBridge(Node):
                 robot=robot, pose_at=self.pose_at, depth=depth, header=header, depth_at=self.depth_at,
                 support=support, resolution=resolution, origin=origin, map_at=self.global_grid_at,
                 to_map=to_map, body_clear=body_clear, lethal=obstacles, unseen=unseen)
+            import sys as _sys
+            _nav = self.nav_command if self.nav_command is not None and now - self.nav_command_at <= 0.2 else None
+            print(f"SRCDBG t={now:.2f} nav={_nav and (round(_nav[0],2), round(_nav[1],2))} out={command and (round(command[0],2), round(command[1],2))} goal={self.goal_id}", file=_sys.stderr, flush=True)
             if command is not None:
                 command = speed.limit(command, clearance, speed.top_speed(self.config), **self.speed_bands)
                 self.send(protocol.cmd_vel(*command, self.goal_id, self.generation))
