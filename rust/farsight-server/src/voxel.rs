@@ -11,6 +11,9 @@ pub struct Cell {
     pub pos: [f64; 3],
     pub color: [f64; 3],
     pub weight: u32,
+    /// Map revision of the integrate that last touched this cell; drives
+    /// the additive /map/points.delta feed. 0 = predates revision stamping.
+    pub touched: u64,
 }
 
 pub struct VoxelMap {
@@ -29,7 +32,7 @@ impl VoxelMap {
         self.cells.clear();
     }
 
-    pub fn integrate(&mut self, points: &[[f32; 3]], colors: &[[u8; 3]]) {
+    pub fn integrate(&mut self, points: &[[f32; 3]], colors: &[[u8; 3]], touched: u64) {
         if points.is_empty() {
             return;
         }
@@ -64,9 +67,10 @@ impl VoxelMap {
                         cell.color[a] = cell.color[a] * (1.0 - alpha) + color[a] * alpha;
                     }
                     cell.weight = (cell.weight + 1).min(30);
+                    cell.touched = touched;
                 }
                 None => {
-                    self.cells.insert(key, Cell { pos, color, weight: 1 });
+                    self.cells.insert(key, Cell { pos, color, weight: 1, touched });
                 }
             }
             // move_to_end(key): refresh LRU position for both paths.

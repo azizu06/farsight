@@ -783,6 +783,29 @@ async fn map_export(State(s): State<Arc<AppState>>, headers: HeaderMap) -> Respo
     map_packet_response(&s, crate::state::PacketKind::Ply, &headers, true)
 }
 
+/// Additive point feed (board 6104167521): cells touched since `?after=`
+/// in the standard 16 B record layout so map updates stay ~7x smaller than
+/// a full replacement — the client merges keyed in place at high cadence.
+async fn map_points_delta(
+    State(s): State<Arc<AppState>>,
+    headers: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let after = match q.get("after").map(|v| v.parse::<u64>()) {
+        Some(Ok(v)) => v,
+        _ => return (StatusCode::BAD_REQUEST, "points.delta requires integer ?after=").into_response(),
+    };
+    let (body, coding, revision, generation) =
+        s.mapping.points_delta(after, accept_encoding(&headers));
+    let mut response = packet_response(body, coding);
+    let h = response.headers_mut();
+    h.insert("X-Map-Revision", revision.to_string().parse().unwrap());
+    h.insert("X-Map-Generation", generation.to_string().parse().unwrap());
+    h.insert("X-Map-Delta", "1".parse().unwrap());
+    h.insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+    response
+}
+
 /// `/map/dense.bin` query surface: epoch/after/snapshot/anchor/limit
 /// (jetson/mapping/server.py parity).
 #[derive(Debug)]
@@ -2244,6 +2267,7 @@ pub fn router(state: Arc<AppState>, dist: Option<PathBuf>) -> Router {
         // variants are cached per map version inside MapState.
         .route("/map/status", get(map_status))
         .route("/map/points.bin", get(map_points))
+        .route("/map/points.delta", get(map_points_delta))
         .route("/map/dense.bin", get(map_dense))
         .route("/map/mesh.bin", get(map_mesh))
         .route("/map/export.ply", get(map_export))
