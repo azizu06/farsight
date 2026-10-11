@@ -88,6 +88,42 @@ class BridgeAuthorityTests(unittest.TestCase):
         node.send_goal = lambda goal_id, goal: self.goals.append((goal_id, goal))
         self.twist = SimpleNamespace(linear=SimpleNamespace(x=.2), angular=SimpleNamespace(z=0.))
 
+    def explore_intent(self, active):
+        self.node.on_intent(dict(generation=2, active=active, mode="explore" if active else "teleop", goal_id=None))
+
+    def test_short_server_stop_resumes_the_same_explore_frontier(self):
+        node = self.node
+        node.goal_handle, node.intent_goal_id = None, None
+        node.explore_resume_s, node.explore_paused_at = 2.0, None
+        node.blacklist, node.escape_from, node.no_frontier_since, node.explore_finished = [], None, None, False
+        clock = [100.0]
+        with patch.object(BRIDGE_MODULE.time, "monotonic", lambda: clock[0]):
+            self.explore_intent(True)
+            node.explore_target, node.blacklist = (1.0, 2.0), [(3.0, 3.0, 99.0)]
+            explorer = node.explorer
+            self.explore_intent(False)  # video_stale: the server drops Explore for a moment
+            clock[0] += 1.2
+            self.explore_intent(True)
+            self.assertEqual(node.explore_target, (1.0, 2.0))
+            self.assertIs(node.explorer, explorer)
+            self.assertEqual(len(node.blacklist), 1)
+            self.explore_intent(False)  # a real release: back after more than 2 s starts fresh
+            clock[0] += 2.5
+            self.explore_intent(True)
+            self.assertIsNone(node.explore_target)
+            self.assertIsNot(node.explorer, explorer)
+            self.assertEqual(node.blacklist, [])
+
+    def test_sensor_reset_never_resumes_the_old_explore(self):
+        node = self.node
+        node.explore_resume_s, node.explore_paused_at = 2.0, None
+        node.blacklist, node.escape_from, node.no_frontier_since, node.explore_finished = [], None, None, False
+        node.exploring, node.explore_target = True, (1.0, 2.0)
+        node.explore_paused_at = 0.0
+        node.on_reset(dict(generation=2))
+        self.explore_intent(True)
+        self.assertIsNone(node.explore_target)
+
     def test_forwarded_velocity_retains_current_sensor_generation(self):
         self.node.on_cmd_vel(self.twist)
         self.assertEqual(len(self.sent), 1)
