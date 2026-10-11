@@ -326,6 +326,18 @@ class ExploreStallTests(unittest.TestCase):
         self.assertAlmostEqual(fresh.goals[-1][1]["x"], 3.02, places=2)
         self.assertAlmostEqual(fresh.goals[-1][1]["y"], 4.43, places=2)
 
+    def test_skipped_forward_goal_does_not_hide_a_usable_flank(self):
+        # Issue #180: the stalled east goal is still observed and blacklisted; the
+        # forward cone holds only it, so the whole pool must get its turn.
+        east = frontiers.Frontier((4.5, 2.5), (4.5, 2.5), 0.5)
+        flank = frontiers.Frontier((3.02, 4.43), (3.02, 4.43), 4.0)
+        node = self.make_node()
+        node.blacklist = [(4.5, 2.5, time.monotonic())]
+        self.tick(node, [east, flank])
+        self.assertTrue(node.goals, "a usable flank must be sent, not 'no reachable frontier'")
+        self.assertAlmostEqual(node.goals[-1][1]["x"], 3.02, places=2)
+        self.assertAlmostEqual(node.goals[-1][1]["y"], 4.43, places=2)
+
 
 if __name__ == "__main__":
     unittest.main()
