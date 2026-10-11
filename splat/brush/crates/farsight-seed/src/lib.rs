@@ -17,6 +17,7 @@ pub mod decimate;
 pub mod emit;
 pub mod fill;
 pub mod grid;
+pub mod mono;
 pub mod pca;
 pub mod synth;
 pub mod views;
@@ -28,6 +29,7 @@ pub use clean::CleanConfig;
 pub use colour::{ColourConfig, DepthSample, SparseDepthView};
 pub use emit::SeedSplat;
 pub use fill::{FillConfig, FillPoint};
+pub use mono::MonoConfig;
 pub use pca::PcaConfig;
 pub use views::{NerfCapture, SeedCamera, SeedView};
 
@@ -48,6 +50,9 @@ pub struct SeedConfig {
     pub fill_opacity: f32,
     /// Use dot rgb only when photo sampling fails.
     pub dot_colour_fallback: bool,
+    /// Depth Anything V2 model path (empty = mono lane off).
+    pub mono_model: String,
+    pub mono: MonoConfig,
     pub clean: CleanConfig,
     pub pca: PcaConfig,
     pub colour: ColourConfig,
@@ -69,6 +74,8 @@ impl Default for SeedConfig {
             pca: PcaConfig::default(),
             colour: ColourConfig::default(),
             fill: None,
+            mono_model: String::new(),
+            mono: MonoConfig::default(),
         }
     }
 }
@@ -96,6 +103,8 @@ pub struct SeedStats {
     /// passing the occlusion test (sampled for colour).
     pub view_in_frame: u64,
     pub view_accepted: u64,
+    /// Splats synthesised by the mono-depth lane (0 when model absent).
+    pub mono_added: usize,
     pub clean: serde_json::Value,
 }
 
@@ -202,6 +211,41 @@ pub fn run(
         });
     }
 
+    // --- 5b. mono-depth fill: back-project confident uncovered pixels ---
+    let mut mono_added = 0usize;
+    if !cfg.mono_model.is_empty() {
+        let maps = mono::complete(views, &pts, &cfg.mono_model, &cfg.mono);
+        let vz: Vec<Option<mono::ViewZ>> = views
+            .iter()
+            .enumerate()
+            .map(|(i, v)| maps.iter().any(|m| m.view_index == i).then(|| mono::project_view(&v.camera, &pts)))
+            .collect();
+        let cands = mono::fill_from_maps(&maps, views, &vz, &pts, med_spacing, &cfg.mono, 200_000);
+        mono_added = cands.len();
+        for (p, conf, vi) in cands {
+            let cam = &views[vi].camera;
+            let n = (cam.position() - p).normalize_or_zero();
+            let rgb = (|| {
+                let im = views[vi].image.as_ref()?;
+                let (u, v, _d) = cam.project(p)?;
+                let c = colour::sample_img_pub(
+                    im,
+                    u * im.width() as f32 / cam.width as f32,
+                    v * im.height() as f32 / cam.height as f32,
+                );
+                Some([c[0] as u8, c[1] as u8, c[2] as u8])
+            })()
+            .unwrap_or([128, 128, 128]);
+            splats.push(SeedSplat {
+                pos: p,
+                rot_cols: normal_cols(n),
+                scales: [fill_scale; 3],
+                rgb,
+                opacity: (0.15 + 0.35 * conf).min(cfg.fill_opacity.max(0.15)),
+            });
+        }
+    }
+
     SeedOutput {
         stats: SeedStats {
             dots_in: dots.len(),
@@ -214,6 +258,7 @@ pub fn run(
             colour_views: views.len().div_ceil(col_stride),
             depth_views,
             uncoloured: uncoloured.get(),
+            mono_added,
             view_in_frame: vs_in,
             view_accepted: vs_ok,
             clean: serde_json::json!({

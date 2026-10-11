@@ -146,6 +146,12 @@ fn sample_img(img: &image::RgbImage, u: f32, v: f32) -> [f32; 3] {
     out
 }
 
+/// Public wrapper of `sample_img` for the mono lane's per-point colour.
+#[inline]
+pub fn sample_img_pub(img: &image::RgbImage, u: f32, v: f32) -> [f32; 3] {
+    sample_img(img, u, v)
+}
+
 /// Per-point result of the projection pass.
 pub struct ColourResult {
     /// Median photo colour per point (sRGB 0..255); None when unobserved.

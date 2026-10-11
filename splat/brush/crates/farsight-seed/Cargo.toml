@@ -25,6 +25,13 @@ rayon = "1"
 rustc-hash = "2"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
+ort = { version = "2.0.0-rc.13", optional = true, default-features = false, features = ["load-dynamic"] }
+
+[features]
+# `onnx`: Depth-Anything inference on the CPU EP (Linux correctness path).
+# `coreml`: registers the CoreML EP (Neural Engine) — only on macOS targets.
+onnx = ["dep:ort"]
+coreml = ["onnx", "ort/coreml"]
 
 [dev-dependencies]
 tempfile = "3"

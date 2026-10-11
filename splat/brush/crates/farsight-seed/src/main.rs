@@ -50,6 +50,10 @@ struct Args {
     /// Also write the raw (non-decimated) dot cloud PLY for comparison.
     #[arg(long)]
     dump_clean: bool,
+    /// Depth Anything V2 ONNX model for mono-depth fill (needs a build with
+    /// `--features onnx`; macOS ANE uses `--features coreml`).
+    #[arg(long)]
+    mono_depth: Option<std::path::PathBuf>,
 }
 
 fn main() -> Result<()> {
@@ -79,6 +83,9 @@ fn main() -> Result<()> {
     cfg.clean.sor_std = args.sor_std;
     cfg.colour.colour_stride = args.colour_stride;
     cfg.colour.depth_stride = args.depth_stride;
+    if let Some(m) = &args.mono_depth {
+        cfg.mono_model = m.to_string_lossy().into_owned();
+    }
     if let Some(fs) = args.fill {
         cfg.fill = Some(fs::FillConfig {
             stride: fs.max(1),
@@ -94,8 +101,9 @@ fn main() -> Result<()> {
         fs::colour::auto_stride(views.len(), 96)
     };
     let fstride = cfg.fill.as_ref().map(|f| f.stride).unwrap_or(usize::MAX);
+    let mono_on = !cfg.mono_model.is_empty();
     let want: Vec<usize> = (0..views.len())
-        .filter(|i| i % cstride == 0 || i % fstride == 0)
+        .filter(|i| i % cstride == 0 || i % fstride == 0 || mono_on)
         .collect();
     views::load_images(&args.capture_dir, &mut views, &want);
     eprintln!(
