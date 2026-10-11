@@ -250,12 +250,14 @@ the goal.
 - **Controller:** Regulated Pure Pursuit by default (20 Hz, 0.95 m/s, never under
   0.45 m/s on approach; tight arcs still slow to 0.25 m/s, because a 0.45 m/s arc floor
   cut the simulated dead-end divider), 0.2-0.5 m
-  speed-scaled lookahead, rotate in place at 2.2 rad/s only beyond 1.0 rad, otherwise
+  speed-scaled lookahead, rotate in place at 1.0 rad/s only beyond 1.0 rad, otherwise
   arc). RPP raises an in-place turn by at most `max_angular_accel` per step above the
   *measured* yaw rate, so it is 60 rad/s^2: at 8 the first step was 0.4 rad/s (PWM 80),
   the loaded rover never broke free and sat for 27 s (floor test, 2026-10-11); now the
-  first step is the full 2.2 rad/s (PWM 109/104 on the unloaded profile, 255/243 on the
-  loaded one). A 3.0 rad/s turn banged between
+  first step is the full 1.0 rad/s, PWM ~148/141 on the loaded profile. At 2.2 rad/s the
+  loaded profile saturated it at 255/243. The rover then spun about 5.7 rad/s (ARKit
+  yaw, 2026-10-11 07:40Z), reversed every 0.3 s and lost ARKit tracking. The captain's
+  manual pivot at PWM ~100 turned 0.87 rad/s. A 3.0 rad/s turn banged between
   directions every 0.2 s in the simulated dead end and hit its walls. Or MPPI
   with `controller:=mppi` (1000 samples, 2 s horizon, `vx_max` 0.95 m/s, `wz_max`
   2.5 rad/s). These are full power for `FARSIGHT_AUTONOMY_MAX_PWM=255` on the 2026-10-10 drive
@@ -273,7 +275,7 @@ the goal.
   global costmap updates at 15 Hz), or when the goal moves. It recovers in turn by
   clearing the local costmap and the global costmap within 1.5 m of the rover (the
   explored map stays), backing up 0.25 m at 0.3 m/s (no rear sensing) and spinning
-  90 degrees at 2.2 rad/s (its 1.5 rad/s floor, PWM 80, did not break the loaded
+  90 degrees at 1.0 rad/s (PWM ~148/141 loaded; PWM 80 did not break the loaded
   rover free); it never waits. Goal checks are position only (0.20 m); final
   heading does not matter.
 
