@@ -360,15 +360,21 @@ fn bracket_mask(keys: &[u64], rounds: &[u8], band_rounds: usize, reach: i32) -> 
 // Observations
 // ---------------------------------------------------------------------------
 
-struct Obs {
-    val: f32,
-    w: f32,
-    sup: f32,
-    col: [f32; 3],
+/// Per-cell TSDF observation record. `pub(crate)`: this is the CPU twin of
+/// `accel::tsdf_splat` — the GPU kernel produces the same per-cell
+/// (val, w, sup, col) reduction over the band cells, from the same inputs
+/// (cell centres, spatial grid, point pos/nrm/weight/flags, obs radius).
+pub(crate) struct Obs {
+    pub(crate) val: f32,
+    pub(crate) w: f32,
+    pub(crate) sup: f32,
+    pub(crate) col: [f32; 3],
 }
 
 /// Weighted point-to-plane implicit estimate for one cell centre.
-fn observe(
+/// Pure function of (centre, grid, cloud) — the per-cell kernel W7's
+/// `accel::tsdf_splat` replicates on GPU.
+pub(crate) fn observe(
     center: V3,
     grid: &Grid,
     cloud: &PointCloud,
@@ -861,7 +867,7 @@ pub fn reconstruct(cloud: &PointCloud, opts: &SurfaceOptions) -> (Mesh, Stats) {
         keys: Vec::with_capacity(keys.len()),
         idx: FxHashMap::with_capacity_and_hasher(keys.len(), Default::default()),
         val: Vec::with_capacity(keys.len()),
-        obs: Vec::with_capacity(keys.len()),
+        obs: Vec::with_capacity(keys.len()), // seam: accel::tsdf_splat writes the same layout
         w: Vec::with_capacity(keys.len()),
         sup: Vec::with_capacity(keys.len()),
         col: Vec::with_capacity(keys.len()),
