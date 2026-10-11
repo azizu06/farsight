@@ -1420,6 +1420,7 @@ async fn control_status(State(s): State<Arc<AppState>>) -> Json<Value> {
 async fn phone_frame_bin(
     State(s): State<Arc<AppState>>,
     Query(q): Query<std::collections::HashMap<String, String>>,
+    headers: HeaderMap,
 ) -> Response {
     let Some(capture) = &s.raw_capture else {
         return StatusCode::NOT_FOUND.into_response();
@@ -1428,12 +1429,22 @@ async fn phone_frame_bin(
         Ok(snap) => {
             let mut response = match snap.body {
                 None => StatusCode::NO_CONTENT.into_response(),
-                Some(body) => {
+                Some(raw) => {
+                    // EncodedCache.get('raw', ...) parity: br/gzip variant
+                    // cached per capture key, Vary + Content-Encoding set.
+                    let (body, coding) =
+                        capture.encoded_body(&snap.key, raw, accept_encoding(&headers));
                     let mut r = Response::new(paced_body(body));
                     r.headers_mut().insert(
                         header::CONTENT_TYPE,
                         "application/octet-stream".parse().unwrap(),
                     );
+                    r.headers_mut()
+                        .insert(header::VARY, "Accept-Encoding".parse().unwrap());
+                    if !coding.is_empty() {
+                        r.headers_mut()
+                            .insert(header::CONTENT_ENCODING, coding.parse().unwrap());
+                    }
                     r
                 }
             };

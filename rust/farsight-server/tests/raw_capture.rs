@@ -178,10 +178,15 @@ async fn serve(state: Arc<farsight_server::server::AppState>) -> std::net::Socke
     addr
 }
 
+// build_state reads the process-global FARSIGHT_RAW_CAPTURE env — serialize
+// the two tests that mutate it.
+static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 // create_app parity: /phone/frame.bin exists only under
 // FARSIGHT_RAW_CAPTURE=1; unset leaves the route unmounted.
 #[tokio::test]
 async fn env_opt_in_mounts_endpoint_default_off() {
+    let _guard = ENV_LOCK.lock().unwrap();
     std::env::remove_var("FARSIGHT_RAW_CAPTURE");
     assert!(app_state().raw_capture.is_none());
     let addr = serve(app_state()).await;
@@ -199,5 +204,59 @@ async fn env_opt_in_mounts_endpoint_default_off() {
         .unwrap();
     // Mounted but no accepted frame yet → 503 'Waiting for accepted RGB-D'.
     assert_eq!(resp.status(), 503);
+    std::env::remove_var("FARSIGHT_RAW_CAPTURE");
+}
+
+// #170 parity: EncodedCache on the raw route — gzip/br variant cached per
+// capture key, native bytes preserved under Content-Encoding, q=0 refused.
+#[tokio::test]
+async fn compressed_export_preserves_native_bytes_and_refused_coding() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::set_var("FARSIGHT_RAW_CAPTURE", "1");
+    let state = app_state();
+    state
+        .mapping
+        .start_session(("phone".into(), 1), "fixture".into());
+    let capture = state.raw_capture.clone().unwrap();
+    let mut f = frame(1);
+    // Body must clear the 1 KiB encode floor.
+    f.jpeg = vec![7u8; 2048];
+    f.header["_received_monotonic"] = json!(now_monotonic());
+    f.header["_mapping_socket_generation"] =
+        json!(state.mapping.inner.lock().unwrap().socket_generation);
+    state.mapping.inner.lock().unwrap().tracking = "normal".into();
+    capture.observe(&f);
+    let addr = serve(state).await;
+
+    let client = reqwest::Client::new();
+    let compressed = client
+        .get(format!("http://{addr}/phone/frame.bin"))
+        .header("Accept-Encoding", "gzip")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(compressed.status(), 200);
+    assert_eq!(
+        compressed.headers().get("content-encoding").unwrap(),
+        "gzip"
+    );
+    let gz_body = compressed.bytes().await.unwrap();
+    let mut decoded = Vec::new();
+    use std::io::Read;
+    flate2::read::GzDecoder::new(&gz_body[..])
+        .read_to_end(&mut decoded)
+        .unwrap();
+    assert!(gz_body.len() < decoded.len());
+    // Native wire layout survives the encoding intact.
+    let jlen = u32::from_le_bytes(decoded[0..4].try_into().unwrap()) as usize;
+    assert_eq!(&decoded[4 + jlen..4 + jlen + 2048], &vec![7u8; 2048][..]);
+
+    let refused = client
+        .get(format!("http://{addr}/phone/frame.bin"))
+        .header("Accept-Encoding", "gzip;q=0,br;q=0")
+        .send()
+        .await
+        .unwrap();
+    assert!(refused.headers().get("content-encoding").is_none());
     std::env::remove_var("FARSIGHT_RAW_CAPTURE");
 }

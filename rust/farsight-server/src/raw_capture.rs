@@ -7,6 +7,7 @@
 //! documented wire layout: u32le JSON-header length + header + native JPEG +
 //! depth f4 + confidence u8.
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
@@ -55,10 +56,18 @@ impl SnapError {
     }
 }
 
+/// Key-keyed body plus its negotiated variants (compress.py EncodedCache:
+/// a new capture key drops the old entry wholesale).
+struct CachedBody {
+    key: String,
+    raw: Bytes,
+    variants: HashMap<&'static str, Bytes>,
+}
+
 pub struct RawCapture {
     state: Arc<MapState>,
     latest: Mutex<Option<Held>>,
-    cached: Mutex<Option<(String, Bytes)>>,
+    cached: Mutex<Option<CachedBody>>,
 }
 
 impl RawCapture {
@@ -134,10 +143,10 @@ impl RawCapture {
                 age_ms,
             });
         }
-        if let Some((cached_key, body)) = self.cached.lock().unwrap().as_ref() {
-            if cached_key == &key {
+        if let Some(cached) = self.cached.lock().unwrap().as_ref() {
+            if cached.key == key {
                 return Ok(Snapshot {
-                    body: Some(body.clone()),
+                    body: Some(cached.raw.clone()),
                     key,
                     age_ms,
                 });
@@ -189,11 +198,72 @@ impl RawCapture {
                 return Err(SnapError::ScopeChanged);
             }
         }
-        *self.cached.lock().unwrap() = Some((key.clone(), body.clone()));
+        *self.cached.lock().unwrap() = Some(CachedBody {
+            key: key.clone(),
+            raw: body.clone(),
+            variants: HashMap::new(),
+        });
         Ok(Snapshot {
             body: Some(body),
             key,
             age_ms,
         })
     }
+
+    /// compress.py EncodedCache.get('raw', ...) parity: br then gzip by
+    /// q-value (wildcard counts), encoded once per capture key, 1 KiB floor.
+    pub fn encoded_body(&self, key: &str, raw: Bytes, accept: &str) -> (Bytes, &'static str) {
+        let mut cached = self.cached.lock().unwrap();
+        if cached.as_ref().map(|c| c.key != key).unwrap_or(true) {
+            *cached = Some(CachedBody {
+                key: key.to_string(),
+                raw: raw.clone(),
+                variants: HashMap::new(),
+            });
+        }
+        let entry = cached.as_mut().unwrap();
+        let coding = negotiate(accept);
+        if coding.is_empty() || entry.raw.len() < 1024 {
+            return (entry.raw.clone(), "");
+        }
+        let body = entry
+            .variants
+            .entry(coding)
+            .or_insert_with(|| encode(coding, &entry.raw));
+        (body.clone(), coding)
+    }
+}
+
+/// compress.negotiate: iterates ("br","gzip") in order; an explicit offer or
+/// a positive wildcard wins, q=0 refuses. Only this subset — the raw route
+/// never negotiates zstd (unlike the map packet paths).
+fn negotiate(accept: &str) -> &'static str {
+    let mut offered: HashMap<String, f64> = HashMap::new();
+    for part in accept.split(',') {
+        let mut seg = part.trim().splitn(2, ';');
+        let name = seg.next().unwrap_or("").trim().to_ascii_lowercase();
+        let params = seg.next().unwrap_or("").trim().replace(' ', "");
+        let mut q = 1.0;
+        if params.starts_with("q=") {
+            q = params[2..].parse::<f64>().unwrap_or(0.0);
+        }
+        if !name.is_empty() {
+            offered.insert(name, q);
+        }
+    }
+    let wildcard = offered.get("*").copied().unwrap_or(0.0);
+    for coding in ["br", "gzip"] {
+        if offered.get(coding).copied().unwrap_or(wildcard) > 0.0 {
+            return coding;
+        }
+    }
+    ""
+}
+
+fn encode(coding: &str, body: &[u8]) -> Bytes {
+    let out = match coding {
+        "br" => crate::state::brotli_compress(body),
+        _ => crate::state::gzip_compress(body),
+    };
+    Bytes::from(out)
 }
