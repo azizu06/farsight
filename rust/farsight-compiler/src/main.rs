@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use farsight_compiler::{core::*, export, io, metrics, pipeline, synth, view};
+use farsight_compiler::{core::*, export, io, metrics, pipeline, refine, synth, view};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -28,6 +28,18 @@ enum Cmd {
         /// JSON file overriding CompileOptions fields.
         #[arg(long)]
         config: Option<PathBuf>,
+        /// Optional splat refine backend: off | brush (requires --capture).
+        #[arg(long, default_value = "off")]
+        refine: String,
+        /// Brush arg preset: fast60 (~2.5k steps) | max (30k steps).
+        #[arg(long, default_value = "fast60")]
+        refine_preset: String,
+        /// Brush --total-steps override (0 = preset value).
+        #[arg(long, default_value_t = 0)]
+        refine_steps: u32,
+        /// Path to the brush_app binary (else $BRUSH or the tools/splat cache).
+        #[arg(long)]
+        brush: Option<PathBuf>,
     },
     /// Write the synthetic ground-truth room scan (cloud.ply, capture/, truth.ply, scene.json).
     Synth {
@@ -96,16 +108,25 @@ fn write_report(out: &PathBuf, out_put: &pipeline::Output, extra: serde_json::Va
 
 fn main() -> Result<()> {
     match Cli::parse().cmd {
-        Cmd::Compile { input, capture, out, preset, config } => {
-            let opts = options(&preset, &config)?;
+        Cmd::Compile { input, capture, out, preset, config, refine, refine_preset, refine_steps, brush } => {
+            let mut opts = options(&preset, &config)?;
+            if refine == "brush" {
+                opts.refine.enabled = true;
+                opts.refine.preset = refine_preset;
+                opts.refine.steps = refine_steps;
+                opts.refine.brush = brush;
+                opts.refine.dir = out.clone();
+                opts.refine.capture_dir = capture.clone();
+            }
             let t = Instant::now();
             let cloud = io::load_source(&input).with_context(|| format!("loading {input}"))?;
             let cap = capture.as_deref().map(io::load_capture).transpose()?;
             eprintln!("[compile] loaded {} points{} in {:.0} ms", cloud.len(),
                 cap.as_ref().map(|c| format!(" + {} images", c.images.len())).unwrap_or_default(), t.elapsed().as_secs_f64() * 1e3);
-            let result = pipeline::compile(cloud, cap.as_ref(), &opts);
+            let mut result = pipeline::compile(cloud, cap.as_ref(), &opts);
             let files = export::write_all(&out, &result.cloud, &result.mesh, &opts.export)?;
-            write_report(&out, &result, serde_json::json!({ "input": input, "preset": preset }))?;
+            let rstats = refine::finish(&mut result.refine, &out);
+            write_report(&out, &result, serde_json::json!({ "input": input, "preset": preset, "refine": rstats }))?;
             for f in files { eprintln!("[compile] wrote {}", f.display()); }
         }
         Cmd::Synth { out, seed } => {

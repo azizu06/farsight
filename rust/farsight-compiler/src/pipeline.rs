@@ -2,7 +2,7 @@
 //! own module; wire new options through their `*Options` struct (serde default).
 
 use crate::core::{Capture, Mesh, PointCloud};
-use crate::{clean, densify, export, learned, meshops, normals, planes, surface, texture, Stats};
+use crate::{clean, densify, export, learned, meshops, normals, planes, refine, surface, texture, Stats};
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
@@ -18,6 +18,8 @@ pub struct CompileOptions {
     pub mesh: meshops::MeshOptions,
     pub texture: texture::TextureOptions,
     pub export: export::ExportOptions,
+    /// Optional Brush splat-refine stage (default off; additive W6 knob).
+    pub refine: refine::RefineOptions,
 }
 
 impl CompileOptions {
@@ -62,6 +64,8 @@ pub struct Output {
     pub cloud: PointCloud,
     pub mesh: Mesh,
     pub report: Vec<StageReport>,
+    /// Spawned Brush refine job when refine.enabled; collect via refine::finish.
+    pub refine: Option<refine::RefineHandle>,
 }
 
 fn timed<T>(report: &mut Vec<StageReport>, stage: &'static str, f: impl FnOnce() -> (T, Stats)) -> T {
@@ -100,7 +104,9 @@ pub fn compile(mut cloud: PointCloud, capture: Option<&Capture>, opts: &CompileO
     mesh.validate();
     timed(&mut report, "meshops", || ((), meshops::run(&mut mesh, &dense, &opts.mesh)));
     mesh.validate();
+    // Refine seed is written here so Brush trains while texture bake runs (W6).
+    let refine_handle = refine::start(&dense, &mesh, capture, &opts.refine);
     timed(&mut report, "texture", || ((), texture::bake(&mut mesh, &dense, capture, &opts.texture)));
     mesh.validate();
-    Output { cloud: dense, mesh, report }
+    Output { cloud: dense, mesh, report, refine: refine_handle }
 }

@@ -1,4 +1,5 @@
 //! Writers. OWNER: W6 (GLB, splat); PLY baseline here.
+pub mod brush;
 pub mod glb;
 pub mod ply;
 pub mod splat;

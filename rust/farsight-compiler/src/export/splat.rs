@@ -221,7 +221,8 @@ pub fn compact(cloud: &PointCloud, opacity0: f32, scale_mul: f32, thin: f32, def
             row[24..27].copy_from_slice(&c);
             row[27] = (cloud.weight(i).clamp(0.0, 1.0) * opacity0 * 255.0) as u8;
             for k in 0..4 {
-                row[28 + k] = ((q[k] * 0.5 + 0.5) * 255.0) as u8;
+                // antimatter15 quat byte: q*128+128, clamped (matches tools ply2splat.py)
+                row[28 + k] = (q[k] * 128.0 + 128.0).clamp(0.0, 255.0) as u8;
             }
             row
         })

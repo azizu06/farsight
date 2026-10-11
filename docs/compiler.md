@@ -113,3 +113,27 @@ synth capture): ~350-400 ms per view end-to-end; Huber fit residual
 (fit_rmse) 0.02-0.13 m vs the measured cloud; median |depth − GT| 15-72 mm
 per view vs the synthetic ground truth. `FARSIGHT_LEARNED_DUMP=<dir>` dumps
 `depth_<i>.f32` maps + `meta` for offline eval.
+
+## Splat refine (Brush)
+
+`compile --refine brush` adds an optional final stage (default off) that refines
+the compiled surfels into a photo-real Gaussian splat, seeded from our result
+instead of raw dots. It writes `<out>/brush/` containing:
+
+- `init.ply` — full INRIA-layout surfels: half from a ~texel-spaced sampling of
+  the mesh surface (flat disks on plane-exact normals, baked vertex colours,
+  opacity 0.8), half from the decimated densified cloud (hole fill included).
+- `transforms.json` — copied from the capture (original doc preserved, frames
+  symlinked under `images/`) with `ply_file_path: "init.ply"`; generated from
+  `Camera` intrinsics + c2w when no capture dir is available.
+- `images/` — symlinks to the source capture frames.
+
+Brush is located via `--brush`, `$BRUSH`, or the pinned tools/splat cache
+(`~/.cache/farsight-splat/brush-v0.3.0/.../brush_app`) and spawned as soon as
+the seed lands, so texture baking and export overlap training. Args come from
+`--refine-preset fast60|max` (fast60: `--total-steps 2500 --export-every 500`;
+max: 30k/5k, both `--max-splats 300000 --eval-split-every 8 --eval-save-to-disk`);
+`--refine-steps N` overrides. `refine::finish` promotes the newest export to
+`<out>/refined.ply` + `refined.splat`, computes held-out PSNR the way
+`score_heldout.py` does (per-view PNG vs capture JPEG, mean/median/min/max),
+and records seed splats, train wall time, steps/s and PSNR in report.json.

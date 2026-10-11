@@ -18,6 +18,7 @@ pub mod export;
 pub mod synth;
 pub mod metrics;
 pub mod pipeline;
+pub mod refine;
 pub mod view;
 pub mod accel;
 pub mod refine_presets;
