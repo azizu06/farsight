@@ -251,31 +251,46 @@ def explore_check(controller):
 
 
 def wander_check(controller):
-    """Informational: Explore in a room it finishes mapping in seconds. How much of the time
-    after the last frontier goes to turning in place vs driving, and does the rover get anywhere."""
+    """Informational: Explore in a room it finishes mapping in seconds. From the first sample
+    with no frontier to choose (local wander, or an open-space Nav2 route), how much of the
+    time goes to turning in place vs driving, and does the rover get anywhere."""
     def check():
         name = "wander" if controller == "rpp" else f"wander_{controller}"
         run, result = hold("wander", "explore", 90, lambda s: False, launch_args=[f"controller:={controller}"])
-        late = [s for s in run.samples if s["sim"] and "No reachable frontier" in (s["remote"].get("message") or "")]
+        samples = [s for s in run.samples if s["sim"]]
+        first = next((i for i, s in enumerate(samples) if any(
+            key in (s["remote"].get("message") or "") for key in ("No reachable frontier", "open space"))), len(samples))
+        late = samples[first:]
         spin = [s for s in late if abs(s["sim"].get("v", 0)) <= STILL and abs(s["sim"].get("w", 0)) > STILL]
         drive = [s for s in late if abs(s["sim"].get("v", 0)) > STILL]
         still = [s for s in late if abs(s["sim"].get("v", 0)) <= STILL and abs(s["sim"].get("w", 0)) <= STILL]
         speeds = [s["sim"]["v"] * s["sim"].get("speed_mps", 0.45) for s in drive]
         path = [(s["sim"]["x"], s["sim"]["z"]) for s in late]
         n = max(1, len(late))
-        result.update(controller=controller, no_frontier_samples=len(late),
+        messages = [s["remote"].get("message") or "" for s in late]
+        goals = {s["remote"].get("goal_id") for s in late if "open space" in (s["remote"].get("message") or "")
+                 and "No reachable" not in (s["remote"].get("message") or "")}
+        collided = next((round(s["t"] - samples[0]["t"], 1) for s in samples if (s["sim"].get("collisions") or 0) > 0), None)
+        result.update(controller=controller, no_frontier_at_s=round(late[0]["t"] - samples[0]["t"], 1) if late else None,
+                      no_frontier_samples=len(late),
                       turning_in_place=f"{100 * len(spin) / n:.0f}%", driving=f"{100 * len(drive) / n:.0f}%",
                       standing=f"{100 * len(still) / n:.0f}%",
                       driving_mps_median=round(statistics.median(speeds), 3) if speeds else None,
                       no_frontier_travelled_m=round(sum(math.dist(a, b) for a, b in zip(path, path[1:])), 2),
-                      reasons=sorted({(s["remote"].get("message") or "")[len("No reachable frontier: "):]
-                                      for s in late})[:6])
+                      no_frontier_displacement_m=round(math.dist(path[0], path[-1]), 2) if path else None,
+                      open_space_goals=len(goals - {None}),
+                      local_wander=f"{100 * sum('No reachable frontier' in m for m in messages) / n:.0f}%",
+                      first_collision_s=collided,
+                      reasons=sorted({m[len("No reachable frontier: "):] for m in messages
+                                      if m.startswith("No reachable frontier")})[:6])
         record(name, result)
         if result["collisions"]:
             raise AssertionError(f"collided: {json.dumps(result)}")
-        return (f"{controller.upper()} after the last frontier ({len(late)} samples): turning in place "
-                f"{result['turning_in_place']}, driving {result['driving']} at {result['driving_mps_median']} m/s, "
-                f"standing {result['standing']}, {result['no_frontier_travelled_m']} m travelled, 0 collisions")
+        return (f"{controller.upper()} after the last frontier at {result['no_frontier_at_s']} s ({len(late)} samples): "
+                f"turning in place {result['turning_in_place']}, driving {result['driving']} at "
+                f"{result['driving_mps_median']} m/s, standing {result['standing']}, "
+                f"{result['no_frontier_travelled_m']} m travelled ({result['no_frontier_displacement_m']} m net), "
+                f"{result['open_space_goals']} open-space goals, local wander {result['local_wander']}, 0 collisions")
     return check
 
 
