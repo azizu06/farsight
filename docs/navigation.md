@@ -76,8 +76,19 @@ ros2 launch farsight_nav nav.launch.py                 # or the farsight-nav sys
     heading is confirmed does it turn in place to look, restarting after each
     full turn. It re-scores frontiers every 0.5 s, and the status names why the
     nose is blocked (map, obstacle, no return, short). A detected
-    person never switches Explore to Seek: people are moving obstacles in the
-    LiDAR costmaps. Seek runs only when the operator selects it.
+    person never switches Explore to Seek. The bridge projects depth-located
+    person torsos from `/ws/detections` into separate inferred body footprints:
+    0.3 m radius per person, with a filled rounded hull for people connected
+    within 1.2 m (`people_body_radius`, `people_crowd_distance`). Floor between
+    legs and inside a small crowd is therefore occupied for navigation.
+    Separate crowds leave wide aisles open. This layer contributes to both
+    Nav2 costmaps before their existing inflation and to the bridge's Explore
+    map; it is never fused into measured reconstruction. Fresh snapshots replace
+    old positions; the detector's existing 1 s freshness expires the overlay.
+    Phone session/epoch/socket changes clear it. People require depth-backed
+    `world` coordinates and a matching native capture key; RGB-only boxes do not
+    become guessed world obstacles. This adds no command stop or parked wait.
+    Seek runs only when the operator selects it.
     The 20 Hz motion arbiter forwards Nav2 whenever its command is moving.
     Otherwise (planning gaps, goal changes, a controller zero, a recovery
     hand-off) it drives itself, using the current validated depth and pose
@@ -159,7 +170,7 @@ Loopback only; one bridge at a time; other hosts get close code 1008.
 | server -> bridge | `hello {version, speed_mps, turn_radps, max_v, max_w, camera_height, frame, camera_yaw_offset_rad, drive_profile, generation, command_generation_required:true}` |
 | server -> bridge | `reset {generation, reason}` when the phone session or map epoch changes: the bridge cancels its goal, clears both costmaps and its odometry history |
 | server -> bridge | `pose {transform (16, column-major ARKit camera-to-world), tracking, source, generation, age_ms, floor_y}` every 40 ms, only with fresh normal tracking; `floor_y` is `-nav_camera_height` |
-| server -> bridge | binary depth: `uint32` header length, JSON header (`frame_id, width, height, fx, fy, cx, cy, transform, floor_y, source, age_ms, generation, tracking`; intrinsics scaled to the subsampled size), normal-tracking frames only, `uint16` millimetres (0 = no return), at most 160 px wide |
+| server -> bridge | binary depth: `uint32` header length, JSON header (`frame_id, width, height, fx, fy, cx, cy, transform, floor_y, source, age_ms, generation, tracking`, optional `sensor_key` matching detections; intrinsics scaled to the subsampled size), normal-tracking frames only, `uint16` millimetres (0 = no return), at most 160 px wide |
 | server -> bridge | `range {cm, age_ms}` at 10 Hz; `intent {generation, active, mode, goal {x, y, yaw} in odom, goal_id, target_id}` on change and every 200 ms |
 | bridge -> server | `cmd_vel {generation, linear, angular, goal_id}` (m/s, rad/s counter-clockwise) at the controller rate; Goto/Seek commands for another `goal_id` are dropped |
 | bridge -> server | `status {generation, state, goal_id, path, frontiers, message, controller_hz, recoveries, nav2}` at 4 Hz; `path` and `frontiers` in odom |

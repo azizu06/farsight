@@ -12,6 +12,8 @@ the point-cloud voxel/obstacle layers); the nvblox node itself is launched by it
 
 import os
 
+import yaml
+
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, GroupAction, IncludeLaunchDescription, OpaqueFunction
@@ -20,6 +22,8 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node, SetParameter
 from launch_ros.descriptions import ParameterFile
 from nav2_common.launch import RewrittenYaml
+
+from farsight_nav.crowds import bootstrap_parameters
 
 NAV2_NODES = ("controller_server", "planner_server", "behavior_server", "bt_navigator")
 
@@ -31,6 +35,10 @@ def nav_nodes(context):
     configured = ParameterFile(RewrittenYaml(source_file=params, root_key="",
                                              param_rewrites={"default_nav_to_pose_bt_xml": bt_xml},
                                              convert_types=True), allow_substs=True)
+    # StaticLayer needs an initial map before activation. Derive its geometry
+    # from the same resolved params (including custom params_file substitutions).
+    with open(configured.evaluate(context)) as file:
+        people_geometry = bootstrap_parameters(yaml.safe_load(file))
     files = [configured]
     if LaunchConfiguration("costmap_source").perform(context) == "nvblox":
         files.append(os.path.join(share, "config", "nvblox_overlay.yaml"))
@@ -55,7 +63,7 @@ def nav_nodes(context):
         Node(package="nav2_lifecycle_manager", executable="lifecycle_manager", name="lifecycle_manager_navigation",
              output="screen", parameters=[{"autostart": True, "bond_timeout": 4.0, "node_names": list(NAV2_NODES)}]),
         Node(package="farsight_nav", executable="bridge", name="farsight_bridge", output="screen",
-             parameters=files + [{"server": LaunchConfiguration("server"), "publish_map_odom": not slam,
+             parameters=files + [people_geometry, {"server": LaunchConfiguration("server"), "publish_map_odom": not slam,
                           "controller": controller.upper(), "explore": explore,
                           "executor": LaunchConfiguration("bridge_executor")}],
              remappings=remappings),

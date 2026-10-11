@@ -52,6 +52,17 @@ def test_input_is_not_mutated_and_the_result_is_stable_when_applied_twice():
     assert apply_nvblox_layers(once) == once
 
 
+def test_farsight_people_layer_survives_nvblox_before_existing_inflation():
+    source = pathlib.Path(__file__).resolve().parents[2] / "farsight_nav/config/nav2_params.yaml"
+    base = yaml.safe_load(source.read_text())
+    out = apply_nvblox_layers(base)
+    for name in ("local_costmap", "global_costmap"):
+        costmap = block(out, name)
+        assert costmap["plugins"] == [LAYER_NAME, "people_layer", "inflation_layer"]
+        assert costmap["people_layer"] == block(base, name)["people_layer"]
+        assert costmap["people_layer"]["map_topic"] == "/farsight/people/map"
+
+
 def test_resolution_follows_the_voxel_size_only_when_given():
     assert block(apply_nvblox_layers(BASE), "local_costmap")["resolution"] == 0.1
     assert block(apply_nvblox_layers(BASE, resolution=0.05), "global_costmap")["resolution"] == 0.05

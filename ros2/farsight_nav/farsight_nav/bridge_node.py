@@ -36,7 +36,7 @@ from std_msgs.msg import String
 from std_srvs.srv import Trigger
 from tf2_ros import Buffer, StaticTransformBroadcaster, TransformBroadcaster, TransformListener
 
-from . import frames, frontiers, local_motion, open_space, protocol, speed
+from . import crowds, frames, frontiers, local_motion, open_space, protocol, speed
 
 try:
     import websockets
@@ -141,6 +141,12 @@ class FarsightBridge(Node):
         # rebuilt its wait set on every TF/costmap/feedback wakeup and spent
         # most of a core doing it. Callbacks here never block, so one thread is enough.
         self.executor_kind = p("executor", "events").value
+        self.people_options = dict(body_radius=p("people_body_radius", 0.3).value,
+                                   crowd_distance=p("people_crowd_distance", 1.2).value)
+        people_resolution = p("people_map_resolution", 0.05).value
+        self.people_geometry = (int(p("people_map_width", 40.0).value / people_resolution),
+                                int(p("people_map_height", 40.0).value / people_resolution), people_resolution,
+                                (p("people_map_origin_x", -20.0).value, p("people_map_origin_y", -20.0).value))
 
         self.tf = TransformBroadcaster(self)
         self.static_tf = StaticTransformBroadcaster(self)
@@ -153,6 +159,7 @@ class FarsightBridge(Node):
         self.info_pub = self.create_publisher(CameraInfo, "farsight/depth/camera_info", qos_profile_sensor_data)
         latched = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                              durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self.people_pub = self.create_publisher(OccupancyGrid, "farsight/people/map", latched)
         self.controller_pub = self.create_publisher(String, "controller_selector", latched)
         self.controller_pub.publish(String(data=self.controller))
         self.create_subscription(Twist, "cmd_vel", self.on_cmd_vel, 20)
@@ -176,6 +183,8 @@ class FarsightBridge(Node):
         self.static_tf.sendTransform(static)
 
         self.lock = threading.RLock()
+        self.people = crowds.People()
+        self.people_signature = None
         self.loop = None
         self.ws = None
         self.config = {}
@@ -229,6 +238,10 @@ class FarsightBridge(Node):
         self.explore_session = 0
         self.create_timer(p("explore_tick_s", 0.5).value, self.request_explore_tick)
         self.create_timer(0.05, self.motion_tick)
+        # A latched empty map lets Nav2 activate before the first detection or
+        # costmap arrives. The launch reads its geometry from the same params file.
+        self.publish_people()
+        self.create_timer(0.1, self.publish_people)
 
     def check_lifecycle(self):
         if self.lifecycle_pending or not self.lifecycle.service_is_ready():
@@ -283,6 +296,9 @@ class FarsightBridge(Node):
             self.explore_session += 1
             self.local_motion.reset()
             self.explore_target, self.no_frontier_since = None, None
+            self.people.clear()
+            self.people_signature = None
+            self.publish_people()
         self.cancel_goal(str(message.get("reason") or "sensor session changed"))
         for client in self.clear_costmaps:
             if client.service_is_ready():
@@ -331,6 +347,7 @@ class FarsightBridge(Node):
         with self.lock:
             self.depth_snapshot = (depth, header)
             self.depth_at = time.monotonic() - max(0, float(header.get("age_ms") or 0) / 1000)
+            self.people.bind(header.get("sensor_key"))
         points = frames.depth_points(depth, header["fx"], header["fy"], header["cx"], header["cy"])
         if len(points) > self.max_cloud_points:
             points = points[:: math.ceil(len(points) / self.max_cloud_points)]
@@ -412,6 +429,39 @@ class FarsightBridge(Node):
         with self.lock:
             self.global_grid = message
             self.global_grid_at = time.monotonic()
+            info = message.info
+            self.people_geometry = (info.width, info.height, info.resolution,
+                                    (info.origin.position.x, info.origin.position.y))
+
+    def on_people(self, packet):
+        with self.lock:
+            updated = self.people.update(packet)
+        if updated:
+            self.publish_people()
+
+    def publish_people(self):
+        """Replace the semantic map, including vacated cells; never mark floor free."""
+        to_map = self.planar(self.map_frame, self.odom_frame)
+        with self.lock:
+            points = tuple(to_map(x, y)[:2] for x, y in self.people.points())
+            geometry = self.people_geometry
+            signature = (self.people.identity, geometry, points)
+            if signature == self.people_signature:
+                return
+            width, height, resolution, origin = geometry
+            occupied = crowds.rasterize(points, (height, width), resolution, origin, **self.people_options)
+            cells = np.full((height, width), -1, np.int8)
+            cells[occupied] = 100
+            message = OccupancyGrid()
+            message.header.stamp = self.get_clock().now().to_msg()
+            message.header.frame_id = self.map_frame
+            message.info.width, message.info.height, message.info.resolution = width, height, resolution
+            message.info.origin.position.x, message.info.origin.position.y = origin
+            message.info.origin.orientation.w = 1.0
+            message.data = array.array("b", cells.tobytes())
+            # Keep publication ordered with sensor resets and snapshot replacement.
+            self.people_pub.publish(message)
+            self.people_signature = signature
 
     def planar(self, target, source):
         """(x, y, yaw) -> (x, y, yaw) from source to target frame; identity when TF has none (map == odom)."""
@@ -467,7 +517,11 @@ class FarsightBridge(Node):
             # Snapshot path samples; NumPy rasterization runs outside the lock.
             trail = frontiers.SweptFootprint(swept.radius)
             trail.poses = dict(swept.poses)
+            people = tuple(to_map(x, y)[:2] for x, y in self.people.points())
         cells = trail.apply(raw_cells, info.resolution, origin, to_map)
+        # A previously driven patch is floor evidence, not permission to pass
+        # through a person now standing there. Add semantic bodies after clearing.
+        cells = crowds.overlay(cells, people, info.resolution, origin, **self.people_options)
         cells, origin = frontiers.observed_window(cells, info.resolution, origin,
                                                   margin=self.explore_config.sensor_range)
         found = frontiers.find(cells, info.resolution, origin)
@@ -483,7 +537,7 @@ class FarsightBridge(Node):
         now = time.monotonic()
         support = frontiers.clearance_map(~((cells >= 0) & (cells <= frontiers.FREE_MAX)), info.resolution)
         # Inflation encodes robot padding, not an observed object inside the
-        # current body disc. Only lethal measured cells veto the physical sweep;
+        # current body disc. Lethal measured/semantic cells veto the physical sweep;
         # raw live depth below independently vetoes newly arrived objects.
         obstacles = frontiers.clearance_map(cells >= 100, info.resolution)
         unseen = frontiers.clearance_map(cells < 0, info.resolution)  # LocalMotion escape arcs
@@ -854,10 +908,28 @@ class FarsightBridge(Node):
                 self.cancel_goal("server link lost")
             await asyncio.sleep(1.0)
 
+    async def connect_people_forever(self):
+        """Consume existing depth-located detections without sharing the drive socket."""
+        url = self.server.rstrip("/").replace("https://", "wss://").replace("http://", "ws://") + "/ws/detections"
+        context = None
+        if url.startswith("wss://"):
+            context = ssl.create_default_context()
+            context.check_hostname, context.verify_mode = False, ssl.CERT_NONE
+        while rclpy.ok():
+            try:
+                async with websockets.connect(url, ssl=context, max_size=8 * 1024 * 1024, ping_interval=None) as ws:
+                    async for raw in ws:
+                        self.on_people(json.loads(raw))
+            except Exception as exc:
+                self.get_logger().warning(f"People link: {exc}", throttle_duration_sec=10.0)
+            await asyncio.sleep(1.0)
+
     def run_websocket(self):
         self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
-        self.loop.run_until_complete(self.connect_forever())
+        async def run():
+            await asyncio.gather(self.connect_forever(), self.connect_people_forever())
+        self.loop.run_until_complete(run())
 
 
 def make_executor(node):

@@ -10,8 +10,10 @@ from types import ModuleType, SimpleNamespace
 import unittest
 from unittest.mock import patch
 
+import numpy as np
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from farsight_nav import frontiers, local_motion  # noqa: E402
+from farsight_nav import crowds, frontiers, local_motion  # noqa: E402
 
 
 def bridge_module():
@@ -59,6 +61,80 @@ class Handle:
         return SimpleNamespace(add_done_callback=lambda callback: None)
 
 
+class PeopleBridgeTests(unittest.TestCase):
+    def setUp(self):
+        node = self.node = Bridge.__new__(Bridge)
+        node.lock = threading.RLock()
+        node.map_frame, node.odom_frame = "map", "odom"
+        node.people = crowds.People()
+        node.people.bind(["phone", 2, 7, 41, 99.])
+        node.people_signature, node.people_options = None, {}
+        node.people_geometry = (80, 60, .1, (-4., -3.))
+        node.planar = lambda target, source: lambda x, y, yaw=0.: (x, y, yaw)
+        node.get_clock = lambda: SimpleNamespace(now=lambda: SimpleNamespace(to_msg=lambda: "stamp"))
+        self.published = []
+        node.people_pub = SimpleNamespace(publish=self.published.append)
+
+    def grid(self):
+        return SimpleNamespace(header=SimpleNamespace(), info=SimpleNamespace(
+            origin=SimpleNamespace(position=SimpleNamespace(), orientation=SimpleNamespace())))
+
+    def data(self):
+        message = self.published[-1]
+        return np.asarray(message.data).reshape(message.info.height, message.info.width)
+
+    def test_bootstrap_is_empty_unknown_and_does_not_publish_free_room_geometry(self):
+        with patch.object(BRIDGE_MODULE, "OccupancyGrid", self.grid):
+            self.node.publish_people()
+            self.node.publish_people()
+        message = self.published[-1]
+        self.assertEqual((message.info.width, message.info.height, message.info.resolution), (80, 60, .1))
+        self.assertEqual(message.header.frame_id, "map")
+        self.assertEqual(len(self.published), 1)
+        self.assertTrue((self.data() == -1).all())
+
+    def test_actual_detection_callback_replaces_body_and_publishes_expired_clear(self):
+        packet = dict(sensor_key=["phone", 2, 7, 42, 100.], fresh=True, age_ms=0,
+                      boxes=[dict(cls="person", world=[0., 1.1, 0.])])
+        clock = [10.]
+        with patch.object(BRIDGE_MODULE, "OccupancyGrid", self.grid), patch.object(crowds.time, "monotonic", lambda: clock[0]):
+            self.node.on_people(packet)
+            self.assertEqual(self.data()[30, 40], 100)
+            clock[0] += .1
+            packet["boxes"][0]["world"] = [0., 1.1, -1.]
+            self.node.on_people(packet)
+            self.assertEqual(self.data()[30, 40], -1)
+            self.assertEqual(self.data()[30, 50], 100)
+            clock[0] += 1.
+            self.node.publish_people()
+            self.assertTrue((self.data() == -1).all())
+
+    def test_slam_transform_moves_semantics_from_odom_into_map(self):
+        self.node.planar = lambda target, source: lambda x, y, yaw=0.: (x + 1., y + .5, yaw)
+        with patch.object(BRIDGE_MODULE, "OccupancyGrid", self.grid):
+            self.node.on_people(dict(sensor_key=["phone", 2, 7, 42, 100.], fresh=True, age_ms=0,
+                                     boxes=[dict(cls="person", world=[0., 1.1, 0.])]))
+        self.assertEqual(self.data()[35, 50], 100)
+        self.assertEqual(self.data()[30, 40], -1)
+
+    def test_native_depth_identity_rebind_clears_the_previous_people_world(self):
+        node = self.node
+        node.generation, node.max_cloud_points, node.optical_frame = 2, 20000, "camera_optical"
+        node.on_pose = lambda *a, **k: None
+        node.cloud_pub = SimpleNamespace(publish=lambda message: None)
+        node.image_pub = node.info_pub = SimpleNamespace(get_subscription_count=lambda: 0)
+        node.people.update(dict(sensor_key=["phone", 2, 7, 42, 100.], fresh=True, age_ms=0,
+                                boxes=[dict(cls="person", world=[0., 1., 0.])]))
+        header = dict(generation=2, sensor_key=["phone", 3, 8, 1, 101.],
+                      transform=np.eye(4).flatten().tolist(), fx=1., fy=1., cx=0., cy=0.)
+        with patch.object(BRIDGE_MODULE.protocol, "decode_depth", return_value=(header, np.ones((1, 1)))), \
+             patch.object(BRIDGE_MODULE, "stamp_from", return_value="stamp"), \
+             patch.object(BRIDGE_MODULE, "cloud_msg", return_value=None):
+            node.handle_depth(b"fixture")
+        self.assertEqual(node.people.identity, ("phone", 3, 8))
+        self.assertEqual(node.people.points(), ())
+
+
 class BridgeAuthorityTests(unittest.TestCase):
     def setUp(self):
         self.node = Bridge.__new__(Bridge)
@@ -76,6 +152,9 @@ class BridgeAuthorityTests(unittest.TestCase):
         node.explore_config = frontiers.ExploreConfig()
         node.explorer = frontiers.Explorer(node.explore_config)
         node.swept = frontiers.SweptFootprint(.35)
+        node.people, node.people_options = crowds.People(), {}
+        node.people_signature = None
+        node.publish_people = lambda: None
         node.local_motion = local_motion.LocalMotion()
         node.progress = frontiers.ProgressWindow()
         node.explore_session, node.explore_target = 1, None
@@ -150,10 +229,15 @@ class BridgeAuthorityTests(unittest.TestCase):
 
     def test_reset_discards_active_intent_and_cached_nav_command(self):
         self.node.exploring = True
+        self.node.people.bind(["phone", 2, 7, 41, 99.])
+        self.node.people.update(dict(sensor_key=["phone", 2, 7, 42, 100.], fresh=True, age_ms=0,
+                                    boxes=[dict(cls="person", world=[0., 1., 0.])]))
         self.node.on_reset(dict(generation=3))
         self.assertFalse(self.node.intent_active)
         self.assertFalse(self.node.exploring)
         self.assertIsNone(self.node.nav_command)
+        self.assertEqual(self.node.people.points(), ())
+        self.assertIsNone(self.node.people.identity)
         self.node.on_cmd_vel(self.twist)
         self.assertEqual(self.sent, [])
 
@@ -231,6 +315,7 @@ class ExploreStallTests(unittest.TestCase):
         node.explorer = SimpleNamespace(choose=lambda *a, **k: None, release=lambda: None,
                                       committed=None)
         node.swept = frontiers.SweptFootprint(0.35)
+        node.people, node.people_options = crowds.People(), {}
         node.progress = frontiers.ProgressWindow()
         node.progress_best, node.progress_at = math.inf, time.monotonic()
         node.heading_best = math.inf
@@ -263,6 +348,17 @@ class ExploreStallTests(unittest.TestCase):
     def tick(self, node, found):
         with patch.object(frontiers, "find", return_value=found):
             node.explore_tick()
+
+    def test_people_override_previously_driven_floor_in_actual_explore_callback(self):
+        node = self.make_node()
+        node.explorer = frontiers.Explorer(node.explore_config)
+        node.people.bind(["phone", 2, 7, 41, 99.])
+        node.people.update(dict(sensor_key=["phone", 2, 7, 42, 100.], fresh=True, age_ms=0,
+                                boxes=[dict(cls="person", world=[-2.5, 1., -3.])]))
+        node.swept.record((3., 2.5, 0.))
+        self.tick(node, [])
+        cells, resolution, origin = node.lethal
+        self.assertTrue(cells[int((2.5 - origin[1]) / resolution), int((3. - origin[0]) / resolution)])
 
     def test_goal_behind_the_rover_is_not_blacklisted_mid_turn(self):
         node = self.make_node()

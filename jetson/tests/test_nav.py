@@ -362,6 +362,15 @@ class GeometryTests(unittest.TestCase):
         self.assertEqual(depth.shape, (120, 160))
         self.assertAlmostEqual(header["fx"], frame.calibration.fx / 2)
 
+    def test_depth_optional_capture_key_matches_existing_detection_world_identity(self):
+        frame = simulated_frame(.5, 7)
+        without, measured = decode_depth(encode_depth(frame, floor_y=-.15, source="simulated", age_ms=0))
+        self.assertNotIn("sensor_key", without)
+        frame.header["_mapping_sensor_key"] = ("phone-session", 2, 9, 7, 100.25)
+        header, depth = decode_depth(encode_depth(frame, floor_y=-.15, source="simulated", age_ms=0))
+        self.assertEqual(header["sensor_key"], ["phone-session", 2, 9, 7, 100.25])
+        np.testing.assert_array_equal(depth, measured)
+
 
 class LeaseTests(unittest.TestCase):
     """ControlState applies Nav2 commands only in an engaged autonomy mode with a live lease."""

@@ -4,7 +4,7 @@
 local_costmap:
   local_costmap:
     ros__parameters:
-      plugins: ["nvblox_layer", "inflation_layer"]
+      plugins: ["nvblox_layer", "people_layer", "inflation_layer"]
       nvblox_layer:
         plugin: "nvblox::nav2::NvbloxCostmapLayer"
         enabled: True
@@ -14,7 +14,7 @@ local_costmap:
 global_costmap:
   global_costmap:
     ros__parameters:
-      plugins: ["nvblox_layer", "inflation_layer"]
+      plugins: ["nvblox_layer", "people_layer", "inflation_layer"]
       nvblox_layer:
         plugin: "nvblox::nav2::NvbloxCostmapLayer"
         enabled: True
