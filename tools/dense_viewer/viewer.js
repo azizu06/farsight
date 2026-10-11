@@ -80,7 +80,12 @@ function setSize(value) {
   document.querySelector('#size-value').textContent=`${Math.round(size*1000)} mm`;
 }
 async function setFrozen(value) {
-  if(value){const lane=mode==='raw'?raw:dense;const deadline=performance.now()+6000;while(lane.busy&&performance.now()<deadline)await new Promise(r=>setTimeout(r,25));if(lane.busy)throw Error('Capture pull did not finish before freeze');}
+  if(value){
+    const previous=frozen;frozen=true; // Stop new pulls before draining the current one.
+    const lane=mode==='raw'?raw:dense;const deadline=performance.now()+6000;
+    while(lane.busy&&performance.now()<deadline)await new Promise(r=>setTimeout(r,25));
+    if(lane.busy){frozen=previous;throw Error('Capture pull did not finish before freeze');}
+  }
   frozen=Boolean(value); capturedAt=frozen ? Date.now() : null;
   capturedDataAge=frozen?(mode==='raw'?raw.stats().raw_age_ms:(status.age_s??0)*1000+Date.now()-statusTime):null;
   document.querySelector('#freeze').textContent=frozen?'Resume live data':'Freeze measured sample';
@@ -107,7 +112,7 @@ async function pollStatus() {
 }
 void pollStatus();const poll=setInterval(pollStatus,1000);
 const stats = () => ({mode,source:frozen?'CAPTURED MEASURED SAMPLE':'LIVE MEASURED RGB-D',frozen,follow,render_frames:totalFrames,captured_at:capturedAt,
-  capture_identity:captureIdentity,uploaded_points:mode==='raw'?raw.count:dense.points,points_drawn:renderer.info.render.points,fps,...raw.stats(),
+  capture_identity:mode==='raw'?raw.identity:captureIdentity,uploaded_points:mode==='raw'?raw.count:dense.points,points_drawn:renderer.info.render.points,fps,...raw.stats(),
   jetson_points:status.jetson_points??null,mac_points:status.mac_points??null,
   data_age_ms:frozen?(capturedDataAge??0)+Date.now()-capturedAt:(mode==='raw'?raw.stats().raw_age_ms:typeof status.age_s==='number'?status.age_s*1000+Date.now()-statusTime:null),
   upstream_age_ms:typeof status.age_s==='number'?status.age_s*1000+Date.now()-statusTime:null,

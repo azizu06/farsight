@@ -14,7 +14,7 @@ DENSE_READS = frozenset(("status", "manifest", "chunk.bin"))
 DIST = Path(__file__).resolve().parents[1] / ".cache/dense-viewer-dist"
 
 
-def create_app(upstream="http://127.0.0.1:8080", dist=DIST):
+def create_app(upstream="http://127.0.0.1:8080", dist=DIST, raw_enabled=False):
     app = web.Application()
 
     async def lifecycle(app):
@@ -26,6 +26,8 @@ def create_app(upstream="http://127.0.0.1:8080", dist=DIST):
     async def dense(request):
         name = request.match_info.get("name", "frame.bin")
         capture = request.path == "/capture/frame.bin"
+        if capture and not raw_enabled:
+            raise web.HTTPServiceUnavailable(text="Raw capture disabled; --raw requires an approved link-budget window")
         if not capture and name not in DENSE_READS:
             raise web.HTTPNotFound()
         try:
@@ -60,8 +62,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=8086)
     parser.add_argument("--upstream", default="http://127.0.0.1:8080")
+    parser.add_argument("--raw", action="store_true", help="Enable raw pulls in an approved link-budget window (default off)")
     args = parser.parse_args()
-    web.run_app(create_app(args.upstream), host="127.0.0.1", port=args.port)
+    web.run_app(create_app(args.upstream, raw_enabled=args.raw), host="127.0.0.1", port=args.port)
 
 
 if __name__ == "__main__":
