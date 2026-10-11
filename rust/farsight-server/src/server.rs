@@ -216,7 +216,13 @@ pub fn build_state(
             Some(nav_turn_radps),
         )))
     });
+    let camera = Arc::new(CameraService::new(
+        mapping.clone(),
+        camera_device.clone(),
+        lidar_drive,
+    ));
     let nav = if nav2 {
+        let camera_snapshot = camera.clone();
         Some(Arc::new(
             crate::nav::NavService::new(
                 mapping.clone(),
@@ -226,17 +232,13 @@ pub fn build_state(
                 nav_max_w,
                 nav_camera_height,
                 None,
+                Some(Arc::new(move || camera_snapshot.snapshot())),
             )
             .unwrap_or_else(|e| panic!("{e}")),
         ))
     } else {
         None
     };
-    let camera = Arc::new(CameraService::new(
-        mapping.clone(),
-        camera_device.clone(),
-        lidar_drive,
-    ));
     let mut video = VideoService::new(camera.clone(), h264);
     video.fps = video_fps;
     video.bitrate = video_bitrate;
@@ -539,7 +541,7 @@ pub fn start_services(state: &Arc<AppState>) {
             let mut next_fusion = 0.0f64;
             loop {
                 let captured = now_monotonic();
-                let frame = crate::demo::simulated_frame(
+                let mut frame = crate::demo::simulated_frame(
                     captured - started,
                     frame_id,
                     &("simulated-room".to_string(), 1),
@@ -554,6 +556,8 @@ pub fn start_services(state: &Arc<AppState>) {
                             mirrored: false,
                             socket_received: None,
                             published: None,
+                            native_jpeg: None,
+                            sensor_key: None,
                     source: "SIMULATED".into(),
                 }));
                 if captured >= next_fusion
@@ -562,7 +566,7 @@ pub fn start_services(state: &Arc<AppState>) {
                     let (mapping, busy) = (mapping.clone(), busy.clone());
                     next_fusion = captured + 0.2;
                     std::thread::spawn(move || {
-                        let _ = mapping.process(&frame);
+                        let _ = mapping.process(&mut frame);
                         busy.store(false, std::sync::atomic::Ordering::SeqCst);
                     });
                 }
@@ -946,6 +950,7 @@ async fn map_pause(State(s): State<Arc<AppState>>, Json(body): Json<Value>) -> R
 }
 
 async fn camera_jpg(State(s): State<Arc<AppState>>) -> Response {
+    let started = now_monotonic();
     let camera = s.camera.clone();
     // A first-frame JPEG encode must not stall control/health on an async worker.
     match tokio::task::spawn_blocking(move || camera.preview()).await.ok().flatten() {
@@ -953,12 +958,18 @@ async fn camera_jpg(State(s): State<Arc<AppState>>) -> Response {
             let fid = frame.frame_id;
             let age = frame.age_ms();
             let source = frame.source.clone();
+            // The frame age already includes preview/executor residence.
+            // Report only completed handler time, rounded down, so clients
+            // can avoid counting that same interval again without
+            // subtracting network time.
+            let wait_ms = ((now_monotonic() - started) * 1000.0).max(0.0) as i64;
             let mut resp = Response::new(paced_body_live(frame.jpeg));
             let h = resp.headers_mut();
             h.insert(header::CONTENT_TYPE, "image/jpeg".parse().unwrap());
             h.insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
             h.insert("x-frame-id", fid.to_string().parse().unwrap());
             h.insert("x-frame-age-ms", age.to_string().parse().unwrap());
+            h.insert("x-frame-server-wait-ms", wait_ms.to_string().parse().unwrap());
             h.insert("x-frame-source", source.parse().unwrap());
             resp
         }
@@ -1843,7 +1854,16 @@ where
             &[],
         ));
         s.camera.begin_phone(Some(permits.clone()));
-        s.mapping.start_session(identity.clone(), hello.device.clone());
+        // Finish the socket state mutation before the endpoint continues
+        // (server.py _session_thread parity): spawn_blocking work is never
+        // cancelled by a dropped await, so a late start_session cannot
+        // overwrite the next socket's state while ownership stays held.
+        let (mapping, ident, device) = (s.mapping.clone(), identity.clone(), hello.device.clone());
+        let socket_generation = tokio::task::spawn_blocking(move || {
+            mapping.start_session(ident, device)
+        })
+        .await
+        .map_err(|_| "Session start worker failed".to_string())?;
         // Outbound traffic goes through one writer task: the permit issuer
         // ticks at 20 Hz (capture_permits.run parity; issue() returns None
         // when the client did not opt in), the handler sends closes/acks.
@@ -1889,7 +1909,7 @@ where
         // the unprocessed item instead of holding up the socket reader.
         let fusion_q = Arc::new(LatestSlot::<(Vec<u8>, f64)>::new());
         let camera_q = Arc::new(LatestSlot::<(Vec<u8>, f64)>::new());
-        let pose_q = Arc::new(LatestSlot::<(Value, crate::geometry::Mat4)>::new());
+        let pose_q = Arc::new(LatestSlot::<(Value, crate::geometry::Mat4, f64)>::new());
         // Camera fast-lane: validate + publish the JPEG BEFORE offering the
         // same packet to fusion, so detection work can never hold up the
         // camera. A decoding error here kills the session (parity).
@@ -1908,7 +1928,7 @@ where
                     let (cam2, ident2, permits2) = (cam.clone(), ident.clone(), permits.clone());
                     let r = tokio::task::spawn_blocking(move || {
                         (
-                            cam2.accept_phone_rgbd(&packet, &ident2, previous, Some(received_at), Some(&permits2)),
+                            cam2.accept_phone_rgbd(&packet, &ident2, previous, Some(received_at), Some(&permits2), Some(socket_generation)),
                             packet,
                         )
                     })
@@ -1931,12 +1951,15 @@ where
         };
         // Pose heartbeats: observe_pose without waiting behind fusion work.
         let mut pose_worker = {
-            let (q, mapping, ident) = (pose_q.clone(), s.mapping.clone(), identity.clone());
+            let (q, mapping) = (pose_q.clone(), s.mapping.clone());
             tokio::spawn(async move {
-                while let Some((header, transform)) = q.wait().await {
-                    let (m, i) = (mapping.clone(), ident.clone());
+                while let Some((header, transform, received_at)) = q.wait().await {
+                    let m = mapping.clone();
                     match tokio::task::spawn_blocking(move || {
-                        m.observe_session_pose(&i, &header, &transform)
+                        crate::camera::adjusted_receipt(&header, received_at)
+                            .and_then(|receipt| {
+                                m.observe_pose(&header, &transform, Some(receipt), Some(socket_generation))
+                            })
                     })
                     .await
                     {
@@ -1960,7 +1983,7 @@ where
                     let r = tokio::task::spawn_blocking(move || {
                         phone::decode_frame(&packet, &i).and_then(|mut f| {
                             f.header["_received_monotonic"] = json!(received_at);
-                            m2.process_permits(&f, Some(&p))
+                            m2.process_permits(&mut f, Some(&p), Some(socket_generation))
                         })
                     })
                     .await;
@@ -1993,7 +2016,7 @@ where
                         // Tracking loss must revoke opt-in LiDAR drive without
                         // waiting for the pose/map worker's fusion lock.
                         s.camera.observe_phone_tracking(&header);
-                        pose_q.offer((header, transform));
+                        pose_q.offer((header, transform, now_monotonic()));
                     }
                     Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
                     _ => {}
@@ -2046,8 +2069,12 @@ where
     if let Some(writer) = writer_opt {
         writer.abort();
     }
-    *s.phone_owner.lock().unwrap() = false;
+    // Withdraw lock-free live eligibility immediately, then finish the
+    // generation bumps before ownership is released (server.py parity:
+    // disconnect_sensor runs to completion before phone_owner clears).
+    s.mapping.inner.lock().unwrap().connected = false;
     s.mapping.disconnect();
+    *s.phone_owner.lock().unwrap() = false;
 }
 
 async fn ws_phone_rgb(ws: WebSocketUpgrade, State(s): State<Arc<AppState>>) -> Response {

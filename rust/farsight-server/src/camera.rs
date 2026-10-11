@@ -29,6 +29,11 @@ pub struct CameraFrame {
     pub socket_received: Option<f64>,
     /// Monotonic time the frame finished decode and was published.
     pub published: Option<f64>,
+    /// Sensor pixels behind the upright detector/display picture.
+    pub native_jpeg: Option<Vec<u8>>,
+    /// Trusted socket generation and exact RGB-D capture key
+    /// (session_id, map_epoch, socket_generation, frame_id, t_capture).
+    pub sensor_key: Option<serde_json::Value>,
 }
 
 impl CameraFrame {
@@ -162,6 +167,8 @@ impl CameraService {
                 mirrored: false,
                 socket_received: None,
                 published: None,
+                native_jpeg: None,
+                sensor_key: None,
             });
         }
         self.inner.lock().unwrap().frame.clone()
@@ -284,6 +291,8 @@ impl CameraService {
             mirrored: false,
             socket_received: Some(arrived),
             published: Some(now_monotonic()),
+            native_jpeg: None,
+            sensor_key: None,
         };
         Ok(if self.publish_phone(frame, &header) { fid } else { previous_frame })
     }
@@ -298,6 +307,7 @@ impl CameraService {
         previous_frame: i64,
         received_at: Option<f64>,
         permits: Option<&Arc<crate::capture_permits::CapturePermits>>,
+        socket_generation: Option<u64>,
     ) -> Result<i64, String> {
         let arrived = received_at.unwrap_or_else(now_monotonic);
         let (header, mut jpeg) = crate::phone::decode_frame_camera(packet, identity)?;
@@ -305,6 +315,7 @@ impl CameraService {
         if fid <= previous_frame {
             return Err("RGB-D camera frame ordering is invalid".into());
         }
+        let native_jpeg = jpeg.clone();
         // Gravity in the ARKit pose says which way up the phone is mounted; show it upright.
         let transform_values: Vec<f64> = header
             .get("transform")
@@ -312,8 +323,19 @@ impl CameraService {
             .map(|a| a.iter().filter_map(|v| v.as_f64()).collect())
             .unwrap_or_default();
         let transform = crate::geometry::rigid_transform(&transform_values)?;
+        // Only the current socket may advance the current mount's hysteresis.
+        // Decode and rotation stay outside the publication lock; the final
+        // publish checks the binding again if a reconnect happened during
+        // JPEG rotation.
         let mirrored = {
             let mut inner = self.inner.lock().unwrap();
+            if inner.phone_binding.is_some()
+                && permits
+                    .map(|p| !Arc::ptr_eq(p, inner.phone_binding.as_ref().unwrap()))
+                    .unwrap_or(true)
+            {
+                return Ok(previous_frame);
+            }
             inner.mount.observe(&transform)
         };
         if mirrored {
@@ -333,6 +355,16 @@ impl CameraService {
             mirrored,
             socket_received: Some(arrived),
             published: Some(now_monotonic()),
+            native_jpeg: Some(native_jpeg),
+            sensor_key: socket_generation.map(|generation| {
+                serde_json::json!([
+                    identity.0,
+                    identity.1,
+                    generation,
+                    fid,
+                    header.get("t_capture").cloned().unwrap_or(serde_json::Value::Null),
+                ])
+            }),
         };
         Ok(if self.publish_phone(frame, &header) { fid } else { previous_frame })
     }
@@ -466,6 +498,8 @@ impl CameraService {
                                 mirrored: false,
                                 socket_received: None,
                                 published: None,
+                                native_jpeg: None,
+                                sensor_key: None,
                             });
                             inner.error = None;
                             drop(inner);
@@ -633,6 +667,7 @@ mod preview_tests {
             frame_id: 7, source: "PHONE RGB".into(),
             capture_verified: false, capture_binding: None,
             tracking: None, mirrored: false, socket_received: None, published: None,
+            native_jpeg: None, sensor_key: None,
         }));
         camera
     }

@@ -53,6 +53,11 @@ pub struct Inner {
     pub device: String,
     pub generation: u64,
     pub processing_generation: u64,
+    /// Socket lifetime; a visual map reset preserves the live socket.
+    /// Incremented on each new phone socket session (and disconnect) so a
+    /// cancelled socket worker cannot publish into a later session even
+    /// when (session_id, map_epoch) identity is reused.
+    pub socket_generation: u64,
     pub paused: bool,
     pub last_received: f64,
     pub last_frame_received: f64,
@@ -121,6 +126,7 @@ impl MapState {
             device: if demo { "Ray-cast room".into() } else { "No sensor".into() },
             generation: 0,
             processing_generation: 0,
+            socket_generation: 0,
             paused: false,
             last_received: 0.0,
             last_frame_received: 0.0,
@@ -184,7 +190,10 @@ impl MapState {
         self.revision_tx.subscribe()
     }
 
-    pub fn start_session(&self, identity: Identity, device: String) {
+    /// Returns the new socket generation: callers pass it back to
+    /// observe_pose/process so a cancelled socket worker cannot publish
+    /// into a later session even when the identity is reused.
+    pub fn start_session(&self, identity: Identity, device: String) -> u64 {
         let mut s = self.inner.lock().unwrap();
         if s.identity.as_ref() != Some(&identity) {
             Self::clear_locked(&mut s);
@@ -204,11 +213,13 @@ impl MapState {
             s.dense.set_source(json!([session_id, map_epoch]));
         }
         s.processing_generation += 1;
+        s.socket_generation += 1;
         s.last_capture = -1.0;
         s.last_pose_capture = -1.0;
         s.pose_history.clear();
         s.tracking = "not_available".into();
         s.reason = Some("Waiting for synchronized RGB-D frames".into());
+        s.socket_generation
     }
 
     fn clear_locked(s: &mut Inner) {
@@ -248,25 +259,30 @@ impl MapState {
         let _ = self.revision_tx.send(s.revision);
     }
 
-    pub fn observe_pose(&self, header: &Value, transform: &Mat4) -> Result<(), String> {
-        Self::observe_pose_locked(&mut self.inner.lock().unwrap(), header, transform)
-    }
-
-    /// Pose heartbeat applied only while `identity` is still the connected
-    /// session (server.py poses worker parity): a stale socket's pose is
-    /// dropped instead of corrupting the new session's pose history.
-    pub fn observe_session_pose(
+    /// Pose heartbeat applied only while the header names the connected
+    /// session's identity and `socket_generation` (when given) is current:
+    /// a stale socket's pose is dropped instead of corrupting the new
+    /// session's pose history. `received_at` is the capture's true receipt
+    /// time — CPU processing must not renew an old capture's age.
+    pub fn observe_pose(
         &self,
-        identity: &Identity,
         header: &Value,
         transform: &Mat4,
+        received_at: Option<f64>,
+        socket_generation: Option<u64>,
     ) -> Result<(), String> {
         let mut s = self.inner.lock().unwrap();
-        if s.connected && s.identity.as_ref() == Some(identity) {
-            Self::observe_pose_locked(&mut s, header, transform)
-        } else {
-            Ok(())
+        let frame_identity = (
+            header["session_id"].as_str().unwrap_or("").to_string(),
+            header["map_epoch"].as_u64().unwrap_or(0),
+        );
+        if !s.connected
+            || s.identity.as_ref() != Some(&frame_identity)
+            || socket_generation.map(|g| g != s.socket_generation).unwrap_or(false)
+        {
+            return Ok(()); // a cancelled socket worker cannot publish into a later session
         }
+        Self::observe_pose_locked(&mut s, header, transform, received_at)
     }
 
     /// Count a fusion-lane packet displaced by a newer one (bounded queue).
@@ -274,7 +290,12 @@ impl MapState {
         self.inner.lock().unwrap().dropped += 1;
     }
 
-    fn observe_pose_locked(s: &mut Inner, header: &Value, transform: &Mat4) -> Result<(), String> {
+    fn observe_pose_locked(
+        s: &mut Inner,
+        header: &Value,
+        transform: &Mat4,
+        received_at: Option<f64>,
+    ) -> Result<(), String> {
         let capture = header["t_capture"].as_f64().unwrap_or(-1.0);
         let identity: PoseIdentity = (
             header["frame_id"].as_i64().unwrap_or(-1),
@@ -294,7 +315,7 @@ impl MapState {
             return Ok(());
         }
         s.last_pose_capture = capture;
-        s.last_received = monotonic();
+        s.last_received = received_at.unwrap_or_else(monotonic);
         s.pose = *transform;
         s.tracking = header["tracking"].as_str().unwrap_or("not_available").to_string();
         Ok(())
@@ -302,8 +323,8 @@ impl MapState {
 
     /// Process one decoded RGB-D frame. Heavy reconstruction happens unlocked,
     /// matching the Python split-lock structure.
-    pub fn process(&self, frame: &RgbdFrame) -> Result<(), String> {
-        self.process_permits(frame, None)
+    pub fn process(&self, frame: &mut RgbdFrame) -> Result<(), String> {
+        self.process_permits(frame, None, None)
     }
 
     /// state.process(frame, permits): the camera fast-lane stamps
@@ -311,8 +332,9 @@ impl MapState {
     /// receipt time; a verified permit origin back-dates it further.
     pub fn process_permits(
         &self,
-        frame: &RgbdFrame,
+        frame: &mut RgbdFrame,
         permits: Option<&std::sync::Arc<crate::capture_permits::CapturePermits>>,
+        socket_generation: Option<u64>,
     ) -> Result<(), String> {
         let started = Instant::now();
         // Mirrors camera_receipt: receipt time minus the producer's encode
@@ -337,7 +359,10 @@ impl MapState {
                 frame.header["session_id"].as_str().unwrap_or("").to_string(),
                 frame.header["map_epoch"].as_u64().unwrap_or(0),
             );
-            if !s.connected || s.identity.as_ref() != Some(&frame_identity) {
+            if !s.connected
+                || s.identity.as_ref() != Some(&frame_identity)
+                || socket_generation.map(|g| g != s.socket_generation).unwrap_or(false)
+            {
                 return Ok(());
             }
             let capture = frame.header["t_capture"].as_f64().unwrap_or(-1.0);
@@ -346,8 +371,20 @@ impl MapState {
                 return Ok(());
             }
             s.last_capture = capture;
+            // Bind observers to this accepted socket lifetime. Overwrite any
+            // producer field: an observer can finish after a reconnect even
+            // when sensor identity is reused.
+            let (session_id, map_epoch) = s.identity.clone().unwrap();
+            frame.header["_mapping_socket_generation"] = json!(s.socket_generation);
+            frame.header["_mapping_sensor_key"] = json!([
+                session_id,
+                map_epoch,
+                s.socket_generation,
+                frame.header["frame_id"].clone(),
+                frame.header["t_capture"].clone(),
+            ]);
             generation = s.processing_generation;
-            Self::observe_pose_locked(&mut s, &frame.header, &frame.transform)?;
+            Self::observe_pose_locked(&mut s, &frame.header, &frame.transform, Some(camera_receipt))?;
             s.jpeg = Some(frame.jpeg.clone());
             s.capture_diagnostics = crate::camera::capture_diagnostics(&frame.header);
             s.last_frame_received = camera_receipt;
@@ -645,7 +682,9 @@ impl MapState {
     pub fn disconnect(&self) {
         let mut s = self.inner.lock().unwrap();
         s.connected = false;
+        // Invalidate any CPU worker still finishing after disconnect.
         s.processing_generation += 1;
+        s.socket_generation += 1;
     }
 }
 
