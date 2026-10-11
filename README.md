@@ -1,14 +1,20 @@
 # Farsight
 
-**Search-and-rescue telepresence: explore a building through a rover, then walk through the room it maps in VR.**
+**An adaptable remote robot: explore a place, understand what is there, and communicate with the people there.**
 
-A responder wears a Quest 2, drives manually or switches to indoor autonomous
-exploration, sees the live camera with person detections, and inspects the
-measured 3D room. The iPhone supplies camera, LiDAR and pose; the Jetson Orin
+An operator wears a Quest 2, drives manually or switches to indoor autonomous
+exploration, sees the live camera with person and enrolled-face recognition,
+and inspects the measured 3D room. A toggled two-way intercom connects operator
+speech and replies through the rover phone. These capabilities support remote
+exploration, inspection, finding people, or an information/alert robot that
+relays announcements and spoken evacuation instructions. Alarms are a possible
+extension. See the [general-purpose product direction](docs/project-purpose.md).
+
+The iPhone supplies camera, LiDAR, pose and audio endpoints; the Jetson Orin
 Nano runs perception, navigation and motor control; the Mac retains the dense
-map and renders the remote room. Current rig operation uses Nav2 on the Jetson;
-this is a hackathon prototype with remaining full-rig acceptance checks, not a
-validated rescue deployment. See the [current evidence and pitch](docs/devpost-draft.md#what-works-and-what-still-needs-the-rig).
+map and renders the remote room. Current rig operation uses Nav2 on the Jetson.
+This hackathon prototype has remaining full-rig acceptance checks; see the
+[current evidence and pitch](docs/devpost-draft.md#what-works-and-what-still-needs-the-rig).
 
 > **TODO-MEDIA:** add a real-rig demo GIF: MANUAL → A/AUTO → map walk → person found.
 > Add a headset screenshot with source and mode visible; label replay/simulation.
