@@ -231,7 +231,9 @@ const mapAxes = new THREE.LineSegments(
   );
 root.add(mapAxes);
 const pointsMaterial = new THREE.PointsMaterial({
-  size: 0.025,
+  // ~5 cm voxel cells: 6 cm splats overlap neighboring cells so the cloud
+  // reads as a continuous surface up close instead of separated dots.
+  size: 0.06,
   vertexColors: true,
   toneMapped: false,
 });

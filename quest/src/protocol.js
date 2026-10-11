@@ -194,6 +194,27 @@ export function decodeMesh(buffer) {
   if (count % 3 || count > 480000 || end + count * 4 !== buffer.byteLength)
     throw new Error("Invalid surface packet");
   const data = decodePoints(buffer, 8, vertices);
+  // Triangle soup: each vertex carries one sampled color, so coincident
+  // corners across triangles leave hard seams (the blocky patches seen in
+  // live review). Blend same-position vertex colors at decode time — the
+  // wire format is unchanged.
+  const { positions, colors } = data;
+  const acc = new Map();
+  const keyOf = k =>
+    (Math.round(positions[k] * 512) + 8192) * 268435456 +
+    (Math.round(positions[k + 1] * 512) + 8192) * 16384 +
+    Math.round(positions[k + 2] * 512) + 8192;
+  for (let i = 0; i < vertices; i++) {
+    const k = i * 3, key = keyOf(k), e = acc.get(key);
+    if (e) { e[0] += colors[k]; e[1] += colors[k + 1]; e[2] += colors[k + 2]; e[3]++; }
+    else acc.set(key, [colors[k], colors[k + 1], colors[k + 2], 1]);
+  }
+  for (let i = 0; i < vertices; i++) {
+    const k = i * 3, e = acc.get(keyOf(k));
+    colors[k] = e[0] / e[3];
+    colors[k + 1] = e[1] / e[3];
+    colors[k + 2] = e[2] / e[3];
+  }
   const indices = new Uint32Array(count);
   // `end` is a multiple of 4, so a typed view is aligned on little-endian hosts.
   const raw = LITTLE_ENDIAN ? new Uint32Array(buffer, end, count) : null;
