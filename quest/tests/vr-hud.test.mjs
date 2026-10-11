@@ -1,12 +1,62 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { cueFor, motionTone, controllerHintLabels, SOURCE_CHIP } from "../src/vr-hud.js";
+import { cueFor, motionTone, controllerHintLabels, SOURCE_CHIP, drawChip } from "../src/vr-hud.js";
 import { explainStop, STOP_CODES } from "../src/stop-reason.js";
 
-test("no stop, no cue: the default headset view has nothing but the chip", () => {
+test("legacy cue helpers preserve their no-stop behavior", () => {
   assert.equal(cueFor(null), null);
   assert.equal(motionTone({ moving: true, unsafe: false, cue: null }), "go");
   assert.equal(motionTone({ moving: false, unsafe: false, cue: null }), "wait");
+});
+
+/** Records calls from the actual painter; no browser/GPU or parallel label implementation. */
+function pillCanvas() {
+  const calls = [], states = [];
+  const context = {
+    font: "10px system-ui", textAlign: "left", textBaseline: "alphabetic",
+    save() { states.push({ font: this.font, textAlign: this.textAlign, textBaseline: this.textBaseline }); },
+    restore() { Object.assign(this, states.pop()); },
+    measureText(text) { return { width: text.length * Number(this.font.match(/([\d.]+)px/)[1]) * .58 }; },
+    clearRect(...args) { calls.push({ op: "clear", args }); },
+    beginPath() {},
+    roundRect(...args) { calls.push({ op: "pill", args }); },
+    arc(...args) { calls.push({ op: "badge", args }); },
+    fill() {}, stroke() {},
+    fillText(text, x, y) { calls.push({ op: "text", text, x, y, font: this.font, align: this.textAlign }); },
+  };
+  return { context, calls };
+}
+
+test("actual mode pill draws only MANUAL/AUTONOMOUS and the small A button", () => {
+  for (const [mode, expected] of [["manual", "MANUAL"], ["auto", "AUTONOMOUS"]]) {
+    const { context, calls } = pillCanvas();
+    drawChip(context, 1024, 128, { mode, source: "SIMULATED", tone: "stop" });
+    assert.deepEqual(calls.filter(call => call.op === "text").map(call => call.text), [expected, "A"]);
+    assert.equal(calls.filter(call => call.op === "pill").length, 1, "one pill, no separate telemetry/source tag");
+    assert.equal(calls.filter(call => call.op === "badge").length, 1, "one A affordance, no mode/telemetry icons");
+    assert.deepEqual(calls[0], { op: "clear", args: [0, 0, 1024, 128] }, "old source/telemetry pixels cleared");
+    const [label, button] = calls.filter(call => call.op === "text");
+    assert.ok(Number(button.font.match(/([\d.]+)px/)[1]) < Number(label.font.match(/([\d.]+)px/)[1]), "A is a smaller affordance");
+  }
+});
+
+test("source/tone changes never add any rendered mode-pill telemetry", () => {
+  for (const mode of ["manual", "auto"]) {
+    const reference = pillCanvas(); drawChip(reference.context, 1024, 128, { mode });
+    for (const source of [...Object.keys(SOURCE_CHIP), "unknown"]) for (const tone of ["go", "wait", "stop"]) {
+      const actual = pillCanvas(); drawChip(actual.context, 1024, 128, { mode, source, tone });
+      assert.deepEqual(actual.calls, reference.calls, `${mode}/${source}/${tone}`);
+    }
+  }
+});
+
+test("pill defaults to manual and fits narrow canvases without leaking text state", () => {
+  const manual = pillCanvas(); drawChip(manual.context, 1024, 128);
+  assert.deepEqual(manual.calls.filter(call => call.op === "text").map(call => call.text), ["MANUAL", "A"]);
+  const small = pillCanvas(); drawChip(small.context, 180, 64, { mode: "auto" });
+  const [x, y, width, height] = small.calls.find(call => call.op === "pill").args;
+  assert.ok(x >= 0 && x + width <= 180 && y >= 0 && y + height <= 64);
+  assert.equal(small.context.font, "10px system-ui"); assert.equal(small.context.textBaseline, "alphabetic");
 });
 
 test("a live unsafe condition is red with its cause; a cleared one asks for a release", () => {

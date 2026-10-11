@@ -1,6 +1,6 @@
-/** Minimal headset HUD: a tiny mode/source chip, a 1-3 word fault cue only when something needs
- * the operator, and an icon controller diagram on entry. Display only; no safety decision here.
- * Long telemetry stays on the 2D page. */
+/** Headset mode pill only. Legacy cue, source and controller helpers remain
+ * available to existing consumers; their visibility belongs to the caller.
+ * Display only; no safety or control decision here. */
 
 /** Truthful source labels, shortest form that keeps the meaning. */
 export const SOURCE_CHIP = {
@@ -109,27 +109,38 @@ export function drawIcon(c, name, x, y, r, color) {
   c.restore();
 }
 
-/** Tiny mode/source chip: tone dot + MANUAL/AUTO, then a truthful source tag. */
-export function drawChip(c, width, height, { mode, source, tone }) {
-  const chip = SOURCE_CHIP[source] ?? SOURCE_CHIP.UNVERIFIED;
+/**
+ * Tiny mode pill and right-A toggle affordance. Legacy source/tone arguments are
+ * accepted but never painted; full source truth stays on the desktop/recording.
+ * @param {{ mode?: string, source?: string, tone?: string }} options
+ */
+export function drawChip(c, width, height, options = {}) {
   c.clearRect(0, 0, width, height);
-  c.textBaseline = "middle"; c.textAlign = "left";
-  c.font = "bold 44px system-ui";
-  const modeText = mode === "auto" ? "AUTO" : "MANUAL";
-  const sourceWidth = c.measureText(chip.text).width + 44;
-  const modeWidth = height + 16 + c.measureText(modeText).width + 28;
-  const x = Math.max(0, (width - modeWidth - sourceWidth - 12) / 2), y = height / 2;
-  // AUTO gets a cyan pill so "the rover is driving itself" reads at a glance.
-  c.fillStyle = mode === "auto" ? "#0e5566f0" : "#0b141ccc"; round(c, x, 4, modeWidth, height - 8, (height - 8) / 2); c.fill();
-  if (mode === "auto") { c.strokeStyle = "#70f2ff"; c.lineWidth = 4; c.stroke(); }
-  c.fillStyle = TONE_COLOR[tone] ?? TONE_COLOR.wait;
-  c.beginPath(); c.arc(x + height / 2, y, height * .22, 0, Math.PI * 2); c.fill();
-  drawIcon(c, mode === "auto" ? "auto" : "manual", x + height + 6, y, height * .3, "#f3f9fc");
-  c.fillStyle = "#f3f9fc"; c.fillText(modeText, x + height + 32, y + 2);
-  const sx = x + modeWidth + 12;
-  c.fillStyle = chip.fill; round(c, sx, 4, sourceWidth, height - 8, 18); c.fill();
-  c.strokeStyle = chip.ink; c.lineWidth = 3; c.stroke();
-  c.fillStyle = chip.ink; c.fillText(chip.text, sx + 22, y + 2);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 4 || height <= 0) return;
+  const automatic = options.mode === "auto", modeText = automatic ? "AUTONOMOUS" : "MANUAL";
+  c.save();
+  try {
+    const fontSize = height * .34;
+    c.font = `600 ${fontSize}px system-ui`;
+    const textWidth = c.measureText(modeText).width;
+    const baseHeight = height * .62, basePad = baseHeight * .38, baseGap = baseHeight * .28, baseBadge = baseHeight * .48;
+    const desiredWidth = basePad * 2 + textWidth + baseGap + baseBadge;
+    const scale = Math.min(1, (width - 4) / desiredWidth);
+    const pillHeight = baseHeight * scale, pad = basePad * scale, badge = baseBadge * scale;
+    const pillWidth = desiredWidth * scale, x = (width - pillWidth) / 2, y = height / 2;
+    c.textBaseline = "middle"; c.textAlign = "left";
+    c.fillStyle = automatic ? "#102b32e8" : "#0e1722e8";
+    round(c, x, y - pillHeight / 2, pillWidth, pillHeight, pillHeight / 2); c.fill();
+    c.strokeStyle = automatic ? "#76e6db66" : "#8195a844"; c.lineWidth = Math.max(.5, pillHeight * .014); c.stroke();
+    c.font = `600 ${fontSize * scale}px system-ui`;
+    c.fillStyle = automatic ? "#bff6ef" : "#ecf2f7";
+    c.fillText(modeText, x + pad, y);
+    const ax = x + pillWidth - pad - badge / 2;
+    c.strokeStyle = "#c0ced780"; c.lineWidth = Math.max(.5, pillHeight * .018);
+    c.beginPath(); c.arc(ax, y, badge / 2, 0, Math.PI * 2); c.stroke();
+    c.font = `500 ${badge * .55}px system-ui`; c.textAlign = "center"; c.fillStyle = "#c0ced7";
+    c.fillText("A", ax, y);
+  } finally { c.restore(); }
 }
 
 /** One icon + 1-3 words, coloured by severity. Clears the canvas when there is no cue. */
