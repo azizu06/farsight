@@ -2,6 +2,7 @@
 """Mac post-run Brush pipeline. See AFTER_RUN.md for commands and measured budgets."""
 import argparse
 import contextlib
+from datetime import datetime, timezone
 import fcntl
 import json
 import math
@@ -13,6 +14,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 from urllib.parse import urlencode
 
@@ -28,10 +30,10 @@ for run in sorted(Path.home().joinpath("captures").iterdir()):
     images = list(run.joinpath("images").glob("*.jpg"))
     tf = run / "transforms.json"
     seed = run / "init.ply" if run.joinpath("init.ply").is_file() else run / "dense.ply"
-    files = images + [p for p in (tf, seed) if p.is_file()]
-    out[run.name] = [len(images), max((p.stat().st_mtime_ns for p in files), default=0),
+    image_mtime = max((p.stat().st_mtime_ns for p in images), default=0)
+    out[run.name] = [len(images), max([image_mtime] + [p.stat().st_mtime_ns for p in (tf, seed) if p.is_file()]),
                      seed.stat().st_size if seed.is_file() else 0,
-                     tf.stat().st_size if tf.is_file() else 0]
+                     tf.stat().st_size if tf.is_file() else 0, image_mtime]
 print(json.dumps(out))
 '''
 
@@ -56,6 +58,21 @@ def saved_runs(args):
     return {**local_runs(args.local_root), **local_runs(args.work_dir / 'captures')}
 
 
+def eval_images(directory):
+    # Sai's fork retains images/ in eval paths; Brush v0.3.0 writes flat paths.
+    return directory / 'images' if (directory / 'images').is_dir() else directory
+
+
+def trainer_env(work):
+    return dict(os.environ, CUBECL_CACHE_DIR=str(work / 'gpu-cache/cubecl'),
+                XDG_CACHE_HOME=str(work / 'gpu-cache'))
+
+
+def run_order(name):
+    stamp = re.search(r'\d{8}T\d{6}', name)
+    return stamp.group(0) if stamp else name
+
+
 def finished(previous, current, now, stable_seconds=60):
     """Track capture signatures. Any active capture defers ALL remote pulls."""
     observations = {}
@@ -76,25 +93,25 @@ def wait_for_run(args):
             current = inventory(args.host)
         except subprocess.CalledProcessError:
             runs = saved_runs(args)
-            name = args.run_id or (max(runs) if runs else None)
+            name = args.run_id or (max(runs, key=run_order) if runs else None)
             if name in runs:
                 print('Jetson unreachable; using saved LOCAL run, no pull.', flush=True)
                 return name, runs[name], 'offline-local', 0, time.monotonic() - started
             raise RuntimeError('Jetson unreachable and no complete local run is available')
-        observations, ready = finished(observations, current, time.monotonic())
-        name = args.run_id or (max(ready) if ready else None)
+        observations, ready = finished(observations, current, time.monotonic(), args.idle_seconds)
+        name = args.run_id or (max(current, key=run_order) if args.demo and current else max(ready, key=run_order) if ready else None)
         if name in ready:
             stage = time.monotonic()
             source = pull(args, name)
             return name, source, 'rsync', time.monotonic() - stage, stage - started
-        print('Waiting for all capture image counts/mtimes to stay unchanged for >=60 s.', flush=True)
+        print(f'Waiting for all capture image counts/mtimes to stay unchanged for >={args.idle_seconds} s.', flush=True)
         time.sleep(args.poll_seconds)
 
 
 def pull(args, name):
     destination = args.work_dir / 'captures' / name
     destination.mkdir(parents=True, exist_ok=True)
-    command(['rsync', '-a', '--bwlimit=' + str(args.bwlimit),
+    command(['rsync', '-a', *([] if args.demo else ['--bwlimit=' + str(args.bwlimit)]),
              '-e', 'ssh -o BatchMode=yes -o ConnectTimeout=5',
              '--include=/images/', '--include=/images/*.jpg', '--include=/transforms.json',
              '--include=/init.ply', '--include=/dense.ply', '--exclude=*',
@@ -172,11 +189,64 @@ def prepare(source, destination, drive_gap_seconds=60):
 def publish(splat, dist, name):
     scenes = dist / 'scenes'
     scenes.mkdir(parents=True, exist_ok=True)
-    target = scenes / (name + '.ply')
-    temporary = scenes / (name + '.ply.tmp')
-    shutil.copyfile(splat, temporary)
+    return atomic_copy(splat, scenes / (name + '.ply'))
+
+
+def atomic_copy(source, target):
+    temporary = target.with_name(target.name + '.tmp')
+    shutil.copyfile(source, temporary)
     os.replace(temporary, target)
     return target
+
+
+class FaceJob:
+    """CPU face extraction overlaps Brush; always reap it when a run is stopped."""
+    def __init__(self, args, dataset, output):
+        self.output = output / 'faces'
+        self.output.mkdir()
+        self.log = (output / 'faces.log').open('w')
+        models = args.work_dir / 'face-models'
+        models.mkdir(exist_ok=True)
+        env = dict(os.environ, FACE_MODEL_PATH=str(models / 'yolo11n-pose.pt'),
+                   YOLO_CONFIG_DIR=str(args.work_dir / 'faces-config'),
+                   MPLCONFIGDIR=str(args.work_dir / 'faces-mpl'),
+                   TORCH_HOME=str(args.work_dir / 'faces-torch'),
+                   OMP_NUM_THREADS='2', OPENBLAS_NUM_THREADS='2', MKL_NUM_THREADS='2')
+        self.started = time.monotonic()
+        try:
+            self.child = subprocess.Popen(['nice', '-n', '10', str(args.faces_python),
+                str(ROOT / 'tools/postprocess/faces/face_pins.py'), str(dataset),
+                str(dataset / 'init.ply'), str(self.output)], cwd=models, env=env,
+                stdout=self.log, stderr=subprocess.STDOUT)
+        except Exception:
+            self.log.close()
+            raise
+        self.thread = threading.Thread(target=self._wait, daemon=True)
+        self.thread.start()
+
+    def _wait(self):
+        self.exit_code = self.child.wait()
+        self.seconds = time.monotonic() - self.started
+
+    def finish(self):
+        self.thread.join()
+        return {'faces_s': self.seconds, 'faces_exit_code': self.exit_code}
+
+    def close(self):
+        if self.child.poll() is None:
+            self.child.terminate()
+        self.thread.join()
+        self.log.close()
+
+
+def publish_faces(source, dist, name):
+    target = dist / 'scenes' / (name + '-faces')
+    (target / 'faceframes').mkdir(parents=True, exist_ok=True)
+    for photo in (source / 'faceframes').glob('*.jpg'):
+        atomic_copy(photo, target / 'faceframes' / photo.name)
+    # Publish the manifest last, once all photos it references are available.
+    atomic_copy(source / 'faces.json', target / 'faces.json')
+    return f'/scenes/{name}-faces/faces.json'
 
 
 def start_pose(dataset, eye_height=1.6):
@@ -193,27 +263,33 @@ def start_pose(dataset, eye_height=1.6):
     yaw = math.degrees(math.atan2(-forward[0], -forward[2]))
     return {'frame_id': frame.get('frame_id'), 'image': frame['file_path'],
             'camera_position': camera.tolist(), 'floor_position': floor.tolist(),
-            'eye_height_m': eye_height, 'yaw_degrees': yaw, 'flip': 1,
-            'desktop_uses_orbit': True}
+            'eye_height_m': eye_height, 'yaw_degrees': yaw, 'flip': 1}
 
 
 @contextlib.contextmanager
-def exclusive(work):
+def exclusive(work, name="pipeline.lock", blocking=False):
     work.mkdir(parents=True, exist_ok=True)
-    with (work / 'pipeline.lock').open('a') as lock:
+    with (work / name).open('a') as lock:
         try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(lock, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
         except BlockingIOError:
             raise RuntimeError('Another after_run/watch process owns this work directory')
         yield
 
 
-def process(args, name, source, pull_s=0, transport='local', wait_s=0):
+def process(args, name, source, pull_s=0, transport='local', wait_s=0, last_image_mtime_ns=None):
     started = time.monotonic()
     output = args.work_dir / 'runs' / name / time.strftime('%Y%m%dT%H%M%S')
     output.mkdir(parents=True)
     receipt = {'run_id': name, 'source': str(source), 'transport': transport, 'pull_s': pull_s,
-               'steps': args.steps, 'wait_for_end_s': wait_s, 'status': 'running'}
+               'steps': args.steps, 'wait_for_end_s': wait_s, 'status': 'running',
+               'quest_prune_skipped': args.skip_quest, 'prune_s': 0.0}
+    def utc(seconds=None):
+        return datetime.fromtimestamp(time.time() if seconds is None else seconds, timezone.utc).isoformat()
+    receipt['pull_started_utc'] = utc(time.time() - pull_s)
+    receipt['pull_done_utc'] = utc()
+    if last_image_mtime_ns:
+        receipt['last_photo_utc'] = utc(last_image_mtime_ns / 1e9)
     try:
         stage = time.monotonic()
         dataset, prep = prepare(source, output, args.drive_gap_seconds)
@@ -222,48 +298,99 @@ def process(args, name, source, pull_s=0, transport='local', wait_s=0):
         exports.mkdir()
         work = args.work_dir / 'brush'
         work.mkdir(exist_ok=True)
-        # Optional initial cap: Brush's max-splats only limits later growth.
+        # Stock Brush's max-splats only limits later growth; cap its seed separately.
         subsample = max(1, math.ceil(prep['seed_points'] / args.seed_max_points)) if args.seed_max_points else 1
-        argv = ['nice', '-n', '10', args.brush, dataset, '--total-steps', args.steps,
+        steps_flag = '--total-train-iters' if args.trainer == 'turbo' else '--total-steps'
+        argv = ['nice', '-n', '10', args.brush, dataset, steps_flag, args.steps,
                 '--export-every', args.steps, '--export-path', exports,
                 '--max-resolution', args.max_resolution, '--sh-degree', args.train_sh_degree,
-                '--max-splats', '300000', '--subsample-points', subsample,
-                '--eval-split-every', '8', '--eval-every', args.steps, '--eval-save-to-disk']
-        load_test = output / 'load-test'
-        load_test.mkdir()
-        stage = time.monotonic()
-        with (output / 'load-test.log').open('w') as log:
-            command(['nice', '-n', '10', args.brush, dataset, '--total-steps', '1',
-                     '--export-every', '1', '--export-path', load_test,
-                     '--max-resolution', args.max_resolution, '--sh-degree', args.train_sh_degree,
-                     '--subsample-points', subsample], cwd=work, stdout=log, stderr=subprocess.STDOUT)
-        receipt['load_test_s'] = time.monotonic() - stage
+                '--max-splats', args.max_splats, '--subsample-points', subsample,
+                '--eval-split-every', '8', '--eval-every', args.steps, '--eval-save-to-disk', *args.brush_extra]
+        if args.load_test:
+            load_test = output / 'load-test'
+            load_test.mkdir()
+            stage = time.monotonic()
+            with (output / 'load-test.log').open('w') as log:
+                command(['nice', '-n', '10', args.brush, dataset, steps_flag, '1',
+                         '--export-every', '1', '--export-path', load_test,
+                         '--max-resolution', args.max_resolution, '--sh-degree', args.train_sh_degree,
+                         '--subsample-points', subsample], cwd=work, env=trainer_env(args.work_dir),
+                        stdout=log, stderr=subprocess.STDOUT)
+            receipt['load_test_s'] = time.monotonic() - stage
         receipt['brush_command'] = [str(a) for a in argv]
-        stage = time.monotonic()
-        with (output / 'brush.log').open('w') as log:
-            command(argv, cwd=work, stdout=log, stderr=subprocess.STDOUT)
-        receipt['train_s'] = time.monotonic() - stage
+        faces = None
+        if getattr(args, 'faces', False):
+            try:
+                faces = FaceJob(args, dataset, output)
+            except Exception as error:
+                receipt['faces_error'] = str(error)
+                print(f'Face extraction could not start: {error}', file=sys.stderr, flush=True)
+        try:
+            stage = time.monotonic()
+            with (output / 'brush.log').open('w') as log:
+                command(argv, cwd=work, env=trainer_env(args.work_dir), stdout=log, stderr=subprocess.STDOUT)
+            receipt['train_s'] = time.monotonic() - stage
+            receipt['train_done_utc'] = utc()
+            stage = time.monotonic()
+            if faces:
+                receipt.update(faces.finish())
+            receipt['faces_wait_after_train_s'] = time.monotonic() - stage
+        finally:
+            if faces:
+                faces.close()
         receipt['steps_per_second_wall'] = args.steps / receipt['train_s']
         receipt['suggested_120s_steps'] = max(1, round(args.steps * 120 / receipt['train_s']))
         raw = sorted(exports.glob('*.ply'))[-1]
+        # The Mac demo becomes ready before optional Quest pruning and scoring.
         stage = time.monotonic()
-        pruned = command([sys.executable, '-m', 'tools.splat.prune', raw, output / 'splat.ply',
-                          '--max-splats', '300000', '--sh-degree', '1'], cwd=ROOT,
-                         capture_output=True, text=True)
-        receipt.update(prune_s=time.monotonic() - stage, prune=json.loads(pruned.stdout))
-        stage = time.monotonic()
-        receipt['published'] = str(publish(output / 'splat.ply', args.dist, name))
-        receipt['publish_s'] = time.monotonic() - stage
+        desktop_name = args.desktop_name or name + '-desktop'
+        receipt['desktop_published'] = str(publish(raw, args.dist, desktop_name))
+        atomic_copy(dataset / 'transforms.json', args.dist / 'scenes' / (name + '-transforms.json'))
+        atomic_copy(ROOT / 'tools/postprocess/walk.html', args.dist / 'scenes/walk.html')
+        vendor = args.dist / 'scenes/vendor'
+        vendor.mkdir(exist_ok=True)
+        for asset in (ROOT / 'tools/postprocess/vendor').iterdir():
+            atomic_copy(asset, vendor / asset.name)
+        face_query = {}
+        if faces and receipt['faces_exit_code'] == 0:
+            face_query['faces'] = publish_faces(faces.output, args.dist, name)
+            receipt['faces_count'] = len(json.loads((faces.output / 'faces.json').read_text())['faces'])
+        elif faces:
+            receipt['faces_error'] = f"Face extraction exited {receipt['faces_exit_code']}; see faces.log"
+        receipt['desktop_publish_s'] = time.monotonic() - stage
         receipt['start_pose'] = pose = start_pose(dataset, args.eye_height)
-        receipt['url'] = args.base_url.rstrip('/') + '/splat.html?' + urlencode({
-            'scene': f'scenes/{name}.ply', 'type': 'ply', 'sh': '1', 'flip': '1',
-            'pos': ','.join(f'{v:.5f}' for v in pose['floor_position']),
-            'yaw': f"{pose['yaw_degrees']:.3f}"})
+        viewer = {'type': 'ply', 'flip': '1', 'transforms': f'scenes/{name}-transforms.json',
+                  'pos': ','.join(f'{v:.5f}' for v in pose['floor_position']),
+                  'yaw': f"{pose['yaw_degrees']:.3f}"}
+        receipt['desktop_url'] = args.base_url.rstrip('/') + '/splat.html?' + urlencode({
+            **viewer, 'scene': f'scenes/{desktop_name}.ply', 'sh': args.train_sh_degree})
+        receipt['walk_url'] = args.base_url.rstrip('/') + '/scenes/walk.html?' + urlencode({
+            'scene': f'/scenes/{desktop_name}.ply', 'transforms': f'/scenes/{name}-transforms.json',
+            'sh': min(args.train_sh_degree, 2), 'start': 'mid',
+            'info': f'{name}: {args.steps} steps, full model', **face_query})
+        receipt['desktop_ready_s'] = time.monotonic() - started + pull_s
+        receipt['url_ready_utc'] = utc()
+        if last_image_mtime_ns:
+            receipt['last_photo_to_ready_s'] = time.time() - last_image_mtime_ns / 1e9
+        receipt['after_observation_start_ready_s'] = receipt['desktop_ready_s'] + wait_s
+        print('DESKTOP READY: ' + receipt['walk_url'], flush=True)
+        (output / 'timing-receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
+        stage = time.monotonic()
+        if not args.skip_quest:
+            pruned = command([sys.executable, '-m', 'tools.splat.prune', raw, output / 'splat.ply',
+                              '--max-splats', '300000', '--sh-degree', '1'], cwd=ROOT,
+                             capture_output=True, text=True)
+            receipt.update(prune_s=time.monotonic() - stage, prune=json.loads(pruned.stdout))
+            stage = time.monotonic()
+            receipt['published'] = str(publish(output / 'splat.ply', args.dist, name))
+            receipt['publish_s'] = time.monotonic() - stage
+            receipt['url'] = args.base_url.rstrip('/') + '/splat.html?' + urlencode({
+                **viewer, 'scene': f'scenes/{name}.ply', 'sh': '1'})
         stage = time.monotonic()
         evaluations = list(exports.glob('eval_*'))
         if evaluations:
             score = command([sys.executable, ROOT / 'tools/postprocess/score_heldout.py',
-                             output / 'decoded/images', evaluations[-1]], capture_output=True, text=True)
+                             output / 'decoded/images', eval_images(evaluations[-1])], capture_output=True, text=True)
             receipt['heldout'] = score.stdout.strip()
         receipt['score_s'] = time.monotonic() - stage
         receipt['status'] = 'complete'
@@ -285,17 +412,23 @@ def watch(args):
         tick = time.monotonic()
         try:
             current = inventory(args.host)
-        except subprocess.CalledProcessError:
+        except subprocess.CalledProcessError as error:
             # A powered-off Jetson cannot be pulled; complete saved datasets remain usable.
+            print(f'SSH inventory unavailable for {args.host}; saved local runs only: '
+                  f'{(error.stderr or str(error)).strip()}', file=sys.stderr, flush=True)
             candidates = [(name, path, 'offline-local') for name, path in saved_runs(args).items()]
         else:
-            observations, ready = finished(observations, current, tick)
-            newest = max(current) if current else None
+            observations, ready = finished(observations, current, tick, args.idle_seconds)
+            newest = max(current, key=run_order) if current else None
             print(f'{time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())} '
                   f'inventory={len(current)} idle_ready={len(ready)} '
                   f'newest={newest} images={current[newest][0] if newest else 0}', flush=True)
             candidates = [(name, None, 'rsync') for name in ready]
-        for name, source, transport in sorted(candidates, reverse=True):
+            if args.demo:
+                candidates = [candidate for candidate in candidates if candidate[0] == newest]
+        if args.demo and candidates:
+            candidates = [max(candidates, key=lambda candidate: run_order(candidate[0]))]
+        for name, source, transport in sorted(candidates, key=lambda candidate: run_order(candidate[0]), reverse=True):
             stamp = re.search(r'\d{8}T\d{6}', name)
             if args.since and (not stamp or stamp.group(0) < args.since):
                 continue
@@ -303,10 +436,13 @@ def watch(args):
                 continue
             # Process one run per tick; the next SSH observation must confirm the link is idle again.
             try:
-                stage = time.monotonic()
-                source = source or pull(args, name)
-                pull_s = time.monotonic() - stage if transport == 'rsync' else 0
-                process(args, name, source, pull_s, transport)
+                with exclusive(args.work_dir):
+                    stage = time.monotonic()
+                    source = source or pull(args, name)
+                    pull_s = time.monotonic() - stage if transport == 'rsync' else 0
+                    wait_s = tick - observations[name][1] if transport == 'rsync' else 0
+                    process(args, name, source, pull_s, transport, wait_s,
+                            current[name][4] if transport == 'rsync' and len(current[name]) > 4 else None)
             except Exception as error:
                 print(f'{name}: {error}', file=sys.stderr, flush=True)
             break
@@ -319,31 +455,56 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('run_id', nargs='?', help='omit for newest finished run')
     parser.add_argument('--watch', action='store_true', help='stay running; one completion receipt per run')
+    parser.add_argument('--demo', action='store_true', help='USB, newest only, 10s idle, unlimited rsync, 5k/300k seed')
     parser.add_argument('--local', type=Path, help='saved completed run; skips SSH and pull')
     parser.add_argument('--local-root', type=Path, default=Path.home() / 'farsight-captures')
-    parser.add_argument('--host', default='jetson-ts')
+    parser.add_argument('--host')
     parser.add_argument('--work-dir', type=Path, default=ROOT / '.cache/autosplat')
     parser.add_argument('--dist', type=Path, default=DIST)
     parser.add_argument('--base-url', default='http://localhost:8080')
-    parser.add_argument('--steps', type=int, default=int(os.environ.get('SPLAT_STEPS', '5000')))
+    parser.add_argument('--steps', type=int)
     parser.add_argument('--fast', dest='steps', action='store_const', const=2000, default=argparse.SUPPRESS, help='Dechante fast option: 2000 steps')
     parser.add_argument('--max-resolution', type=int, default=1600)
+    parser.add_argument('--max-splats', type=int, default=300000, help='training growth cap; turbo also caps its initial seed')
     parser.add_argument('--train-sh-degree', type=int, choices=range(4), default=3)
-    parser.add_argument('--seed-max-points', type=int, default=0, help="initial seed cap; 0 uses Dechante's full measured seed")
+    parser.add_argument('--load-test', action='store_true', help='optional one-step diagnostic before training')
+    parser.add_argument('--skip-quest', action='store_true', help='publish only the full-quality Mac scene')
+    parser.add_argument('--faces', action='store_true', help='CPU face pins alongside Brush; enabled in demo mode')
+    parser.add_argument('--faces-python', type=Path, help='Python with ultralytics/open3d; defaults to the faces venv')
+    parser.add_argument('--desktop-name', help='override the full-quality scene filename stem')
+    parser.add_argument('--wait-for-gpu', action='store_true', help='queue a manual trial behind an active automatic job')
+    parser.add_argument('--seed-max-points', type=int, help="initial seed cap; 0 uses Dechante's full measured seed")
     parser.add_argument('--drive-gap-seconds', type=float, default=60, help='maximum parked pause within a drive')
     parser.add_argument('--eye-height', type=float, default=1.6, help='XR eye height above start floor, metres')
     parser.add_argument('--since', help='watch only run IDs at/after this UTC YYYYMMDDTHHMMSS timestamp')
-    parser.add_argument('--brush', type=Path, default=Path(os.environ.get('BRUSH', str(BRUSH))))
-    parser.add_argument('--poll-seconds', type=int, choices=range(30, 61), default=30, metavar='30..60')
+    parser.add_argument('--trainer', choices=['stable', 'turbo'], default='stable')
+    parser.add_argument('--brush', type=Path, help='trainer binary; BRUSH env overrides its default')
+    parser.add_argument('--brush-extra', nargs=argparse.REMAINDER, default=[], help='extra trainer arguments, placed last')
+    parser.add_argument('--poll-seconds', type=int, choices=range(10, 61), metavar='10..60')
     parser.add_argument('--bwlimit', type=int, default=2048, help='rsync KiB/s; default 2 MiB/s')
     args = parser.parse_args()
+    args.host = args.host or ('jetson' if args.demo else 'jetson-ts')
+    args.idle_seconds = 10 if args.demo else 60
+    args.poll_seconds = args.poll_seconds or (10 if args.demo else 30)
+    if not args.demo and args.poll_seconds < 30:
+        parser.error('non-demo polling must be at least 30 seconds')
+    args.steps = args.steps if args.steps is not None else int(os.environ.get('SPLAT_STEPS', '5000'))
+    args.seed_max_points = args.seed_max_points if args.seed_max_points is not None else (300000 if args.demo else 0)
+    args.faces = args.faces or args.demo
+    args.brush = args.brush or Path(os.environ.get('BRUSH', str(
+        args.work_dir / 'turbo-target/release/brush-cli' if args.trainer == 'turbo' else BRUSH)))
     args.work_dir = args.work_dir.expanduser().resolve()
+    # Keep the venv launcher path: resolving its symlink bypasses site-packages.
+    args.faces_python = Path(os.path.abspath((args.faces_python or args.work_dir /
+                                            'faces-venv/bin/python').expanduser()))
     args.dist = args.dist.expanduser().resolve()
     args.brush = args.brush.expanduser().resolve()
-    with exclusive(args.work_dir):
-        if args.watch:
+    if args.watch:
+        with exclusive(args.work_dir, 'watcher.lock'):
             watch(args)
-        elif args.local:
+        return
+    with exclusive(args.work_dir, blocking=args.wait_for_gpu):
+        if args.local:
             process(args, args.run_id or args.local.name, args.local.expanduser().resolve())
         else:
             name, source, transport, pull_s, wait_s = wait_for_run(args)
