@@ -266,7 +266,12 @@ pub fn build(mesh: &Mesh, nrm: &[V3], area: &[f32], texel_m: f32, max_atlas: u32
                 acc = add(acc, scale(nrm[f as usize], area[f as usize]));
             }
             let normal = normalize(acc);
-            let (eu, ev) = tangent(normal);
+            // A merged region counts as planar when its face normals cluster
+            // within ~10 deg of the chart normal (walls, floors, table tops).
+            let dev = faces.iter().map(|&f| area[f as usize] * dot(nrm[f as usize], normal).max(-1.0).min(1.0).acos()).sum::<f32>();
+            let aw_ = faces.iter().map(|&f| area[f as usize]).sum::<f32>().max(1e-12);
+            let planar = dev / aw_ <= (10.0f32).to_radians();
+            let (mut eu, mut ev) = tangent(normal);
             let mut seen: FxHashMap<u32, u32> = FxHashMap::default();
             let mut verts = Vec::new();
             for &f in &faces {
@@ -278,7 +283,28 @@ pub fn build(mesh: &Mesh, nrm: &[V3], area: &[f32], texel_m: f32, max_atlas: u32
                 }
             }
             verts.sort_unstable();
-            let uv: Vec<[f32; 2]> = verts.iter().map(|&v| [dot(mesh.pos[v as usize], eu), dot(mesh.pos[v as usize], ev)]).collect();
+            let mut uv: Vec<[f32; 2]> = verts.iter().map(|&v| [dot(mesh.pos[v as usize], eu), dot(mesh.pos[v as usize], ev)]).collect();
+            if planar {
+                // Rotate the in-plane basis onto the chart's principal axis so
+                // the content rect hugs the region (tighter rects -> higher
+                // coverage, fewer texels to bake).
+                let (mx, my) = uv.iter().fold((0.0f64, 0.0f64), |(a, b), p| (a + p[0] as f64, b + p[1] as f64));
+                let n = uv.len().max(1) as f64;
+                let (mx, my) = (mx / n, my / n);
+                let (mut c00, mut c01, mut c11) = (0.0f64, 0.0f64, 0.0f64);
+                for p in &uv {
+                    let (du, dv) = (p[0] as f64 - mx, p[1] as f64 - my);
+                    c00 += du * du;
+                    c01 += du * dv;
+                    c11 += dv * dv;
+                }
+                let th = 0.5 * (2.0 * c01).atan2(c00 - c11);
+                let (cs, sn) = (th.cos() as f32, th.sin() as f32);
+                let (eu2, ev2) = (add(scale(eu, cs), scale(ev, sn)), add(scale(ev, cs), scale(eu, -sn)));
+                eu = eu2;
+                ev = ev2;
+                uv = verts.iter().map(|&v| [dot(mesh.pos[v as usize], eu), dot(mesh.pos[v as usize], ev)]).collect();
+            }
             let mut omin = [f32::INFINITY; 2];
             let mut omax = [f32::NEG_INFINITY; 2];
             for p in &uv {
@@ -287,11 +313,6 @@ pub fn build(mesh: &Mesh, nrm: &[V3], area: &[f32], texel_m: f32, max_atlas: u32
                 omax[0] = omax[0].max(p[0]);
                 omax[1] = omax[1].max(p[1]);
             }
-            // A merged region counts as planar when its face normals cluster
-            // within ~10 deg of the chart normal (walls, floors, table tops).
-            let dev = faces.iter().map(|&f| area[f as usize] * dot(nrm[f as usize], normal).max(-1.0).min(1.0).acos()).sum::<f32>();
-            let aw_ = faces.iter().map(|&f| area[f as usize]).sum::<f32>().max(1e-12);
-            let planar = dev / aw_ <= (10.0f32).to_radians();
             Chart { faces, verts, uv, normal, planar, eu, ev, omin, w: 0, h: 0, x: 0, y: 0 }
         })
         .collect();
