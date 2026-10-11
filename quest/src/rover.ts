@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { SourceTruth } from "./source-banner.js";
 import { explainStop } from "./stop-reason.js";
 import { ControlSafety, stick } from "./control-safety.js";
-import { manualDrive, steerCurve } from "./manual-drive.js";
+import { ForwardRamp, manualDrive, steerCurve } from "./manual-drive.js";
 import { H264Viewer } from "./h264";
 import { cameraCrop, croppedBox } from "./camera-view.js";
 import { VRActionMenu, type VRAction } from "./vr-actions";
@@ -65,6 +65,9 @@ export class RoverExperience {
   private auto = false;
   /** A mode change sends a release before autonomous heartbeats begin. */
   private autoArming = false;
+  private forwardRampState?: ForwardRamp;
+  /** Lazily created so prototype-built test fixtures need no extra field. */
+  private get forwardRamp() { return this.forwardRampState ??= new ForwardRamp(); }
   private lastRoamAt = -Infinity;
   private roamTurnArmed = true;
   private voiceCanvas = document.createElement("canvas");
@@ -441,6 +444,7 @@ export class RoverExperience {
   /** `hard`: a deliberate stop (B, MANUAL/AUTO switch, session start/end, viewer closed) that needs a real
    * trigger release even in demo mode. Every other stop is transient. */
   stop(reason: string, hard = false) {
+    this.forwardRamp.reset();
     // An accepted go-to goal stays armed (see AutonomyIntent.release); motion still needs a fresh deadman press.
     this.autonomy.release();
     this.scanGeneration++; this.scanReserved = false;
@@ -656,13 +660,14 @@ export class RoverExperience {
       if (!tracked && this.gate.demo && pose && session.visibilityState === "visible" && now - this.lastXRAt < DEMO_BLIP_MS) {
         // Demo: ride out a short right-controller tracking blip without a stop or re-press. The deadman
         // state carries over, but manual v/w go to 0 until tracking returns; > DEMO_BLIP_MS still stops.
-        this.input = { ...this.input, v: 0, w: 0 };
+        this.input = { ...this.input, v: 0, w: 0 }; this.forwardRamp.reset();
         this.navOverlay.setReticle(null); this.pointer.visible = false;
         this.cockpit.visible = true; this.cameraScreen.visible = !this.actionMenu.visible;
         this.paint(now);
         return;
       }
       if (!tracked) {
+        this.forwardRamp.reset();
         this.inputValid = false;
         this.voice?.stopListening("XR tracking lost: voice question cancelled");
         if (Number.isFinite(this.lastXRAt) || this.input.held)
@@ -712,8 +717,11 @@ export class RoverExperience {
           leftAxes.length >= 4 ? leftAxes[3] : leftAxes[1]);
       }
       this.lastRoamAt = this.auto ? now : -Infinity;
-      // Forward keeps its full linear range; steering gets a deadzone, expo curve and straight-ahead lock.
-      const drive = manualDrive(-stick(stickY, XR_STICK_DEADZONE), steerCurve(stickX, stickY));
+      // Forward eases in from rest (~90% after 0.3 s, full after ~2 s held); easing off or releasing is
+      // immediate. Steering gets a deadzone, expo curve and straight-ahead lock.
+      if (this.auto) this.forwardRamp.reset();
+      const forward = this.auto ? 0 : this.forwardRamp.step(-stick(stickY, XR_STICK_DEADZONE), now);
+      const drive = manualDrive(forward, steerCurve(stickX, stickY));
       this.input = { held,
         v: this.auto ? 0 : drive.v,
         w: this.auto ? 0 : drive.w,
@@ -984,6 +992,8 @@ export class RoverExperience {
     if (this.voice?.capturing) this.gate.invalidate("Voice question: release trigger");
     const moving = this.gate.decide(this.input.held, now, connected, available,
       this.renderer.xr.isPresenting ? this.lastXRAt : undefined);
+    // Any tick that does not move restarts the forward ease-in, so resuming never jumps to full.
+    if (!moving) this.forwardRamp.reset();
     // Never add another command behind buffered traffic. Reset the session instead.
     if (connected && this.socket!.bufferedAmount > 0) {
       // A permit callback and the 50 ms timer can run in the same browser turn.
