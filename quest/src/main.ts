@@ -412,9 +412,6 @@ diagnostics = new DiagnosticsOverlay(() => rover!.diagnostics());
 rover.addCockpitPanel(diagnostics.panel);
 // Prepare shader programs before the headset enters or changes to the map.
 void renderer.compileAsync(scene, camera).catch(() => {});
-setView(new URLSearchParams(location.search).get("view") === "map" ? "3d" : "camera");
-if (new URLSearchParams(location.search).get("walk") === "1") mapWalk.setMode("walk");
-
 function replaceGeometry(
   object: THREE.Points | THREE.Mesh,
   data: ReturnType<typeof decodePoints>,
@@ -486,6 +483,11 @@ function deltaCapable(next: Status | undefined): boolean {
 }
 const authorityMs = (next: Status | undefined) =>
   deltaCapable(next) ? MAP_AUTHORITY_INTERVAL_MS : MAP_TRANSFER_INTERVAL_MS;
+
+// Initial view runs frameMap(), which reads cloudMerger/denseView — it must
+// come after those declarations or the module dies in TDZ before init ends.
+setView(new URLSearchParams(location.search).get("view") === "map" ? "3d" : "camera");
+if (new URLSearchParams(location.search).get("walk") === "1") mapWalk.setMode("walk");
 function frameMap() {
   if (!cloudMerger.used || !cloudMerger.bounds) return;
   const b = cloudMerger.bounds;
