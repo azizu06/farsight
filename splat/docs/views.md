@@ -42,6 +42,37 @@ Pipeline order: `select` → `masks` → `exposure` → `brush-cli EXP`.
 Emits a self-contained capture: `transforms.json` (train), `transforms_val.json`
 (eval), `images/` (hardlinks).
 
+## Neural Engine path (macOS, `vision` feature)
+
+`farsight-views` gains a macOS-only engine for the two quality-affecting
+stages, gated `#[cfg(all(target_os="macos", feature="vision"))]` +
+`--features vision` cargo flag; Linux compiles and runs identically with
+the feature off.
+
+- `masks --engine auto|temporal|vision`: `vision` runs
+  `VNGeneratePersonSegmentationRequest` (qualityLevel =
+  `VNQualityBalanced`, outputPixelFormat `L008`) via objc2 msg_send —
+  Apple's balanced tier is the ANE-scheduled path. Person pixels become
+  transient (mask byte 0); layout, `mask_path` patching, and the
+  AlphaMode::Masked consumption path are identical to `temporal`
+  (verified: `--engine temporal` rewrote the same 24/24 masks on
+  Linux). Run it on a worker thread and it overlaps GPU training.
+- `select --engine auto|rust|vision`: `vision` replaces the Rust
+  Laplacian-variance blur score with `vImageConvolve_Planar8`
+  (Accelerate) on the same decoded luma plane — same metric, SIMD path.
+- `auto` resolves to vision on macOS+feature, temporal/rust elsewhere;
+  explicit `vision` on Linux exits with a clear error.
+
+**Mac verification checklist (bench_mac.sh / manual, all required before
+claiming ANE behaviour):** `cargo build --release --features vision` in
+`splat/farsight-views`; `farsight-views masks --engine vision --in-dir
+CAP` — assert `masks/images/*.png` written and `mask_path` patched for
+every frame; visually spot-check one mask (person pixels 0); time it vs
+`--engine temporal`; run `select --engine vision` vs `rust` and compare
+score ordering + wall time; confirm ANE use with Instruments (ANE
+Power/Usage template) — do NOT claim ANE scheduling without that trace.
+No ANE or Metal speed claims are made from Linux runs.
+
 ### masks — transient/people masking
 
 For each train view: decode the k pose-nearest neighbours at 320 px, take the
