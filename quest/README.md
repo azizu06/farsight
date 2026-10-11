@@ -87,8 +87,11 @@ qualification. The scoped redesign measurement is saved in
   stays truthful; the rover's own camera checks follow its separate
   `--demo-mode` / `FARSIGHT_DEMO_MODE` (see `docs/interfaces.md`). The desktop
   page keeps every guard.
-- Voice and assistant controls remain on the laptop page when the rover has the
-  required models. They are absent from the two-mode headset interface.
+- With rover Whisper available, hold the left trigger to ask from the Quest mic;
+  release sends to `/ask`. The headset shows Heard text + answer and plays Piper
+  audio through its speakers. Demo voice defaults on; `?voice=0` disables it.
+  Asking stops driving through the answer; release the right trigger and center
+  the joystick to resume. Removing the headset or losing tracking cancels capture.
 - With guards on (`?demo=0`, or the desktop page), the right controller must be
   connected with a fresh grip pose each frame, and the newest XR sample must be
   under 150 ms old (`performance.now()` observation time, never the predicted
@@ -246,10 +249,12 @@ stroked as one path per frame; `down: true` adds a red frame with a "PERSON DOWN
 The HUD link chip is red ("LINK LOST") when no control status has arrived for 500 ms,
 otherwise shows the server `link_ms` and the detector fps. No pose data is invented.
 
-The local scene assistant accepts text in settings. Optional voice starts only
-when clicking Ask by voice, records at most 10 seconds, and sends audio to the rover
+The local scene assistant accepts text in settings. Voice starts when clicking
+Ask by voice or holding the left trigger in VR, records at most 10 seconds, and sends audio to the rover
 for offline transcription. Closing settings or hiding the app cancels capture and
-stops all microphone tracks. Missing permission or models leaves text available.
+stops all microphone tracks. The demo arms in-VR voice without opening the mic;
+the first held trigger requests permission. Strict mode (`?demo=0`) retains the
+settings opt-in or `?voice=1`. Missing permission or models leaves text available.
 Play answer uses same-origin rover audio, or an explicitly labelled local browser
 speech voice; no cloud speech recognition is used. The rescue drill counts
 observed person tracks as encounters, rather than claiming distinct people. The

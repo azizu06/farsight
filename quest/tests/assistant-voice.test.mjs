@@ -19,9 +19,9 @@ rmSync(temporary, { recursive: true, force: true });
 
 const flush = () => new Promise(resolve => setImmediate(resolve));
 function fixture(fetchResponse = null, vrPushToTalk = true) {
-  const originals = new Map(["document", "window", "navigator", "MediaRecorder", "fetch"].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+  const originals = new Map(["document", "window", "navigator", "MediaRecorder", "fetch", "location", "Audio"].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
   const listeners = new Map(), closeListeners = new Map(), buttons = new Map();
-  const pendingPermissions = [], pendingDenials = [], recorders = [], stopEvents = [], timers = new Map();
+  const pendingPermissions = [], pendingDenials = [], recorders = [], stopEvents = [], timers = new Map(), uploads = [], playback = [];
   let permissionCalls = 0, requests = 0, timerID = 0;
   const media = { hidden: false, addEventListener: (key, value) => listeners.set(key, value), removeEventListener: key => listeners.delete(key),
     createElement: () => ({ innerHTML: "", className: "", querySelector: selector => {
@@ -42,7 +42,9 @@ function fixture(fetchResponse = null, vrPushToTalk = true) {
     permissionCalls++; return new Promise((resolve, reject) => { pendingPermissions.push(resolve); pendingDenials.push(reject); });
   } } });
   set("MediaRecorder", Recorder);
-  set("fetch", () => { requests++; if (fetchResponse) return Promise.resolve(fetchResponse); throw new Error("Cancelled recordings must not submit audio"); });
+  set("location", { origin: "https://quest.test" });
+  set("Audio", class { constructor(url) { this.url = url; } async play() { playback.push(this.url); } pause() {} });
+  set("fetch", (url, options) => { requests++; uploads.push({ url, ...options }); if (fetchResponse) return Promise.resolve(fetchResponse); throw new Error("Cancelled recordings must not submit audio"); });
   const textButton = { disabled: false };
   const confirmed = [], starts = [];
   const voice = new AssistantVoice({ append() {} }, settings, textButton, () => starts.push(Date.now()), () => {}, action => confirmed.push(action), vrPushToTalk);
@@ -58,7 +60,7 @@ function fixture(fetchResponse = null, vrPushToTalk = true) {
     const probe = stream(); pendingPermissions.shift()(probe); pendingDenials.shift(); await flush();
     return probe;
   };
-  return { voice, confirmed, starts, enable, pendingDenials, textButton, buttons, settings, media, listeners, closeListeners, pendingPermissions, recorders, stopEvents, timers, stream,
+  return { voice, confirmed, starts, enable, pendingDenials, textButton, buttons, settings, media, listeners, closeListeners, pendingPermissions, recorders, stopEvents, timers, stream, uploads, playback,
     permissionCalls: () => permissionCalls, requests: () => requests, cleanup };
 }
 
@@ -196,6 +198,30 @@ test("held left trigger records in VR with settings closed; release sends one lo
     assert.equal(f.voice.phase, "answer");
     assert.equal(f.voice.answerText, "Two people ahead");
     assert.equal(f.textButton.disabled, false);
+  } finally { f.cleanup(); }
+});
+
+test("demo preference arms without a mic probe; held question uploads to /ask and plays rover speech on the headset", async () => {
+  const f = fixture({ ok: true, json: async () => ({ question: "What do you see?", answer: "A doorway ahead", audio_url: "/tts/reply.wav" }) });
+  try {
+    f.voice.restoreVR(); f.settings.open = false;
+    assert.equal(f.permissionCalls(), 0, "arming never opens the microphone");
+    assert.equal(f.voice.pushStart(), true);
+    assert.equal(f.permissionCalls(), 1, "holding the trigger requests headset audio");
+    assert.equal(f.voice.busy, true);
+    const stream = f.stream(); f.pendingPermissions.shift()(stream); await flush();
+    f.recorders[0].ondataavailable({ data: new Blob(["Quest mic audio"], { type: "audio/webm" }) });
+    f.voice.pushEnd();
+    assert.equal(f.voice.busy, true, "release keeps motion held through processing");
+    f.stopEvents.shift()(); await flush(); await flush();
+    assert.equal(stream.track.stops >= 1, true);
+    assert.equal(f.uploads[0].url, "/ask");
+    assert.equal(f.uploads[0].method, "POST");
+    assert.equal(await f.uploads[0].body.get("audio").text(), "Quest mic audio");
+    assert.equal(f.voice.questionText, "What do you see?");
+    assert.equal(f.voice.answerText, "A doorway ahead");
+    assert.deepEqual(f.playback, ["https://quest.test/tts/reply.wav"]);
+    assert.equal(f.voice.busy, false);
   } finally { f.cleanup(); }
 });
 

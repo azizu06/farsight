@@ -49,12 +49,12 @@ try {
     await page.waitForTimeout(2500);
     assert.deepEqual(errors, [], `${path}: no page errors with a healthy /health`);
     if (path !== '/splat.html') {
-      assert.equal(await page.locator('#voice-vr-enable').evaluate(button => button.hidden), true,
-        `${path}: the removed left-trigger assistant control must not be advertised`);
+      assert.equal(await page.locator('#voice-vr-enable').evaluate(button => button.hidden), false,
+        `${path}: the left-trigger assistant control is available with rover Whisper`);
       assert.equal(await page.locator('#voice-record').evaluate(button => button.hidden), false,
         `${path}: desktop voice questions remain available`);
       assert.equal(await page.evaluate(() => window.voicePermissionRequests), 0,
-        `${path}: neither saved voice nor voice=1 should request a microphone for the removed VR control`);
+        `${path}: arming saved voice or voice=1 waits for a deliberate held trigger to request the microphone`);
     }
     await page.close();
   }

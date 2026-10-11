@@ -15,6 +15,14 @@ test("defaults apply when neither query nor storage chooses", () => {
   assert.deepEqual(explicit, {});
 });
 
+test("demo voice defaults on; strict mode and explicit opt-outs stay off", () => {
+  assert.equal(resolveSettings("", {}).values.voice, true);
+  assert.equal(resolveSettings("?demo=0", {}).values.voice, false);
+  assert.equal(resolveSettings("?voice=0", {}).values.voice, false);
+  assert.equal(resolveSettings("", { voice: false }).values.voice, false);
+  assert.equal(resolveSettings("?demo=0&voice=1", {}).values.voice, true);
+});
+
 test("query wins over storage, storage over defaults, per setting", () => {
   const saved = { mount: "servo", h264: true, voice: true };
   const { values, origin } = resolveSettings("?mount=fixed&h264=0", saved);

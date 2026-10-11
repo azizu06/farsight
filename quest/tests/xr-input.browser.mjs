@@ -106,7 +106,7 @@ try {
   assert.ok(result.roaming.commands.every(m=>m.mode==='explore'&&m.v===0&&m.w===0));
   assert.equal(result.transition.deadman,false);assert.equal(result.heldAfterSwitch.deadman,false);assert.equal(result.rearmed.deadman,true);
   assert.equal(result.lost.deadman,false);assert.equal(result.stale.deadman,false);assert.equal(result.stopped.deadman,false);
-  assert.deepEqual(result.panels,{children:2,menu:false,hint:false,stop:false,voice:false,drill:false,identity:false,pointer:false});
+  assert.deepEqual(result.panels,{children:3,menu:false,hint:false,stop:false,voice:false,drill:false,identity:false,pointer:false});
   assert.deepEqual(result.identityFresh,{visible:true,canvasHidden:true,cameraPaintUnchanged:true});
   assert.deepEqual(result.identityExpired,{visible:false,cameraPaintUnchanged:true});
   assert.ok(result.pixels.slice(0,3).some(v=>v>25),'actual camera pixels remain visible');

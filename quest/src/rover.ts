@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { SourceTruth } from "./source-banner.js";
 import { explainStop } from "./stop-reason.js";
-import { ControlSafety, stick } from "./control-safety.js";
+import { ControlSafety, stick, triggerHeld } from "./control-safety.js";
 import { DriveRamp, joystickDrive, manualDrive, steerCurve } from "./manual-drive.js";
 import { H264Viewer } from "./h264";
 import { cameraCrop, croppedBox } from "./camera-view.js";
@@ -75,6 +75,8 @@ export class RoverExperience {
   private voiceTexture = new THREE.CanvasTexture(this.voiceCanvas);
   private voicePanel = new THREE.Mesh(new THREE.PlaneGeometry(1.2, 0.8), new THREE.MeshBasicMaterial({ map: this.voiceTexture, transparent: true, toneMapped: false, depthTest: false }));
   private talkDown = false;
+  private voiceReleaseRequired = false;
+  private voiceKey = "";
   private gate = new ControlSafety({ demo: DEMO_MODE });
   private socket: WebSocket | null = null;
   private detectionsSocket: WebSocket | null = null;
@@ -271,7 +273,7 @@ export class RoverExperience {
     this.voiceTexture.colorSpace = THREE.SRGBColorSpace;
     this.voicePanel.position.set(-2.15, 0.15, -2.1); this.voicePanel.rotation.y = 0.35; this.voicePanel.renderOrder = 12; this.voicePanel.visible = false;
     this.pointer.visible = false; this.pointer.renderOrder = 30;
-    this.cockpit.add(screen, this.bannerPanel); this.cockpit.visible = false;
+    this.cockpit.add(screen, this.bannerPanel, this.voicePanel); this.cockpit.visible = false;
     this.cameraScreen = screen;
     this.identityCanvas.width = 300; this.identityCanvas.height = 160;
     this.identityCanvas.hidden = true;
@@ -687,7 +689,14 @@ export class RoverExperience {
       if (!leftTracked) {
         this.voice?.stopListening("Left controller tracking unavailable: voice question cancelled");
         this.latchLeftButtons();
+      } else {
+        const talk = triggerHeld(this.talkDown, left?.gamepad?.buttons[0]);
+        if (talk && !this.talkDown) this.talkPressed();
+        if (!talk && this.talkDown) this.voice?.pushEnd();
+        this.talkDown = talk;
       }
+      if (this.voiceReleaseRequired && !this.voice?.busy && !triggerHeld(true, right?.gamepad?.buttons[0]))
+        this.voiceReleaseRequired = false;
       this.lastXRAt = now;
       const axes = right?.gamepad?.axes ?? [];
       const stickX = axes.length >= 4 ? axes[2] : axes[0], stickY = axes.length >= 4 ? axes[3] : axes[1];
@@ -929,7 +938,11 @@ export class RoverExperience {
   private talkPressed() {
     if (!this.voice) return;
     if (this.voice.pendingAction) { this.voice.confirmAction(); this.dirty = true; return; }
-    if (this.voice.pushStart()) this.stop("Voice question: release trigger");
+    if (this.voice.pushStart()) {
+      this.voiceReleaseRequired = true;
+      this.autoArming = this.auto;
+      this.stop("Voice question: release right trigger and center stick", true);
+    }
   }
   get vrCameraView() { return this.renderer.xr.isPresenting && !this.auto; }
   /** AUTO walk-through state for diagnostics/tests; main.ts renders mapWalk itself. */
@@ -991,8 +1004,11 @@ export class RoverExperience {
     const contextActive = this.renderer.xr.isPresenting ? !this.actionMenu.visible && !this.suspended : this.getView() === "camera" && !document.querySelector("dialog[open]");
     const displayVisible = this.renderer.xr.isPresenting ? this.renderer.xr.getSession()?.visibilityState === "visible" : !document.hidden;
     const available = this.inputValid && contextActive && displayVisible && !this.contextLost && (this.gate.demo || now - this.lastCanvasDraw < 250);
-    // No motion while the microphone is requested or open; release is required afterwards.
-    if (this.voice?.capturing) this.gate.invalidate("Voice question: release trigger");
+    // Voice holds motion through transcription/answering too, including hands-free demo AUTO.
+    if (this.voice?.busy || this.voiceReleaseRequired) {
+      this.gate.invalidate("Voice question: release right trigger and center stick", true);
+      this.driveRamp.reset(); this.send(false); return;
+    }
     const moving = this.gate.decide(this.input.held, now, connected, available,
       this.renderer.xr.isPresenting ? this.lastXRAt : undefined);
     // Any tick that does not move restarts the forward ease-in, so resuming never jumps to full.
@@ -1302,7 +1318,24 @@ export class RoverExperience {
     drawCue(this.stopCanvas.getContext("2d")!, this.stopCanvas.width, this.stopCanvas.height, cue);
     this.stopTexture.needsUpdate = true;
   }
-  private drawVoice() { this.voicePanel.visible = false; }
+  private drawVoice() {
+    const voice = this.voice;
+    this.voicePanel.visible = !!voice && this.renderer.xr.isPresenting && voice.phase !== "idle";
+    if (!voice || !this.voicePanel.visible) return;
+    const text = [voice.statusText, voice.questionText ? `Heard: ${voice.questionText}` : "", voice.answerText].filter(Boolean).join("\n");
+    const key = `${voice.phase}|${text}`;
+    if (key === this.voiceKey) return;
+    this.voiceKey = key;
+    const context = this.voiceCanvas.getContext("2d")!;
+    context.clearRect(0, 0, 768, 512);
+    context.fillStyle = "rgba(7, 17, 26, .94)"; context.fillRect(0, 0, 768, 512);
+    context.fillStyle = "#8dffa9"; context.font = "bold 28px system-ui";
+    context.fillText(`VOICE · ${voice.phase.toUpperCase()}`, 24, 40);
+    context.fillStyle = "#eef5ff"; context.font = "26px system-ui";
+    for (const [index, line] of wrapLines(context, text, 720).slice(0, 13).entries())
+      context.fillText(line, 24, 80 + index * 32);
+    this.voiceTexture.needsUpdate = true;
+  }
   private addAssistant() {
     const parent = document.querySelector("#settings")!;
     const block = document.createElement("section");
@@ -1326,7 +1359,7 @@ export class RoverExperience {
         this.stop(`Seek person #${action.target_id}: release, then hold deadman`);
         this.autonomy.select(action.target_id);
         result.textContent = `Seek person #${action.target_id} armed: hold the deadman to approach; move the stick to cancel.`;
-      }, false); // This interface has no left-trigger assistant handler; desktop voice still works.
+      });
     this.voice.onVREnabled = () => saveSettings(pageStorage(), { voice: true });
     this.voice.setAvailable(false);  // until /health reports the rover's Whisper
     const phrase = block.querySelector<HTMLSelectElement>(".survivor-phrases select")!, phraseStatus = block.querySelector<HTMLElement>("#phrase-status")!;

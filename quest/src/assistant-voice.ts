@@ -28,6 +28,7 @@ export class AssistantVoice {
   private action: Action | null = null;
   private actionAt = 0;
   private answer = "";
+  private question = "";
   private audioURL: string | null = null;
   private audio: HTMLAudioElement | null = null;
   private disposed = false;
@@ -36,8 +37,7 @@ export class AssistantVoice {
   private ptt = false;
   private enableButton: HTMLButtonElement;
   private available = true;
-  /** Opt-in from a settings click, or `voice=1` saved/deep-linked by the operator (viewer-settings.js),
-   * so the headset never prompts for the microphone unasked. */
+  /** Settings/deep-link preference, default on in the demo. Capture still needs a held trigger. */
   vrEnabled = false;
   /** Called once the microphone permission for in-VR voice is granted. */
   onVREnabled: () => void = () => {};
@@ -87,6 +87,8 @@ export class AssistantVoice {
   private say(text: string, phase: VoicePhase = this.phase) { this.status.textContent = text; this.phase = phase; }
   get statusText() { return this.status.textContent ?? ""; }
   get answerText() { return this.answer; }
+  get questionText() { return this.question; }
+  get busy() { return this.capturing || this.phase === "processing"; }
   get pendingAction() { return this.action && Date.now() - this.actionAt <= CONFIRM_WINDOW_MS ? this.action : null; }
   /** Microphone requested or open: the rover must hold motion. */
   get capturing() { return this.phase === "permission" || this.phase === "listening"; }
@@ -111,7 +113,12 @@ export class AssistantVoice {
       : "Voice questions are off: this rover has no speech recognizer. The text question works.", "idle");
   }
   /** Re-enable in-VR voice saved from an earlier visit; no-op where recording is unavailable. */
-  restoreVR() { if (this.vrPushToTalk && this.available && !this.enableButton.disabled) void this.enableVR(); }
+  restoreVR() {
+    if (!this.vrPushToTalk || !this.available || this.enableButton.disabled || this.disposed) return;
+    // Arm the preference without a permission probe on page load. The held trigger requests the mic.
+    this.vrEnabled = true;
+    this.enableButton.textContent = "In-VR voice enabled (hold left trigger)";
+  }
   private async enableVR() {
     if (!this.vrPushToTalk || this.disposed || this.vrEnabled) return;
     this.enableButton.disabled = true;
@@ -155,7 +162,7 @@ export class AssistantVoice {
   }
   private async record(ptt: boolean) {
     if (this.disposed || document.hidden || (!ptt && !this.settings.open)) return;
-    this.onStart(); this.stopPlayback(); this.clearAction();
+    this.onStart(); this.stopPlayback(); this.clearAction(); this.answer = ""; this.question = "";
     const generation = ++this.generation;
     this.ptt = ptt;
     this.recordButton.disabled = true; this.cancelButton.disabled = false;
@@ -224,7 +231,7 @@ export class AssistantVoice {
     if (message) this.status.textContent = message;
   }
   setReply(reply: Reply) {
-    this.stopPlayback(); this.answer = String(reply.answer ?? ""); this.audioURL = null;
+    this.stopPlayback(); this.answer = String(reply.answer ?? ""); this.question = String(reply.question ?? ""); this.audioURL = null;
     this.clearAction();
     const action = validAction(reply.action);
     if (action) {
