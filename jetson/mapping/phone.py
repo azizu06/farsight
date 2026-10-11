@@ -154,8 +154,9 @@ def measured_points(frame, max_points=None, phase=0):
     usable &= frame.confidence >= 1
     indices = np.flatnonzero(usable)
     if max_points is not None and len(indices) > max_points:
-        step = (len(indices) + max_points - 1) // max_points
-        indices = indices[phase % step::step][:max_points]
+        count = len(indices)
+        ranks = (np.arange(max_points, dtype=np.int64) * count // max_points + phase) % count
+        indices = indices[ranks]
     v, u = np.divmod(indices, frame.depth.shape[1])
     z, k = frame.depth[v, u], frame.calibration
     local = np.stack(((u - k.cx) * z / k.fx, -(v - k.cy) * z / k.fy, -z), axis=-1)
