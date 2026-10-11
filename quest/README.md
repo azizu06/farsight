@@ -4,6 +4,12 @@ The default page opens the live rover camera. `?view=map` opens the retained 3D
 map. All requests use the page origin, so the headset stays on the MacBook's USB
 relay instead of trying to reach the Jetson directly.
 
+The desktop map is a full-canvas workspace: right-drag orbits, left-drag pans,
+scroll zooms, and F frames the scan. **Controls** opens rover actions and source,
+connection and stop details; **Settings** opens view modes, geometry options and
+capture settings. Opening controls or changing views stops motion and requires
+a fresh deadman press. Source details stay in the drawer instead of covering the map.
+
 Build with `npm ci && npm run build` from `quest/`. Run `npm test` for protocol,
 full-frame geometry, action-menu hit testing, and control safety checks. `npm run test:browser` runs the
 production `RoverExperience` in headless Chromium (SwiftShader, simulated XR
