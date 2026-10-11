@@ -37,7 +37,7 @@ enum Cmd {
         /// times on average.
         #[arg(long)] steps: Option<u32>,
         /// Target epochs per view for --steps auto-sizing.
-        #[arg(long, default_value_t = 30.0)] epochs: f64,
+        #[arg(long, default_value_t = 9.0)] epochs: f64,
         /// Held-out split period, identical to eval-split-every (0 = none).
         #[arg(long, default_value_t = 8)] eval_every: usize,
         /// Drop this fraction of the blurriest training views.
