@@ -75,7 +75,8 @@ ros2 launch farsight_nav nav.launch.py                 # or the farsight-nav sys
     near-field cells; measured costs remain intact. Something measured inside
     the body disc makes it back straight off (at most 0.35 m, only over floor
     the costmap has seen or the rover has driven), then turn away from it.
-    The fallback selects the widest supported gentle arc at 0.45 m/s, or turns
+    The fallback selects the widest supported gentle arc at 0.3 m/s (0.45 m/s
+    brushed a wall in simulated explore), or turns
     in place at 2.2 rad/s (PWM 109/104; 1.8 rad/s, PWM 91/87, sits near the
     loaded rover's breakaway, and at 0.82 rad/s the skid-steer sat at L75/R60,
     just above the floors, and stalled under payload); it never

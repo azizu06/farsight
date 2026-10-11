@@ -341,7 +341,7 @@ farsight_bridge:
     explore_tick_s: 0.5                # frontier re-score / goal decision period
     explore_switch_margin: 0.8
     explore_transition_distance: 0.6
-    explore_creep_mps: 0.45          # cruise floor: ~PWM 131/125, well above both wheel floors (70/40)
+    explore_creep_mps: 0.3           # above both wheel floors (PWM 70/40); 0.45 brushed a wall in simulated explore
     explore_scan_radps: 2.2           # PWM 109/104 like RPP's in-place turn; 1.8 (PWM 91/87) sits near the loaded rover's breakaway
     explore_gap_budget_s: 4.0
     explore_scan_budget_s: 10.0
