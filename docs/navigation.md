@@ -200,8 +200,22 @@ the goal.
   translation slower than 0.15 m/s (`NavService.MIN_LINEAR_MPS`) to 0.15 m/s on the
   same arc (the turn rate scales with it, then the server clamps it). The bridge's
   local Explore motion applies the same floor, and so does the reactive policy without
-  Nav2 (`ControlState._reactive_floor`). Exact zero (an in-place turn or a stop) stays zero. The floor holds at the real speed only with a drive
-  profile that matches the loaded rover (see [drive calibration](drive-calibration.md#loaded-rover)).
+  Nav2 (`ControlState._reactive_floor`). Exact zero (an in-place turn or a stop) stays zero.
+  The floor holds at the real speed only with a drive profile that matches the loaded
+  rover (see [drive calibration](drive-calibration.md#loaded-rover)).
+- **Explore speed follows clearance:** the bridge caps every Explore command
+  (`farsight_nav/speed.py`) by the distance from the rover centre to the nearest measured
+  lethal map cell. With nothing within `speed_open_clearance_m` (0.8 m) it drives at the
+  server's top speed: the drive profile's `max_linear_mps` (0.304 m/s loaded, PWM 255),
+  else `speed_mps * max_v`. It slows linearly to the 0.15 m/s floor at
+  `speed_tight_clearance_m` (0.3 m), on the same arc. Off-map space never slows it.
+  RPP's own cost-regulated scaling stays off: it only sees the 0.22 m inflation.
+  Before, RPP asked for the same speed everywhere (captain, 2026-10-11: "it should go
+  fast in open space and slower in tight corners").
+  Simulated Explore (2026-10-11): forward median 0.30 m/s with clearance over 1 m (main
+  0.273), 0.176 m/s under 0.5 m (main 0.236); 90% of the floor in 160.9 s (main 91% in
+  145.4 s), 0 collisions, minimum clearance 0.32 m (main 0.20 m). With 0.4/1.0 m bands it
+  took 240 s to reach 88%.
 - **Controller:** Regulated Pure Pursuit by default (20 Hz, 0.95 m/s, never under
   0.45 m/s on approach; tight arcs still slow to 0.25 m/s, because a 0.45 m/s arc floor
   cut the simulated dead-end divider), 0.2-0.5 m

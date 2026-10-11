@@ -131,8 +131,8 @@ class FarsightBridge(Node):
         # Explore drives at the server's top speed from this clearance out, slowing to the
         # 0.15 m/s AUTO floor by speed_tight_clearance_m (captain: fast in open space, slow in corners).
         self.speed_bands = dict(floor_mps=p("speed_floor_mps", 0.15).value,
-                                tight_m=p("speed_tight_clearance_m", 0.4).value,
-                                open_m=p("speed_open_clearance_m", 1.0).value)
+                                tight_m=p("speed_tight_clearance_m", 0.3).value,
+                                open_m=p("speed_open_clearance_m", 0.8).value)
         # "events": rclpy's C++ EventsExecutor. The Python MultiThreadedExecutor
         # rebuilt its wait set on every TF/costmap/feedback wakeup and spent
         # most of a core doing it. Callbacks here never block, so one thread is enough.

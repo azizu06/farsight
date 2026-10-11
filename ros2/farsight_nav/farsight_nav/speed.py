@@ -42,7 +42,7 @@ def top_speed(hello):
     return float(top)
 
 
-def clearance_limit(clearance_m, top_mps, *, floor_mps=0.15, tight_m=0.4, open_m=1.0):
+def clearance_limit(clearance_m, top_mps, *, floor_mps=0.15, tight_m=0.3, open_m=0.8):
     """Fastest translation for this clearance: top from open_m out, floor_mps at tight_m and closer."""
     if clearance_m is None or not math.isfinite(clearance_m) or clearance_m >= open_m:
         return top_mps
