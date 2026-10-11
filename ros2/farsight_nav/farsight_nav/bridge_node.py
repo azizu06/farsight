@@ -114,6 +114,10 @@ class FarsightBridge(Node):
         self.progress = frontiers.ProgressWindow(window_s=p("explore_progress_window_s", 8.0).value,
                                                  min_m=p("explore_progress_min_m", 0.4).value)
         self.explore_escape_m = p("explore_escape_m", 1.5).value
+        # A server stop that re-arms Explore within this long (demo-mode video/camera blips)
+        # resumes the same frontier, blacklist and progress window instead of starting over.
+        self.explore_resume_s = p("explore_resume_s", 2.0).value
+        self.explore_paused_at = None
         self.explore_config = frontiers.ExploreConfig(**{
             name: p("explore_" + name, field.default).value
             for name, field in frontiers.ExploreConfig.__dataclass_fields__.items()})
@@ -256,6 +260,7 @@ class FarsightBridge(Node):
         with self.lock:
             self.generation = message.get("generation")
             self.intent_active, self.intent_goal_id, self.exploring = False, None, False
+            self.explore_paused_at = None  # a new session or server link never resumes the old Explore
             self.nav_command, self.nav_command_at = None, -math.inf
             self.frontiers, self.frontiers_odom = [], []
             self.velocity = frames.VelocityEstimator()
@@ -345,20 +350,26 @@ class FarsightBridge(Node):
             self.intent_active = bool(active and (exploring or (mode in ("goto", "seek") and goal is not None)))
             self.intent_goal_id = goal_id if self.intent_active and not exploring else None
             if exploring and not self.exploring:
-                self.explore_session += 1
-                self.explore_target, self.blacklist = None, []  # a new Explore press starts fresh
-                self.progress.reset()
-                self.escape_from = None
-                self.no_frontier_since, self.explore_finished = None, False
-                # Keep decaying visits, start a separate commitment object so an
-                # older scoring result cannot arm this new operator press.
-                previous = self.explorer
-                self.explorer = frontiers.Explorer(self.explore_config)
-                self.explorer.visits = dict(previous.visits)
-                self.explorer.last_robot = previous.last_robot
+                self.explore_session += 1  # discard scoring that started before the pause
+                paused = self.explore_paused_at
+                if paused is None or time.monotonic() - paused > self.explore_resume_s:
+                    self.explore_target, self.blacklist = None, []  # a new Explore press starts fresh
+                    self.progress.reset()
+                    self.escape_from = None
+                    self.no_frontier_since, self.explore_finished = None, False
+                    # Keep decaying visits, start a separate commitment object so an
+                    # older scoring result cannot arm this new operator press.
+                    previous = self.explorer
+                    self.explorer = frontiers.Explorer(self.explore_config)
+                    self.explorer.visits = dict(previous.visits)
+                    self.explorer.last_robot = previous.last_robot
+                # else: a short server stop (video/camera blip) resumes the same frontier
+                # without re-picking a goal and turning to face it.
+                self.explore_paused_at = None
                 self.local_motion.reset()
                 self.nav_command, self.nav_command_at = None, -math.inf
             if self.exploring and not exploring:
+                self.explore_paused_at = time.monotonic()
                 self.local_motion.reset()
                 self.nav_command, self.nav_command_at = None, -math.inf
             self.exploring = exploring
@@ -785,6 +796,7 @@ class FarsightBridge(Node):
                 self.ws = None
                 with self.lock:
                     self.intent_active, self.intent_goal_id, self.exploring = False, None, False
+                    self.explore_paused_at = None  # a new session or server link never resumes the old Explore
                 self.cancel_goal("server link lost")
             await asyncio.sleep(1.0)
 
