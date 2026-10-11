@@ -34,6 +34,8 @@ export class H264Viewer {
   private decodedMediaTime = -1;
   private decodedAt = -Infinity;
   private decodedFrames = 0;
+  /** Codec startup capability only; this never establishes current camera freshness. */
+  hasVerifiedFrame = false;
   private frameCallback = 0;
   private callbackSupported = "requestVideoFrameCallback" in this.video;
   /** Decoder processing time of the last presented frame, for diagnostics only. */
@@ -50,7 +52,7 @@ export class H264Viewer {
     this.video.muted = true; this.video.autoplay = true; this.video.playsInline = true;
     this.video.onerror = () => this.reset("Decoder error: restarting H.264");
   }
-  start() { this.stopped = false; this.problem = null; this.connect(); this.watchDecodedFrame(); }
+  start() { this.hasVerifiedFrame = false; this.stopped = false; this.problem = null; this.connect(); this.watchDecodedFrame(); }
   private watchDecodedFrame() {
     if (this.stopped || !this.callbackSupported) return;
     this.frameCallback = this.video.requestVideoFrameCallback((_now, metadata) => {
@@ -67,6 +69,7 @@ export class H264Viewer {
     const segment = [...this.segments].reverse().find(item =>
       this.decodedMediaTime >= item.media_start_s - 0.0001 && this.decodedMediaTime < item.media_end_s);
     if (!segment) return null;
+    this.hasVerifiedFrame = true;
     return {
       id: `h264:${segment.request_id}:${this.decodedFrames}`,
       // Age at the moment it is on screen, including the wait for its vsync.
