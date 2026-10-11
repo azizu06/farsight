@@ -58,8 +58,14 @@ ros2 launch farsight_nav nav.launch.py                 # or the farsight-nav sys
     blip restarted Explore and the rover turned in place to face a new goal: on
     the 2026-10-11 00:35Z floor run, 7 `video_stale` stops in 43 s, with 58% of
     the time spent rotating in place.
-    Explore never ends on its own (captain's order, 2026-10-10). Planning gaps,
-    and stretches with no frontier at all, creep along the most open
+    Explore never ends on its own (captain's order, 2026-10-10). With no usable
+    frontier it chooses an open destination inside the mapped room and sends
+    that goal to Nav2. Connected map passages determine reachability; broader
+    routes take priority, with no additional corridor-width or camera-ray veto.
+    An active destination stays committed until approached, blocked or skipped.
+    This handles an obstacle directly ahead with an open passage around it,
+    including fully observed rooms with no remaining frontier. Planning gaps
+    creep along the most open
     measured arc; with no open arc it turns in place to look, restarting after
     each full turn, and re-scores frontiers every 0.5 s. A detected
     person never switches Explore to Seek: people are moving obstacles in the
