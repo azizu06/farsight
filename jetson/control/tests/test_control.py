@@ -508,13 +508,24 @@ class DemoModeTests(unittest.TestCase):
         self.assertEqual(self.state.status()["reason"], "lease_expired")
         self.assert_resumes()
 
-    def test_teleop_ignores_camera_freshness_but_autonomy_does_not(self):
+    def test_teleop_ignores_camera_freshness_and_autonomy_holds_still_on_it(self):
         self.camera[0] = False
         self.assertTrue(self.send(video_fresh=False, video_age_ms=2000))
         self.assertEqual(self.state.output()[:2], (50, 50))
-        self.assertFalse(self.send(mode="explore", v=0))
-        self.assertEqual(self.state.status()["reason"], "camera_stale")
-        self.assertFalse(self.state.status()["requires_release"])
+        self.state = ControlState(clock=self.clock, proximity_stop=False, demo_mode=True,
+                                  camera_ready=lambda: self.camera[0], detections=lambda: {})
+        self.state.set_connected(True)
+        self.session = self.state.begin()
+        self.send(deadman=False)
+        self.assertTrue(self.send(mode="explore", v=0))  # accepted: a stale camera holds, it does not stop
+        self.assertEqual(self.state.output()[:2], (0, 0))
+        status = self.state.status()
+        self.assertEqual((status["mode"], status["reason"], status["requires_release"]),
+                         ("explore", "camera_stale", False))
+        self.clock.now += self.state.SENSOR_PAUSE_S
+        self.send(mode="explore", v=0)
+        self.state.output()
+        self.assertEqual((self.state.status()["mode"], self.state.status()["reason"]), ("teleop", "camera_stale"))
 
     def test_demo_autonomy_is_not_gated_on_the_viewer_picture(self):
         def explore(demo_mode, video_age_ms):
