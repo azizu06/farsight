@@ -1,0 +1,24 @@
+{
+  "source_pin": "07a85507a03d0a59319f10bf90f69d2a4611be98",
+  "expected_and_deployed_match": true,
+  "files": {
+    "jetson/mapping/server.py": "acdbf10e26e549e1f53452d4f86c7b20d7889429d58d4753d664fcc9c4815901",
+    "jetson/mapping/phone.py": "db5e9acece4d3791591229faa67a14e02c0200ee5caf557a32c5587c0b3b67a7",
+    "jetson/mapping/dense_worker.py": "931f48dfc4c96d7f72e91b35a0038d90eafdc2131b1a990768eaf18b457fd91a",
+    "jetson/nav.py": "6bf51a9fa49ce6620913586e96d4d2cc20e5e121d0fd919f19efe6891f27611c",
+    "jetson/control/state.py": "e9facefbaf536985697a44a77b6d6327342254d9d414d9c112c8054c4bf80cbf"
+  },
+  "environment_sha256": "8c24cf69fce3af738b9300a8eda4a061f75f4afb7bfe13dfb5615ec9075a0d4c",
+  "max_pwm": 255,
+  "autonomy_max_pwm": 255,
+  "raw_capture": 1,
+  "clocks_applied": true,
+  "cpu_mhz": 1344,
+  "gpu_mhz": 918,
+  "emc_mhz": 3199,
+  "services": {
+    "farsight_pid": 2216,
+    "nav_pid": 3352
+  },
+  "relay_already_restarted_by_owner_pid": 75341
+}

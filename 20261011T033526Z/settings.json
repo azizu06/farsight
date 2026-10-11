@@ -1,0 +1,14 @@
+{
+  "core_pin": "98d8d1279b794806b865c35518a9d5524d8ccc77",
+  "adapter_pin": "2032ac584220a345793a538d037c62aa3a2c28e9",
+  "adapter_sha256": "d32daab0852188445a5aaf045dffb55164d81f75d8825ad4030a3a4f7d8c4572",
+  "renderer_pid": 30496,
+  "relay_pid": 75341,
+  "renderer_restarted": false,
+  "relay_restarted_by_this_worker": false,
+  "headset_touched": false,
+  "raw_requests": 1,
+  "raw_accepted": 0,
+  "raw_polling": false,
+  "timeout_changed": false
+}
