@@ -1,0 +1,15 @@
+<!doctype html><meta charset="utf-8"><style>html,body{margin:0;background:#000}</style>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}</script>
+<script type="module">
+import * as THREE from "three"; import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+const r=new THREE.WebGLRenderer({antialias:true,preserveDrawingBuffer:true});r.setSize(640,480);r.outputColorSpace=THREE.SRGBColorSpace;document.body.appendChild(r.domElement);
+const s=new THREE.Scene();s.background=new THREE.Color(0);s.add(new THREE.AmbientLight(0xffffff,1.0));
+const g=await new GLTFLoader().loadAsync('compiled/scene.glb');
+g.scene.traverse(o=>{if(o.isMesh){const m=o.material;o.material=new THREE.MeshBasicMaterial({map:m.map||null,color:m.map?0xffffff:(m.color||0xffffff),vertexColors:!!o.geometry.attributes.color,side:THREE.DoubleSide});}});
+s.add(g.scene);
+const cams=await (await fetch('cams_eval.json')).json();
+window.renderAll=()=>cams.map(c=>{const cam=new THREE.PerspectiveCamera(2*Math.atan(c.h/2/c.fl_y)*180/Math.PI,c.w/c.h,.02,200);
+  const a=c.m,M=new THREE.Matrix4();M.set(a[0][0],a[0][1],a[0][2],a[0][3],a[1][0],a[1][1],a[1][2],a[1][3],a[2][0],a[2][1],a[2][2],a[2][3],0,0,0,1);
+  cam.matrixAutoUpdate=false;cam.matrix.copy(M);cam.matrixWorld.copy(M);cam.matrixWorldInverse.copy(M).invert();r.render(s,cam);return [c.name,r.domElement.toDataURL('image/png')];});
+window.__ready=true;
+</script>

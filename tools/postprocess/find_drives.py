@@ -3,6 +3,7 @@
   python find_drives.py RUN_DIR                    # print drives
   python find_drives.py RUN_DIR --cut A B OUT_DIR  # copy frames A..B (inclusive) into OUT_DIR
 A drive is a stretch of motion (>1 cm or >2 deg per frame) with pauses under 12 s.
+Use --gap-seconds N to allow longer pauses within the same drive.
 """
 import json, shutil, sys
 from pathlib import Path
@@ -20,11 +21,12 @@ if '--cut' in sys.argv:
     for f in seg: shutil.copy2(run / f['file_path'], out / f['file_path'])
     json.dump(dict(t, frames=seg), open(out / 'transforms.json', 'w'))
     print(f'cut {len(seg)} frames -> {out}'); sys.exit()
+gap = float(sys.argv[sys.argv.index('--gap-seconds') + 1]) if '--gap-seconds' in sys.argv else 12
 idx = np.where(mov)[0]
 if not len(idx): print('no motion in this run'); sys.exit()
 drives, s, p = [], idx[0], idx[0]
 for i in idx[1:]:
-    if T[i] - T[p] > 12: drives.append((s, p)); s = i
+    if T[i] - T[p] > gap: drives.append((s, p)); s = i
     p = i
 drives.append((s, p))
 for a, b in drives:

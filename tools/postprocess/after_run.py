@@ -14,7 +14,7 @@ import signal
 import subprocess
 import sys
 import time
-from urllib.parse import quote
+from urllib.parse import urlencode
 
 ROOT = Path(__file__).resolve().parents[2]
 BRUSH = Path.home() / '.cache/farsight-splat/brush-v0.3.0/brush-app-aarch64-apple-darwin/brush_app'
@@ -26,7 +26,8 @@ out = {}
 for run in sorted(Path.home().joinpath("captures").iterdir()):
     if not run.is_dir(): continue
     images = list(run.joinpath("images").glob("*.jpg"))
-    tf, seed = run / "transforms.json", run / "init.ply"
+    tf = run / "transforms.json"
+    seed = run / "init.ply" if run.joinpath("init.ply").is_file() else run / "dense.ply"
     files = images + [p for p in (tf, seed) if p.is_file()]
     out[run.name] = [len(images), max((p.stat().st_mtime_ns for p in files), default=0),
                      seed.stat().st_size if seed.is_file() else 0,
@@ -47,7 +48,7 @@ def inventory(host):
 
 def local_runs(base):
     return {p.name: p for p in sorted(base.glob('*'))
-            if (p / 'init.ply').is_file() and
+            if ((p / 'init.ply').is_file() or (p / 'dense.ply').is_file()) and
             ((p / 'transforms.json').is_file() or (p / 'photos/transforms.json').is_file())}
 
 
@@ -96,19 +97,19 @@ def pull(args, name):
     command(['rsync', '-a', '--bwlimit=' + str(args.bwlimit),
              '-e', 'ssh -o BatchMode=yes -o ConnectTimeout=5',
              '--include=/images/', '--include=/images/*.jpg', '--include=/transforms.json',
-             '--include=/init.ply', '--exclude=*',
+             '--include=/init.ply', '--include=/dense.ply', '--exclude=*',
              f'{args.host}:captures/{name}/', str(destination) + '/'])
     return destination
 
 
-def prepare(source, destination):
+def prepare(source, destination, drive_gap_seconds=60):
     from PIL import Image, ImageFile
     ImageFile.LOAD_TRUNCATED_IMAGES = False
     dataset = source if (source / 'transforms.json').is_file() else source / 'photos'
     transforms = json.loads((dataset / 'transforms.json').read_text())
     clean = destination / 'decoded'
     clean.mkdir(parents=True)
-    frames, rejected = [], []
+    frames, rejected, normalized = [], [], []
     for frame in transforms['frames']:
         image = dataset / frame['file_path']
         try:
@@ -116,21 +117,28 @@ def prepare(source, destination):
                 decoded.verify()
             with Image.open(image) as decoded:
                 decoded.load()
-            # Brush v0.3.0 reads a fixed 16,387-byte header before decoding.
-            if image.stat().st_size < 16387:
-                raise ValueError('short file triggers Brush v0.3.0 early eof')
+                pixels = decoded.copy() if image.stat().st_size < 16387 else None
         except (OSError, ValueError, SyntaxError) as error:
             rejected.append({'file': frame['file_path'], 'reason': str(error)})
             continue
         target = clean / frame['file_path']
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(image, target)
+        if pixels is not None:
+            # Preserve valid small photos; Brush requires a 16,387-byte initial read.
+            png = target.with_suffix('.png')
+            pixels.save(png)
+            with png.open('ab') as padded:
+                padded.write(b'\0' * max(0, 20000 - png.stat().st_size))
+            normalized.append(frame['file_path'])
+            frame = dict(frame, file_path=str(png.relative_to(clean)))
         frames.append(frame)
     if not frames:
         raise RuntimeError('No decodable images')
     transforms['frames'] = frames
     (clean / 'transforms.json').write_text(json.dumps(transforms))
-    drives = command([sys.executable, ROOT / 'tools/postprocess/find_drives.py', clean],
+    drives = command([sys.executable, ROOT / 'tools/postprocess/find_drives.py', clean,
+                      '--gap-seconds', drive_gap_seconds],
                      capture_output=True, text=True).stdout
     print(drives, flush=True)
     segments = [(int(a), int(b)) for a, b in re.findall(r'frames\s+(\d+)-\s*(\d+)', drives)]
@@ -139,10 +147,11 @@ def prepare(source, destination):
     def duration(segment):
         a, b = segment
         return frames[b].get('t_capture', b / 2.5) - frames[a].get('t_capture', a / 2.5)
-    a, b = max(segments, key=duration)
+    a, b = (0, len(frames) - 1) if len(segments) == 1 else max(segments, key=duration)
     cut = destination / 'drive'
     command([sys.executable, ROOT / 'tools/postprocess/find_drives.py', clean, '--cut', a, b, cut])
-    shutil.copy2(source / 'init.ply', cut / 'init.ply')
+    seed_source = source / 'init.ply' if (source / 'init.ply').is_file() else source / 'dense.ply'
+    shutil.copy2(seed_source, cut / 'init.ply')
     selected = json.loads((cut / 'transforms.json').read_text())
     selected['ply_file_path'] = 'init.ply'
     (cut / 'transforms.json').write_text(json.dumps(selected))
@@ -154,6 +163,9 @@ def prepare(source, destination):
         else:
             raise RuntimeError('init.ply has no vertex count')
     return cut, {'input_frames': len(frames) + len(rejected), 'rejected': rejected,
+                 'normalized_short_jpegs': normalized, 'drive_gap_seconds': drive_gap_seconds,
+                 'selection': 'whole-run' if len(segments) == 1 else 'longest-drive',
+                 'seed_file': str(seed_source),
                  'drive_frames': b - a + 1, 'drive_duration_s': duration((a, b)), 'seed_points': points}
 
 
@@ -165,6 +177,24 @@ def publish(splat, dist, name):
     shutil.copyfile(splat, temporary)
     os.replace(temporary, target)
     return target
+
+
+def start_pose(dataset, eye_height=1.6):
+    import numpy as np
+    frames = json.loads((dataset / 'transforms.json').read_text())['frames']
+    normal = [frame for frame in frames if frame.get('tracking', 'normal') == 'normal'] or frames
+    frame = normal[len(normal) // 2]
+    matrix = np.array(frame['transform_matrix'])
+    # flip=1 rotates the PLY 180 degrees about X; transform the measured camera too.
+    flip = np.array([1, -1, -1])
+    camera = matrix[:3, 3] * flip
+    forward = -matrix[:3, 2] * flip
+    floor = camera - np.array([0, eye_height, 0])
+    yaw = math.degrees(math.atan2(-forward[0], -forward[2]))
+    return {'frame_id': frame.get('frame_id'), 'image': frame['file_path'],
+            'camera_position': camera.tolist(), 'floor_position': floor.tolist(),
+            'eye_height_m': eye_height, 'yaw_degrees': yaw, 'flip': 1,
+            'desktop_uses_orbit': True}
 
 
 @contextlib.contextmanager
@@ -186,19 +216,28 @@ def process(args, name, source, pull_s=0, transport='local', wait_s=0):
                'steps': args.steps, 'wait_for_end_s': wait_s, 'status': 'running'}
     try:
         stage = time.monotonic()
-        dataset, prep = prepare(source, output)
+        dataset, prep = prepare(source, output, args.drive_gap_seconds)
         receipt.update(prep, prep_s=time.monotonic() - stage)
         exports = output / 'exports'
         exports.mkdir()
         work = args.work_dir / 'brush'
         work.mkdir(exist_ok=True)
-        # Cap the *initial* seed too: Brush's max-splats only limits later growth.
-        subsample = max(1, math.ceil(prep['seed_points'] / 300_000))
+        # Optional initial cap: Brush's max-splats only limits later growth.
+        subsample = max(1, math.ceil(prep['seed_points'] / args.seed_max_points)) if args.seed_max_points else 1
         argv = ['nice', '-n', '10', args.brush, dataset, '--total-steps', args.steps,
                 '--export-every', args.steps, '--export-path', exports,
-                '--max-resolution', args.max_resolution, '--sh-degree', '1',
+                '--max-resolution', args.max_resolution, '--sh-degree', args.train_sh_degree,
                 '--max-splats', '300000', '--subsample-points', subsample,
                 '--eval-split-every', '8', '--eval-every', args.steps, '--eval-save-to-disk']
+        load_test = output / 'load-test'
+        load_test.mkdir()
+        stage = time.monotonic()
+        with (output / 'load-test.log').open('w') as log:
+            command(['nice', '-n', '10', args.brush, dataset, '--total-steps', '1',
+                     '--export-every', '1', '--export-path', load_test,
+                     '--max-resolution', args.max_resolution, '--sh-degree', args.train_sh_degree,
+                     '--subsample-points', subsample], cwd=work, stdout=log, stderr=subprocess.STDOUT)
+        receipt['load_test_s'] = time.monotonic() - stage
         receipt['brush_command'] = [str(a) for a in argv]
         stage = time.monotonic()
         with (output / 'brush.log').open('w') as log:
@@ -215,12 +254,16 @@ def process(args, name, source, pull_s=0, transport='local', wait_s=0):
         stage = time.monotonic()
         receipt['published'] = str(publish(output / 'splat.ply', args.dist, name))
         receipt['publish_s'] = time.monotonic() - stage
-        receipt['url'] = args.base_url.rstrip('/') + '/splat.html?scene=scenes/' + quote(name) + '.ply&type=ply'
+        receipt['start_pose'] = pose = start_pose(dataset, args.eye_height)
+        receipt['url'] = args.base_url.rstrip('/') + '/splat.html?' + urlencode({
+            'scene': f'scenes/{name}.ply', 'type': 'ply', 'sh': '1', 'flip': '1',
+            'pos': ','.join(f'{v:.5f}' for v in pose['floor_position']),
+            'yaw': f"{pose['yaw_degrees']:.3f}"})
         stage = time.monotonic()
         evaluations = list(exports.glob('eval_*'))
         if evaluations:
             score = command([sys.executable, ROOT / 'tools/postprocess/score_heldout.py',
-                             dataset / 'images', evaluations[-1]], capture_output=True, text=True)
+                             output / 'decoded/images', evaluations[-1]], capture_output=True, text=True)
             receipt['heldout'] = score.stdout.strip()
         receipt['score_s'] = time.monotonic() - stage
         receipt['status'] = 'complete'
@@ -236,6 +279,7 @@ def process(args, name, source, pull_s=0, transport='local', wait_s=0):
 
 
 def watch(args):
+    print(f'Watcher armed: host={args.host} since={args.since or "all"} poll={args.poll_seconds}s', flush=True)
     observations = {}
     while True:
         tick = time.monotonic()
@@ -246,8 +290,15 @@ def watch(args):
             candidates = [(name, path, 'offline-local') for name, path in saved_runs(args).items()]
         else:
             observations, ready = finished(observations, current, tick)
+            newest = max(current) if current else None
+            print(f'{time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())} '
+                  f'inventory={len(current)} idle_ready={len(ready)} '
+                  f'newest={newest} images={current[newest][0] if newest else 0}', flush=True)
             candidates = [(name, None, 'rsync') for name in ready]
         for name, source, transport in sorted(candidates, reverse=True):
+            stamp = re.search(r'\d{8}T\d{6}', name)
+            if args.since and (not stamp or stamp.group(0) < args.since):
+                continue
             if (args.work_dir / (name + '.done.json')).exists():
                 continue
             # Process one run per tick; the next SSH observation must confirm the link is idle again.
@@ -275,7 +326,13 @@ def main():
     parser.add_argument('--dist', type=Path, default=DIST)
     parser.add_argument('--base-url', default='http://localhost:8080')
     parser.add_argument('--steps', type=int, default=int(os.environ.get('SPLAT_STEPS', '5000')))
-    parser.add_argument('--max-resolution', type=int, default=640)
+    parser.add_argument('--fast', dest='steps', action='store_const', const=2000, default=argparse.SUPPRESS, help='Dechante fast option: 2000 steps')
+    parser.add_argument('--max-resolution', type=int, default=1600)
+    parser.add_argument('--train-sh-degree', type=int, choices=range(4), default=3)
+    parser.add_argument('--seed-max-points', type=int, default=0, help="initial seed cap; 0 uses Dechante's full measured seed")
+    parser.add_argument('--drive-gap-seconds', type=float, default=60, help='maximum parked pause within a drive')
+    parser.add_argument('--eye-height', type=float, default=1.6, help='XR eye height above start floor, metres')
+    parser.add_argument('--since', help='watch only run IDs at/after this UTC YYYYMMDDTHHMMSS timestamp')
     parser.add_argument('--brush', type=Path, default=Path(os.environ.get('BRUSH', str(BRUSH))))
     parser.add_argument('--poll-seconds', type=int, choices=range(30, 61), default=30, metavar='30..60')
     parser.add_argument('--bwlimit', type=int, default=2048, help='rsync KiB/s; default 2 MiB/s')
