@@ -464,6 +464,13 @@ canvas:focus-visible {
 .viewport:not([data-scene-view="camera"]) .rover-help { display: none; }
 .viewport:not([data-scene-view="camera"]) .view-label,
 .viewport:not([data-scene-view="camera"]) .navigation-hint { display: none; }
+.viewport:not([data-scene-view="camera"]) .settings-toggle,
+.viewport:not([data-scene-view="camera"]) .xr-launch { display: none; }
+.settings .desktop-controls-toggle {
+  position: static; display: block; width: 100%; margin: 12px 0;
+  padding: 8px 12px; border: 1px solid #3b4048; background: #23272e;
+  border-radius: 2px; text-align: center;
+}
 .viewport:not([data-scene-view="camera"]) .cloud-status {
   position: static; margin: 6px 0 14px; font-size: 10px; text-shadow: none;
 }

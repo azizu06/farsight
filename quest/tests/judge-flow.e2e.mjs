@@ -219,6 +219,12 @@ async function noteBanner(page) {
 const roverDetails = (page) => page.locator("#rover-details").textContent();
 const roverMessage = (page) => page.locator("#rover-message").textContent();
 
+async function mapControls(page, open) {
+  if ((await page.locator(".rover-controls").isVisible()) === open) return;
+  await page.keyboard.press("Escape");
+  if (open) await page.locator("#desktop-controls-toggle").click();
+}
+
 async function releaseAll(page) {
   for (const key of ["KeyW", "KeyA", "KeyS", "KeyD", "Space"]) await page.keyboard.up(key);
 }
@@ -450,12 +456,12 @@ async function main() {
       await page.route("**/nav/cancel", (route) => { cancels.push(route.request().method()); return route.fulfill({ contentType: "application/json", body: JSON.stringify({ state: "idle", backend: "nav2" }) }); });
       nav = { state: "driving", mode: "goto", goal: { x: 1.5, z: -1 }, path: [[0, 0], [0.8, -0.4], [1.5, -1]], frontiers: [[2, 2]], backend: "nav2", message: "" };
       try {
-        if (!(await page.locator("#rover-map").isVisible())) await page.locator("#desktop-controls-toggle").click();
+        if (!(await page.locator("#rover-map").isVisible())) await mapControls(page, true);
         await page.locator("#rover-map").click();
         // Map mode is a clear canvas; the operator opens the drawer for controls and telemetry.
-        for (const selector of [".view-label", "#navigation-help", ".source-banner", "#cloud-status", ".rover-controls"])
+        for (const selector of [".view-label", "#navigation-help", ".source-banner", "#cloud-status", ".rover-controls", "#settings-toggle", "#desktop-controls-toggle", "#xr-slot"])
           if (await page.locator(selector).isVisible()) throw new Error(`map overlay still visible: ${selector}`);
-        await page.locator("#desktop-controls-toggle").click();
+        await mapControls(page, true);
         if (!(await page.locator(".source-banner").isVisible())) throw new Error("source truth missing from Controls drawer");
         const line = await waitFor("nav status never shown", async () => {
           const text = await page.locator("#rover-nav").textContent();
@@ -463,7 +469,7 @@ async function main() {
         }, 4000);
         const points = await page.locator("#rover-nav").getAttribute("data-path-points");
         if (points !== "3") throw new Error(`path overlay drew ${points} points, expected 3`);
-        await page.locator("#desktop-controls-toggle").click();
+        await mapControls(page, false);
         const box = await page.locator("#scene canvas").boundingBox();
         await page.mouse.dblclick(box.x + box.width / 2, box.y + box.height / 2);
         await waitFor("double-click never posted a goal", () => goals.length === 1, 3000);
@@ -473,7 +479,7 @@ async function main() {
         await waitFor("HUD never showed Go-to armed", async () => /Go-to armed/.test(await roverDetails(page)), 2000);
         const server = await status();
         if (server.mode === "goto" || server.left_pwm || server.right_pwm) throw new Error(`goal moved the rover without the deadman: ${JSON.stringify(server)}`);
-        await page.locator("#desktop-controls-toggle").click();
+        await mapControls(page, true);
         await page.locator("#rover-nav-cancel").click();
         await waitFor("cancel never posted", () => cancels.length === 1, 3000);
         await waitFor("Go-to stayed armed after cancel", async () => !/Go-to armed/.test(await roverDetails(page)), 2000);
