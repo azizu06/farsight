@@ -556,13 +556,15 @@ mod onnx {
         let rgb = image::RgbImage::from_raw(img.width, img.height, img.rgb.clone())
             .context("image buffer")?;
         let resized = image::imageops::resize(&rgb, iw as u32, ih as u32, FilterType::Triangle);
-        // NCHW, normalise to [-1,1] (DAV2 onnx exports use mean/std 0.5)
+        // NCHW, ImageNet normalisation (DAV2 / transformers.js convention)
+        const MEAN: [f32; 3] = [0.485, 0.456, 0.406];
+        const STD: [f32; 3] = [0.229, 0.224, 0.225];
         let mut data = vec![0f32; 3 * ih * iw];
         for y in 0..ih {
             for x in 0..iw {
                 let p = resized.get_pixel(x as u32, y as u32);
                 for c in 0..3 {
-                    data[c * ih * iw + y * iw + x] = (p[c] as f32 / 255.0 - 0.5) / 0.5;
+                    data[c * ih * iw + y * iw + x] = (p[c] as f32 / 255.0 - MEAN[c]) / STD[c];
                 }
             }
         }
@@ -631,8 +633,10 @@ mod onnx {
             let img = Image { width: 8, height: 8, rgb: vec![255u8; 8 * 8 * 3] };
             let (rel, w, h) = infer(&mut s, &img, &opts).unwrap();
             assert_eq!((w, h), (32, 32));
-            // toy model: rel = 0.5 + mean(normalised rgb) = 0.5 + 1.0
-            assert!((rel[0] - 1.5).abs() < 1e-3, "rel0={}", rel[0]);
+            // toy model: rel = 0.5 + mean_c((1 - MEAN[c]) / STD[c])
+            let expect = 0.5
+                + ((1.0 - 0.485) / 0.229 + (1.0 - 0.456) / 0.224 + (1.0 - 0.406) / 0.225) / 3.0;
+            assert!((rel[0] - expect).abs() < 1e-3, "rel0={} expect={expect}", rel[0]);
         }
     }
 }
