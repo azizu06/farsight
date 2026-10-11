@@ -178,6 +178,7 @@ pub fn pull(base: &str, opts: &IoOptions) -> Result<PointCloud> {
     }
     for (name, path) in [
         ("/map/points.bin", "/map/points.bin"),
+        ("/map/points.delta?after=0", "/map/points.delta?after=0"),
         ("/map/mesh.bin", "/map/mesh.bin"),
         ("/geometry/mesh.bin", "/geometry/mesh.bin"),
         ("/map/export.ply", "/map/export.ply"),
@@ -185,7 +186,7 @@ pub fn pull(base: &str, opts: &IoOptions) -> Result<PointCloud> {
         if let Some(c) = try_step(name, &mut || {
             let body = f.get(&join(base, path))?;
             match path {
-                "/map/points.bin" => points::read_points(&body),
+                "/map/points.bin" | "/map/points.delta?after=0" => points::read_points(&body),
                 "/map/export.ply" => ply::read_points_opts(&body, opts),
                 _ => {
                     let m = meshbin::read(&body)?;
