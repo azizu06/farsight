@@ -52,7 +52,7 @@ export class RawView {
    const p=this.patches.shift();triangles-=p.userData.triangles;vertices-=p.userData.vertices;this.remove(p);
   }
  }
- async update(enabled,frozen){
+ async update(enabled,frozen,pull=true,force=false){
   this.group.visible=enabled;this.active=enabled;
   if(!enabled){this.controller?.abort();return;}if(frozen)return;
   this.expire();
@@ -60,7 +60,8 @@ export class RawView {
   // its dense point receiver; keep only a native grid here while recent RGB-D
   // surfaces remain available after the camera turns away.
   if(this.lastGood&&Date.now()-this.lastGood+(this.age||0)>this.ttl*1000){this.clearPoints();this.lastGood=0;}
-  if(this.busy||Date.now()-this.received<this.pollInterval)return;
+  if(!pull)return;
+  if(this.busy||(!force&&Date.now()-this.received<this.pollInterval))return;
   this.busy=true;this.received=Date.now();
   this.controller=new AbortController();
   try{const reply=await fetch(`${this.endpoint}?after=${encodeURIComponent(this.cursor)}`,{signal:AbortSignal.any([this.controller.signal,AbortSignal.timeout(4000)])});
