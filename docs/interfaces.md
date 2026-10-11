@@ -1127,6 +1127,12 @@ the desktop canvas can display them. Geometry source/age/counts are unchanged.
 This works even when an unworn headset keeps its visual pose socket connected.
 It does not qualify headset stereo, tracking or pose-to-photon latency.
 
+Before any tracked pose, a mono desktop overview fits the measured dense cloud
+after bootstrap. Existing chunk bounds select the camera target and distance;
+geometry and RGB are unchanged. Manual camera changes relinquish overview
+ownership. Capture metadata optionally includes `sceneOverview` with `active`
+and `target`. Tracked pose handling and packed stereo preview remain unchanged.
+
 The Mac server's packed mode is explicit: `--stereo sbs-left-right`, default
 coded size 1920×1080 (960×1080 per eye); `--width 1280 --height 720` selects the
 smaller pair. Without that mode the server remains mono. A packed producer

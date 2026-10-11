@@ -183,6 +183,10 @@ density mesh is an explicit `?msurf=1` comparison; it can suppress individual
 samples and fine colour patterns and is not the default live-dot view.
 Pose/status polling continues, while unused coarse geometry downloads stop
 once the dense source is identified, leaving bulk bandwidth for its samples.
+An untracked desktop overview frames the measured cloud after bootstrap rather
+than leaving it far from the origin camera. It follows new bounds while the
+overview owns the camera. An explicit camera change keeps manual framing;
+tracked poses, including their last position after expiry, remain exact.
 
 While native textures are visible, the coarse and dense splats use the back of
 their display footprint for depth testing (half the splat diameter: 36mm and

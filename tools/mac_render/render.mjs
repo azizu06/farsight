@@ -29,6 +29,7 @@ import { DenseCloudState, DenseCloudReceiver, DenseGpuChunks } from "./dense-clo
 import { StereoPass, SBS_LAYOUT } from "./stereo-pass.mjs";
 import { DesktopPreviewCamera } from "./desktop-preview.mjs";
 import { sceneAnchor } from "./scene-anchor.mjs";
+import { fitSceneBounds } from "./scene-framing.mjs";
 import { measuredSurfaceLayer, measuredSurfaceOptions } from "./measured-surface.mjs";
 
 const params = new URLSearchParams(location.search);
@@ -88,6 +89,11 @@ scene.fog = sceneFog;
 const camera = new THREE.PerspectiveCamera(50, width / height, 0.01, 2000);
 camera.position.set(9, 6, 9);
 camera.lookAt(0, 0, 0);
+const overviewPosition = camera.position.clone(), overviewQuaternion = camera.quaternion.clone();
+const overviewBounds = new THREE.Box3();
+let overviewOwned = true, overviewEpoch = null, overviewAt = -Infinity;
+let overviewAspect, overviewFov;
+const overviewView = { active: false, target: null };
 const desktopPreview = new DesktopPreviewCamera({ THREE, camera, width, height });
 
 const root = new THREE.Group();
@@ -489,6 +495,8 @@ const viewPosition = [0, 0, 0];
 const layers = [];
 const layerContext = {
   THREE, renderer, scene, camera, root, params, style, width, height,
+  getSceneBounds: () => measuredSceneBounds(),
+  sceneEpoch: () => hasDenseSource() ? denseReceiver.epoch : mapIdentity,
   requestFrame: () => { frameDirty = true; },
   quality: () => lodView,
   registerLayer: (layer) => registerLayer(layer),
@@ -505,6 +513,48 @@ function registerLayer(layer) {
   };
 }
 window.__macRegisterLayer = registerLayer;
+
+function measuredSceneBounds() {
+  const bounds = new THREE.Box3();
+  if (hasDenseSource()) {
+    // These boxes are already updated by bounded GPU chunk uploads.
+    for (const slot of denseGpu.slots.values()) bounds.union(slot.points.geometry.boundingBox);
+  } else if (cloudCount) {
+    bounds.setFromArray(cloudGeometry.getAttribute("position").array.subarray(0, cloudCount * 3));
+  }
+  return bounds;
+}
+
+function frameOverview(now) {
+  overviewView.active = false;
+  if (localFixture || stereoRequested || incomingPose || pose || !hasDenseSource() || !overviewOwned) return;
+  // A layer or desktop interaction owns any explicit camera change.
+  if (!camera.position.equals(overviewPosition) || !camera.quaternion.equals(overviewQuaternion)) {
+    overviewOwned = false;
+    return;
+  }
+  if (denseReceiver.cursor.snapshot === "true" || !denseState.size) return;
+  if (denseReceiver.epoch === overviewEpoch && now - overviewAt < 1000) {
+    overviewView.active = true;
+    return;
+  }
+  overviewAt = now;
+  const bounds = measuredSceneBounds();
+  if (bounds.equals(overviewBounds) && denseReceiver.epoch === overviewEpoch &&
+      overviewAspect === camera.aspect && overviewFov === camera.getEffectiveFOV()) {
+    overviewView.active = true;
+    return;
+  }
+  const frame = fitSceneBounds(THREE, camera, bounds);
+  if (!frame) return;
+  camera.position.copy(frame.position);
+  camera.lookAt(frame.target);
+  overviewPosition.copy(camera.position); overviewQuaternion.copy(camera.quaternion);
+  overviewBounds.copy(bounds); overviewEpoch = denseReceiver.epoch;
+  overviewAspect = camera.aspect; overviewFov = camera.getEffectiveFOV();
+  overviewView.active = true; overviewView.target = frame.target.toArray();
+  frameDirty = true;
+}
 
 // The live default draws every measured dot with its original colour. The
 // averaged density mesh remains an explicit ?msurf=1 diagnostic comparison.
@@ -881,6 +931,7 @@ function drawScene(measure) {
     surfacesVisibleSeen = surfaces.visible;
     frameDirty = true;
   }
+  frameOverview(performance.now());
   const now = performance.now();
   applyPose();
   for (const layer of layers) {
@@ -945,6 +996,7 @@ function drawScene(measure) {
   viewPosition[1] = camera.position.y;
   viewPosition[2] = camera.position.z;
   window.__mac.viewPosition = viewPosition;
+  window.__mac.sceneOverview = overviewView;
   window.__mac.draws = (window.__mac.draws || 0) + 1;
   exposeMap();
   if (measure === "raf") {
