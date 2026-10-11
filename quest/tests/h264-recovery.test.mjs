@@ -50,5 +50,21 @@ for(const origin of ['saved','query']){
  f.video.seeking=false;now=1300;assert.equal(f.decoder.displayedFrame,null);assert.equal(f.decoder.hasVerifiedFrame,false);f.decoder.stop();
  results.push({case:'unmatched-paused-seeking-or-old-decoder-callback-never-latches',passed:true});
 }
+{
+ // A stall reset of a working stream reconnects at once; a failed link keeps the 1 s backoff.
+ const delays=[],sockets=[],saved={window:globalThis.window,WebSocket:globalThis.WebSocket,location:globalThis.location,document:globalThis.document};
+ const video={requestVideoFrameCallback(){return 1;},cancelVideoFrameCallback(){},pause(){},removeAttribute(){},load(){}};
+ class FakeSocket{static OPEN=1;readyState=0;constructor(url){this.url=url;sockets.push(this);}send(){}close(){this.readyState=3;this.onclose?.();}}
+ Object.assign(globalThis,{WebSocket:FakeSocket,location:{href:'http://localhost:8080/'},document:{createElement:()=>video},
+  window:{MediaSource:class{},setTimeout:(fn,ms)=>{delays.push(ms);return 0;},clearTimeout(){}}});
+ try{
+  const decoder=new H264Viewer(()=>{},()=>{});decoder.stopped=false;decoder.connect();
+  sockets[0].readyState=1;decoder.reset('H.264 segment stalled: restarting');
+  decoder.connect();sockets[1].onerror();
+  decoder.stop();
+ }finally{Object.assign(globalThis,saved);}
+ assert.deepEqual(delays,[0,1000]);
+ results.push({case:'stall-reset-of-open-stream-reconnects-without-backoff',passed:true});
+}
 const report={passed:true,checks:results.length,scope:'Actual production H264Viewer and RoverExperience.applyRoverVideo with synthetic video/clock/decoder callbacks; no connection, GPU, browser, deployment or headset evidence',results};
 console.log(JSON.stringify(report,null,2));
