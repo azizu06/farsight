@@ -29,6 +29,14 @@ export CUBECL_CACHE_DIR="${CUBECL_CACHE_DIR:-$HOME/.cache/farsight-splat/cubecl}
 export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}"
 mkdir -p "$CUBECL_CACHE_DIR"
 
+# SSIM_TILES="ssim-fwd-32x8,ssim-bwd-8x4" rebuilds brush-loss with tile
+# variants and runs the ssim_bench micro-timing first (one-time; pick the
+# fastest variant for this frame size before the budget runs).
+if [[ -n "${SSIM_TILES:-}" ]]; then
+    cargo test --release -p brush-loss --features "$SSIM_TILES" ssim_bench \
+        -- --ignored --nocapture | tee "$OUT/ssim_bench.log"
+fi
+
 IFS=',' read -ra BS <<< "$BUDGETS"
 for B in "${BS[@]}"; do
     echo "=== budget ${B}s: $CAPTURE -> $OUT/b$B ==="
@@ -39,4 +47,15 @@ for B in "${BS[@]}"; do
         --export-every 100000 \
         --export-path "$OUT/b$B/" || true
 done
+
+# Kernel table: a short extra run with --profile dumps per-kernel device
+# times to JSON (Resolved timing serializes launches — run it AFTER the
+# budget runs, never timed). Skip with NO_PROFILE=1.
+if [[ -z "${NO_PROFILE:-}" ]]; then
+    echo "=== kernel profile (untimed): $OUT/kernels.json ==="
+    "$CLI" "$CAPTURE" \
+        --total-train-iters 200 --eval-every 100000 \
+        --eval-split-every 8 --export-path "$OUT/profile/" \
+        --profile "$OUT/kernels.json" || true
+fi
 echo "results: $OUT"
