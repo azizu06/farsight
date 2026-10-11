@@ -2,7 +2,7 @@
  * The returned vectors are applied by the caller with position.copy/lookAt.
  */
 export function fitSceneBounds(THREE, camera, bounds, padding = 1.12,
-  direction = new THREE.Vector3(1, .5, 1)) {
+  direction = new THREE.Vector3(1, .5, 1), orbit = false) {
   if (bounds.isEmpty()) return null;
   const target = bounds.getCenter(new THREE.Vector3());
   // Match the camera's lookAt orientation, including its configured up vector.
@@ -28,6 +28,13 @@ export function fitSceneBounds(THREE, camera, bounds, padding = 1.12,
           depth + camera.near + radius);
       }
     }
+  }
+  if (orbit) {
+    // Auto-orbit changes the view direction at a fixed radius. Enclose the
+    // measured box and dot footprint in a sphere so every yaw/pitch fits.
+    const sphereRadius = bounds.getSize(new THREE.Vector3()).length() / 2 + radius;
+    const angle = Math.atan(Math.min(vertical, horizontal) / padding);
+    distance = Math.max(distance, sphereRadius / Math.sin(angle), camera.near + sphereRadius);
   }
   return { position: target.clone().addScaledVector(away, distance), target, distance };
 }

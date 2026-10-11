@@ -123,3 +123,47 @@ test('fitting is pure and equal inputs give stable equal results', () => {
   assert.deepEqual(camera.toJSON(), original.camera);
   assert.ok(bounds.equals(original.bounds)); assert.ok(direction.equals(original.direction));
 });
+
+test('orbit fit keeps flat measured clouds inside the frame through full yaw and pitch changes', () => {
+  const center = new THREE.Vector3(-1.329, 1.7835, -3.7765);
+  const bounds = new THREE.Box3(center.clone().add(new THREE.Vector3(-2, -1.2, -.015)),
+    center.clone().add(new THREE.Vector3(2, 1.2, .015)));
+  for (const aspect of [.45, 1, 16 / 9]) {
+    const camera = new THREE.PerspectiveCamera(50, aspect, .01, 2000);
+    camera.position.set(9, 6, 9); camera.lookAt(0, 0, 0); camera.updateMatrixWorld();
+    const original = { camera: camera.toJSON(), bounds: bounds.clone() };
+    const orbitFit = fitSceneBounds(THREE, camera, bounds, 1.12, undefined, true);
+    const exactFit = fitSceneBounds(THREE, camera, bounds);
+    assert.ok(orbitFit.distance > exactFit.distance);
+    for (const pitch of [-80, -35, 0, 25, 60, 85]) for (let yaw = 0; yaw <= 360; yaw += 15) {
+      const horizontal = Math.cos(THREE.MathUtils.degToRad(pitch));
+      const direction = new THREE.Vector3(horizontal * Math.cos(THREE.MathUtils.degToRad(yaw)),
+        Math.sin(THREE.MathUtils.degToRad(pitch)), horizontal * Math.sin(THREE.MathUtils.degToRad(yaw)));
+      // Apply the one fitted radius at every orientation, rather than refitting
+      // the scene while it orbits and making the camera move in and out.
+      const rotatedFit = { target: orbitFit.target,
+        position: orbitFit.target.clone().addScaledVector(direction, orbitFit.distance),
+        distance: orbitFit.distance };
+      assertInside(camera, bounds, rotatedFit);
+    }
+    assert.deepEqual(camera.toJSON(), original.camera); assert.ok(bounds.equals(original.bounds));
+    const repeated = fitSceneBounds(THREE, camera, bounds, 1.12, undefined, true);
+    assert.deepEqual(repeated.position.toArray(), orbitFit.position.toArray());
+    assert.equal(repeated.distance, orbitFit.distance);
+  }
+});
+
+test('orbit sphere fit keeps a tiny scene beyond the near plane without changing exact defaults', () => {
+  const bounds = new THREE.Box3(new THREE.Vector3(10, 20, -30), new THREE.Vector3(10.001, 20.002, -29.999));
+  const camera = new THREE.PerspectiveCamera(50, .6, .1, 2000);
+  const direction = new THREE.Vector3(-1, 2, 3), originalDirection = direction.clone();
+  const exact = fitSceneBounds(THREE, camera, bounds, 1.12, direction);
+  const explicitExact = fitSceneBounds(THREE, camera, bounds, 1.12, direction, false);
+  assert.deepEqual(exact.position.toArray(), explicitExact.position.toArray());
+  assert.equal(exact.distance, explicitExact.distance);
+  const orbitFit = fitSceneBounds(THREE, camera, bounds, 1.12, direction, true);
+  const radius = bounds.getSize(new THREE.Vector3()).length() / 2 + .008;
+  assert.ok(orbitFit.distance >= camera.near + radius);
+  assertInside(camera, bounds, orbitFit);
+  assert.ok(direction.equals(originalDirection));
+});

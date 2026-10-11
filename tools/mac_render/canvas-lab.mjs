@@ -23,7 +23,7 @@ const renderTimes = new Float64Array(600);
 let frameCount = 0, sampleCount = 0, previousFrame = 0, frameStarted = 0, lastTick = 0;
 let context, controls, captureCalls = 0, autoOrbit = true, followScene = live;
 let fitAt = -Infinity, fitEpoch = null;
-let fittedBounds, fitAspect, fitFov;
+let fittedBounds, fitAspect, fitFov, fitAutoOrbit;
 const originalCapture = window.__macCapture;
 window.__macCapture = (...args) => { captureCalls++; return originalCapture(...args); };
 const percentile = (samples, fraction) => {
@@ -62,17 +62,18 @@ window.__macRegisterLayer({
   },
   poll(ctx, now) {
     frameStarted = performance.now();
-    if (followScene && !window.__mac.poseValid && window.__mac.dense?.bootstrap_incomplete === false &&
+    if (followScene && !window.__mac.poseValid && ctx.sceneBootstrapComplete() &&
         (now - fitAt >= 1000 || fitEpoch !== ctx.sceneEpoch())) {
       fitAt = now;
       const bounds = ctx.getSceneBounds();
       if (!bounds.isEmpty() && (!bounds.equals(fittedBounds) || fitEpoch !== ctx.sceneEpoch() ||
-          fitAspect !== ctx.camera.aspect || fitFov !== ctx.camera.getEffectiveFOV())) {
+          fitAspect !== ctx.camera.aspect || fitFov !== ctx.camera.getEffectiveFOV() || fitAutoOrbit !== autoOrbit)) {
         const frame = fitSceneBounds(ctx.THREE, ctx.camera, bounds, 1.12,
-          ctx.camera.position.clone().sub(controls.target));
+          ctx.camera.position.clone().sub(controls.target), autoOrbit);
         ctx.camera.position.copy(frame.position); controls.target.copy(frame.target);
         fittedBounds.copy(bounds); fitEpoch = ctx.sceneEpoch();
         fitAspect = ctx.camera.aspect; fitFov = ctx.camera.getEffectiveFOV();
+        fitAutoOrbit = autoOrbit;
         ctx.requestFrame();
       }
     }

@@ -497,6 +497,7 @@ const layerContext = {
   THREE, renderer, scene, camera, root, params, style, width, height,
   getSceneBounds: () => measuredSceneBounds(),
   sceneEpoch: () => hasDenseSource() ? denseReceiver.epoch : mapIdentity,
+  sceneBootstrapComplete: () => denseReceiver.cursor.snapshot !== "true",
   requestFrame: () => { frameDirty = true; },
   quality: () => lodView,
   registerLayer: (layer) => registerLayer(layer),
