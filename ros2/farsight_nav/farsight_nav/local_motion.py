@@ -12,7 +12,7 @@ from . import frames
 
 
 class LocalMotion:
-    def __init__(self, min_width=0.7, creep_mps=0.2, turn_radps=0.82, budget_s=4.0, scan_budget_s=10.0):
+    def __init__(self, min_width=0.7, creep_mps=0.6, turn_radps=2.5, budget_s=4.0, scan_budget_s=10.0):
         if (not all(math.isfinite(v) and v > 0 for v in (min_width, creep_mps, turn_radps, budget_s, scan_budget_s))
                 or min_width < 0.34):
             raise ValueError("Local Explore motion needs finite positive limits and a rover-width corridor")

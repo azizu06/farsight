@@ -14,8 +14,8 @@ class AutonomyPolicyTests(unittest.TestCase):
         policy = Autonomy()
         policy.select("seek", 7, 10)
         v, w = policy.step(10, 160, detection(.7))
-        self.assertGreater(v, 0)
-        self.assertGreater(w, 0)  # target right -> right turn
+        self.assertEqual(v, 1.0)  # distant target uses full configured drive demand
+        self.assertAlmostEqual(w, 0.6)  # target right -> right turn
         near, left = policy.step(10.1, 80, detection(.1))
         self.assertLess(near, v)
         self.assertLess(left, 0)
@@ -48,11 +48,11 @@ class AutonomyPolicyTests(unittest.TestCase):
             with self.subTest(trigger_time=trigger_time):
                 policy = Autonomy(choose_turn=lambda: -1)
                 policy.select("explore", None, 10)
-                self.assertEqual(policy.step(10, 120, empty), (.25, 0))
-                self.assertEqual(policy.step(trigger_time, range_cm, empty), (0, -.35))
+                self.assertEqual(policy.step(10, 120, empty), (1.0, 0))
+                self.assertEqual(policy.step(trigger_time, range_cm, empty), (0, -1.0))
                 self.assertEqual(policy.phase, "turning")
-                self.assertEqual(policy.step(trigger_time + 1.01, 120, empty), (.25, 0))
-                self.assertEqual(policy.step(trigger_time + 1.1, 120, detection()), (.25, 0))
+                self.assertEqual(policy.step(trigger_time + 1.01, 120, empty), (1.0, 0))
+                self.assertEqual(policy.step(trigger_time + 1.1, 120, detection()), (1.0, 0))
                 self.assertEqual((policy.mode, policy.target_id), ("explore", None))
 
     def test_unknown_range_and_estop_stop_all_autonomous_motion(self):
@@ -67,8 +67,8 @@ class AutonomyPolicyTests(unittest.TestCase):
         empty = dict(fresh=True, error=None, age_ms=0, boxes=[])
         policy = Autonomy(choose_turn=lambda: 1, proximity_stop=False)
         policy.select("explore", None, 10)
-        self.assertEqual(policy.step(10, None, empty), (.25, 0))
-        self.assertEqual(policy.step(10.1, 20, empty), (0, .35))  # close range turns, never estop
+        self.assertEqual(policy.step(10, None, empty), (1.0, 0))
+        self.assertEqual(policy.step(10.1, 20, empty), (0, 1.0))  # close range turns, never estop
         self.assertEqual(policy.phase, "turning")
         seek = Autonomy(proximity_stop=False)
         seek.select("seek", 7, 10)
@@ -114,7 +114,7 @@ class AutonomyControlTests(unittest.TestCase):
 
     def test_seek_uses_control_ceiling_and_stick_override_latches_teleop(self):
         self.assertTrue(self.send())
-        self.assertEqual(self.state.output()[:2], (24, 24))
+        self.assertEqual(self.state.output()[:2], (48, 48))
         self.assertEqual(self.state.status()["mode"], "seek")
         self.send(v=-.5)
         self.assertEqual(self.state.output()[:2], (-40, -40))
@@ -131,8 +131,8 @@ class AutonomyControlTests(unittest.TestCase):
         self.state.set_connected(True)
         self.session = self.state.begin()
         self.send(deadman=False)
-        self.assertTrue(self.send())  # seek at v = 0.3
-        self.assertEqual(self.state.output()[:2], (79, 79))  # 70 + (100 - 70) * 0.3
+        self.assertTrue(self.send())  # seek at v = 0.6
+        self.assertEqual(self.state.output()[:2], (88, 88))  # 70 + (100 - 70) * 0.6
         self.send(v=-.5)  # stick override: teleop gets the full ceiling
         self.assertEqual(self.state.output()[:2], (-162, -162))  # 70 + (255 - 70) * 0.5
         self.assertEqual(self.state.status()["max_pwm"], 255)
@@ -140,6 +140,16 @@ class AutonomyControlTests(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 ControlState(max_pwm=255, min_pwm=70, autonomy_max_pwm=bad)
         self.assertEqual(ControlState(max_pwm=200).autonomy_max_pwm, 200)  # default: unchanged
+
+    def test_full_scale_auto_demand_reaches_only_configured_autonomy_ceiling(self):
+        self.state = ControlState(simulated=True, max_pwm=255, min_pwm=70, autonomy_max_pwm=200,
+                                  clock=lambda: self.now, proximity_stop=True, detections=lambda: self.snapshot)
+        self.state.set_connected(True)
+        self.session = self.state.begin()
+        self.send(deadman=False)
+        self.state.update_range(160)
+        self.assertTrue(self.send(refresh_range=False))
+        self.assertEqual(self.state.output()[:2], (200, 200))
 
     def test_lease_expiry_without_commands_stops_and_requires_release(self):
         self.send()
