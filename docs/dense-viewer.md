@@ -80,9 +80,15 @@ Checks:
 ```sh
 python -m unittest jetson.mapping.tests.test_raw_capture tools.tests.test_dense_viewer
 node --test tools/dense_viewer/metrics.test.mjs
-# Generate fixture using bundle(flat_frame(), map_generation=1) from
-# jetson.mapping.tests.test_mapping, then:
+python - <<'PYTHON'
+from pathlib import Path
+from jetson.mapping.tests.test_mapping import bundle, flat_frame
+Path('.cache').mkdir(exist_ok=True)
+Path('.cache/raw-fixture.bin').write_bytes(bundle(flat_frame(), map_generation=1))
+PYTHON
 node tools/tests/dense_viewer.browser.mjs http://127.0.0.1:8086/ .cache/raw-fixture.bin
+# Build the adapter with vite.layer.config.mjs first:
+node tools/tests/raw_layer.browser.mjs
 ```
 
 The browser check exercises the real worker's 48 measured points, 70 supported
@@ -92,3 +98,17 @@ synthetic decoder/render check, not live raw-capture acceptance.
 The live viewer follows measured scan bounds by default. Dragging or flying disables follow so you can inspect a fixed location; re-enable **Follow live scan** to return. Capture epoch changes reframe the new coordinate system. A healthy fresh feed can look frozen when a camera remains aimed at an earlier scan location.
 
 The **Open Mac-rendered preview** link opens `http://localhost:8080/?view=map`, the teammate-owned encoded Mac output viewer. The lab does not open an additional stream until that link is used.
+
+For native camera textures open `http://127.0.0.1:8086/?mode=raw`. **Camera-textured surfaces** and **Measured points** can be compared independently. Supported depth triangles draw first with a small depth offset; later points pass the depth test only where they are uncovered. Samples stay retained and become visible again when a texture patch expires. This suppresses coplanar dots without deleting measured fallback geometry.
+
+Compare the same captured samples with and without textures:
+
+```sh
+node tools/observe_dense_viewer.mjs --mode raw --compare-surfaces --sizes 0.012 --out .cache/raw-compare
+```
+
+The owner-mounted Mac adapter is `tools/dense_viewer/mac-layer.js`. Build it with `node quest/node_modules/vite/bin/vite.js build --config tools/dense_viewer/vite.layer.config.mjs`. The resulting `.cache/dense-layer-dist/raw-texture-layer.mjs` exports `rawTextureLayer({endpoint:'/phone/frame.bin'})`; mount its adjacent `assets/` worker directory at the same origin, import it and pass the result to `window.__macRegisterLayer`. It shares the renderer's existing Three.js, uses `ctx.root` and `ctx.requestFrame()`, and exposes `layer.stats()`. Registration, native route proxying and dense/coarse visibility remain the renderer owner's integration work.
+
+Raw exports negotiate br/gzip and retain only the newest encoded packet variants. The relay owner must include `/phone/frame.bin` in its compression pass-through paths before this helps the tailnet hop. A recorded 270,259-byte physical packet compressed to 70,557 bytes with Brotli q4 in 3.1 ms on this Mac; that is a local compression measurement, not Jetson CPU or live link proof. Initial live uncompressed reads sometimes took 2.8 s and were rejected by the unchanged 2 s capture freshness limit. No service is restarted by the lab or adapter.
+
+A same-view recorded physical packet comparison (frame 1230, 2026-10-11 01:32 UTC, 640×480 JPEG / 256×192 native depth) kept 6,565 measured 1 cm cells and 83,709 supported triangles. Front-view canvas coverage rose from 0.78% with points alone to 2.05% with textured surfaces; side/above remained sparse. This is recorded desktop SwiftShader evidence, not live delivery, room completeness or headset FPS. Its source was visibly labelled RECORDED IPHONE LIDAR.
