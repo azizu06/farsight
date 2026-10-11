@@ -83,3 +83,14 @@ Run a fast room directly: `brush_app <dataset> --total-steps 5000 --export-every
 | `poisson.py`, `surface.mjs` | Dots → solid surface (Open3D Poisson / team #201 builder) |
 | `faces/vision_vs_ultraface.py`, `faces/six_way.py` | Face detector comparison on rover frames (UltraFace, Apple Vision, YOLO11n-face, SCRFD-500M/10G, pose-keypoint heads) |
 | `cull.py`, `clean_splat.py`, `refine.py` | Tried and not recommended (see above) |
+
+## Face detection in the walkthrough
+
+`python faces/face_pins.py RUN_DIR RUN_DIR/init.ply OUT_DIR` → `faces.json` + `faceframes/`. Then open
+`walk.html?scene=<room>&transforms=transforms.json&faces=faces.json` from `OUT_DIR`:
+- left panel lists every face spot (thumbnail, frames seen); minimap shows them as red dots on the rover track
+- click a face → jump to where the rover saw it, and the **real camera frame** pops up with the face boxed
+- no boxes are drawn in the 3D room (clean walk)
+
+Run 094259: 143 sightings → 9 face spots (about 4 people; people who moved appear more than once).
+Detector comparison behind the choice: `faces/six_way.py`, release `face-compare-094259`, issue #24.

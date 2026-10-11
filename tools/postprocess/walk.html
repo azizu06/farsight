@@ -23,6 +23,19 @@ button:hover,button:focus-visible{border-color:var(--accent);outline:none}
 button[aria-pressed="true"]{border-color:var(--accent);color:var(--accent)}
 #map{position:fixed;right:16px;bottom:calc(16px + env(safe-area-inset-bottom,0px));width:170px;height:170px;background:var(--panel);border:1px solid var(--line);border-radius:8px;z-index:2}
 #status[hidden]{display:none}
+#faces{position:fixed;left:16px;top:calc(56px + env(safe-area-inset-top,0px));width:216px;max-height:calc(100vh - 290px);overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px;display:grid;gap:8px;z-index:2}
+#faces[hidden]{display:none}
+#shot{position:fixed;inset:0;display:grid;place-items:center;background:rgba(0,0,0,.72);z-index:5;padding:16px}
+#shot[hidden]{display:none}
+#shot figure{margin:0;display:grid;gap:8px;max-width:min(960px,100%);background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px}
+#shot img{width:100%;border-radius:4px;display:block}
+#shot figcaption{display:flex;justify-content:space-between;gap:12px;align-items:center;font-size:.82rem;color:var(--muted)}
+#faces .t{font-size:.68rem;letter-spacing:.09em;text-transform:uppercase;color:var(--muted)}
+#faces button{display:grid;grid-template-columns:48px 1fr;gap:8px;align-items:center;text-align:left;padding:6px}
+#faces button[aria-pressed="true"]{border-color:#ffd23f}
+#faces img{width:48px;height:48px;border-radius:4px;object-fit:cover}
+#faces small{display:block;color:var(--muted);font-size:.7rem}
+@media (max-width:640px){#faces{width:150px}}
 #status{position:fixed;inset:0;display:grid;place-items:center;color:var(--muted);font-size:.9rem;z-index:1;pointer-events:none}
 .pad{position:fixed;right:16px;bottom:calc(200px + env(safe-area-inset-bottom,0px));display:grid;grid-template-columns:repeat(3,56px);gap:8px;z-index:2}
 .pad button{font-size:1.1rem}
@@ -33,6 +46,9 @@ button[aria-pressed="true"]{border-color:var(--accent);color:var(--accent)}
 <div id="stage"></div>
 <div id="status">Loading the room…</div>
 <div class="bar"><h1>Farsight walkthrough</h1><span id="sub">One continuous rover drive</span></div>
+<div id="faces" hidden aria-label="Faces the rover saw"></div>
+<div id="shot" hidden role="dialog" aria-label="Camera frame of the selected face"><figure><img id="shotImg" alt="Camera frame with the face boxed"><figcaption><span id="shotCap"></span><button id="shotClose">Close</button></figcaption></figure></div>
+
 <div class="dock">
   <div class="t">Walk</div>
   <div class="keys"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> or arrows to walk · drag to look · <kbd>Q</kbd>/<kbd>E</kbd> up/down · <kbd>Shift</kbd> faster</div>
@@ -50,6 +66,7 @@ import * as GS from "https://cdn.jsdelivr.net/npm/@mkkellogg/gaussian-splats-3d@
 // walk.html?scene=<.ply|.splat URL>[&transforms=<transforms.json URL>][&info=<caption>]
 // Without transforms the walk starts at the origin, looking down -Z (ARKit world, Y up).
 const Q=new URLSearchParams(location.search);
+const FACES=Q.get('faces');
 const D={scene:Q.get('scene'),info:Q.get('info')||'Post-run splat walkthrough',path:[[0,0,0,0]]};
 if(Q.get('transforms')){const t=await (await fetch(Q.get('transforms'))).json();
   D.path=t.frames.map(f=>{const m=f.transform_matrix;return [m[0][3],m[1][3],m[2][3],Math.atan2(m[0][2],m[2][2])]})
@@ -57,7 +74,8 @@ if(Q.get('transforms')){const t=await (await fetch(Q.get('transforms'))).json();
 document.getElementById('sub').textContent=D.info;
 const path=D.path, eye=path.reduce((s,p)=>s+p[1],0)/path.length;
 const cam=new THREE.PerspectiveCamera(70,innerWidth/innerHeight,0.02,200);
-const viewer=new GS.Viewer({rootElement:document.getElementById('stage'),camera:cam,useBuiltInControls:false,
+const overlay=new THREE.Scene();
+const viewer=new GS.Viewer({rootElement:document.getElementById('stage'),camera:cam,useBuiltInControls:false,threeScene:overlay,
   sharedMemoryForWorkers:false,dynamicScene:false,sphericalHarmonicsDegree:0,antialiased:true});
 let yaw=0,pitch=0,touring=false,tourT=0;
 function place(i){const p=path[i];cam.position.set(p[0],p[1],p[2]);yaw=p[3];pitch=0;}
@@ -90,8 +108,38 @@ function tick(now){
   if(keys.has('ArrowLeft'))yaw+=1.6*dt; if(keys.has('ArrowRight'))yaw-=1.6*dt;
   if(keys.has('KeyE'))cam.position.y+=sp; if(keys.has('KeyQ'))cam.position.y-=sp;
   cam.rotation.set(pitch,yaw,0,'YXZ');
+  if(selected){const k=1+0.12*Math.sin(now/180);selected.scale.set(k,k,k);}
   drawMap();requestAnimationFrame(tick);
 }
+// Face pins: faces.json from face_pins.py (YOLO11n-pose keypoint heads placed on the run's LiDAR dots).
+let faces=[];
+function label(n){const c=document.createElement('canvas');c.width=128;c.height=64;const g=c.getContext('2d');
+  g.fillStyle='#ff4d6d';g.fillRect(0,0,128,64);g.fillStyle='#fff';g.font='bold 40px system-ui';g.textAlign='center';g.textBaseline='middle';g.fillText('Face '+n,64,34);
+  const s=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(c),depthTest:false,transparent:true}));s.scale.set(.2,.1,.1);s.renderOrder=999;return s;}
+// A wire box around each face (size = the head's measured width). Selected face turns yellow and pulses.
+function faceBox(f){const g=new THREE.Group();const s=f.size||0.22;
+  const box=new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(s,s*1.25,s)),new THREE.LineBasicMaterial({color:0xff4d6d,depthTest:false,transparent:true}));
+  box.renderOrder=998;g.add(box);const l=label(f.id);l.position.y=s*0.625+0.07;g.add(l);
+  g.position.set(f.pos[0],f.pos[1],f.pos[2]);g.userData={box,l,f};g.visible=false;return g;}
+let selected=null;
+function select(g){if(selected){selected.visible=false;selected.scale.set(1,1,1);}
+  selected=g;if(g){g.visible=true;g.userData.box.material.color.set(0xffd23f);}
+  document.querySelectorAll('#faces button').forEach(b=>b.setAttribute('aria-pressed',String(g&&b.dataset.id==g.userData.f.id)));}
+const faceGroups=[];
+
+function showShot(f){if(!f.frame_img)return;document.getElementById('shotImg').src=f.frame_img;
+  document.getElementById('shotCap').textContent=`Face ${f.id} · camera photo ${f.frame} · seen in ${f.seen} frames`;document.getElementById('shot').hidden=false;}
+function goFace(f){stopTour();select(faceGroups.find(g=>g.userData.f===f));const [x,y,z]=f.view;cam.position.set(x,y,z);
+  yaw=Math.atan2(-(f.pos[0]-x),-(f.pos[2]-z));pitch=Math.atan2(f.pos[1]-y,Math.hypot(f.pos[0]-x,f.pos[2]-z));}
+if(FACES){try{const j=await (await fetch(FACES)).json();faces=j.faces||[];
+  const box=document.getElementById('faces');box.hidden=!faces.length;
+  box.innerHTML=`<div class="t">Faces seen · ${faces.length} spots</div>`;
+  for(const f of faces){const g=faceBox(f);faceGroups.push(g);
+    const b=document.createElement('button');b.dataset.id=f.id;b.innerHTML=`<img src="${f.thumb}" alt="Face ${f.id}"><span>Face ${f.id}<small>seen in ${f.seen} frames</small></span>`;
+    b.onclick=()=>{goFace(f);showShot(f);};box.appendChild(b);}}catch(e){console.warn('faces',e)}}
+const closeShot=()=>{document.getElementById('shot').hidden=true;};document.getElementById('shotClose').onclick=closeShot;
+document.getElementById('shot').onclick=e=>{if(e.target.id==='shot')closeShot();};
+addEventListener('keydown',e=>{if(e.key==='Escape')closeShot();});
 const mc=document.getElementById('map').getContext('2d');
 const xs=path.map(p=>p[0]),zs=path.map(p=>p[2]);
 const minX=Math.min(...xs)-1,maxX=Math.max(...xs)+1,minZ=Math.min(...zs)-1,maxZ=Math.max(...zs)+1,sc=300/Math.max(maxX-minX,maxZ-minZ);
@@ -99,6 +147,7 @@ const mx=x=>20+(x-minX)*sc,mz=z=>20+(z-minZ)*sc;
 function drawMap(){mc.clearRect(0,0,340,340);
   mc.strokeStyle=getComputedStyle(document.documentElement).getPropertyValue('--path');mc.lineWidth=3;mc.beginPath();
   path.forEach((p,i)=>i?mc.lineTo(mx(p[0]),mz(p[2])):mc.moveTo(mx(p[0]),mz(p[2])));mc.stroke();
+  for(const f of faces){mc.fillStyle=selected&&selected.userData.f===f?'#ffd23f':'#ff4d6d';mc.beginPath();mc.arc(mx(f.pos[0]),mz(f.pos[2]),7,0,7);mc.fill();}
   const x=mx(cam.position.x),z=mz(cam.position.z);mc.fillStyle='#45d19f';mc.beginPath();mc.arc(x,z,8,0,7);mc.fill();
   mc.strokeStyle='#45d19f';mc.lineWidth=3;mc.beginPath();mc.moveTo(x,z);mc.lineTo(x-Math.sin(yaw)*22,z-Math.cos(yaw)*22);mc.stroke();}
 addEventListener('resize',()=>{cam.aspect=innerWidth/innerHeight;cam.updateProjectionMatrix()});
