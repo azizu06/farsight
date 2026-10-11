@@ -123,6 +123,13 @@ for real PSNR-vs-seconds numbers once the harness lands.
 
 ## Design notes / not-yet-landed
 
+- **`pose-refine` subcommand**: implemented in farsight-views (Gauss-Newton
+  photometric SE3 refinement against LiDAR anchors — ply rgb, else
+  LiDAR-depth-projected neighbour pixels; Huber + per-iter step clamp +
+  cost-decrease guard). On a checkerboard synth with periodic texture it
+  over-corrects (photometric ambiguity), which is a property of that
+  test scene rather than the method; needs a non-periodic synth or the
+  real init.ply to score. Not wired into the pipeline yet.
 - **Per-view SE3 pose deltas**: Brush has **no** camera-pose gradients
   (`burn_glue.rs` produces only per-splat grads). Options: (a) 2.5D direct
   photometric alignment — median splat depth per view + GT gradients →

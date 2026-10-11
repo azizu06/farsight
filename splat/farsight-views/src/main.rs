@@ -11,6 +11,8 @@
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use serde_json::Value;
+#[cfg(all(target_os = "macos", feature = "vision"))]
+mod vision_mac;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -45,6 +47,9 @@ enum Cmd {
         #[arg(long, default_value_t = 0.5)] dir_weight: f64,
         /// Decode width for blur scoring.
         #[arg(long, default_value_t = 160)] blur_res: u32,
+        /// Sharpness engine: auto | rust | vision. `vision` = vImage
+        /// Laplacian (Accelerate) on macOS builds with --features vision.
+        #[arg(long, default_value = "auto")] engine: String,
     },
     /// Temporal-median transient masks for training frames.
     Masks {
@@ -59,6 +64,38 @@ enum Cmd {
         #[arg(long, default_value_t = 28)] thresh: u8,
         /// Dilation radius (px at working res) around transient pixels.
         #[arg(long, default_value_t = 2)] dilate: u32,
+        /// Mask engine: auto | temporal | vision. `vision` = Apple
+        /// VNGeneratePersonSegmentationRequest (balanced → ANE) on macOS
+        /// builds with --features vision; `auto` picks it when available.
+        #[arg(long, default_value = "auto")] engine: String,
+    },
+    /// Per-view SE3 pose refinement via direct photometric alignment:
+    /// LiDAR-seeded anchors (ply rgb if present, else LiDAR depth
+    /// projected into a pose-neighbour frame to steal its colours) give
+    /// shared 3D points; each view's pose is Gauss-Newton-refined to
+    /// minimise |I_i(proj p) - colour(p)| with Huber weights. Absorbs
+    /// ARKit-style drift. Writes refined transforms.json.
+    PoseRefine {
+        #[arg(long)] in_dir: PathBuf,
+        /// LiDAR seed (e.g. init.ply).
+        #[arg(long)] ply: PathBuf,
+        /// transforms.json to refine (defaults to <in_dir>/transforms.json).
+        #[arg(long)] transforms: Option<PathBuf>,
+        /// Output transforms.json (defaults to in-place update).
+        #[arg(long)] out_transforms: Option<PathBuf>,
+        /// Pose-neighbours used as colour sources when the ply has no rgb.
+        #[arg(long, default_value_t = 3)] k: usize,
+        /// Working decode width for photometric sampling.
+        #[arg(long, default_value_t = 320)] res: u32,
+        /// Gauss-Newton rounds.
+        #[arg(long, default_value_t = 8)] iters: u32,
+        /// Huber delta (0-255 luma units).
+        #[arg(long, default_value_t = 16.0)] huber: f64,
+        /// Max anchors per view.
+        #[arg(long, default_value_t = 4000)] max_anchors: usize,
+        /// Reject pose updates whose final robust cost isn't lower than
+        /// the original pose's.
+        #[arg(long, default_value_t = true)] guard: bool,
     },
     /// Per-view affine gain/bias normalization of TRAIN images toward the
     /// dataset-wide tone. Eval images are copied unchanged by default;
@@ -192,10 +229,14 @@ fn cmd_select(
     dup_eps_r: f64,
     dir_weight: f64,
     blur_res: u32,
+    engine: &str,
 ) -> Result<()> {
     let (json, frames) = load_transforms(&in_dir.join("transforms.json"))?;
     let n = frames.len();
 
+    let _use_vimage = want_vision(engine, "select")?;
+    #[cfg(all(target_os = "macos", feature = "vision"))]
+    let use_vimage = _use_vimage;
     // Blur scores for every frame (cheap 160px decode).
     let mut scores = vec![0f64; n];
     for f in frames.iter() {
@@ -203,6 +244,12 @@ fn cmd_select(
         match decode_small(&p, blur_res) {
             Ok((w, h, rgb)) => {
                 let y = luma(w as usize, h as usize, &rgb);
+                #[cfg(all(target_os = "macos", feature = "vision"))]
+                if use_vimage {
+                    scores[f.idx] =
+                        vision_mac::sharpness_vimage(w as usize, h as usize, &y);
+                    continue;
+                }
                 scores[f.idx] = blur_score(w as usize, h as usize, &y);
             }
             Err(e) => {
@@ -359,6 +406,22 @@ fn write_capture(
 
 // ---------- masks ----------
 
+/// True if the requested engine should use the macOS Vision path.
+fn want_vision(engine: &str, what: &str) -> Result<bool> {
+    match engine {
+        "auto" => Ok(cfg!(all(target_os = "macos", feature = "vision"))),
+        "vision" => {
+            if cfg!(all(target_os = "macos", feature = "vision")) {
+                Ok(true)
+            } else {
+                bail!("{what}: --engine vision needs a macOS build with --features vision")
+            }
+        }
+        "temporal" | "rust" | "laplacian" => Ok(false),
+        _ => bail!("unknown --engine '{engine}'"),
+    }
+}
+
 fn cmd_masks(
     in_dir: &Path,
     transforms: Option<PathBuf>,
@@ -366,6 +429,7 @@ fn cmd_masks(
     res: u32,
     thresh: u8,
     dilate: u32,
+    engine: &str,
 ) -> Result<()> {
     let tpath = transforms.unwrap_or_else(|| in_dir.join("transforms.json"));
     let (mut json, frames) = load_transforms(&tpath)?;
@@ -397,6 +461,58 @@ fn cmd_masks(
 
     let mask_dir = in_dir.join("masks").join("images");
     fs::create_dir_all(&mask_dir)?;
+
+    // Vision engine: per-frame person segmentation (ANE). Produces the
+    // identical mask layout — person pixels become transient (0).
+    #[cfg(all(target_os = "macos", feature = "vision"))]
+    if want_vision(engine, "masks")? {
+        let mut patched = 0usize;
+        for (i, f) in frames.iter().enumerate() {
+            let Ok((w, h, conf)) =
+                (unsafe { vision_mac::person_mask(&in_dir.join(&f.file_path)) })
+            else {
+                continue;
+            };
+            // conf > 128 ⇒ person ⇒ transient.
+            let mut mask: Vec<u8> =
+                conf.iter().map(|&c| if c > 128 { 0 } else { 255 }).collect();
+            if dilate > 0 {
+                let src = mask.clone();
+                let r = dilate as usize;
+                for yy in 0..h {
+                    for xx in 0..w {
+                        if src[yy * w + xx] == 0 {
+                            for dy in yy.saturating_sub(r)..=(yy + r).min(h - 1) {
+                                for dx in xx.saturating_sub(r)..=(xx + r).min(w - 1) {
+                                    mask[dy * w + dx] = 0;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            let name = Path::new(&f.file_path)
+                .file_stem()
+                .context("frame stem")?
+                .to_string_lossy()
+                .to_string();
+            image::GrayImage::from_raw(w as u32, h as u32, mask)
+                .unwrap()
+                .save(mask_dir.join(format!("{name}.png")))?;
+            if let Some(fj) = json["frames"].as_array_mut().and_then(|a| a.get_mut(i)) {
+                fj["mask_path"] =
+                    Value::String(format!("masks/images/{name}.png"));
+                patched += 1;
+            }
+        }
+        fs::write(&tpath, serde_json::to_string_pretty(&json)?)?;
+        eprintln!("masks: vision engine, {patched}/{n} frames patched");
+        return Ok(());
+    }
+    if engine == "vision" {
+        bail!("masks: --engine vision needs a macOS build with --features vision");
+    }
+    let _ = want_vision(engine, "masks")?;
 
     let frames_arr = json["frames"].as_array().unwrap().clone();
     let mut patched = 0usize;
@@ -640,6 +756,438 @@ fn cmd_exposure(
     Ok(())
 }
 
+// ---------- pose-refine ----------
+
+use nalgebra::{Matrix3, Matrix4, Vector3, Vector6};
+
+/// Ply vertex: position + optional rgb.
+struct PlyPoint {
+    p: [f64; 3],
+    rgb: Option<[u8; 3]>,
+}
+
+/// Minimal ply loader: vertex element with x,y,z (+ optional red,green,
+/// blue), ascii or binary_little_endian float32 vertices.
+fn load_ply_points(path: &Path) -> Result<Vec<PlyPoint>> {
+    let mut data = std::io::BufReader::new(fs::File::open(path)?);
+    let mut line = String::new();
+    use std::io::BufRead;
+    let mut fmt_ascii = false;
+    let mut fmt_bin = false;
+    let mut n = 0usize;
+    let mut props: Vec<String> = Vec::new();
+    let mut in_vertex = false;
+    loop {
+        line.clear();
+        if data.read_line(&mut line)? == 0 {
+            bail!("ply: unexpected EOF in header");
+        }
+        let t = line.trim();
+        if t.starts_with("format") {
+            fmt_ascii = t.contains("ascii");
+            fmt_bin = t.contains("binary_little_endian");
+        } else if t.starts_with("element") {
+            in_vertex = t.starts_with("element vertex");
+            if in_vertex {
+                n = t
+                    .rsplit(' ')
+                    .next()
+                    .and_then(|s| s.parse().ok())
+                    .context("ply vertex count")?;
+            }
+        } else if in_vertex && t.starts_with("property") {
+            props.push(t.rsplit(' ').next().unwrap_or("").to_string());
+        } else if t == "end_header" {
+            break;
+        }
+    }
+    let ix = props.iter().position(|p| p == "x");
+    let iy = props.iter().position(|p| p == "y");
+    let iz = props.iter().position(|p| p == "z");
+    let ir = props.iter().position(|p| p == "red" || p == "r");
+    let ig = props.iter().position(|p| p == "green" || p == "g");
+    let ib = props.iter().position(|p| p == "blue" || p == "b");
+    let (Some(ix), Some(iy), Some(iz)) = (ix, iy, iz) else {
+        bail!("ply: no x/y/z vertex properties");
+    };
+    let has_rgb = ir.is_some() && ig.is_some() && ib.is_some();
+    let mut out = Vec::with_capacity(n);
+    if fmt_ascii {
+        for _ in 0..n {
+            line.clear();
+            data.read_line(&mut line)?;
+            let f: Vec<f64> = line
+                .split_whitespace()
+                .filter_map(|s| s.parse().ok())
+                .collect();
+            if f.len() <= iz.max(ix).max(iy) {
+                continue;
+            }
+            let rgb = has_rgb.then(|| {
+                [
+                    f[ir.unwrap()] as u8,
+                    f[ig.unwrap()] as u8,
+                    f[ib.unwrap()] as u8,
+                ]
+            });
+            out.push(PlyPoint {
+                p: [f[ix], f[iy], f[iz]],
+                rgb,
+            });
+        }
+    } else if fmt_bin {
+        use std::io::Read;
+        let stride = props.len(); // assume all float32 except rgb u8?
+        // Generic: parse each property type from header order.
+        // Re-scan header for property types.
+        // For simplicity: handle common layout [x,y,z,(nx,ny,nz,)red,green,blue] all float32 except u8 colours.
+        // Fall back: read per-vertex using prop names — most LiDAR exports
+        // use all-float32 anyway; treat rgb as float.
+        let mut buf = vec![0u8; n * stride * 4];
+        data.read_exact(&mut buf)?;
+        for v in 0..n {
+            let b = &buf[v * stride * 4..(v + 1) * stride * 4];
+            let f = |i: usize| f32::from_le_bytes(b[i * 4..i * 4 + 4].try_into().unwrap()) as f64;
+            out.push(PlyPoint {
+                p: [f(ix), f(iy), f(iz)],
+                rgb: has_rgb.then(|| {
+                    [
+                        f(ir.unwrap()) as u8,
+                        f(ig.unwrap()) as u8,
+                        f(ib.unwrap()) as u8,
+                    ]
+                }),
+            });
+        }
+    } else {
+        bail!("ply: unsupported format (ascii/binary_le only)");
+    }
+    Ok(out)
+}
+
+fn se3_exp(xi: &Vector6<f64>) -> Matrix4<f64> {
+    let (w, v) = (xi.fixed_rows::<3>(3), xi.fixed_rows::<3>(0));
+    let theta = w.norm();
+    let wx = Matrix3::new(0.0, -w[2], w[1], w[2], 0.0, -w[0], -w[1], w[0], 0.0);
+    let (r, vmat) = if theta < 1e-9 {
+        (Matrix3::identity() + wx, Matrix3::identity() + wx / 2.0)
+    } else {
+        let a = wx / theta;
+        let s = theta.sin();
+        let c = theta.cos();
+        (
+            Matrix3::identity() + a * s + a * a * (1.0 - c),
+            Matrix3::identity() + a * (1.0 - c) / theta + a * a * (theta - s) / theta,
+        )
+    };
+    let mut m = Matrix4::identity();
+    m.fixed_view_mut::<3, 3>(0, 0).copy_from(&r);
+    m.fixed_view_mut::<3, 1>(0, 3).copy_from(&(vmat * v));
+    m
+}
+
+/// Sample luma at (u,v) by bilinear interpolation; None outside.
+fn sample_luma(y: &[u8], w: usize, h: usize, u: f64, v: f64) -> Option<f64> {
+    let (x0, y0) = (u.floor() as i32, v.floor() as i32);
+    if x0 < 0 || y0 < 0 || x0 + 1 >= w as i32 || y0 + 1 >= h as i32 {
+        return None;
+    }
+    let (fx, fy) = (u - x0 as f64, v - y0 as f64);
+    let g = |dx: i32, dy: i32| y[(y0 + dy) as usize * w + (x0 + dx) as usize] as f64;
+    Some(
+        g(0, 0) * (1.0 - fx) * (1.0 - fy)
+            + g(1, 0) * fx * (1.0 - fy)
+            + g(0, 1) * (1.0 - fx) * fy
+            + g(1, 1) * fx * fy,
+    )
+}
+
+/// Cam2world 4x4 from the nerfstudio matrix row-major, plus intrinsics.
+fn frame_matrix(f: &Value) -> Option<Matrix4<f64>> {
+    let m = f["transform_matrix"].as_array()?;
+    let mut out = Matrix4::zeros();
+    for r in 0..4 {
+        for c in 0..4 {
+            out[(r, c)] = m.get(r)?.get(c)?.as_f64()?;
+        }
+    }
+    Some(out)
+}
+
+/// world2cam = inverse(cam2world) (rigid).
+fn w2c(c2w: &Matrix4<f64>) -> Matrix4<f64> {
+    let r = c2w.fixed_view::<3, 3>(0, 0).clone_owned();
+    let t = c2w.fixed_view::<3, 1>(0, 3).clone_owned();
+    let rt = r.transpose();
+    let mut m = Matrix4::identity();
+    m.fixed_view_mut::<3, 3>(0, 0).copy_from(&rt);
+    m.fixed_view_mut::<3, 1>(0, 3).copy_from(&(-rt * t));
+    m
+}
+
+fn cmd_pose_refine(
+    in_dir: &Path,
+    ply_path: &Path,
+    transforms: Option<PathBuf>,
+    out_transforms: Option<PathBuf>,
+    k: usize,
+    res: u32,
+    iters: u32,
+    huber: f64,
+    max_anchors: usize,
+    guard: bool,
+) -> Result<()> {
+    let tpath = transforms.unwrap_or_else(|| in_dir.join("transforms.json"));
+    let mut json: Value = serde_json::from_str(&fs::read_to_string(&tpath)?)?;
+    let farr = json["frames"].as_array().context("frames")?.clone();
+    let n = farr.len();
+    // Intrinsics (per-frame override → top-level fallback), hoisted
+    // out of `json` so the frames array can be rewritten in place later.
+    let tl = |key: &str| json[key].as_f64().unwrap_or(0.0);
+    let (fl0, fy0, cx0, cy0, w0, h0) = (tl("fl_x"), tl("fl_y"), tl("cx"), tl("cy"), tl("w"), tl("h"));
+    let intrs: Vec<[f64; 6]> = farr
+        .iter()
+        .map(|f| {
+            let g = |k: &str, d: f64| f[k].as_f64().unwrap_or(d);
+            [g("fl_x", fl0), g("fl_y", fy0), g("cx", cx0), g("cy", cy0), g("w", w0), g("h", h0)]
+        })
+        .collect();
+    let c2w: Vec<Matrix4<f64>> = farr.iter().filter_map(frame_matrix).collect();
+    if c2w.len() != n {
+        bail!("transform_matrix missing on some frames");
+    }
+    let poses_t: Vec<Vector3<f64>> = c2w
+        .iter()
+        .map(|m| Vector3::new(m[(0, 3)], m[(1, 3)], m[(2, 3)]))
+        .collect();
+
+    // Decode working-res luma planes for all frames.
+    let mut planes: Vec<Option<(usize, usize, Vec<u8>)>> = Vec::with_capacity(n);
+    for f in farr.iter() {
+        let p = f["file_path"].as_str().context("file_path")?;
+        planes.push(
+            decode_small(&in_dir.join(p), res)
+                .ok()
+                .map(|(w, h, rgb)| (w as usize, h as usize, luma(w as usize, h as usize, &rgb))),
+        );
+    }
+
+    let pts = load_ply_points(ply_path)?;
+    eprintln!("pose-refine: {} LiDAR points, {n} views", pts.len());
+
+    // Anchor colours: ply rgb if present, else steal from the k pose-
+    // nearest neighbour frames (LiDAR depth projected into the frame).
+    let ply_rgb = pts.iter().any(|p| p.rgb.is_some());
+    let mut anchors: Vec<(Vector3<f64>, f64)> = Vec::with_capacity(pts.len());
+    if ply_rgb {
+        for p in &pts {
+            if let Some(rgb) = p.rgb {
+                let y = (rgb[0] as f64 * 299.0 + rgb[1] as f64 * 587.0 + rgb[2] as f64 * 114.0)
+                    / 1000.0;
+                anchors.push((Vector3::from_column_slice(&p.p), y));
+            }
+        }
+    } else {
+        // For each frame j, project ply points into it → (world, luma_j).
+        for (j, m) in c2w.iter().enumerate() {
+            let Some((w, h, ref y)) = planes[j] else { continue };
+            let wmat = w2c(m);
+            let (fx, fy, cx, cy) = (
+                intrs[j][0] * w as f64 / intrs[j][4],
+                intrs[j][1] * h as f64 / intrs[j][5],
+                intrs[j][2] * w as f64 / intrs[j][4],
+                intrs[j][3] * h as f64 / intrs[j][5],
+            );
+            for p in &pts {
+                let q = wmat.transform_vector(&Vector3::from_column_slice(&p.p));
+                if q.z <= 0.05 {
+                    continue;
+                }
+                let (u, v) = (fx * q.x / q.z + cx, fy * q.y / q.z + cy);
+                if let Some(yy) = sample_luma(y, w, h, u, v) {
+                    anchors.push((Vector3::from_column_slice(&p.p), yy));
+                }
+            }
+            if anchors.len() > max_anchors * k.max(1) {
+                break;
+            }
+        }
+        // Keep at most max_anchors*k anchors globally by thinning.
+        let cap = max_anchors * k.max(1);
+        if anchors.len() > cap {
+            let stride = anchors.len() / cap + 1;
+            anchors = anchors.iter().step_by(stride).copied().collect();
+        }
+    }
+    eprintln!("pose-refine: {} anchors", anchors.len());
+    if anchors.len() < 8 {
+        eprintln!("pose-refine: too few anchors, skipping");
+        fs::write(
+            out_transforms.unwrap_or(tpath),
+            serde_json::to_string_pretty(&json)?,
+        )?;
+        return Ok(());
+    }
+
+    // Neighbour sets by camera-centre distance.
+    let neigh: Vec<Vec<usize>> = (0..n)
+        .map(|i| {
+            let mut ds: Vec<(f64, usize)> = (0..n)
+                .map(|j| ((poses_t[i] - poses_t[j]).norm(), j))
+                .collect();
+            ds.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+            ds.iter().skip(1).take(k.max(1)).map(|&(_, j)| j).collect()
+        })
+        .collect();
+
+    let mut refined = 0usize;
+    let mut mean_move = 0f64;
+    for i in 0..n {
+        let Some((w, h, ref y)) = planes[i] else { continue };
+        // Anchors visible to any of i's neighbours (or all if ply_rgb).
+        let pool: &[(Vector3<f64>, f64)] = &anchors;
+        let (fx, fy, cx, cy) = (
+            intrs[i][0] * w as f64 / intrs[i][4],
+            intrs[i][1] * h as f64 / intrs[i][5],
+            intrs[i][2] * w as f64 / intrs[i][4],
+            intrs[i][3] * h as f64 / intrs[i][5],
+        );
+        // Restrict to anchors that project inside view i's box.
+        let wmat0 = w2c(&c2w[i]);
+        let mut pts3: Vec<(Vector3<f64>, f64)> = Vec::new();
+        let mut proj: Vec<(f64, f64, f64, f64)> = Vec::new(); // u,v + gx,gy? no
+        for (p, col) in pool.iter().take(if ply_rgb { max_anchors * 4 } else { pool.len() }) {
+            let q = wmat0.transform_vector(p);
+            if q.z <= 0.05 {
+                continue;
+            }
+            let (u, v) = (fx * q.x / q.z + cx, fy * q.y / q.z + cy);
+            if u >= 1.0 && v >= 1.0 && u < (w as f64 - 1.0) && v < (h as f64 - 1.0) {
+                pts3.push((*p, *col));
+            }
+        }
+        if pts3.len() > max_anchors {
+            let stride = pts3.len() / max_anchors + 1;
+            pts3 = pts3.iter().step_by(stride).copied().collect();
+        }
+        if pts3.len() < 16 {
+            continue;
+        }
+        let _ = &mut proj;
+        let _ = &neigh;
+
+        let cost = |wmat: &Matrix4<f64>| -> f64 {
+            let mut c = 0.0;
+            let mut m = 0usize;
+            for (p, col) in pts3.iter() {
+                let q = wmat.transform_vector(p);
+                if q.z <= 0.05 {
+                    continue;
+                }
+                let (u, v) = (fx * q.x / q.z + cx, fy * q.y / q.z + cy);
+                if let Some(s) = sample_luma(y, w, h, u, v) {
+                    let r = (s - col).abs();
+                    // Huber cost.
+                    c += if r <= huber { 0.5 * r * r } else { huber * (r - 0.5 * huber) };
+                    m += 1;
+                }
+            }
+            if m == 0 { f64::MAX } else { c / m as f64 }
+        };
+
+        let mut wmat = wmat0;
+        let c0 = cost(&wmat);
+        if !c0.is_finite() {
+            continue;
+        }
+        for _it in 0..iters {
+            // Build normal equations JᵀWJ ξ = -JᵀWr (Huber weights).
+            let mut hmat: nalgebra::Matrix6<f64> = nalgebra::Matrix6::zeros();
+            let mut g: Vector6<f64> = Vector6::zeros();
+            for (p, col) in pts3.iter() {
+                let q = wmat.transform_vector(p);
+                if q.z <= 0.05 {
+                    continue;
+                }
+                let (u, v) = (fx * q.x / q.z + cx, fy * q.y / q.z + cy);
+                let Some(s) = sample_luma(y, w, h, u, v) else { continue };
+                let r = s - col;
+                let wt = if r.abs() <= huber { 1.0 } else { huber / r.abs().max(1e-6) };
+                // image gradient at (u,v)
+                let gx = (sample_luma(y, w, h, u + 1.0, v).unwrap_or(s)
+                    - sample_luma(y, w, h, u - 1.0, v).unwrap_or(s))
+                    / 2.0;
+                let gy = (sample_luma(y, w, h, u, v + 1.0).unwrap_or(s)
+                    - sample_luma(y, w, h, u, v - 1.0).unwrap_or(s))
+                    / 2.0;
+                // d(u,v)/dq
+                let du = [fx / q.z, 0.0, -fx * q.x / (q.z * q.z)];
+                let dv = [0.0, fy / q.z, -fy * q.y / (q.z * q.z)];
+                // dq/dξ with ξ=[t(3) w(3)]: dq/dt=I, dq/dw=-[q]×
+                let mut j = nalgebra::Matrix1x6::<f64>::zeros();
+                for c in 0..3 {
+                    j[c] = gx * du[c] + gy * dv[c];
+                }
+                let qv = Vector3::new(q.x, q.y, q.z);
+                // -[q]× columns for the rotational part
+                let neg_skew = Matrix3::new(
+                    0.0, qv.z, -qv.y, -qv.z, 0.0, qv.x, qv.y, -qv.x, 0.0,
+                );
+                for c in 0..3 {
+                    let colv = neg_skew.column(c);
+                    j[3 + c] = gx * (du[0] * colv[0] + du[1] * colv[1] + du[2] * colv[2])
+                        + gy * (dv[0] * colv[0] + dv[1] * colv[1] + dv[2] * colv[2]);
+                }
+                hmat += wt * (j.transpose() * j);
+                g += wt * (j.transpose() * r);
+            }
+            // LM-ish damping.
+            let mut damp = nalgebra::Matrix6::<f64>::identity() * 1e-3;
+            damp[(3, 3)] = 1e-4;
+            damp[(4, 4)] = 1e-4;
+            damp[(5, 5)] = 1e-4;
+            let Some(delta) = (hmat + damp).try_inverse() else { break };
+            let xi = -(delta * g);
+            if xi.norm() < 1e-8 {
+                break;
+            }
+            let mut xi_c = xi;
+            let tn = xi_c.fixed_rows::<3>(0).norm();
+            if tn > 0.05 {
+                xi_c.fixed_rows_mut::<3>(0).scale_mut(0.05 / tn);
+            }
+            let rn = xi_c.fixed_rows::<3>(3).norm();
+            if rn > 0.02 {
+                xi_c.fixed_rows_mut::<3>(3).scale_mut(0.02 / rn);
+            }
+            wmat = se3_exp(&xi_c) * wmat;
+        }
+        let c1 = cost(&wmat);
+        if !guard || c1 < c0 {
+            let new_c2w = wmat.try_inverse().unwrap_or(c2w[i]);
+            let moved = (new_c2w.fixed_view::<3, 1>(0, 3) - c2w[i].fixed_view::<3, 1>(0, 3))
+                .norm();
+            mean_move += moved;
+            refined += 1;
+            let m = &mut json["frames"][i]["transform_matrix"];
+            for r in 0..4 {
+                for c in 0..4 {
+                    m[r][c] = serde_json::json!(new_c2w[(r, c)]);
+                }
+            }
+        }
+    }
+    eprintln!(
+        "pose-refine: refined {refined}/{n} views, mean translation move {:.4} m",
+        if refined > 0 { mean_move / refined as f64 } else { 0.0 }
+    );
+    fs::write(
+        out_transforms.unwrap_or(tpath),
+        serde_json::to_string_pretty(&json)?,
+    )?;
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
     match args.cmd {
@@ -654,6 +1202,7 @@ fn main() -> Result<()> {
             dup_eps_r,
             dir_weight,
             blur_res,
+            engine,
         } => cmd_select(
             &in_dir,
             &out_dir,
@@ -665,6 +1214,30 @@ fn main() -> Result<()> {
             dup_eps_r,
             dir_weight,
             blur_res,
+            &engine,
+        ),
+        Cmd::PoseRefine {
+            in_dir,
+            ply,
+            transforms,
+            out_transforms,
+            k,
+            res,
+            iters,
+            huber,
+            max_anchors,
+            guard,
+        } => cmd_pose_refine(
+            &in_dir,
+            &ply,
+            transforms,
+            out_transforms,
+            k,
+            res,
+            iters,
+            huber,
+            max_anchors,
+            guard,
         ),
         Cmd::Masks {
             in_dir,
@@ -673,7 +1246,8 @@ fn main() -> Result<()> {
             res,
             thresh,
             dilate,
-        } => cmd_masks(&in_dir, transforms, k, res, thresh, dilate),
+            engine,
+        } => cmd_masks(&in_dir, transforms, k, res, thresh, dilate, &engine),
         Cmd::Exposure {
             in_dir,
             out_dir,
