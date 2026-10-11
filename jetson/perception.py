@@ -207,8 +207,36 @@ class PerceptionService:
         try:
             await asyncio.to_thread(self._setup)
             self.task = asyncio.create_task(self._run())
+        except TensorRTError as exc:
+            self.error = f"Detector unavailable: {exc}"
+            self.task = asyncio.create_task(self._retry_startup())
         except Exception as exc:
             self.error = f"Detector unavailable: {exc}"
+
+    async def _retry_startup(self):
+        # Initial CUDA allocation can fail while other models are loading.
+        # Preserve the fault in health and retry at the same bounded cadence
+        # as runtime GPU recovery, without blocking camera/control startup.
+        while True:
+            await asyncio.sleep(self.REBUILD_INTERVAL)
+            setup = asyncio.create_task(asyncio.to_thread(self._setup))
+            try:
+                await asyncio.shield(setup)
+            except asyncio.CancelledError:
+                # to_thread cannot stop an allocating worker. Drain it before
+                # close() releases any detector it finishes constructing.
+                with suppress(Exception):
+                    await setup
+                raise
+            except TensorRTError as exc:
+                self.error = f"Detector unavailable: {exc}"
+                continue
+            except Exception as exc:
+                self.error = f"Detector unavailable: {exc}"
+                return
+            self.error = None
+            await self._run()
+            return
 
     FPS_WINDOW = 2.0
 
@@ -230,7 +258,15 @@ class PerceptionService:
             if frame and frame.age_ms < 500 and identity != previous:
                 previous = identity
                 try:
-                    boxes = await asyncio.to_thread(self._detect, frame.jpeg)
+                    inference = asyncio.create_task(asyncio.to_thread(self._detect, frame.jpeg))
+                    try:
+                        boxes = await asyncio.shield(inference)
+                    except asyncio.CancelledError:
+                        # Do not release the detector while its worker still
+                        # holds it, or publish an inference cancelled on close.
+                        with suppress(Exception):
+                            await inference
+                        raise
                     duration = time.monotonic() - started
                     completed = time.monotonic()
                     rate = self.windowed_rate(completed)
@@ -243,13 +279,22 @@ class PerceptionService:
                     # Inference results retain the input timestamp, not completion freshness.
                     self.packet = dict(ts=time.time(), frame=frame.frame_id, fps=round(rate, 1), inference_ms=round(duration * 1000, 1),
                            boxes=boxes, detector=self.mode,
-                           source=frame.source, received=frame.received, age_ms=frame.age_ms)
+                           source=frame.source, received=frame.received, age_ms=frame.age_ms,
+                           sensor_key=getattr(frame, "sensor_key", None), mirrored=getattr(frame, "mirrored", False))
                     self.error = None
                     if self.on_detection:
                         await asyncio.to_thread(self.on_detection, self.packet, frame)
                 except Exception as exc:
                     self.error = str(exc)
-                    await asyncio.to_thread(self._recover_gpu, exc)
+                    recovery = asyncio.create_task(asyncio.to_thread(self._recover_gpu, exc))
+                    try:
+                        await asyncio.shield(recovery)
+                    except asyncio.CancelledError:
+                        # A rebuild may still install a fresh detector. Finish
+                        # it before close() chooses the resource to release.
+                        with suppress(Exception):
+                            await recovery
+                        raise
             await asyncio.sleep(max(.01, 1 / self.fps - (time.monotonic() - started)))
 
     def face_status(self):

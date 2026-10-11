@@ -22,6 +22,8 @@ function sourceIdentity(source, selected) {
       source.kind === 'arkit_mesh_neutral' && selected === 'geometry') {
     ({ session, epoch } = source); kind = source.kind;
   } else throw new Error('Dense source kind does not match selected lane');
+  if (kind === 'rgbd' && session === 'simulated-room' && safeInteger(epoch))
+    return { key: `simulated_rgbd:${session}:${epoch}`, label: 'SIMULATED RGB-D' };
   if (typeof session !== 'string' || !UUID.test(session) || !safeInteger(epoch)) throw new Error('Invalid dense capture identity');
   return { key: `${kind}:${session.toLowerCase()}:${epoch}`,
     label: kind === 'rgbd' ? 'SOURCE RGB-D SAMPLES' : 'ARKIT MESH · NEUTRAL RGB' };

@@ -2,7 +2,10 @@
 import asyncio
 import json
 from pathlib import Path
+import shutil
+import ssl
 import struct
+import subprocess
 import tempfile
 import unittest
 
@@ -132,6 +135,54 @@ class GeometryRelayTests(unittest.IsolatedAsyncioTestCase):
         count = self.mesh_reads
         await asyncio.sleep(.08)
         self.assertEqual(self.mesh_reads, count, "stable revision redownloaded mesh")
+
+    @unittest.skipUnless(shutil.which("openssl"), "TLS fixture needs openssl")
+    async def test_private_ca_is_required_and_shared_by_pose_and_geometry_polling(self):
+        loop = asyncio.get_running_loop()
+        previous_handler = loop.get_exception_handler()
+        def expected_handshake_reset(loop, context):
+            if (isinstance(context.get("exception"), ConnectionResetError)
+                    and context.get("message") == "Error on transport creation for incoming connection"):
+                return  # The client intentionally refuses the untrusted certificate.
+            if previous_handler:
+                previous_handler(loop, context)
+            else:
+                loop.default_exception_handler(context)
+        loop.set_exception_handler(expected_handshake_reset)
+        self.addCleanup(loop.set_exception_handler, previous_handler)
+        cert, key = Path(self.temp.name) / "cert.pem", Path(self.temp.name) / "key.pem"
+        await asyncio.to_thread(subprocess.run, ["openssl", "req", "-x509", "-newkey", "rsa:2048",
+            "-nodes", "-keyout", str(key), "-out", str(cert), "-days", "1", "-subj", "/CN=localhost",
+            "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1"],
+            check=True, capture_output=True, timeout=10)
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(cert, key)
+        secure_origins = []
+        for server in (self.upstream, self.geometry):
+            site = web.TCPSite(server.runner, "127.0.0.1", 0, ssl_context=context)
+            await site.start()
+            secure_origins.append(f"https://127.0.0.1:{site._server.sockets[0].getsockname()[1]}")
+        for ca_file, expected in ((None, 503), (str(cert), 200)):
+            with self.subTest(configured_ca=ca_file is not None):
+                app = create_app(secure_origins[0], dist=self.temp.name,
+                                 ca_file=ca_file, geometry_upstream=secure_origins[1])
+                client = TestClient(TestServer(app))
+                await client.start_server()
+                try:
+                    await app["geometry"].refresh()
+                    response = await client.get("/map/mesh.bin")
+                    self.assertEqual(response.status, expected, app["geometry"].jetson_error)
+                    if expected == 200:
+                        self.assertEqual(await response.read(), mesh())
+                        self.assertIsNone(app["geometry"].geometry_error)
+                        camera = await client.get("/camera.jpg")
+                        self.assertEqual(camera.status, 200)
+                        self.assertEqual(await camera.read(), b"upstream camera")
+                    else:
+                        await response.read()
+                        self.assertIn("ClientConnectorCertificateError", app["geometry"].jetson_error)
+                finally:
+                    await client.close()
 
     async def test_wrong_session_or_epoch_clears_without_fetching_geometry(self):
         await self.wait(lambda: self.adapter.mesh is not None)

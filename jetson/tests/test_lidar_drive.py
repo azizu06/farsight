@@ -14,6 +14,7 @@ from jetson.mapping.tests.test_mapping import flat_frame
 class LidarDriveTests(unittest.TestCase):
     def fixture(self, lidar_drive=True, tracking="normal"):
         mapping = MapState()
+        self.addCleanup(mapping.dense_worker.close)
         mapping.start_session(("test", 1), "synthetic fixture")
         frame = flat_frame()
         frame.header.update(t_capture=100.0, tracking=tracking, _received_monotonic=10.0)

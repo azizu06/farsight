@@ -80,6 +80,7 @@ class ControlState:
         self.reason = "rover_disabled"
         self.link_ms = None
         self.scan_token = None
+        self._scan_stop_reason = None
         self.scan_w = 0.0
         # Permits already issued when the scan began: a zero-stick teleop
         # heartbeat carrying one was sent before POST /scan and may race it.
@@ -101,6 +102,7 @@ class ControlState:
                     or (self.autonomy and self.autonomy.mode != "teleop")):
                 raise ValueError("Scan requires a stopped rover and a live operator-held permit")
             self.scan_token = object()
+            self._scan_stop_reason = None
             self.scan_w = 0.0
             self.scan_race_permits = frozenset(self.permits)
             return self.scan_token
@@ -109,13 +111,13 @@ class ControlState:
         with self.lock:
             self.output()  # enforce expiry, camera and range gates
             if token is None or token is not self.scan_token:
-                raise ValueError("Scan cancelled: operator lease, override, or safety stop")
+                raise ValueError(f"Scan cancelled: operator lease, override, or safety stop ({self._scan_stop_reason or 'unknown'})")
             if not math.isfinite(w) or not -.35 <= w <= .35 or not -80 <= pan <= 80:
                 raise ValueError("Scan command outside bounded sweep")
             self.scan_w, self.pan = w, round(pan) if self.pan_mount == "servo" else 0
             self.output()
             if token is not self.scan_token:
-                raise ValueError("Scan cancelled: camera or range unavailable")
+                raise ValueError(f"Scan cancelled: camera or range unavailable ({self._scan_stop_reason or 'unknown'})")
 
     def end_scan(self, token):
         with self.lock:
@@ -135,6 +137,10 @@ class ControlState:
             self.v = self.w = 0.0
             self.drive = None
             self.deadline = 0.0
+            # Later release/status messages may replace self.reason. Retain
+            # the first stop that revoked this scan for its eventual error.
+            if self.scan_token is not None:
+                self._scan_stop_reason = reason
             self.scan_token = None
             self.scan_w = 0.0
             self.scan_race_permits = frozenset()

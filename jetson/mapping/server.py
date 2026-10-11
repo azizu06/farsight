@@ -24,7 +24,7 @@ from jetson.sim.worlds import WORLDS, load as load_world
 from .people import PersonLocator
 from .phone import Hello, decode_frame, validate_pose
 from .state import MapState
-from jetson.camera import CameraService
+from jetson.camera import CameraService, adjusted_receipt
 from jetson.capture_permits import CapturePermits
 from jetson.video import VideoService
 from jetson.perception import PerceptionService
@@ -43,6 +43,21 @@ from jetson.bulk import BulkPacer, BulkPacketTooLarge
 from jetson.bulk_response import bulk_response, PacedStreamingResponse
 
 DIST = Path(__file__).resolve().parents[2] / "quest" / "dist"
+
+
+async def _session_thread(function, *args):
+    """Finish a socket state mutation before propagating endpoint cancellation."""
+    operation = asyncio.create_task(asyncio.to_thread(function, *args))
+    try:
+        return await asyncio.shield(operation)
+    except asyncio.CancelledError:
+        # Cancelling to_thread cannot stop its CPU worker. Repeated endpoint
+        # cancellation must also leave this mutation protected until it finishes.
+        while not operation.done():
+            with suppress(asyncio.CancelledError):
+                await asyncio.shield(operation)
+        operation.result()
+        raise
 
 
 def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=False,
@@ -94,7 +109,8 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
     mission = Mission(mission_dir, record=record)
     # Opt-in ROS 2 Nav2 backend (ros2/farsight_nav); without --nav2 autonomy is unchanged.
     nav = NavService(state, speed_mps=nav_speed_mps, turn_radps=nav_turn_radps, max_v=nav_max_v,
-                     max_w=nav_max_w, camera_height=nav_camera_height) if nav2 else None
+                     max_w=nav_max_w, camera_height=nav_camera_height,
+                     camera_snapshot=camera_service.snapshot) if nav2 else None
     people = PersonLocator()
     state.frame_observers.append(people.offer_frame)
     perception = ReplayPerception(camera_service) if replay is not None else PerceptionService(camera_service, model=detector_model, mode=detector, on_detection=mission.detect, face_model=face_model, annotate=people.annotate)
@@ -362,11 +378,17 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
 
     @app.get("/camera.jpg")
     async def camera():
+        started = time.monotonic()
         frame = await asyncio.to_thread(camera_service.preview)
         if frame is None:
             raise HTTPException(503, "Waiting for a camera frame")
+        # The age below already includes preview/executor residence. Report
+        # only completed handler time, rounded down, so clients can avoid
+        # counting that same interval again without subtracting network time.
+        wait_ms = max(0, int((time.monotonic() - started) * 1000))
         return bulk_response(frame.jpeg, live, media_type="image/jpeg", headers={"Cache-Control": "no-store",
               "X-Frame-Id": str(frame.frame_id), "X-Frame-Age-Ms": str(frame.age_ms),
+              "X-Frame-Server-Wait-Ms": str(wait_ms),
               "X-Frame-Source": frame.source})
 
     @app.get("/depth.jpg")
@@ -656,7 +678,9 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
             permits = CapturePermits(*identity, enabled=hello.supports_capture_permits,
                                      supported_clocks=())
             camera_service.begin_phone(permits)
-            await asyncio.to_thread(state.start_session, identity, hello.device)
+            # Keep ownership through initialization, including cancelled awaits;
+            # a late start_session must not overwrite the next socket's state.
+            socket_generation = await _session_thread(state.start_session, identity, hello.device)
 
             def offer(target, item):
                 if target.full():
@@ -678,7 +702,8 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                     try:
                         frame = await asyncio.to_thread(decode_frame, packet, identity)
                         frame.header["_received_monotonic"] = received_at
-                        await asyncio.to_thread(state.process, frame, permits=permits)
+                        await asyncio.to_thread(state.process, frame, permits=permits,
+                                                socket_generation=socket_generation)
                     except (ValueError, TypeError, KeyError, ValidationError) as exc:
                         await asyncio.to_thread(reject, exc)
 
@@ -687,19 +712,17 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                 while True:
                     packet, received_at = await camera_queue.get()
                     previous = await asyncio.to_thread(camera_service.accept_phone_rgbd, packet, identity,
-                                                       previous, received_at, permits)
+                                                       previous, received_at, permits,
+                                                       socket_generation=socket_generation)
                     # Offer only after camera publication, without waiting for fusion.
                     offer(queue, (packet, received_at))
 
-            def observe(header, transform):
-                with state.lock:
-                    if state.connected and state.identity == identity:
-                        state.observe_pose(header, transform)
-
             async def poses():
                 while True:
-                    header, transform = await pose_queue.get()
-                    await asyncio.to_thread(observe, header, transform)
+                    header, transform, received_at = await pose_queue.get()
+                    await asyncio.to_thread(state.observe_pose, header, transform,
+                                            adjusted_receipt(header, received_at),
+                                            socket_generation=socket_generation)
 
             async def reader():
                 while True:
@@ -709,6 +732,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                     if message.get("bytes") is not None:
                         offer(camera_queue, (message["bytes"], time.monotonic()))
                     elif message.get("text"):
+                        received_at = time.monotonic()
                         header = json.loads(message["text"])
                         if not isinstance(header, dict) or header.get("type") != "pose":
                             raise ValueError("Expected a pose message or binary RGB-D frame")
@@ -716,7 +740,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                         # Tracking loss must revoke opt-in LiDAR drive without
                         # waiting for the pose/map worker's fusion lock.
                         camera_service.observe_phone_tracking(header)
-                        offer(pose_queue, (header, transform))
+                        offer(pose_queue, (header, transform, received_at))
 
             async def receive_frames():
                 workers.extend(asyncio.create_task(job()) for job in (reader, camera_frames, poses, consume))
@@ -737,13 +761,22 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
             with suppress(asyncio.CancelledError):
                 await asyncio.gather(*workers, return_exceptions=True)
             if app.state.phone_owner is owner:
-                app.state.phone_owner = None
+                # Withdraw lock-free live eligibility immediately. Off-thread
+                # cleanup may wait behind a map job, while ownership stays held.
+                state.connected = False
                 def disconnect_sensor():
                     with state.lock:
                         state.connected = False
                         # Invalidate any CPU worker still finishing after disconnect.
                         state.processing_generation += 1
-                await asyncio.to_thread(disconnect_sensor)
+                        state.socket_generation += 1
+                try:
+                    await _session_thread(disconnect_sensor)
+                finally:
+                    # Release even when cancellation was delayed through cleanup.
+                    # The helper has finished the worker before reaching this point.
+                    if app.state.phone_owner is owner:
+                        app.state.phone_owner = None
 
     @app.websocket("/phone/rgb")
     async def phone_rgb(ws: WebSocket):

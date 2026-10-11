@@ -29,9 +29,10 @@ def hello(**fields):
     return dict(type="hello", version=VERSION, node="farsight_bridge", **fields)
 
 
-def cmd_vel(linear, angular, goal_id=None):
-    """goal_id: the server goal this command drives toward; the server drops mismatches."""
-    return dict(type="cmd_vel", linear=float(linear), angular=float(angular), goal_id=goal_id)
+def cmd_vel(linear, angular, goal_id=None, generation=None):
+    """Capture goal and sensor generation before enqueueing; the server rejects stale authority."""
+    return dict(type="cmd_vel", linear=float(linear), angular=float(angular),
+                goal_id=goal_id, generation=generation)
 
 
 def status(state, goal_id, *, path=(), frontiers=(), message="", **extra):
@@ -43,6 +44,12 @@ def status(state, goal_id, *, path=(), frontiers=(), message="", **extra):
 
 def encode(message):
     return json.dumps(message, separators=(",", ":"))
+
+
+def accept_generation(message, generation):
+    """Motion intent requires an explicit matching integer sensor generation."""
+    value = message.get("generation")
+    return type(value) is int and type(generation) is int and value >= 0 and value == generation
 
 
 def accept_sample(message, generation):

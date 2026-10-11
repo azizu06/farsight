@@ -18,6 +18,7 @@ class RGBDBindingTests(unittest.TestCase):
         token = permits.issue()["token"]
         self.now = 10.2
         mapping = MapState()
+        self.addCleanup(mapping.dense_worker.close)
         mapping.start_session(("test", 1), "synthetic fixture")
         frame = flat_frame()
         frame.header.update(t_capture=100.1, capture_permit_received_t=100,

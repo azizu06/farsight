@@ -84,9 +84,10 @@ def export_ply(body):
 
 
 class GeometryRelay:
-    def __init__(self, upstream, geometry, *, interval=.5, timeout=1.0):
+    def __init__(self, upstream, geometry, *, interval=.5, timeout=1.0, ssl_context=True):
         self.upstream, self.origin = upstream, geometry_origin(geometry)
         self.interval, self.timeout = interval, timeout
+        self.ssl_context = ssl_context
         self.client = None
         self.task = None
         self.jetson = None
@@ -108,7 +109,7 @@ class GeometryRelay:
     async def start(self):
         self.client = aiohttp.ClientSession(auto_decompress=False,
             timeout=aiohttp.ClientTimeout(total=self.timeout, connect=min(self.timeout, .5)),
-            connector=aiohttp.TCPConnector(limit=2))
+            connector=aiohttp.TCPConnector(limit=2, ssl=self.ssl_context))
         self.task = asyncio.create_task(self.run())
 
     async def close(self):

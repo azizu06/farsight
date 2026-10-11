@@ -1,8 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import vm from "node:vm";
+import ts from "typescript";
 import * as THREE from "three";
 import { MapWalk } from "../src/map-walk.js";
+import * as macPose from "../src/mac-auto-pose.js";
 import {
   MAC_STALE_MS, PoseRing, frameSeenAt, frameView, frustumRect, macPresenting, macStereoEnabled, macViewEnabled, mapPoint, mapPoseMessage,
   mapQuaternion, pictureSize, projectionFovY, segmentKind, shouldSendPose, viewerEyes, worldPoint,
@@ -107,6 +110,62 @@ test("a frozen picture goes stale: only a new decoded frame renews it", () => {
   assert.equal(frameSeenAt(at, id, null, 1250), at, "no frame changes nothing");
 });
 
+// Run the production class without allocating DOM, decoder, or WebGL resources.
+// The frame input is controlled; update(), placement, and presentation use real code.
+const module = { exports: {} };
+const compiled = ts.transpileModule(readFileSync(new URL("../src/mac-auto.ts", import.meta.url), "utf8"), {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+}).outputText;
+vm.runInNewContext(compiled, { exports: module.exports, WebSocket: { OPEN: 1 },
+  require: name => name === "three" ? THREE : name === "./mac-auto-pose.js" ? macPose : {} });
+
+function presentation() {
+  const view = Object.create(module.exports.MacAutoView.prototype), camera = new THREE.Object3D();
+  const context = { clearRect() {}, beginPath() {}, roundRect() {}, fill() {}, fillText() {} };
+  Object.assign(view, {
+    session: "test-session", active: true, viewer: { update() {}, displayedFrame: null, video: { videoWidth: 640, videoHeight: 360 } },
+    renderer: { xr: { getCamera: () => camera, getReferenceSpace: () => null } }, poseSocket: null,
+    head: { position: new THREE.Vector3(), quaternion: new THREE.Quaternion() }, offset: new THREE.Vector3(),
+    lastFrameAt: -Infinity, lastFrameId: null, ring: new PoseRing(),
+    picture: new THREE.Object3D(), label: new THREE.Object3D(), group: new THREE.Group(),
+    eyeQuads: [new THREE.Object3D(), new THREE.Object3D()], stereoShown: false,
+    labelCanvas: { getContext: () => context }, labelTexture: {}, labelText: "",
+  });
+  const show = (now, id, age, metadata = null, pose = null) => {
+    view.viewer.displayedFrame = id === null ? null : { id, age, metadata, pose };
+    return view.update(now, true);
+  };
+  return { view, show };
+}
+
+test("AUTO returns to the local map when new decoded IDs keep arriving with stale capture age", () => {
+  const { view, show } = presentation();
+  assert.equal(show(10000, "fresh", 20), true);
+  for (let now = 10100; now <= 15100; now += 100) {
+    assert.equal(show(now, `old:${now}`, MAC_STALE_MS + 200), false, "decode progress cannot renew old captures");
+    assert.equal(view.picture.visible, false);
+  }
+  assert.equal(show(15200, "recovered", 20), true, "a fresh picture restores Mac presentation");
+  assert.equal(view.picture.visible, true);
+});
+
+test("AUTO counts the frame's existing capture age while the same decoded picture remains", () => {
+  const { show } = presentation();
+  assert.equal(show(10000, "almost-stale", MAC_STALE_MS - 100), true);
+  assert.equal(show(10050, "almost-stale", MAC_STALE_MS - 50), true);
+  assert.equal(show(10100, null), false, "capture age reaches the bound even without another decoder callback");
+});
+
+test("AUTO invalidates a picture whose capture age is missing, nonfinite, or in the future", () => {
+  for (const age of [undefined, NaN, Infinity, -Infinity, -1]) {
+    const { view, show } = presentation();
+    assert.equal(show(10000, "fresh", 20), true);
+    assert.equal(show(10001, "invalid", age), false, `invalid age ${String(age)} clears the previous picture`);
+    assert.equal(view.picture.visible, false);
+    assert.equal(show(10002, "recovered", 0), true);
+  }
+});
+
 test("flat picture is sized so it subtends the renderer's field of view", () => {
   const { width, height } = pictureSize(50, 16 / 9, 3);
   assert.ok(Math.abs(height - 2 * 3 * Math.tan(25 * Math.PI / 180)) < 1e-9);
@@ -126,6 +185,25 @@ test("Mac view is opt-in and never owns rover control", () => {
 });
 
 const stereoMeta = { stereo: true, layout: "sbs-left-right", eye_width: 960, eye_height: 1080 };
+
+test("AUTO hides packed stereo when the exact eye pair is unavailable, then recovers", () => {
+  const { view, show } = presentation();
+  assert.equal(show(10000, "mono", 20), true);
+  assert.equal(show(10001, "unknown-eyes", 20, stereoMeta, { pose_id: 99 }), false);
+  assert.equal(view.picture.visible, false, "packed stereo cannot become a mono picture");
+  assert.ok(view.eyeQuads.every(quad => !quad.visible));
+  const projection = new THREE.PerspectiveCamera(90, 1, .1, 100).projectionMatrix.elements;
+  view.ring.push({ id: 7, mono: 10002, position: [0, 1.6, 0], quaternion: [0, 0, 0, 1],
+    eyes: [-.032, .032].map((x, index) => ({ eye: index ? "right" : "left", position: [x, 1.6, 0], quaternion: [0, 0, 0, 1], projection })) });
+  assert.equal(show(10003, "paired", 20, stereoMeta, { pose_id: 7, session_id: "test-session" }), true);
+  assert.equal(view.picture.visible, false);
+  assert.ok(view.eyeQuads.every(quad => quad.visible));
+  assert.equal(show(10004, "invalid-layout", 20, { ...stereoMeta, layout: "top-bottom" }, { pose_id: 7, session_id: "test-session" }), false);
+  assert.ok(view.eyeQuads.every(quad => !quad.visible));
+  assert.equal(show(10005, "paired-again", 20, stereoMeta, { pose_id: 7, session_id: "test-session" }), true);
+  assert.equal(show(10006, "stale-pair", MAC_STALE_MS, stereoMeta, { pose_id: 7, session_id: "test-session" }), false);
+  assert.ok(view.eyeQuads.every(quad => !quad.visible));
+});
 
 test("stereo is a separate opt-in on top of the Mac view and asks the renderer for packed pairs", () => {
   assert.equal(macStereoEnabled("?macview=1"), false);

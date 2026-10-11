@@ -4,7 +4,9 @@ import json
 import socket
 import threading
 import time
+from types import SimpleNamespace
 import unittest
+from unittest import mock
 
 from tools.qualify_capture import Evidence, collect, fetch_health, origin
 
@@ -126,16 +128,45 @@ class LoopbackTests(unittest.TestCase):
                 requests.append((self.command, self.path)); count = len(requests)
                 if count == 3:
                     self.connection.shutdown(socket.SHUT_RDWR); self.connection.close(); return
+                if count == 5:
+                    time.sleep(.05)  # Last poll has only 1 ms of collection time left.
                 body = json.dumps(healthy(count)).encode()
-                self.send_response(200); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+                try:
+                    self.send_response(200); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+                except OSError:
+                    pass  # The bounded client has already closed the final request.
             def log_message(self, *args): pass
-        report = collect(self.run_server(Handler), seconds=.24, interval=.025, timeout=.1)
+        url = self.run_server(Handler)
+        clock = SimpleNamespace(now=0.)
+        calls = 0
+        def fetch(*args):
+            nonlocal calls
+            calls += 1
+            try:
+                return fetch_health(*args)  # Keep actual HTTP and header/body deadlines.
+            finally:
+                if calls == 4:
+                    clock.now = .24 - .025 - .001
+                elif calls == 5:
+                    clock.now = .24
+        def sleep(delay):
+            clock.now += delay
+        # Pin collection scheduling without replacing the real socket I/O.
+        with mock.patch('tools.qualify_capture.time',
+                        SimpleNamespace(monotonic=lambda: clock.now, sleep=sleep)):
+            report = collect(url, seconds=.24, interval=.025, timeout=.1, fetcher=fetch)
         self.assertGreater(len(requests), 3)
         self.assertTrue(all(method == 'GET' and path == '/health' for method, path in requests))
         self.assertTrue(any('error' in sample for sample in report['evidence']))
         self.assertGreater(report['advancing_frames'], 0)
         self.assertFalse(report['sustained_physical_capture_eligible'])
-        self.assertTrue(report['evidence'][-1]['physical_capture_eligible'], 'recovery recorded without erasing the interruption')
+        samples = report['evidence']
+        interruption = next(index for index, sample in enumerate(samples) if 'error' in sample)
+        self.assertTrue(any(sample['physical_capture_eligible'] for sample in samples[interruption + 1:]),
+                        'Recovery must be recorded without erasing the interruption')
+        # A final request may exhaust the collection deadline after recovery.
+        self.assertIn('error', samples[-1])
+        self.assertFalse(samples[-1]['physical_capture_eligible'])
 
     def test_slow_header_trickle_is_bounded_and_redirect_is_not_followed(self):
         visited = []

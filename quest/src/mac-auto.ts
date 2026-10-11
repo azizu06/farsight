@@ -11,7 +11,7 @@ import { H264Viewer } from "./h264.js";
 import { mapWalk } from "./map-walk.js";
 import { socketUrl } from "./mac-view-urls.js";
 import {
-  DEFAULT_ASPECT, DEFAULT_FOV_Y_DEG, PICTURE_DISTANCE, PoseRing, STEREO_LAYOUT, frameSeenAt, macPresenting, mapPoseMessage,
+  DEFAULT_ASPECT, DEFAULT_FOV_Y_DEG, MAC_STALE_MS, PICTURE_DISTANCE, PoseRing, STEREO_LAYOUT, frameSeenAt, macPresenting, mapPoseMessage,
   frameView, pictureSize, shouldSendPose, viewerEyes,
 } from "./mac-auto-pose.js";
 
@@ -98,15 +98,19 @@ export class MacAutoView {
     this.sendPose(now, viewerEyes(viewer?.views));
     this.viewer.update();
     const decoded = this.viewer.displayedFrame;
-    if (decoded && decoded.id !== this.lastFrameId) {
-      // Decide before renewing: the shared VideoTexture already shows this frame, so a
-      // rejected one (bad pair, unknown or foreign pose) drops the picture immediately.
-      const view = frameView(decoded.metadata, decoded.pose, this.ring, this.session);
-      this.lastFrameAt = view ? frameSeenAt(this.lastFrameAt, this.lastFrameId, decoded.id, now) : -Infinity;
-      this.lastFrameId = decoded.id;
-      this.stereoShown = view?.mode === "stereo";
-      if (view?.mode === "stereo") this.placeEyes(view.eyes, view.rects);
-      else if (view) this.place(view.from, decoded.fovY);
+    if (decoded) {
+      const fresh = Number.isFinite(decoded.age) && decoded.age >= 0 && decoded.age < MAC_STALE_MS;
+      if (!fresh) this.lastFrameAt = -Infinity;
+      if (decoded.id !== this.lastFrameId) {
+        // Validate before renewing: the shared VideoTexture already shows this frame.
+        // Preserve original capture age as well as the exact session and eye pair.
+        const view = fresh ? frameView(decoded.metadata, decoded.pose, this.ring, this.session) : null;
+        this.lastFrameAt = view ? frameSeenAt(this.lastFrameAt, this.lastFrameId, decoded.id, now - decoded.age) : -Infinity;
+        this.lastFrameId = decoded.id;
+        this.stereoShown = view?.mode === "stereo";
+        if (view?.mode === "stereo") this.placeEyes(view.eyes, view.rects);
+        else if (view) this.place(view.from, decoded.fovY);
+      }
     }
     this.presenting = macPresenting(true, this.lastFrameAt, now);
     this.picture.visible = this.presenting && !this.stereoShown;

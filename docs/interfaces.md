@@ -45,7 +45,7 @@ explicit ray-cast camera/map and virtual rover sources. See
 | `GET /` | Quest WebXR app (built `quest/dist`) |
 | `GET /stream.mjpg` | Camera, MJPEG, 640x480, 15 fps by default (camera capture loop, `jetson/camera.py`) |
 | `GET /health` | `{"camera": bool, "detector_fps": float, "rover": bool, "estop": bool}`; optional `camera_pan: bool` (see below); optional `face_detector: bool`, `face_error: string\|null` (see below) |
-| `GET /camera.jpg` | Latest JPEG; `X-Frame-Id`, `X-Frame-Age-Ms`, `X-Frame-Source`; no-store |
+| `GET /camera.jpg` | Latest JPEG; `X-Frame-Id`, `X-Frame-Age-Ms`, `X-Frame-Source`, optional `X-Frame-Server-Wait-Ms`; no-store |
 | `GET /control/status` | Read-only control status; no usable permit |
 | `GET /mission/report` | Evidence, persistence/source labels, drill results, control `summary` and `timeline` (below) |
 | `POST /mission/drill` | `{"duration_s":90,"victims":3}` starts a rescue drill; `GET` polls it. See below |
@@ -110,6 +110,16 @@ Native verified RGB instead uses the earlier of receiver token issuance and
 adjusted receipt, giving a conservative capture-age bound without synchronizing
 phone and server clocks. Neither value measures camera-to-display latency.
 
+JPEG `X-Frame-Server-Wait-Ms` optionally reports completed camera-handler
+residence, rounded down. `X-Frame-Age-Ms` is measured after that work and still
+refers to the original capture receipt. Quest subtracts a finite, nonnegative
+server wait only when it does not exceed the request interval observed at
+header arrival; network, body transfer, decode and presentation delays remain
+in the displayed-age bound. Missing or malformed wait metadata retains the
+full request interval. This optional header changes no capture eligibility,
+source expiry or motion cutoff; legacy consumers and Rust servers remain
+compatible. Repeating a frame ID never renews its displayed capture age.
+
 ### Native capture freshness
 
 Both phone WebSocket routes accept optional hello `supports_capture_permits:true`.
@@ -150,6 +160,15 @@ as previously defined.
 ```
 
 Box coordinates are normalized 0..1, top-left origin, relative to the MJPEG frame.
+For phone RGB-D, that picture can be rotated 180 degrees to match the mount.
+`mirrored` records that rotation; depth and fused geometry remain sensor-native.
+`sensor_key` is the server-created five-element capture key
+`[session_id, map_epoch, socket_generation, frame_id, t_capture]`, or null for
+sources without paired depth. The socket generation changes even when a phone
+reconnects with the same session/epoch. Together with `source`, this key binds
+inference to its exact retained depth capture; missing, stale or mismatched keys
+cannot select a Nav Seek target. JPEG bytes stay internal. Clients may ignore
+these fields when drawing ordinary 2D boxes.
 
 Optional pose fields (YOLO11-pose), present when the detector is a pose model:
 
@@ -783,7 +802,12 @@ geometry. RGB remains sRGB on wire and is converted to linear in the viewer.
 
 Metadata: `format: "xyz_mm_rgb8_op"`, `epoch`, `source`, `cursor`, `reset`,
 `snapshot`, `anchor`, `more`, `points` (current retained unique cells),
-`voxel_m: 0.01`, `ttl_s: 30`. A mismatched epoch or journal gap returns
+`voxel_m: 0.01`, `ttl_s: 30`. Real RGB-D `source` is `[UUID session, safe integer epoch]`.
+Only the exact RGB-D simulation identity `["simulated-room", safe integer epoch]`
+is admitted without a UUID; it uses a separate `simulated_rgbd` key and the
+`SIMULATED RGB-D` label. It is never admitted on the geometry lane. Missing
+identity with nonempty data, unknown names and unsafe epochs remain errors.
+A mismatched epoch or journal gap returns
 `reset:true` once at bootstrap start: clear the consumer, then follow
 `snapshot`/`anchor`/`cursor` until `snapshot:false`. The final snapshot cursor
 returns to its start anchor so normal deltas replay updates/removals concurrent

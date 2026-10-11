@@ -26,7 +26,7 @@ class SimFeed:
         self.identity = identity
         self.started = time.monotonic()
         self.frame_id = 0
-        self.boxes, self.boxes_at = [], None
+        self.pending = self.capture = None  # (RGB-D frame, its boxes, original receipt)
 
     def header(self, now, pose):
         self.frame_id += 1
@@ -35,25 +35,41 @@ class SimFeed:
                     transform=pose.flatten(order="F").tolist(), tracking="normal")
 
     def frame(self, now):
-        """Render one RGB-D frame; returns RGBDFrame (also refreshes detections)."""
+        """Render one pending RGB-D capture; boxes publish after MapState accepts it."""
         depth, rgb, pose = self.sim.render()
         boxes = self.sim.person_boxes(depth, pose)
-        self.boxes, self.boxes_at = boxes, time.monotonic()
         confidence = np.where(depth > 0, 2, 0).astype(np.uint8)
         header = self.header(now, pose)
         header["_received_monotonic"] = now
-        return RGBDFrame(header, rgb, depth, confidence, self.sim.calibration, pose, self.sim.jpeg(rgb))
+        frame = RGBDFrame(header, rgb, depth, confidence, self.sim.calibration, pose, self.sim.jpeg(rgb))
+        self.pending = frame, boxes, now
+        return frame
+
+    def offer_frame(self, frame):
+        """Publish an accepted capture after navigation's depth observer received it."""
+        pending = self.pending
+        if pending is not None and pending[0] is frame and frame.header.get("_mapping_sensor_key") is not None:
+            self.capture = pending
 
     def detections(self):
         """The perception.snapshot() shape autonomy reads, from ground truth."""
-        age = None if self.boxes_at is None else round((time.monotonic() - self.boxes_at) * 1000)
-        fresh = age is not None and age < 1000
-        return dict(boxes=list(self.boxes) if fresh else [], age_ms=age, fresh=fresh, error=None,
-                    backend="simulated")
+        capture = self.capture
+        frame, boxes, received = capture if capture is not None else (None, [], None)
+        elapsed = None if received is None else time.monotonic() - received
+        age = None if elapsed is None else round(elapsed * 1000)
+        # MapState stamps this exact frame only after acceptance. Never guess a
+        # current socket/capture key for boxes rendered earlier or still in flight.
+        key = frame.header.get("_mapping_sensor_key") if frame is not None else None
+        fresh = key is not None and elapsed is not None and 0 <= elapsed < 1
+        return dict(boxes=list(boxes) if fresh else [], age_ms=age, fresh=fresh, error=None,
+                    backend="simulated", source="SIMULATED", mirrored=False, sensor_key=key,
+                    frame=frame.header["frame_id"] if frame is not None else -1)
 
 
 async def stream_world(state, camera, feed):
     fusion, next_frame = None, 0.0
+    # Existing depth observers (including Nav) run before detections publish.
+    state.frame_observers.append(feed.offer_frame)
     try:
         while True:
             now = time.monotonic()
@@ -72,5 +88,8 @@ async def stream_world(state, camera, feed):
                 state.observe_pose(feed.header(now, pose), pose)
             await asyncio.sleep(max(0, 1 / POSE_HZ - (time.monotonic() - now)))
     finally:
-        if fusion is not None:
-            await asyncio.shield(fusion)
+        try:
+            if fusion is not None:
+                await asyncio.shield(fusion)
+        finally:
+            state.frame_observers.remove(feed.offer_frame)

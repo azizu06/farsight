@@ -1403,39 +1403,493 @@ pub fn router(shared: Arc<Shared>) -> Router {
 /// WS messages are v1 records; seq/session ordering is enforced inside
 /// apply_owned, and lane stats count rejects.
 pub async fn pull_loop(s: Arc<Shared>, upstreams: Vec<String>, retry_min: f64, retry_max: f64) {
+    pull_loop_with_timeouts(s, upstreams, retry_min, retry_max, PullTimeouts::default()).await;
+}
+
+#[derive(Clone, Copy)]
+struct PullTimeouts {
+    connect: std::time::Duration,
+    heartbeat: std::time::Duration,
+    pong: std::time::Duration,
+    send: std::time::Duration,
+}
+
+impl Default for PullTimeouts {
+    fn default() -> Self {
+        Self {
+            connect: std::time::Duration::from_secs(5),
+            heartbeat: std::time::Duration::from_secs(5),
+            // Native atomic 256 KiB frames share 102400 B/s across two
+            // clients: a queued Pong can wait over 5.12s plus network delay.
+            pong: std::time::Duration::from_secs(10),
+            send: std::time::Duration::from_secs(5),
+        }
+    }
+}
+
+async fn pull_loop_with_timeouts(
+    s: Arc<Shared>,
+    upstreams: Vec<String>,
+    retry_min: f64,
+    retry_max: f64,
+    timeouts: PullTimeouts,
+) {
     if upstreams.is_empty() {
         return;
     }
     let mut backoff = retry_min;
     loop {
         for url in &upstreams {
-            let connect = tokio_tungstenite::connect_async(url).await;
-            let Ok((mut ws, _)) = connect else {
-                tracing::warn!("geometry lane {url} connect failed");
+            // Bound TCP, TLS and the HTTP upgrade together so a stalled
+            // primary cannot prevent trying the next configured source.
+            let connect =
+                tokio::time::timeout(timeouts.connect, tokio_tungstenite::connect_async(url)).await;
+            let Ok(Ok((mut ws, _))) = connect else {
+                tracing::warn!("geometry lane {url} connect failed or timed out");
                 continue;
             };
             *s.connected.lock().unwrap() = Some(url.clone());
+            let authority = ConnectedLane(&s);
             backoff = retry_min;
             tracing::info!("geometry lane connected: {url}");
-            while let Some(msg) = ws.next().await {
-                let Ok(msg) = msg else { break };
-                let tokio_tungstenite::tungstenite::Message::Binary(data) = msg else {
-                    continue;
-                };
-                match decode(&data) {
-                    Ok(u) => {
-                        s.geo.lock().unwrap().apply_owned(u);
-                    }
-                    Err(e) => {
-                        s.geo.lock().unwrap().lane_mut().dropped_malformed += 1;
-                        tracing::warn!("geometry record rejected: {e}");
-                    }
-                }
-            }
-            *s.connected.lock().unwrap() = None;
+            pump_upstream(&s, &mut ws, timeouts).await;
+            drop(authority);
             tracing::warn!("geometry lane {url} dropped; retrying");
         }
         tokio::time::sleep(std::time::Duration::from_secs_f64(backoff)).await;
         backoff = (backoff * 2.0).min(retry_max);
+    }
+}
+
+// A canceled read pump must not leave status claiming a connected source.
+struct ConnectedLane<'a>(&'a Shared);
+
+impl Drop for ConnectedLane<'_> {
+    fn drop(&mut self) {
+        *self.0.connected.lock().unwrap() = None;
+    }
+}
+
+async fn pump_upstream<S>(
+    s: &Shared,
+    ws: &mut tokio_tungstenite::WebSocketStream<S>,
+    timeouts: PullTimeouts,
+) where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    use futures_util::SinkExt;
+    use tokio::time::{sleep_until, timeout, Instant};
+    use tokio_tungstenite::tungstenite::Message;
+
+    let mut heartbeat_at = Instant::now() + timeouts.heartbeat;
+    let mut pending: Option<(bytes::Bytes, Instant)> = None;
+    let mut ping_seq = 0u64;
+    loop {
+        let deadline = pending
+            .as_ref()
+            .map(|(_, deadline)| *deadline)
+            .unwrap_or(heartbeat_at);
+        tokio::select! {
+            // Traffic, including malformed records, cannot postpone the
+            // deadline for acknowledging our heartbeat.
+            biased;
+            _ = sleep_until(deadline) => {
+                if pending.is_some() {
+                    tracing::warn!("geometry lane missed heartbeat Pong");
+                    break;
+                }
+                ping_seq = ping_seq.wrapping_add(1);
+                let payload: bytes::Bytes = ping_seq.to_le_bytes().to_vec().into();
+                if !matches!(timeout(timeouts.send, ws.send(Message::Ping(payload.clone()))).await, Ok(Ok(()))) {
+                    tracing::warn!("geometry lane heartbeat send failed or timed out");
+                    break;
+                }
+                pending = Some((payload, Instant::now() + timeouts.pong));
+            }
+            msg = ws.next() => match msg {
+                Some(Ok(Message::Binary(data))) => match decode(&data) {
+                    Ok(u) => { s.geo.lock().unwrap().apply_owned(u); }
+                    Err(e) => {
+                        s.geo.lock().unwrap().lane_mut().dropped_malformed += 1;
+                        tracing::warn!("geometry record rejected: {e}");
+                    }
+                },
+                Some(Ok(Message::Pong(data))) => {
+                    if pending.as_ref().map(|(payload, _)| payload == &data).unwrap_or(false) {
+                        pending = None;
+                        heartbeat_at = Instant::now() + timeouts.heartbeat;
+                    }
+                }
+                Some(Ok(Message::Ping(data))) => {
+                    if !matches!(timeout(timeouts.send, ws.send(Message::Pong(data))).await, Ok(Ok(()))) {
+                        tracing::warn!("geometry lane Pong send failed or timed out");
+                        break;
+                    }
+                }
+                Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
+                _ => {}
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod upstream_liveness_tests {
+    use super::*;
+    use futures_util::SinkExt;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+    use tokio::sync::oneshot;
+    use tokio_tungstenite::tungstenite::{protocol::Role, Message};
+
+    fn limits() -> PullTimeouts {
+        PullTimeouts {
+            connect: Duration::from_millis(60),
+            heartbeat: Duration::from_millis(30),
+            pong: Duration::from_millis(60),
+            send: Duration::from_millis(30),
+        }
+    }
+
+    enum Producer {
+        SilentHandshake,
+        Blackhole,
+        IdlePong,
+    }
+
+    async fn producer(
+        kind: Producer,
+    ) -> (
+        String,
+        tokio::task::JoinHandle<()>,
+        oneshot::Receiver<()>,
+        Arc<AtomicUsize>,
+    ) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}/geometry/stream", listener.local_addr().unwrap());
+        let (tx, accepted) = oneshot::channel();
+        let pings = Arc::new(AtomicUsize::new(0));
+        let ping_count = pings.clone();
+        let task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            if matches!(kind, Producer::SilentHandshake) {
+                let _stream = stream;
+                let _ = tx.send(());
+                futures_util::future::pending::<()>().await;
+                return;
+            }
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let _ = tx.send(());
+            if matches!(kind, Producer::Blackhole) {
+                let _ws = ws;
+                futures_util::future::pending::<()>().await;
+                return;
+            }
+            let mesh = ChunkMesh {
+                positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                colors: vec![[7, 8, 9]; 3],
+                indices: vec![[0, 1, 2]],
+            };
+            for (seq, op, mesh) in [
+                (1, Op::Reset, None),
+                (2, Op::Replace, Some(mesh)),
+                (3, Op::SnapshotEnd, None),
+            ] {
+                let update = Update {
+                    session: [3; 16],
+                    epoch: 7,
+                    seq,
+                    op,
+                    anchor: [4; 16],
+                    transform: IDENTITY,
+                    mesh,
+                };
+                ws.send(Message::Binary(encode(&update, RecordCoding::Raw).into()))
+                    .await
+                    .unwrap();
+            }
+            while let Some(Ok(msg)) = ws.next().await {
+                if let Message::Ping(data) = msg {
+                    ping_count.fetch_add(1, Ordering::SeqCst);
+                    if ws.send(Message::Pong(data)).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+        (url, task, accepted, pings)
+    }
+
+    async fn wait_connected(s: &Shared, url: &str) {
+        tokio::time::timeout(Duration::from_millis(300), async {
+            while s.connected.lock().unwrap().as_deref() != Some(url) {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+        .await
+        .expect("upstream did not become connected");
+    }
+
+    #[tokio::test]
+    async fn silent_tcp_handshake_reaches_the_next_source() {
+        let (first, first_task, accepted, _) = producer(Producer::SilentHandshake).await;
+        let (second, second_task, fallback, _) = producer(Producer::IdlePong).await;
+        let shared = Shared::new(100);
+        let pull = tokio::spawn(pull_loop_with_timeouts(
+            shared.clone(),
+            vec![first, second.clone()],
+            0.01,
+            0.02,
+            limits(),
+        ));
+        accepted.await.unwrap();
+        let reached = tokio::time::timeout(Duration::from_millis(300), fallback).await;
+        if reached.is_ok() {
+            wait_connected(&shared, &second).await;
+        }
+        let connected = shared.connected.lock().unwrap().clone();
+        pull.abort();
+        first_task.abort();
+        second_task.abort();
+        assert!(
+            reached.is_ok(),
+            "silent TCP handshake blocked the fallback source"
+        );
+        assert_eq!(connected.as_deref(), Some(second.as_str()));
+    }
+
+    #[tokio::test]
+    async fn accepted_ws_blackhole_reaches_the_next_source() {
+        let (first, first_task, accepted, _) = producer(Producer::Blackhole).await;
+        let (second, second_task, fallback, _) = producer(Producer::IdlePong).await;
+        let shared = Shared::new(100);
+        let pull = tokio::spawn(pull_loop_with_timeouts(
+            shared.clone(),
+            vec![first.clone(), second.clone()],
+            0.01,
+            0.02,
+            limits(),
+        ));
+        accepted.await.unwrap();
+        wait_connected(&shared, &first).await;
+        let reached = tokio::time::timeout(Duration::from_millis(300), fallback).await;
+        if reached.is_ok() {
+            wait_connected(&shared, &second).await;
+        }
+        let connected = shared.connected.lock().unwrap().clone();
+        pull.abort();
+        first_task.abort();
+        second_task.abort();
+        assert!(
+            reached.is_ok(),
+            "accepted WS blackhole remained authoritative forever"
+        );
+        assert_eq!(connected.as_deref(), Some(second.as_str()));
+    }
+
+    #[tokio::test]
+    async fn idle_geometry_with_pongs_keeps_the_current_source() {
+        let (first, first_task, accepted, pings) = producer(Producer::IdlePong).await;
+        let (second, second_task, mut fallback, _) = producer(Producer::IdlePong).await;
+        let shared = Shared::new(100);
+        let pull = tokio::spawn(pull_loop_with_timeouts(
+            shared.clone(),
+            vec![first.clone(), second],
+            0.01,
+            0.02,
+            limits(),
+        ));
+        accepted.await.unwrap();
+        wait_connected(&shared, &first).await;
+        tokio::time::sleep(Duration::from_millis(240)).await;
+        let connected = shared.connected.lock().unwrap().clone();
+        let geo = shared.geo.lock().unwrap();
+        let retained = (geo.anchors(), geo.triangles(), geo.snapshot_complete());
+        drop(geo);
+        let healthy_pings = pings.load(Ordering::SeqCst);
+        let fallback_untried = matches!(
+            fallback.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        );
+        pull.abort();
+        first_task.abort();
+        second_task.abort();
+        assert_eq!(connected.as_deref(), Some(first.as_str()));
+        assert_eq!(retained, (1, 1, true));
+        assert!(
+            fallback_untried,
+            "idle valid geometry was incorrectly failed over"
+        );
+        assert!(
+            healthy_pings >= 3,
+            "idle source liveness was not checked with Ping/Pong"
+        );
+    }
+
+    #[tokio::test]
+    async fn blocked_ping_write_does_not_stall_the_read_pump() {
+        let (stream, _unread_peer) = tokio::io::duplex(1);
+        let mut ws =
+            tokio_tungstenite::WebSocketStream::from_raw_socket(stream, Role::Client, None).await;
+        let shared = Shared::new(100);
+        tokio::time::timeout(
+            Duration::from_millis(300),
+            pump_upstream(&shared, &mut ws, limits()),
+        )
+        .await
+        .expect("blocked heartbeat write stalled the read pump");
+    }
+
+    #[tokio::test]
+    async fn canceled_pull_withdraws_source_authority() {
+        let (url, server, accepted, _) = producer(Producer::IdlePong).await;
+        let shared = Shared::new(100);
+        let pull = tokio::spawn(pull_loop_with_timeouts(
+            shared.clone(),
+            vec![url.clone()],
+            0.01,
+            0.02,
+            limits(),
+        ));
+        accepted.await.unwrap();
+        wait_connected(&shared, &url).await;
+        pull.abort();
+        let _ = pull.await;
+        server.abort();
+        assert!(
+            shared.connected.lock().unwrap().is_none(),
+            "canceled pull still claims a live source"
+        );
+    }
+
+    #[tokio::test]
+    async fn native_atomic_record_can_finish_before_the_queued_pong() {
+        use tokio::io::AsyncWriteExt;
+        use tokio::time::{sleep_until, Instant};
+
+        // PhoneGeometryServer shares 102400 B/s across at most two clients,
+        // writes up to 256 KiB as one WS frame, then prioritizes control frames.
+        // Scale that exact pacing contract and the production budgets by 20.
+        const SCALE: f64 = 20.0;
+        const NATIVE_RATE: f64 = 102400.0;
+        const CLIENTS: f64 = 2.0;
+        let defaults = PullTimeouts::default();
+        let scaled = |duration: Duration| duration.div_f64(SCALE);
+        let timeouts = PullTimeouts {
+            connect: scaled(defaults.connect),
+            heartbeat: scaled(defaults.heartbeat),
+            pong: scaled(defaults.pong),
+            send: scaled(defaults.send),
+        };
+        let vertices = (MAX_UPDATE_BYTES - 124 - 12) / 12;
+        let mut positions = vec![[0.0; 3]; vertices];
+        positions[1] = [1.0, 0.0, 0.0];
+        positions[2] = [0.0, 1.0, 0.0];
+        let update = Update {
+            session: [3; 16],
+            epoch: 7,
+            seq: 2,
+            op: Op::Replace,
+            anchor: [4; 16],
+            transform: IDENTITY,
+            mesh: Some(ChunkMesh {
+                positions,
+                colors: vec![[7, 8, 9]; vertices],
+                indices: vec![[0, 1, 2]],
+            }),
+        };
+        let record = encode(&update, RecordCoding::Raw);
+        assert!(record.len() <= MAX_UPDATE_BYTES);
+        let mut binary = vec![0x82, 127];
+        binary.extend_from_slice(&(record.len() as u64).to_be_bytes());
+        binary.extend_from_slice(&record);
+        let draining = Duration::from_secs_f64(binary.len() as f64 * CLIENTS / NATIVE_RATE / SCALE);
+        assert!(draining > scaled(Duration::from_secs(5)));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}/geometry/stream", listener.local_addr().unwrap());
+        let (tx, pong_sent) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let reset = Update {
+                session: [3; 16],
+                epoch: 7,
+                seq: 1,
+                op: Op::Reset,
+                anchor: [0; 16],
+                transform: IDENTITY,
+                mesh: None,
+            };
+            ws.send(Message::Binary(encode(&reset, RecordCoding::Raw).into()))
+                .await
+                .unwrap();
+            // Begin the atomic frame immediately before the first heartbeat.
+            tokio::time::sleep(timeouts.heartbeat - Duration::from_millis(1)).await;
+            let started = Instant::now();
+            let chunk = (NATIVE_RATE * 0.025) as usize;
+            ws.get_mut().write_all(&binary[..chunk]).await.unwrap();
+            let ping = match ws.next().await {
+                Some(Ok(Message::Ping(payload))) => payload,
+                other => panic!("expected heartbeat while binary frame was in flight: {other:?}"),
+            };
+            for offset in (chunk..binary.len()).step_by(chunk) {
+                sleep_until(
+                    started
+                        + Duration::from_secs_f64(offset as f64 * CLIENTS / NATIVE_RATE / SCALE),
+                )
+                .await;
+                let end = (offset + chunk).min(binary.len());
+                if ws.get_mut().write_all(&binary[offset..end]).await.is_err() {
+                    return;
+                }
+            }
+            // A control Pong cannot interleave within the binary frame.
+            if ws.send(Message::Pong(ping)).await.is_err() {
+                return;
+            }
+            let _ = tx.send(());
+            let end = Update {
+                seq: 3,
+                op: Op::SnapshotEnd,
+                ..reset
+            };
+            if ws
+                .send(Message::Binary(encode(&end, RecordCoding::Raw).into()))
+                .await
+                .is_err()
+            {
+                return;
+            }
+            while let Some(Ok(message)) = ws.next().await {
+                if let Message::Ping(payload) = message {
+                    if ws.send(Message::Pong(payload)).await.is_err() {
+                        return;
+                    }
+                }
+            }
+        });
+        let shared = Shared::new(100);
+        let pull = tokio::spawn(pull_loop_with_timeouts(
+            shared.clone(),
+            vec![url.clone()],
+            0.01,
+            0.02,
+            timeouts,
+        ));
+        let replied = tokio::time::timeout(Duration::from_secs(2), pong_sent).await;
+        tokio::time::sleep(timeouts.heartbeat + Duration::from_millis(20)).await;
+        let connected = shared.connected.lock().unwrap().clone();
+        let geo = shared.geo.lock().unwrap();
+        let retained = (geo.anchors(), geo.triangles(), geo.snapshot_complete());
+        drop(geo);
+        pull.abort();
+        server.abort();
+        assert!(
+            matches!(replied, Ok(Ok(()))),
+            "healthy native record was disconnected before its queued Pong"
+        );
+        assert_eq!(connected.as_deref(), Some(url.as_str()));
+        assert_eq!(retained, (1, 1, true));
     }
 }

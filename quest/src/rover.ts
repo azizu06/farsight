@@ -559,6 +559,14 @@ export class RoverExperience {
       const source = response.headers.get("X-Frame-Source") ?? "Unverified camera source";
       const serverAge = ageHeader === null || !ageHeader.trim() ? Infinity : Number(ageHeader);
       if (!Number.isFinite(serverAge) || serverAge < 0) return;
+      const waitHeader = response.headers.get("X-Frame-Server-Wait-Ms");
+      const reportedWait = waitHeader?.trim() ? Number(waitHeader) : NaN;
+      const elapsed = performance.now() - start;
+      // The server's age already includes this measured handler residence.
+      // Missing/invalid metadata retains the complete request bound; network,
+      // body transfer, decode and later display delay are still counted.
+      const serverWait = Number.isFinite(reportedWait) && reportedWait >= 0 && reportedWait <= elapsed ? reportedWait : 0;
+      const frameAge = (now: number) => serverAge + now - start - serverWait;
       // Request start order is not capture order: rank by capture ordinal within one source, and only
       // fall back to the conservative capture-age bound across sources or after a counter restart.
       const retainDisplayed = (now: number) => {
@@ -566,7 +574,7 @@ export class RoverExperience {
         const order = frameOrder(source, id, this.frameSource, this.frameId);
         if (order !== 0) return order < 0;
         const retainedAge = this.pendingFrame ? this.pendingFrame.age + Math.max(0, now - this.pendingFrame.at) : this.gate.videoAge(now);
-        return serverAge + now - start >= retainedAge;
+        return frameAge(now) >= retainedAge;
       };
       if (controller.signal.aborted || this.gate.session !== controlSession || retainDisplayed(performance.now())) return;
       const blob = await response.blob();
@@ -585,8 +593,8 @@ export class RoverExperience {
           retainDisplayed(now)) return;
       this.frame = image; this.frameSource = source;
       this.frameId = id ?? "";
-      // Server capture age + full request/decode time bounds transit age without synchronized clocks.
-      this.pendingFrame = { id, age: serverAge + now - start, at: now };
+      // Subtract only measured server residence, never the original capture age.
+      this.pendingFrame = { id, age: frameAge(now), at: now };
       this.dirty = true;
     } catch {
       // Keep the last frame visible; its monotonically growing age stops motion.

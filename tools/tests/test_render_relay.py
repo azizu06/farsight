@@ -171,7 +171,8 @@ class RenderSocketTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(failure.exception.status, 503)
         async with self.client.get(base + "/relay/health") as response:
             report = (await response.json())["render"]
-        self.assertEqual(report, dict(configured=False, endpoints=["/ws/macview", "/ws/macview-pose"], transport_only=True))
+        self.assertEqual(report, dict(configured=False, upstream=None,
+                                     endpoints=["/ws/macview", "/ws/macview-pose"], transport_only=True))
         self.assertEqual(self.jetson_paths, [])
         self.assertEqual(self.render_paths, [])
 
@@ -197,7 +198,8 @@ class RenderSocketTests(unittest.IsolatedAsyncioTestCase):
     async def test_health_reports_configuration_without_renderer_ready_claims(self):
         async with self.client.get(self.base + "/relay/health") as response:
             report = (await response.json())["render"]
-        self.assertEqual(report, dict(configured=True, endpoints=["/ws/macview", "/ws/macview-pose"], transport_only=True))
+        self.assertEqual(report, dict(configured=True, upstream=self.render_origin,
+                                     endpoints=["/ws/macview", "/ws/macview-pose"], transport_only=True))
         self.assertFalse(any(key in report for key in ("ready", "live", "stereo", "render_ready")))
 
     async def test_render_traffic_does_not_bypass_stale_view_control_guard(self):
@@ -236,7 +238,10 @@ class RenderSocketTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(message.type, aiohttp.WSMsgType.CLOSE)
 
     async def test_dedicated_pool_remains_available_when_jetson_pools_are_full(self):
-        for path, count in (("/ws/video", 16), ("/ws/control", 4)):
+        # Camera has its own bounded pool after #157. Fill its actual capacity,
+        # rather than waiting for a fifth socket while all four slots are held.
+        for path, count in (("/ws/video", self.relay_app["video"].connector.limit),
+                            ("/ws/control", self.relay_app["control"].connector.limit)):
             for _ in range(count):
                 socket = await self.connect(path)
                 self.assertEqual(await socket.receive_str(), "jetson-fixture")
@@ -244,6 +249,7 @@ class RenderSocketTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("opaque", await pose.receive_str())
         await pose.send_bytes(b"pose"); self.assertEqual(await pose.receive_bytes(), b"pose")
         self.assertIsNot(self.relay_app["render"].connector, self.relay_app["http"].connector)
+        self.assertIsNot(self.relay_app["render"].connector, self.relay_app["video"].connector)
         self.assertIsNot(self.relay_app["render"].connector, self.relay_app["control"].connector)
 
     async def test_admission_is_bounded_and_close_does_not_reconnect_or_replay(self):

@@ -15,6 +15,7 @@ voxel-map ``x, z``.
 """
 
 import asyncio
+from collections import OrderedDict
 from contextlib import suppress
 import json
 import math
@@ -27,10 +28,23 @@ from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from jetson.camera import adjusted_receipt
+from jetson.mapping.orientation import upright_view
+
 PROTOCOL = 1
 STATES = ("idle", "planning", "driving", "recovering", "arrived", "failed", "unavailable")
 NAV_MODES = ("explore", "seek", "goto")
 LOOPBACK = ("127.0.0.1", "::1", "localhost", "testclient")
+
+
+def _capture_key(value):
+    """Validate the trusted RGB-D input key, including JSON tuple/list copies."""
+    if (not isinstance(value, (tuple, list)) or len(value) != 5
+            or not isinstance(value[0], str) or not value[0]
+            or any(type(item) is not int or not 0 <= item < 2**53 for item in value[1:4])
+            or type(value[4]) not in (int, float) or not math.isfinite(value[4]) or value[4] < 0):
+        return None
+    return tuple(value)
 
 
 def world_to_odom(x, z):
@@ -169,12 +183,14 @@ class NavService:
     DEPTH_TTL = 1.0    # ... and measured depth of the same sensor session at least this fresh
 
     def __init__(self, mapping, *, speed_mps=0.45, turn_radps=3.0, max_v=0.7, max_w=0.8,
-                 camera_height=0.15, backed_modes=NAV_MODES, standoff=0.8, clock=time.monotonic):
+                 camera_height=0.15, backed_modes=NAV_MODES, standoff=0.8, clock=time.monotonic,
+                 camera_snapshot=None):
         for name, value in (("speed_mps", speed_mps), ("turn_radps", turn_radps), ("max_v", max_v),
                             ("max_w", max_w), ("camera_height", camera_height)):
             if not math.isfinite(value) or value <= 0:
                 raise ValueError(f"Navigation {name} must be positive")
         self.mapping, self.clock = mapping, clock
+        self.camera_snapshot = camera_snapshot
         self.speed_mps, self.turn_radps = speed_mps, turn_radps
         self.max_v, self.max_w = min(max_v, 1.0), min(max_w, 1.0)
         self.camera_height = camera_height
@@ -185,12 +201,13 @@ class NavService:
         self.seek = None            # dict(target_id, person, seen_at, goal, goal_id, state, distance)
         self.seek_seq = 0
         self.seek_checked = 0.0
+        self.seek_input = None      # detached last successfully projected detector input
         self.control = None
         self.lock = threading.RLock()
         self.bridge = None
         self.bridge_seen = -math.inf
         self.bridge_hello = None
-        self.cmd = None             # (v, w normalized, received monotonic, linear m/s, angular rad/s CCW)
+        self.cmd = None             # (v, w, received monotonic, linear m/s, angular rad/s, generation, goal_id)
         self.remote = {}            # latest bridge status
         self.mode, self.target_id, self.active = None, None, False
         self.goal = None            # voxel-map (x, z)
@@ -199,9 +216,12 @@ class NavService:
         self.frame = None           # newest normal-tracking RGB-D frame of the current sensor session
         self.frame_at = None        # monotonic receipt of self.frame
         self.frame_seq = 0
-        # Sensor generation: bumps whenever MapState's (session_id, map_epoch) changes. Old
-        # goals, commands and depth never carry across, and the bridge resets its ROS state.
+        self.seek_frames = OrderedDict()  # at most 12 exact captures for delayed inference
+        # Sensor generation follows both the sensor identity and the phone socket lifetime.
+        # Old goals, commands and depth never carry across a reconnect, including when the
+        # phone reuses its session and epoch. A visual map reset preserves this authority.
         self.identity = mapping.identity if mapping is not None else None
+        self.socket_generation = getattr(mapping, "socket_generation", 0)
         self.generation = 0
         self.router = APIRouter()
         self.router.add_api_websocket_route("/ws/nav", self.websocket)
@@ -216,12 +236,17 @@ class NavService:
 
     def sync_generation(self):
         """Detect a new sensor session; returns the current generation."""
-        identity = self.mapping.identity if self.mapping is not None else None  # replaced, never mutated
         with self.lock:
-            if identity != self.identity:
+            identity = self.mapping.identity if self.mapping is not None else None  # replaced, never mutated
+            socket_generation = getattr(self.mapping, "socket_generation", 0)
+            if identity != self.identity or socket_generation != self.socket_generation:
                 self.identity = identity
+                self.socket_generation = socket_generation
                 self.generation += 1
                 self.goal = self.cmd = self.frame = self.frame_at = None
+                self.seek_frames.clear()
+                self.seek_input = None
+                self.seek, self.seek_checked = None, 0.0
                 self.remote = dict(self.remote, state="idle", goal_id=None, path=[], frontiers=[])
             return self.generation
 
@@ -233,11 +258,25 @@ class NavService:
         """
         self.sync_generation()
         header = frame.header
-        good = (header.get("tracking") == "normal" and getattr(self.mapping, "tracking", None) == "normal"
-                and (header.get("session_id"), header.get("map_epoch")) == self.identity)
         with self.lock:
+            self.sync_generation()
+            if ((header.get("session_id"), header.get("map_epoch")) != self.identity
+                    or header.get("_mapping_socket_generation", 0) != getattr(self.mapping, "socket_generation", 0)):
+                return  # a finishing old-session observer must not withdraw newer depth
+            good = header.get("tracking") == "normal" and getattr(self.mapping, "tracking", None) == "normal"
             self.frame = frame if good else None
-            self.frame_at = header.get("_received_monotonic", time.monotonic()) if good else None
+            self.frame_at = adjusted_receipt(header, header.get("_received_monotonic", time.monotonic())) if good else None
+            if good:
+                key = _capture_key(header.get("_mapping_sensor_key"))
+                if (key is not None and key[:2] == self.identity and key[2] == self.socket_generation
+                        and key[3:] == (header.get("frame_id"), header.get("t_capture"))):
+                    source = "SIMULATED" if getattr(self.mapping, "demo", False) else "IPHONE LIDAR"
+                    self.seek_frames[key] = (frame, self.frame_at, source)
+                    self.seek_frames.move_to_end(key)
+                    while len(self.seek_frames) > 12:
+                        self.seek_frames.popitem(last=False)
+            else:
+                self.seek_frames.clear()
             self.frame_seq += 1
 
     def sensor_fault(self):
@@ -268,6 +307,7 @@ class NavService:
             active = bool(active and mode)
             if mode != "seek" or not active or (self.seek and self.seek["target_id"] != target_id):
                 self.seek = None
+                self.seek_input = None
             if active and not self.active:
                 self.cmd = None  # never resume on a command computed before this press
             self.mode, self.target_id, self.active = mode, target_id, active
@@ -298,10 +338,13 @@ class NavService:
                 return None
             if self.mode == "goto" and (self.goal is None or self._remote_state() == "arrived"):
                 return 0.0, 0.0
-            if self.mode == "seek" and (self.seek is None or self.seek["state"] in ("arrived", "failed")
+            if self.mode == "seek" and (self.seek is None or self.seek["state"] != "driving"
                                         or self.seek["goal"] is None):
                 return 0.0, 0.0  # no located person yet, already at the standoff, or the target is lost
-            if self.cmd is None or self.clock() - self.cmd[2] > self.CMD_TTL:
+            if self.cmd is None or self.clock() - self.cmd[2] > self.CMD_TTL or self.cmd[5] != self.generation:
+                return None
+            goal_id = self.seek["goal_id"] if self.mode == "seek" else self.goal_id
+            if self.mode in ("goto", "seek") and self.cmd[6] != goal_id:
                 return None
             return self.cmd[3:5] if si else self.cmd[0:2]
 
@@ -413,7 +456,8 @@ class NavService:
         """Server hello: drive scaling and, with a drive profile, the chassis calibration."""
         message = dict(type="hello", version=PROTOCOL, speed_mps=self.speed_mps, turn_radps=self.turn_radps,
                        max_v=self.max_v, max_w=self.max_w, camera_height=self.camera_height, frame="arkit",
-                       camera_yaw_offset_rad=0.0, drive_profile=None, generation=self.generation)
+                       camera_yaw_offset_rad=0.0, drive_profile=None, generation=self.generation,
+                       command_generation_required=True)
         profile = getattr(self.control, "profile", None)
         if profile is not None:
             max_pwm = self.control.max_pwm
@@ -464,16 +508,36 @@ class NavService:
         """ControlState calls this each tick in a Nav2-backed Seek with its detection snapshot."""
         now = time.monotonic()
         with self.lock:
-            if self.mode != "seek" or not self.active or now - self.seek_checked < 0.2:
+            self.sync_generation()
+            if self.mode != "seek" or not self.active:
+                return
+            generation = self.generation
+            paired = self._seek_capture(detections, now)
+            boxes = detections.get("boxes") if isinstance(detections, dict) else None
+            box = next((b for b in boxes if isinstance(b, dict) and type(b.get("id")) is int
+                        and b["id"] == self.target_id
+                        and b.get("cls") == "person"
+                        and all(type(b.get(k)) in (int, float) and math.isfinite(b[k]) for k in ("x", "y", "w", "h"))
+                        and 0 <= b["x"] <= 1 and 0 <= b["y"] <= 1
+                        and 0 < b["w"] <= 1 and 0 < b["h"] <= 1
+                        and b["x"] + b["w"] <= 1 + 1e-6
+                        and b["y"] + b["h"] <= 1 + 1e-6), None) if isinstance(boxes, (list, tuple)) else None
+            if paired is None or box is None:
+                if box is not None and self._pending_seek_capture(detections, now):
+                    return  # current goal retains only its original, still-fresh input
+                if generation != self.sync_generation():
+                    return
+                self._hold_seek(now)
+                return
+            if now - self.seek_checked < 0.2:
                 return
             self.seek_checked = now
-            frame, target_id = self.frame, self.target_id
-            seek = self.seek or dict(target_id=target_id, person=None, seen_at=now, goal=None, goal_id=None,
-                                     state="planning", distance=None)
-        boxes = (detections.get("boxes", []) if detections and detections.get("fresh")
-                 and not detections.get("error") else [])
-        box = next((b for b in boxes if b.get("id") == target_id and b.get("cls") == "person"), None)
-        person = self.locate(box, frame) if box is not None and frame is not None else None
+            frame, _, _, mirrored = paired
+            target_id, generation = self.target_id, self.generation
+            seek = self.seek.copy() if self.seek else dict(target_id=target_id, person=None, seen_at=now,
+                                                          goal=None, goal_id=None, state="planning", distance=None)
+        new_goal = False
+        person = self.locate(box, upright_view(frame) if mirrored else frame)
         transform = self.pose_snapshot()[0]
         if person is not None and transform is not None:
             rover = (float(transform[0, 3]), float(transform[2, 3]))
@@ -485,21 +549,98 @@ class NavService:
             else:
                 goal = (person[0] - self.standoff * dx / distance, person[1] - self.standoff * dz / distance)
                 if seek["goal"] is None or seek["state"] != "driving" or math.dist(goal, seek["goal"]) > self.SEEK_MOVE_M:
-                    with self.lock:
-                        self.seek_seq += 1
-                        seek["goal_id"] = f"seek-{self.seek_seq}"
+                    new_goal = True
                     seek["goal"] = goal
                 seek["state"] = "driving"
         elif now - seek["seen_at"] >= self.SEEK_LOST_S:
             seek["state"] = "failed"
         with self.lock:
-            if self.mode == "seek" and self.active and self.target_id == seek["target_id"]:
+            if (generation == self.sync_generation() and self.mode == "seek" and self.active
+                    and self.target_id == seek["target_id"]):
+                # Projection can finish after a reset, cache eviction or age expiry.
+                current = self._seek_capture(detections, time.monotonic())
+                if person is None or transform is None or current is None or current[0] is not frame:
+                    self._hold_seek(time.monotonic())
+                    return
+                if new_goal:
+                    self.seek_seq += 1
+                    seek["goal_id"] = f"seek-{self.seek_seq}"
+                    self.cmd = None  # a previous goal's command cannot move toward this one
                 self.seek = seek
+                age = detections.get("age_ms", 0)
+                self.seek_input = (dict(sensor_key=tuple(detections["sensor_key"]), frame=detections["frame"],
+                                        source=detections["source"], mirrored=mirrored, fresh=True, error=None,
+                                        box=box.copy()),
+                                   min(paired[1], now - age / 1000)) if (type(age) in (int, float)
+                                   and math.isfinite(age) and age >= 0) else None
+
+    def _seek_key(self, detections):
+        """Current source and internally consistent input metadata, independent of depth arrival."""
+        if (not isinstance(detections, dict) or detections.get("fresh") is not True
+                or detections.get("error") is not None or type(detections.get("mirrored")) is not bool
+                or not getattr(self.mapping, "connected", False)
+                or getattr(self.mapping, "tracking", None) != "normal"):
+            return None
+        key = _capture_key(detections.get("sensor_key"))
+        if (key is None or key[:2] != self.identity or key[2] != self.socket_generation
+                or type(detections.get("frame")) is not int or detections["frame"] != key[3]
+                or detections.get("source") != ("SIMULATED" if self.mapping.demo else "IPHONE LIDAR")):
+            return None
+        return key
+
+    def _seek_capture(self, detections, now):
+        """Exact detector input and source; caller holds the navigation lock."""
+        key = self._seek_key(detections)
+        if key is None:
+            return None
+        held = self.seek_frames.get(key)
+        if held is None:
+            return None
+        frame, received, source = held
+        if detections.get("source") != source or not 0 <= now - received < self.DEPTH_TTL:
+            return None
+        return frame, received, source, detections["mirrored"]
+
+    def _pending_seek_capture(self, detections, now):
+        """A proven newer camera input may wait for depth without renewing the prior goal."""
+        key = self._seek_key(detections)
+        if (key is None or self.camera_snapshot is None or self.seek_input is None
+                or self.seek is None or self.seek["state"] != "driving" or self.seek["goal"] is None):
+            return False
+        prior, received = self.seek_input
+        prior_key = prior["sensor_key"]
+        if (prior["box"]["id"] != self.target_id or not 0 <= now - received < self.DEPTH_TTL
+                or self._seek_capture(prior, now) is None or key in self.seek_frames
+                or key[3] <= prior_key[3] or key[4] <= prior_key[4]):
+            return False
+        generation = self.generation
+        try:
+            camera = self.camera_snapshot()
+            proven = (camera is not None and _capture_key(camera.sensor_key) == key
+                      and type(camera.frame_id) is int and camera.frame_id == key[3]
+                      and camera.source == detections["source"] and camera.mirrored is detections["mirrored"]
+                      and camera.tracking == "normal" and 0 <= now - camera.received < .5)
+        except Exception:
+            return False
+        checked = time.monotonic()
+        return (proven and generation == self.sync_generation()
+                and 0 <= checked - received < self.DEPTH_TTL and 0 <= checked - camera.received < .5
+                and self._seek_capture(prior, checked) is not None)
+
+    def _hold_seek(self, now):
+        """Withdraw the old goal/command immediately; keep the existing target-loss timer."""
+        seek = self.seek.copy() if self.seek else dict(target_id=self.target_id, person=None, seen_at=now,
+                                                      goal_id=None, distance=None)
+        seek.update(goal=None, goal_id=None,
+                    state="failed" if now - seek["seen_at"] >= self.SEEK_LOST_S else "planning")
+        self.seek, self.cmd, self.seek_checked = seek, None, 0.0
+        self.seek_input = None
 
     def receive(self, message):
         """Apply one bridge message (cmd_vel or status)."""
         if not isinstance(message, dict):
             raise ValueError("Bridge message must be an object")
+        self.sync_generation()
         kind = message.get("type")
         with self.lock:
             now = self.clock()
@@ -507,14 +648,19 @@ class NavService:
                 linear, angular = message.get("linear"), message.get("angular")
                 if not all(type(x) in (int, float) and math.isfinite(x) for x in (linear, angular)):
                     raise ValueError("cmd_vel needs finite linear and angular")
-                if self.mode == "goto" and message.get("goal_id", self.goal_id) != self.goal_id:
+                if type(message.get("generation")) is not int or message["generation"] != self.generation:
+                    return  # missing authority fails closed, including an older bridge
+                goal_id = self.seek["goal_id"] if self.mode == "seek" and self.seek else self.goal_id
+                if self.mode in ("goto", "seek") and message.get("goal_id") != goal_id:
                     self.bridge_seen = now
                     return  # computed for an earlier goal
                 # ROS angular.z is counter-clockwise (left); ControlState positive w turns right.
                 v = max(-self.max_v, min(self.max_v, linear / self.speed_mps))
                 w = max(-self.max_w, min(self.max_w, -angular / self.turn_radps))
-                self.cmd = (v, w, now, float(linear), float(angular))
+                self.cmd = (v, w, now, float(linear), float(angular), self.generation, message.get("goal_id"))
             elif kind == "status":
+                if type(message.get("generation")) is not int or message["generation"] != self.generation:
+                    return
                 self.remote = {key: message.get(key) for key in
                                ("state", "goal_id", "path", "frontiers", "message", "controller_hz",
                                 "planner_ms", "recoveries", "result", "costmap", "nav2")}
@@ -559,6 +705,8 @@ class NavService:
                         sent_generation = generation
                     if now - last_pose >= 0.04:
                         transform, tracking, source, age = await asyncio.to_thread(self.pose_snapshot)
+                        if generation != self.sync_generation():
+                            continue  # announce the reset before publishing the new world
                         if transform is not None:  # limited/lost tracking never renews TF or odometry
                             await ws.send_json(dict(type="pose", transform=transform.flatten(order="F").tolist(),
                                                     tracking=tracking, source=source, generation=generation,
@@ -566,14 +714,26 @@ class NavService:
                                                     floor_y=-self.camera_height))
                         last_pose = now
                     with self.lock:  # a generation change clears self.frame under this lock
-                        frame, seq, frame_generation = self.frame, self.frame_seq, self.generation
+                        frame, seq, frame_generation, received = self.frame, self.frame_seq, self.generation, self.frame_at
+                    if frame_generation != sent_generation:
+                        continue
                     if frame is not None and seq != sent_frame:
-                        received = frame.header.get("_received_monotonic", now)
                         source = "simulated" if self.mapping.demo else "arkit"
                         packet = await asyncio.to_thread(encode_depth, frame, floor_y=-self.camera_height, source=source,
-                                                         age_ms=round(max(0, now - received) * 1000, 1),
+                                                         age_ms=0,
                                                          generation=frame_generation)
-                        await ws.send_bytes(packet)
+                        if frame_generation != self.sync_generation():
+                            continue
+                        age = max(0, time.monotonic() - received)
+                        if age < self.DEPTH_TTL:
+                            # Stamp after worker queueing/encoding. Only the small
+                            # JSON header is rebuilt; measured depth bytes stay exact.
+                            length = struct.unpack_from("<I", packet)[0]
+                            header = json.loads(packet[4:4 + length])
+                            header["age_ms"] = round(age * 1000, 1)
+                            data = json.dumps(header, separators=(",", ":")).encode()
+                            packet = struct.pack("<I", len(data)) + data + packet[4 + length:]
+                            await ws.send_bytes(packet)
                     sent_frame = seq
                     if self.control is not None and now - last_range >= 0.1:
                         cm, at = self.control.range_cm, self.control.range_at  # no control.lock on the event loop
@@ -581,6 +741,8 @@ class NavService:
                                                 age_ms=None if not math.isfinite(at) else round((self.control.clock() - at) * 1000)))
                         last_range = now
                     intent = self.intent()
+                    if intent["generation"] != sent_generation:
+                        continue
                     if intent != sent_intent or now - last_intent_at >= 0.2:
                         await ws.send_json(intent)
                         sent_intent, last_intent_at = intent, now

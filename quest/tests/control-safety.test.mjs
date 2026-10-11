@@ -130,6 +130,66 @@ test("server release requirement overrides a locally fresh connection", () => {
   assert.equal(gate.decide(true, 150), true);
 });
 
+test("optional stop trace reports the first cause without sharing safety state", () => {
+  const gate = ready(), events = [];
+  const previous = globalThis.__farsightControlSafetyTrace;
+  globalThis.__farsightControlSafetyTrace = event => {
+    events.push({ ...event });
+    event.needsRelease = false;
+    event.cause = "changed by observer";
+  };
+  try {
+    gate.invalidate("Camera stale: motion stopped");
+    gate.invalidate("Release deadman to continue");
+    assert.deepEqual(events, [
+      { event: "stop", reason: "Camera stale: motion stopped", cause: "Camera stale: motion stopped", needsRelease: true, hardLatch: false },
+      { event: "stop", reason: "Release deadman to continue", cause: "Camera stale: motion stopped", needsRelease: true, hardLatch: false },
+    ]);
+    assert.equal(gate.cause, "Camera stale: motion stopped");
+    assert.equal(gate.decide(true, 110), false);
+  } finally {
+    if (previous === undefined) delete globalThis.__farsightControlSafetyTrace;
+    else globalThis.__farsightControlSafetyTrace = previous;
+  }
+});
+
+test("optional frame trace observes accepted capture age without renewing duplicates", () => {
+  const gate = ready(), events = [];
+  const previous = globalThis.__farsightControlSafetyTrace;
+  globalThis.__farsightControlSafetyTrace = value => { events.push({ ...value }); value.age = 0; };
+  try {
+    assert.equal(gate.acceptFrame("2", 125, 200), true);
+    assert.equal(gate.acceptFrame("2", 0, 300), false);
+    assert.equal(gate.acceptFrame("3", NaN, 300), false);
+    assert.deepEqual(events, [{ event: "frame", age: 125 }]);
+    assert.equal(gate.videoAge(300), 225, "the observer and duplicate cannot renew capture freshness");
+    globalThis.__farsightControlSafetyTrace = () => { throw new Error("frame observer failed"); };
+    assert.equal(gate.acceptFrame("3", 250, 310), true);
+    assert.equal(gate.videoAge(310), 250, "an observer error cannot interrupt capture acceptance");
+  } finally {
+    if (previous === undefined) delete globalThis.__farsightControlSafetyTrace;
+    else globalThis.__farsightControlSafetyTrace = previous;
+  }
+});
+
+test("a throwing stop trace cannot prevent a hard stop or change recovery", () => {
+  const gate = ready();
+  const previous = globalThis.__farsightControlSafetyTrace;
+  let calls = 0;
+  globalThis.__farsightControlSafetyTrace = () => { calls++; throw new Error("observer failed"); };
+  try {
+    gate.invalidate("STOP pressed", true);
+    assert.equal(calls, 1);
+    assert.equal(gate.hardLatch, true);
+    assert.equal(gate.decide(true, 110), false);
+    gate.decide(false, 120);
+    assert.equal(gate.decide(true, 130), true);
+  } finally {
+    if (previous === undefined) delete globalThis.__farsightControlSafetyTrace;
+    else globalThis.__farsightControlSafetyTrace = previous;
+  }
+});
+
 test("inactive headset or unobserved input cannot invent a deadman release", () => {
   for (const reportedHeld of [true, false]) {
     const gate = ready();
