@@ -12,6 +12,10 @@ path = "src/lib.rs"
 name = "farsight-seed"
 path = "src/main.rs"
 
+[[bin]]
+name = "farsight-seed-synth"
+path = "src/bin/synth.rs"
+
 [dependencies]
 glam.workspace = true
 serde.workspace = true

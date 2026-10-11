@@ -18,6 +18,7 @@ pub mod emit;
 pub mod fill;
 pub mod grid;
 pub mod pca;
+pub mod synth;
 pub mod views;
 
 use glam::Vec3;
@@ -91,6 +92,10 @@ pub struct SeedStats {
     pub colour_views: usize,
     pub depth_views: usize,
     pub uncoloured: usize,
+    /// Summed over colour views: projections landing in-frame, and of those
+    /// passing the occlusion test (sampled for colour).
+    pub view_in_frame: u64,
+    pub view_accepted: u64,
     pub clean: serde_json::Value,
 }
 
@@ -139,6 +144,11 @@ pub fn run(
         col_stride
     };
     let colres = colour::project(&dpos, views, &cfg.colour, col_stride, dep_stride);
+    let (mut vs_in, mut vs_ok) = (0u64, 0u64);
+    for &(_vi, n_in, n_ok) in &colres.view_stats {
+        vs_in += n_in as u64;
+        vs_ok += n_ok as u64;
+    }
 
     // sparse depth for supervision uses the full cleaned cloud, not just the
     // decimated splats — T3 can thin it further if needed. colour_stride of
@@ -204,6 +214,8 @@ pub fn run(
             colour_views: views.len().div_ceil(col_stride),
             depth_views,
             uncoloured: uncoloured.get(),
+            view_in_frame: vs_in,
+            view_accepted: vs_ok,
             clean: serde_json::json!({
                 "sor_removed": cstats.sor_removed,
                 "iso_removed": cstats.iso_removed,

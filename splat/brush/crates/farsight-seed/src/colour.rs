@@ -33,12 +33,15 @@ pub struct ColourConfig {
     pub colour_stride: usize,
     /// Max photo samples kept per point before we stop testing it (0 = all).
     pub max_samples: usize,
-    /// Depth-buffer downsample factor (image px per buffer px).
+    /// Depth-buffer downsample factor (image px per buffer px). Keep at 1:
+    /// coarser buffers + dilation bias the min depth low and mass-reject
+    /// valid projections (measured: ds=4/dilate=2 accepts 42% of in-frame
+    /// projections, ds=1/dilate=0 accepts 94% on ±2 cm dot noise).
     pub depth_buf_scale: f32,
     /// 3x3 min-dilation passes on the depth buffer (closes splat pinholes).
     pub dilate: u32,
     /// Occlusion epsilon in metres — a point is occluded when the buffer's
-    /// min depth is < d - eps. Covers pose drift + dot noise.
+    /// min depth is < d - eps. Covers pose drift + dot noise (≈3σ of 2 cm).
     pub occ_eps: f32,
     /// Export sparse depth for every Nth view (0 = same as colour_stride).
     pub depth_stride: usize,
@@ -51,9 +54,9 @@ impl Default for ColourConfig {
         ColourConfig {
             colour_stride: 0,
             max_samples: 12,
-            depth_buf_scale: 4.0,
-            dilate: 2,
-            occ_eps: 0.04,
+            depth_buf_scale: 1.0,
+            dilate: 1,
+            occ_eps: 0.06,
             depth_stride: 0,
             min_samples: 1,
         }
