@@ -16,7 +16,7 @@ class IntercomPlaybackTests(unittest.TestCase):
                             str(ROOT / "ios/tests/IntercomPlaybackFixture.swift"), "-o", str(binary)],
                            check=True, capture_output=True, text=True)
             result = subprocess.run([str(binary)], check=True, capture_output=True, text=True, timeout=10)
-            self.assertIn("PASS intercom playback protocol and bounded speaker queue", result.stdout)
+            self.assertIn("PASS duplex intercom protocol and bounded audio queues", result.stdout)
 
 
 if __name__ == "__main__":

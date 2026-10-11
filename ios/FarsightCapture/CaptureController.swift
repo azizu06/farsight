@@ -21,6 +21,7 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate, AV
     @Published var resolvedEndpoint = ""
     @Published var geometryStatus = "Phone 3D disabled"
     @Published var clockDiagnostic = "Capture clock not checked"
+    @Published var intercomStatus = "Talk off"
 
     let supportsMesh = ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh)
     let supportsDepth = ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth)
@@ -87,6 +88,7 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate, AV
 
     override init() {
         super.init()
+        intercomPlayback.onStatus = { [weak self] value in self?.intercomStatus = value }
         capture.delegate = self
         capture.delegateQueue = queue
         geometryFeed.onRecord = { [weak self] session, packet in

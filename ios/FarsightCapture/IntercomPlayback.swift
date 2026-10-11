@@ -8,6 +8,11 @@ struct IntercomPCMFrame: Equatable {
 
     let samples: [Int16]
 
+    init(samples: [Int16]) {
+        precondition(samples.count == Self.sampleCount)
+        self.samples = samples
+    }
+
     init?(data: Data) {
         guard data.count == Self.byteCount else { return nil }
         var samples = [Int16]()
@@ -17,6 +22,16 @@ struct IntercomPCMFrame: Equatable {
             samples.append(Int16(bitPattern: value))
         }
         self.samples = samples
+    }
+
+    var data: Data {
+        var bytes = Data(capacity: Self.byteCount)
+        for sample in samples {
+            let littleEndian = UInt16(bitPattern: sample).littleEndian
+            bytes.append(UInt8(truncatingIfNeeded: littleEndian))
+            bytes.append(UInt8(truncatingIfNeeded: littleEndian >> 8))
+        }
+        return bytes
     }
 
     static func receiverURL(from captureURL: URL) -> URL? {
@@ -32,20 +47,45 @@ struct IntercomPCMFrame: Equatable {
 
 enum IntercomWireMessage: Equatable {
     case talk(active: Bool)
+    case peer(connected: Bool)
     case audio(Data)
 
     static func parse(text: String) -> IntercomWireMessage? {
         guard let data = text.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              object["type"] as? String == "talk",
-              let active = object["active"] as? NSNumber,
-              CFGetTypeID(active) == CFBooleanGetTypeID() else { return nil }
-        return .talk(active: active.boolValue)
+              let type = object["type"] as? String else { return nil }
+        switch type {
+        case "talk":
+            guard let active = object["active"] as? NSNumber,
+                  CFGetTypeID(active) == CFBooleanGetTypeID() else { return nil }
+            return .talk(active: active.boolValue)
+        case "peer":
+            guard let connected = object["connected"] as? NSNumber,
+                  CFGetTypeID(connected) == CFBooleanGetTypeID() else { return nil }
+            return .peer(connected: connected.boolValue)
+        default: return nil
+        }
     }
 }
 
+struct IntercomFrameAccumulator {
+    private var pending: [Int16] = []
+
+    mutating func append(_ samples: [Int16]) -> [Data] {
+        pending.append(contentsOf: samples)
+        var frames: [Data] = []
+        while pending.count >= IntercomPCMFrame.sampleCount {
+            frames.append(IntercomPCMFrame(samples: Array(pending.prefix(IntercomPCMFrame.sampleCount))).data)
+            pending.removeFirst(IntercomPCMFrame.sampleCount)
+        }
+        return frames
+    }
+
+    mutating func reset() { pending.removeAll(keepingCapacity: true) }
+}
+
 protocol IntercomPCMOutput: AnyObject {
-    func start()
+    func start(onCapture: @escaping (Data) -> Void, onUnavailable: @escaping () -> Void)
     func enqueue(_ frame: IntercomPCMFrame)
     func stop()
 }
@@ -53,15 +93,31 @@ protocol IntercomPCMOutput: AnyObject {
 final class IntercomPlaybackCore {
     private let output: IntercomPCMOutput
     private(set) var isTalking = false
+    private(set) var peerConnected = false
+    private let sendAudio: (Data) -> Void
+    private let onUnavailable: () -> Void
 
-    init(output: IntercomPCMOutput) { self.output = output }
+    init(output: IntercomPCMOutput, sendAudio: @escaping (Data) -> Void = { _ in },
+         onUnavailable: @escaping () -> Void = {}) {
+        self.output = output
+        self.sendAudio = sendAudio
+        self.onUnavailable = onUnavailable
+    }
 
     func receive(_ message: IntercomWireMessage) {
         switch message {
+        case .peer(let connected):
+            peerConnected = connected
+            if !connected { stopTalking() }
         case .talk(let active):
             guard active != isTalking else { return }
             isTalking = active
-            if active { output.start() } else { output.stop() }
+            if active {
+                output.start(onCapture: { [weak self] data in
+                    guard let self, data.count == IntercomPCMFrame.byteCount else { return }
+                    self.sendAudio(data)
+                }, onUnavailable: onUnavailable)
+            } else { output.stop() }
         case .audio(let data):
             guard isTalking, let frame = IntercomPCMFrame(data: data) else { return }
             output.enqueue(frame)
@@ -69,6 +125,12 @@ final class IntercomPlaybackCore {
     }
 
     func disconnected() {
+        peerConnected = false
+        stopTalking()
+    }
+
+    private func stopTalking() {
+        guard isTalking else { return }
         isTalking = false
         output.stop()
     }
@@ -119,8 +181,16 @@ final class IntercomPlayback {
     private var retryDelay: TimeInterval = 0.25
     private var session: URLSession?
     private var socket: URLSessionWebSocketTask?
-    private lazy var output = IPhoneIntercomPCMOutput(queue: queue)
-    private lazy var core = IntercomPlaybackCore(output: output)
+    private var audioSendsInFlight = 0
+    var onStatus: ((String) -> Void)?
+    private lazy var output = IPhoneIntercomPCMOutput(queue: queue) { [weak self] message in
+        self?.report(message)
+    }
+    private lazy var core = IntercomPlaybackCore(output: output, sendAudio: { [weak self] data in
+        self?.sendCapturedAudio(data)
+    }, onUnavailable: { [weak self] in
+        self?.report("iPhone microphone unavailable · check iOS permission")
+    })
 
     func beginAttempt(from captureURL: URL) {
         queue.async { [weak self] in
@@ -177,6 +247,11 @@ final class IntercomPlayback {
                     self.retryDelay = 0.25
                     if let message = IntercomWireMessage.parse(text: text) {
                         self.core.receive(message)
+                        switch message {
+                        case .talk(let active): self.report(active ? "Talk on · requesting iPhone microphone" : "Talk off")
+                        case .peer(let connected): self.report(connected ? "Quest connected · Talk is off" : "Quest disconnected")
+                        case .audio: break
+                        }
                     }
                     self.receive(task, generation: generation)
                 @unknown default:
@@ -208,6 +283,8 @@ final class IntercomPlayback {
         guard self.generation == generation else { return }
         closeSocket()
         core.disconnected()
+        audioSendsInFlight = 0
+        report("Intercom disconnected · retrying")
         let delay = retryDelay
         retryDelay = min(2, retryDelay * 2)
         let work = DispatchWorkItem { [weak self] in self?.connect(generation: generation) }
@@ -225,43 +302,151 @@ final class IntercomPlayback {
         session?.invalidateAndCancel()
         session = nil
     }
+
+    private func sendCapturedAudio(_ data: Data) {
+        queue.async { [weak self] in
+            guard let self, self.core.isTalking, self.audioSendsInFlight < 4,
+                  let socket = self.socket, socket.state == .running else { return }
+            let generation = self.generation
+            self.audioSendsInFlight += 1
+            socket.send(.data(data)) { [weak self] error in
+                guard let self else { return }
+                self.queue.async {
+                    guard self.generation == generation, self.socket === socket else { return }
+                    self.audioSendsInFlight = max(0, self.audioSendsInFlight - 1)
+                    if error != nil { self.retry(generation: generation) }
+                }
+            }
+        }
+    }
+
+    private func report(_ message: String) {
+        DispatchQueue.main.async { [weak self] in self?.onStatus?(message) }
+    }
 }
 
 private final class IPhoneIntercomPCMOutput: IntercomPCMOutput {
     private let queue: DispatchQueue
+    private let report: (String) -> Void
+    private let lock = NSLock()
     private var engine: AVAudioEngine?
     private var player: AVAudioPlayerNode?
-    private var format: AVAudioFormat?
+    private var outputFormat: AVAudioFormat?
+    private var converter: AVAudioConverter?
+    private var capture: ((Data) -> Void)?
+    private var attempt = UUID()
+    private var accumulator = IntercomFrameAccumulator()
     private var window = IntercomScheduledWindow(capacity: 4)
 
-    init(queue: DispatchQueue) { self.queue = queue }
+    init(queue: DispatchQueue, report: @escaping (String) -> Void) {
+        self.queue = queue
+        self.report = report
+    }
 
-    func start() {
+    func start(onCapture: @escaping (Data) -> Void, onUnavailable: @escaping () -> Void) {
         guard engine == nil else { return }
+        let id = UUID()
+        attempt = id
+        capture = onCapture
+        accumulator.reset()
+        let permission = AVAudioApplication.shared.recordPermission
         do {
-            let audioSession = AVAudioSession.sharedInstance()
-            try audioSession.setCategory(.playback, mode: .voicePrompt)
-            try audioSession.setActive(true)
-            let engine = AVAudioEngine()
-            let player = AVAudioPlayerNode()
-            let format = AVAudioFormat(commonFormat: .pcmFormatInt16,
-                                       sampleRate: Double(IntercomPCMFrame.sampleRate),
-                                       channels: 1, interleaved: false)!
-            engine.attach(player)
-            engine.connect(player, to: engine.mainMixerNode, format: format)
-            try engine.start()
-            player.play()
-            self.engine = engine
-            self.player = player
-            self.format = format
+            try configureSpeaker(id: id)
         } catch {
             stop()
+            onUnavailable()
+            return
+        }
+        switch permission {
+        case .denied:
+            onUnavailable()
+        case .undetermined:
+            AVAudioApplication.requestRecordPermission { [weak self] granted in
+                guard let self else { return }
+                self.queue.async {
+                    guard self.attempt == id else { return }
+                    if granted { self.configureMicrophone(id: id, onUnavailable: onUnavailable) }
+                    else { onUnavailable() }
+                }
+            }
+        case .granted:
+            configureMicrophone(id: id, onUnavailable: onUnavailable)
+        @unknown default:
+            onUnavailable()
         }
     }
 
+    private func configureSpeaker(id: UUID) throws {
+        guard attempt == id, engine == nil else { return }
+        let audioSession = AVAudioSession.sharedInstance()
+        try audioSession.setCategory(.playAndRecord, mode: .voiceChat,
+                                     options: [.defaultToSpeaker])
+        try audioSession.setActive(true)
+        try audioSession.overrideOutputAudioPort(.speaker)
+        let engine = AVAudioEngine()
+        let player = AVAudioPlayerNode()
+        let input = engine.inputNode
+        try input.setVoiceProcessingEnabled(true)
+        let inputFormat = input.outputFormat(forBus: 0)
+        let outputFormat = AVAudioFormat(commonFormat: .pcmFormatInt16,
+                                         sampleRate: Double(IntercomPCMFrame.sampleRate),
+                                         channels: 1, interleaved: false)!
+        let mutedMic = AVAudioMixerNode()
+        engine.attach(player)
+        engine.attach(mutedMic)
+        engine.connect(player, to: engine.mainMixerNode, format: outputFormat)
+        engine.connect(input, to: mutedMic, format: inputFormat)
+        engine.connect(mutedMic, to: engine.mainMixerNode, format: inputFormat)
+        mutedMic.outputVolume = 0
+        self.engine = engine
+        self.player = player
+        self.outputFormat = outputFormat
+        try engine.start()
+        player.play()
+        report("iPhone speaker ready · requesting microphone")
+    }
+
+    private func configureMicrophone(id: UUID, onUnavailable: @escaping () -> Void) {
+        guard attempt == id, let engine else { return }
+        let input = engine.inputNode
+        let inputFormat = input.outputFormat(forBus: 0)
+        let outputFormat = AVAudioFormat(commonFormat: .pcmFormatInt16,
+                                         sampleRate: Double(IntercomPCMFrame.sampleRate),
+                                         channels: 1, interleaved: false)!
+        guard let converter = AVAudioConverter(from: inputFormat, to: outputFormat) else {
+            onUnavailable(); return
+        }
+        input.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
+            self?.capture(buffer, converter: converter, outputFormat: outputFormat)
+        }
+        self.converter = converter
+        report("Two-way audio active")
+    }
+
+    private func capture(_ buffer: AVAudioPCMBuffer, converter: AVAudioConverter, outputFormat: AVAudioFormat) {
+        guard let converted = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: 1024) else { return }
+        var conversionError: NSError?
+        var supplied = false
+        let status = converter.convert(to: converted, error: &conversionError) { _, inputStatus in
+            if supplied { inputStatus.pointee = .noDataNow; return nil }
+            supplied = true
+            inputStatus.pointee = .haveData
+            return buffer
+        }
+        guard status != .error, conversionError == nil, let samples = converted.int16ChannelData?.pointee else { return }
+        let count = Int(converted.frameLength)
+        let frames: [Data]
+        let send: ((Data) -> Void)?
+        lock.lock()
+        frames = accumulator.append(Array(UnsafeBufferPointer(start: samples, count: count)))
+        send = capture
+        lock.unlock()
+        for frame in frames { send?(frame) }
+    }
+
     func enqueue(_ frame: IntercomPCMFrame) {
-        guard engine != nil, let player, let format,
-              let buffer = AVAudioPCMBuffer(pcmFormat: format,
+        guard engine != nil, let player, let outputFormat,
+              let buffer = AVAudioPCMBuffer(pcmFormat: outputFormat,
                                             frameCapacity: AVAudioFrameCount(frame.samples.count)),
               let samples = buffer.int16ChannelData?.pointee else { return }
         buffer.frameLength = AVAudioFrameCount(frame.samples.count)
@@ -279,12 +464,19 @@ private final class IPhoneIntercomPCMOutput: IntercomPCMOutput {
     }
 
     func stop() {
+        attempt = UUID()
+        lock.lock()
+        capture = nil
+        accumulator.reset()
+        lock.unlock()
+        engine?.inputNode.removeTap(onBus: 0)
         player?.stop()
         player?.reset()
         engine?.stop()
         window.reset()
         player = nil
-        format = nil
+        outputFormat = nil
+        converter = nil
         engine = nil
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
