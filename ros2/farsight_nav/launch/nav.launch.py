@@ -35,8 +35,8 @@ def nav_nodes(context):
     configured = ParameterFile(RewrittenYaml(source_file=params, root_key="",
                                              param_rewrites={"default_nav_to_pose_bt_xml": bt_xml},
                                              convert_types=True), allow_substs=True)
-    # StaticLayer needs an initial map before activation. Derive its geometry
-    # from the same resolved params (including custom params_file substitutions).
+    # Bootstrap the semantic mask from the same resolved map geometry,
+    # including custom params_file substitutions.
     with open(configured.evaluate(context)) as file:
         people_geometry = bootstrap_parameters(yaml.safe_load(file))
     files = [configured]
