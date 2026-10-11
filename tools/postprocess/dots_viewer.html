@@ -1,0 +1,126 @@
+<title>Farsight Room Scan</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;800&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: full-bleed 3D stage, a slim instrument bar on top, layer switches docked bottom-left like a survey tool. */
+:root{
+  --bg:#0c1110; --panel:rgba(18,26,24,.86); --fg:#e3ebe7; --muted:#8fa29a; --line:#2a3733; --accent:#45d19f;
+  --display:"Archivo",system-ui,sans-serif; --mono:"IBM Plex Mono",ui-monospace,monospace;
+  color-scheme:dark;
+}
+html,body{height:100%}
+body{background:var(--bg);color:var(--fg);font-family:var(--mono);overflow:hidden}
+#stage{position:fixed;inset:0}
+canvas{display:block}
+.bar{position:fixed;left:0;right:0;top:0;padding:calc(10px + env(safe-area-inset-top,0px)) 16px 10px;display:flex;flex-wrap:wrap;gap:6px 18px;align-items:baseline;background:linear-gradient(var(--bg),transparent);pointer-events:none}
+.bar h1{font-family:var(--display);font-weight:800;font-size:1.15rem;margin:0;letter-spacing:.01em}
+.bar span{font-size:.74rem;color:var(--muted);font-variant-numeric:tabular-nums}
+.dock{position:fixed;left:16px;bottom:calc(16px + env(safe-area-inset-bottom,0px));background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px 14px;display:grid;gap:8px;max-width:calc(100vw - 32px);backdrop-filter:blur(6px)}
+.dock .t{font-size:.68rem;letter-spacing:.09em;text-transform:uppercase;color:var(--muted)}
+label{display:flex;gap:9px;align-items:center;font-size:.82rem;cursor:pointer}
+input[type=checkbox]{accent-color:var(--accent);width:16px;height:16px}
+.n{color:var(--muted);font-variant-numeric:tabular-nums}
+.btns{display:flex;gap:6px;flex-wrap:wrap}
+button{font:inherit;font-size:.78rem;background:transparent;color:var(--fg);border:1px solid var(--line);border-radius:5px;padding:5px 10px;cursor:pointer}
+button:hover,button:focus-visible{border-color:var(--accent);outline:none}
+input[type=range]{accent-color:var(--accent);width:140px}
+.hint{position:fixed;right:16px;bottom:calc(16px + env(safe-area-inset-bottom,0px));font-size:.72rem;color:var(--muted);text-align:right}
+@media (max-width:560px){.hint{display:none}}
+</style>
+
+<div id="stage"></div>
+<div class="bar"><h1>Farsight room scan</h1><span>Pulled live from the rover · iPhone LiDAR · 2026-10-11</span><span id="stat">loading…</span></div>
+<div class="dock">
+  <div class="t">Layers</div>
+  <label><input type="checkbox" id="lSolid" checked> Solid 3D, rebuilt from all dots <span class="n" id="nSolid"></span></label>
+  <label><input type="checkbox" id="lFine"> Close-up surface, team builder #201 <span class="n" id="nFine"></span></label>
+  <label><input type="checkbox" id="lMesh"> Jetson walls <span class="n" id="nMesh"></span></label>
+  <label><input type="checkbox" id="lPts"> Map dots, 4 cm <span class="n" id="nPts"></span></label>
+  <label><input type="checkbox" id="lDense"> Fine dots, 1 cm, last ~30 s <span class="n" id="nDense"></span></label>
+  <label>Dot size <input type="range" id="size" min="1" max="12" value="4"></label>
+  <div class="btns"><button id="vTop">Top</button><button id="vSide">Angle</button><button id="vSpin">Spin</button></div>
+</div>
+<div class="hint">Drag to orbit · scroll or pinch to zoom · right-drag to pan</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.147.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/controls/OrbitControls.js"></script>
+<script src="mapdata.js"></script>
+<script>
+const stage=document.getElementById('stage');
+const renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.setSize(innerWidth,innerHeight);
+stage.appendChild(renderer.domElement);
+const scene=new THREE.Scene();
+scene.background=new THREE.Color(0x0c1110);
+const camera=new THREE.PerspectiveCamera(55,innerWidth/innerHeight,0.02,300);
+const controls=new THREE.OrbitControls(camera,renderer.domElement);
+controls.enableDamping=true;
+scene.add(new THREE.HemisphereLight(0xffffff,0x334440,0.9));
+const sun=new THREE.DirectionalLight(0xffffff,0.6);sun.position.set(3,8,4);scene.add(sun);
+
+function dotsMaterial(){return new THREE.PointsMaterial({size:0.04,vertexColors:true,sizeAttenuation:true});}
+function readPoints(buf,offset,count,stride){
+  const dv=new DataView(buf),pos=new Float32Array(count*3),col=new Float32Array(count*3);
+  for(let i=0;i<count;i++){const o=offset+i*stride;
+    pos[i*3]=dv.getFloat32(o,true);pos[i*3+1]=dv.getFloat32(o+4,true);pos[i*3+2]=dv.getFloat32(o+8,true);
+    col[i*3]=dv.getUint8(o+12)/255;col[i*3+1]=dv.getUint8(o+13)/255;col[i*3+2]=dv.getUint8(o+14)/255;}
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.BufferAttribute(pos,3));
+  g.setAttribute('color',new THREE.BufferAttribute(col,3));
+  return g;
+}
+const layers={};let box=new THREE.Box3();
+const fmt=n=>n.toLocaleString('en-US');
+async function load(){
+  const b64=s=>{const bin=atob(s),u=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)u[i]=bin.charCodeAt(i);return u.buffer;};
+  const [p,m,d,sp,sd]=['points','mesh','dense','surf_poisson','surf_dense'].map(k=>b64(window.MAPDATA[k]));
+  const pc=new DataView(p).getUint32(0,true);
+  const pg=readPoints(p,4,pc,16);
+  layers.pts=new THREE.Points(pg,dotsMaterial());layers.pts.visible=false;scene.add(layers.pts);
+  const meshFrom=(buf,on)=>{const v=new DataView(buf),nv=v.getUint32(0,true),ni=v.getUint32(4,true);
+    const g=readPoints(buf,8,nv,16);g.setIndex(new THREE.BufferAttribute(new Uint32Array(buf.slice(8+nv*16)),1));g.computeVertexNormals();
+    const o=new THREE.Mesh(g,new THREE.MeshStandardMaterial({vertexColors:true,side:THREE.DoubleSide,roughness:.9,metalness:0}));
+    o.visible=on;scene.add(o);return [o,ni/3];};
+  let n;[layers.solid,n]=meshFrom(sp,true);document.getElementById('nSolid').textContent=fmt(n)+' triangles';
+  [layers.fine,n]=meshFrom(sd,false);document.getElementById('nFine').textContent=fmt(n)+' triangles';
+  document.getElementById('nPts').textContent=fmt(pc);
+  const dc=d.byteLength/16;
+  layers.dense=new THREE.Points(readPoints(d,0,dc,16),dotsMaterial());layers.dense.material.size=0.012;layers.dense.visible=false;scene.add(layers.dense);
+  document.getElementById('nDense').textContent=fmt(dc);
+  const mv=new DataView(m),nv=mv.getUint32(0,true),ni=mv.getUint32(4,true);
+  const mg=readPoints(m,8,nv,16);
+  mg.setIndex(new THREE.BufferAttribute(new Uint32Array(m,8+nv*16,ni),1));
+  mg.computeVertexNormals();
+  layers.mesh=new THREE.Mesh(mg,new THREE.MeshStandardMaterial({vertexColors:true,side:THREE.DoubleSide,roughness:.85,metalness:0}));
+  layers.mesh.visible=false;scene.add(layers.mesh);
+  document.getElementById('nMesh').textContent=fmt(ni/3)+' triangles';
+  pg.computeBoundingBox();box=pg.boundingBox.clone();
+  const s=box.getSize(new THREE.Vector3());
+  document.getElementById('stat').textContent=`${s.x.toFixed(1)} × ${s.z.toFixed(1)} m floor · ${s.y.toFixed(1)} m tall`;
+  const grid=new THREE.GridHelper(Math.ceil(Math.max(s.x,s.z))+2,Math.ceil(Math.max(s.x,s.z))+2,0x2f4a42,0x1c2925);
+  grid.position.set((box.min.x+box.max.x)/2,box.min.y,(box.min.z+box.max.z)/2);scene.add(grid);
+  view('side');applySize();
+}
+function view(kind){
+  const c=box.getCenter(new THREE.Vector3()),r=box.getSize(new THREE.Vector3()).length();
+  controls.target.copy(c);
+  if(kind==='top')camera.position.set(c.x,c.y+r*0.9,c.z+0.01);
+  else camera.position.set(c.x+r*0.35,c.y+r*0.45,c.z+r*0.55);
+  controls.update();
+}
+function applySize(){const v=+document.getElementById('size').value;
+  if(layers.pts)layers.pts.material.size=v*0.01;if(layers.dense)layers.dense.material.size=v*0.003;}
+document.getElementById('lPts').onchange=e=>{if(layers.pts)layers.pts.visible=e.target.checked};
+document.getElementById('lDense').onchange=e=>{if(layers.dense)layers.dense.visible=e.target.checked};
+document.getElementById('lSolid').onchange=e=>{if(layers.solid)layers.solid.visible=e.target.checked};
+document.getElementById('lFine').onchange=e=>{if(layers.fine)layers.fine.visible=e.target.checked};
+document.getElementById('lMesh').onchange=e=>{if(layers.mesh)layers.mesh.visible=e.target.checked};
+document.getElementById('size').oninput=applySize;
+document.getElementById('vTop').onclick=()=>{controls.autoRotate=false;view('top')};
+document.getElementById('vSide').onclick=()=>{controls.autoRotate=false;view('side')};
+document.getElementById('vSpin').onclick=()=>{controls.autoRotate=!controls.autoRotate};
+controls.autoRotateSpeed=matchMedia('(prefers-reduced-motion: reduce)').matches?0.3:1.2;
+addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight)});
+(function loop(){requestAnimationFrame(loop);controls.update();renderer.render(scene,camera)})();
+load().catch(e=>{document.getElementById('stat').textContent='Could not load the map files: '+e.message});
+</script>
