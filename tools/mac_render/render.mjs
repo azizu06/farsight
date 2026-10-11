@@ -463,12 +463,20 @@ function registerLayer(layer) {
 }
 window.__macRegisterLayer = registerLayer;
 
-// Dense crew's raw-texture layer (#170 contract): the bundle is optional —
+// Dense crew's raw-texture layer (#170/#173 contract): the bundle is optional —
 // when .cache/dense-layer-dist is not built the import fails and no layer
-// registers. The layer fetches /phone/frame.bin through this server's
-// upstream passthrough.
+// registers. Raw networking is opt-in (default off): ?raw=1 enables pulls,
+// window.__macRawLayer.setEnabled(v) toggles at runtime. The layer fetches
+// /phone/frame.bin through this server's upstream passthrough.
 import("/dense-layer/raw-texture-layer.mjs")
-  .then((m) => registerLayer(m.rawTextureLayer({ endpoint: "/phone/frame.bin" })))
+  .then((m) => {
+    const layer = m.rawTextureLayer({
+      endpoint: "/phone/frame.bin",
+      enabled: params.get("raw") === "1",
+    });
+    window.__macRawLayer = layer;
+    registerLayer(layer);
+  })
   .catch(() => {});
 
 const mapStatusView = {};
