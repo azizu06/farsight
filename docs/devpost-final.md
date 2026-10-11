@@ -28,6 +28,8 @@ Farsight is a ground rover you inhabit from a Meta Quest 2. No venue Wi-Fi. Two 
 
 **Scan the room.** The rover stops, looks in five directions, and Depth Anything V2 turns each view into metric depth. You stand inside the point cloud in VR. A LiDAR iPhone supplies measured depth instead, and the viewer says which one you are looking at. A five-view scan measured on a Mac takes 596.5 ms and produces 89,967 points.
 
+**Walk the room after the run.** While the rover drives, the Jetson quietly archives the phone's full camera frames with their ARKit poses and lens intrinsics, up to 2.5 per second, off the control path. After the run the operator Mac pulls that capture and trains a photoreal Gaussian splat of the room on its own GPU (Brush on Metal), under a fixed time budget, then trims it to at most 300,000 splats so a Quest can hold it. Put the headset back on and you walk through the room the rover just saw, in stereo: left stick to walk where you look, right stick to snap-turn. The viewer loads public sample scenes of 175,745 to 1,026,508 splats in 105 to 2,063 ms on a desktop check.
+
 **Plan the path.** Nav2 plans go-to, Explore, and Seek. Double-click the floor of the laptop's map for a go-to goal, and the map draws the path, the goal, and the frontier markers. In five simulated worlds, across every closed-loop navigation scenario, 0 collisions. With a box appearing in the corridor, the simulated rover reaches the goal in 26.4 s, longest standstill 0.41 s. Explore covers 91% of a three-room floor in 25.0 s. Seek follows a walking person and holds a 1.18 m median gap behind a 0.8 m target. In the same simulated rooms, SLAM Toolbox cuts ARKit-like drift on a 16.7 m loop from 0.34 m to 0.06 m, and heavy drift from 1.36 m to 0.03 m. An optional nvblox path can build that costmap on the GPU: depth integrated into a TSDF, sliced into a 2D obstacle map.
 
 **Run the drill. Leave the record.** A 90-second rescue drill scores the search: a face held in view for one second counts, emergency stops cost you, and you get a score plus a route home. Every encounter lands in a mission report with time, snapshot, and an SBAR triage note drafted on the rover. A pose that changes from standing to lying writes the note again. Runs record and replay.
@@ -129,7 +131,7 @@ Keep SLAM on for any run that loops back. On a short straight demo ARKit is enou
 
 ## Built with
 
-Python, FastAPI, NVIDIA Jetson Orin Nano, TensorRT, CUDA, ONNX Runtime, OpenCV, FFmpeg (libx264), Ultralytics YOLO11 (pose), UltraFace, Depth Anything V2, Qwen3-VL-2B, Qwen2.5-VL, SmolVLM, llama.cpp, whisper.cpp, Piper, Hugging Face Hub, TypeScript, WebXR, Three.js, Vite, Playwright, Meta Quest 2, Swift, ARKit, Brotli, ROS 2 Jazzy, Nav2, SLAM Toolbox, Isaac ROS nvblox, Arduino (C++), Tailscale, adb, Rust, VideoToolbox.
+Python, FastAPI, NVIDIA Jetson Orin Nano, TensorRT, CUDA, ONNX Runtime, OpenCV, FFmpeg (libx264), Ultralytics YOLO11 (pose), UltraFace, Depth Anything V2, Qwen3-VL-2B, Qwen2.5-VL, SmolVLM, llama.cpp, whisper.cpp, Piper, Hugging Face Hub, TypeScript, WebXR, Three.js, Vite, Playwright, Meta Quest 2, Swift, ARKit, Brotli, ROS 2 Jazzy, Nav2, SLAM Toolbox, Isaac ROS nvblox, Arduino (C++), Tailscale, adb, Rust, VideoToolbox, Gaussian splatting, Brush, Spark.
 
 Repository: https://github.com/azizu06/farsight
 
