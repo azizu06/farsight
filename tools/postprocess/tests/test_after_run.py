@@ -12,6 +12,34 @@ from tools.postprocess import after_run as pipeline
 
 
 class AfterRunTests(unittest.TestCase):
+    def test_reboot_capture_uses_photo_time_for_newest_and_since(self):
+        normal = '20261011T162416.549928Z-old'
+        reboot = '19700101T000111.187704Z-new'
+        captures = {normal: [711, 1791736162982736553, 0, 100, 1791736162894718071],
+                    reboot: [667, 1791738918629043366, 0, 100, 1791738918541039648]}
+        newest = max(captures, key=lambda name: pipeline.capture_order(name, captures[name]))
+        self.assertEqual(newest, reboot)
+        self.assertTrue(pipeline.after_since(reboot, '20261011T131633', captures[reboot]))
+        self.assertFalse(pipeline.after_since(reboot, '20261011T180000', captures[reboot]))
+
+    def test_demo_watcher_builds_current_reboot_named_capture(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old, new = '20261011T162416.549928Z-old', '19700101T000111.187704Z-new'
+            signatures = {old: [711, 1791736162982736553, 0, 100, 1791736162894718071],
+                          new: [667, 1791738918629043366, 0, 100, 1791738918541039648]}
+            args = argparse.Namespace(demo=True, idle_seconds=10, host='jetson',
+                work_dir=root, poll_seconds=10, since='20261011T131633')
+            with patch.object(pipeline, 'inventory', return_value=signatures), \
+                 patch.object(pipeline, 'finished', return_value=({new: (signatures[new], 0)}, [old, new])), \
+                 patch.object(pipeline, 'pull', return_value=root / new) as pull, \
+                 patch.object(pipeline, 'process') as process, \
+                 patch.object(pipeline.time, 'sleep', side_effect=KeyboardInterrupt):
+                with self.assertRaises(KeyboardInterrupt):
+                    pipeline.watch(args)
+            pull.assert_called_once_with(args, new)
+            self.assertEqual(process.call_args.args[1], new)
+
     def test_recent_photos_use_latest_motion_and_cap_long_archive(self):
         import numpy as np
         frames = []

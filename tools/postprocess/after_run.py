@@ -75,6 +75,23 @@ def run_order(name):
     return stamp.group(0) if stamp else name
 
 
+def capture_order(name, signature):
+    # Reboot captures can be named in 1970 before NTP catches up; photo mtimes are current.
+    return (signature[4] if len(signature) > 4 else signature[1], run_order(name))
+
+
+def after_since(name, since, signature=None):
+    if not since:
+        return True
+    stamp = re.search(r'\d{8}T\d{6}', name)
+    if stamp and stamp.group(0)[:4] >= '2000':
+        return stamp.group(0) >= since
+    if signature:
+        cutoff = datetime.strptime(since, '%Y%m%dT%H%M%S').replace(tzinfo=timezone.utc).timestamp()
+        return capture_order(name, signature)[0] / 1e9 >= cutoff
+    return False
+
+
 def finished(previous, current, now, stable_seconds=60, require_seed=True):
     """Track capture signatures. Any active capture defers ALL remote pulls."""
     observations = {}
@@ -173,7 +190,9 @@ def wait_for_run(args):
             raise RuntimeError('Jetson unreachable and no complete local run is available')
         observations, ready = finished(observations, current, time.monotonic(), args.idle_seconds,
                                        require_seed=not args.demo)
-        name = args.run_id or (max(current, key=run_order) if args.demo and current else max(ready, key=run_order) if ready else None)
+        name = args.run_id or (max(current, key=lambda name: capture_order(name, current[name]))
+                              if args.demo and current else
+                              max(ready, key=lambda name: capture_order(name, current[name])) if ready else None)
         if name in ready:
             stage = time.monotonic()
             source = pull(args, name)
@@ -525,7 +544,7 @@ def watch(args):
         else:
             observations, ready = finished(observations, current, tick, args.idle_seconds,
                                            require_seed=not args.demo)
-            newest = max(current, key=run_order) if current else None
+            newest = max(current, key=lambda name: capture_order(name, current[name])) if current else None
             print(f'{time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())} '
                   f'inventory={len(current)} idle_ready={len(ready)} '
                   f'newest={newest} images={current[newest][0] if newest else 0}', flush=True)
@@ -535,8 +554,7 @@ def watch(args):
         if args.demo and candidates:
             candidates = [max(candidates, key=lambda candidate: run_order(candidate[0]))]
         for name, source, transport in sorted(candidates, key=lambda candidate: run_order(candidate[0]), reverse=True):
-            stamp = re.search(r'\d{8}T\d{6}', name)
-            if args.since and (not stamp or stamp.group(0) < args.since):
+            if not after_since(name, args.since, current[name] if transport == 'rsync' else None):
                 continue
             if (args.work_dir / (name + '.done.json')).exists():
                 continue

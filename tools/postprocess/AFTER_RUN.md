@@ -28,6 +28,9 @@ Omit `--watch` for one newest finished run. `--steps` and `--seed-max-points`
 override the demo preset. This remains an image-idle heuristic, rather than a
 motor stop signal. Final seed export must also finish before the pull starts.
 The watcher excludes captures older than `--since`; arm it before the drive.
+Remote newest selection uses photo modification time. A rover reboot can name
+a run `19700101…` before clock synchronization; for those names, `--since` also
+uses the photo timestamp rather than discarding the current drive as old.
 With `--open-chrome`, the completion notifier runs `open -a 'Google Chrome'`
 on the complete walk URL (including `faces=`) once the final scene, sidecars,
 optional pruning and scoring have all completed. It records the open
