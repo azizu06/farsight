@@ -258,7 +258,10 @@ def wander_check(controller):
         name = "wander" if controller == "rpp" else f"wander_{controller}"
         run, result = hold("wander", "explore", 90, lambda s: False, launch_args=[f"controller:={controller}"])
         samples = [s for s in run.samples if s["sim"]]
-        first = next((i for i, s in enumerate(samples) if any(
+        # Nav2 feedback overwrites the open-space status message within one sample, so the phase
+        # also starts at the first frontier-free sample after the map had frontiers.
+        seen = next((i for i, s in enumerate(samples) if s["frontiers"]), len(samples))
+        first = next((i for i, s in enumerate(samples) if (i > seen and not s["frontiers"]) or any(
             key in (s["remote"].get("message") or "") for key in ("No reachable frontier", "open space"))), len(samples))
         late = samples[first:]
         spin = [s for s in late if abs(s["sim"].get("v", 0)) <= STILL and abs(s["sim"].get("w", 0)) > STILL]
