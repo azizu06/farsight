@@ -47,6 +47,15 @@ struct SplatOptim {
     opacities: AdamState<1>,
 }
 
+/// EMA of the three param tensors (inner backend). `None` entries mean the
+/// state hasn't been (re)anchored since the last refine.
+struct EmaState {
+    decay: f64,
+    transforms: Option<Tensor<2>>,
+    sh_coeffs: Option<Tensor<3>>,
+    raw_opacities: Option<Tensor<1>>,
+}
+
 /// Step one parameter: pull its gradient, run Adam on the inner
 /// (autodiff-free) tensor, and re-wrap tracking. Parameters without a
 /// gradient this step are left untouched. When `vis_inds` is given, only
@@ -108,6 +117,10 @@ pub struct SplatTrainer {
     /// Currently installed SH scaling: `(locked_band_mask, tensor)` —
     /// rebuilt only when the set of locked bands changes.
     sh_scale_cur: Option<(u64, Tensor<3>)>,
+    /// EMA of the params, evaluated/exported instead of the raw params when
+    /// `--ema-decay` > 0. Re-anchored at every refine (row identities
+    /// change), so its effective window is the time since the last refine.
+    ema: Option<EmaState>,
     /// Per-view appearance affine bank (T6); see `appearance.rs`.
     appearance: AppearanceBank,
     #[cfg(not(target_family = "wasm"))]
@@ -233,8 +246,10 @@ impl SplatTrainer {
         let mut config = config.clone();
         config.growth_stop_iter = config.growth_stop_iter.min(config.total_train_iters);
         config.growth_start_iter = config.growth_start_iter.min(config.growth_stop_iter);
+        config.apply_quality();
 
         let (app_lr, app_reg) = (config.appearance_lr, config.appearance_reg);
+        let ema_decay = config.ema_decay;
         #[cfg(not(target_family = "wasm"))]
         let lpips = (config.lpips_loss_weight > 0.0).then(|| lpips::load_vgg_lpips(device));
 
@@ -255,6 +270,12 @@ impl SplatTrainer {
             seeded: false,
             sh_scale_base: None,
             sh_scale_cur: None,
+            ema: (ema_decay > 0.0).then_some(EmaState {
+                decay: ema_decay,
+                transforms: None,
+                sh_coeffs: None,
+                raw_opacities: None,
+            }),
             appearance: AppearanceBank::new(app_lr, app_reg),
             #[cfg(not(target_family = "wasm"))]
             lpips,
@@ -299,6 +320,55 @@ impl SplatTrainer {
     /// config tweaks (lower mean LR, early opacity/colour boost).
     pub fn set_seeded(&mut self, seeded: bool) {
         self.seeded = seeded;
+    }
+
+    /// EMA step on the inner param tensors; re-anchors (copies the current
+    /// params) whenever a count changed or the state is empty.
+    fn ema_update(&mut self, splats: &Splats) {
+        let Some(ema) = &mut self.ema else { return };
+        let d = ema.decay;
+        let t = splats.transforms.val().inner();
+        if ema.transforms.as_ref().is_some_and(|m| m.dims() == t.dims()) {
+            let m = ema.transforms.take().unwrap();
+            ema.transforms = Some(m * d + t * (1.0 - d));
+        } else {
+            ema.transforms = Some(t);
+        }
+        let c = splats.sh_coeffs.val().inner();
+        if ema.sh_coeffs.as_ref().is_some_and(|m| m.dims() == c.dims()) {
+            let m = ema.sh_coeffs.take().unwrap();
+            ema.sh_coeffs = Some(m * d + c * (1.0 - d));
+        } else {
+            ema.sh_coeffs = Some(c);
+        }
+        let o = splats.raw_opacities.val().inner();
+        if ema.raw_opacities.as_ref().is_some_and(|m| m.dims() == o.dims()) {
+            let m = ema.raw_opacities.take().unwrap();
+            ema.raw_opacities = Some(m * d + o * (1.0 - d));
+        } else {
+            ema.raw_opacities = Some(o);
+        }
+    }
+
+    /// The splats to eval/export: the EMA copy when `--ema-decay` is on and
+    /// anchored at the current count, else the raw params unchanged.
+    pub fn ema_splats(&self, splats: &Splats) -> Splats {
+        let Some(e) = &self.ema else { return splats.clone() };
+        let (Some(t), Some(c), Some(o)) = (
+            e.transforms.clone(),
+            e.sh_coeffs.clone(),
+            e.raw_opacities.clone(),
+        ) else {
+            return splats.clone();
+        };
+        if t.dims() != splats.transforms.dims() {
+            return splats.clone();
+        }
+        let mut out = splats.clone();
+        out.transforms = out.transforms.map(|_| t);
+        out.sh_coeffs = out.sh_coeffs.map(|_| c);
+        out.raw_opacities = out.raw_opacities.map(|_| o);
+        out
     }
 
     /// Fraction of the schedule completed: wall-clock `elapsed/budget`
@@ -758,6 +828,9 @@ impl SplatTrainer {
             .expect("counts dtype");
         let num_visible = (counts[0] as f32 / n_views) as u32;
 
+        // EMA tracks the stepped params (re-anchored after each refine).
+        self.ema_update(&splats);
+
         let stats = TrainStepStats {
             num_visible,
             lr_mean,
@@ -1190,6 +1263,9 @@ impl SplatTrainer {
             let new_opac = sigmoid(f) - minus_opac;
             inv_sigmoid(new_opac.clamp(1e-12, 1.0 - 1e-12))
         });
+
+        // Row identities changed — the EMA restarts from these params.
+        self.ema_update(&splats);
 
         self.optim = Some(optim);
         splats

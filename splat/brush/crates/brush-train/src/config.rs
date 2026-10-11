@@ -295,6 +295,24 @@ pub struct TrainConfig {
     /// (`reg * (|gain - I|^2 + |bias|^2)` added to the view loss).
     #[arg(long, help_heading = "Training options", default_value = "0.001")]
     pub appearance_reg: f64,
+
+    /// Exponential moving average decay for the evaluated/exported
+    /// parameters: `ema = d·ema + (1−d)·param` applied to
+    /// transforms/sh_coeffs/raw_opacities after every optimizer step. The
+    /// EMA copy is what eval and export see when set. Refine re-anchors the
+    /// EMA to the post-refine params (row identities change across refine),
+    /// so the effective window is the time since the last refine. 0 disables.
+    /// Values must be in [0, 1).
+    #[arg(long, help_heading = "Training options", default_value = "0.0")]
+    pub ema_decay: f64,
+
+    /// Quality bundle: overrides the schedule knobs this flag covers with
+    /// the tuned values from splat/docs/schedule.md (progressive res ramp,
+    /// SH unlock to degree 3, sparse Adam, EMA export, seeded-LR tweaks).
+    /// Individual flags it covers are ignored — don't combine it with them.
+    /// SH width itself comes from `--sh-degree` (model config).
+    #[arg(long, help_heading = "Training options", default_value = "false")]
+    pub quality: bool,
 }
 
 impl Default for TrainConfig {
@@ -304,6 +322,28 @@ impl Default for TrainConfig {
 }
 
 impl TrainConfig {
+    /// Apply the `quality` bundle. Called by the trainer at construction;
+    /// idempotent.
+    pub fn apply_quality(&mut self) {
+        if !self.quality {
+            return;
+        }
+        // Tuned on the synth capture at the 120 s / 300 s budgets — see
+        // splat/docs/schedule.md for the ablations behind each value.
+        self.res_start_div = 4;
+        self.res_full_at = 0.5;
+        if self.sh_unlock_at.is_empty() {
+            self.sh_unlock_at = vec![0.15, 0.3, 0.5];
+        }
+        self.sparse_adam = true;
+        self.ssim_weight = 0.2;
+        if self.ema_decay == 0.0 {
+            self.ema_decay = 0.999;
+        }
+        self.seeded_mean_lr_scale = 0.5;
+        self.seeded_early_boost = 1.5;
+    }
+
     pub fn total_iters(&self) -> u32 {
         self.total_train_iters + self.lod_levels * self.lod_refine_steps
     }

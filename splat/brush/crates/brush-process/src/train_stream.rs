@@ -268,7 +268,7 @@ pub(crate) async fn train_stream(
                     (lod_name, lod_refine_steps, lod_refine_steps)
                 };
                 let res = export_checkpoint(
-                    splats.clone(),
+                    trainer.ema_splats(&splats),
                     &export_path,
                     &name,
                     exp_iter,
@@ -405,11 +405,12 @@ pub(crate) async fn train_stream(
                 .eval_save_to_disk
                 .then(|| export_path.clone());
 
+            // Eval sees the EMA params when --ema-decay is on.
             let eval = run_eval(
                 device,
                 emitter,
                 &visualize,
-                splats.clone(),
+                trainer.ema_splats(&splats),
                 iter,
                 eval_scene,
                 save_path,
@@ -442,7 +443,7 @@ pub(crate) async fn train_stream(
                     (lod_name, lod_refine_steps, lod_refine_steps)
                 };
                 let res = export_checkpoint(
-                    splats.clone(),
+                    trainer.ema_splats(&splats),
                     &export_path,
                     &name,
                     exp_iter,
