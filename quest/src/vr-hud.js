@@ -117,7 +117,7 @@ export function drawIcon(c, name, x, y, r, color) {
 export function drawChip(c, width, height, options = {}) {
   c.clearRect(0, 0, width, height);
   if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 4 || height <= 0) return;
-  const automatic = options.mode === "auto", modeText = automatic ? "AUTONOMOUS" : "MANUAL";
+  const automatic = options.mode === "auto", modeText = automatic ? "AUTONOMOUS" : options.mode === "head" ? "HEAD STEERING" : "MANUAL";
   c.save();
   try {
     const fontSize = height * .34;

@@ -27,6 +27,11 @@ function pillCanvas() {
   return { context, calls };
 }
 
+test('the active head-steering mode is visible without extra telemetry',()=>{
+  const {context,calls}=pillCanvas();drawChip(context,1024,128,{mode:'head'});
+  assert.ok(calls.some(call=>call.op==='text'&&call.text==='HEAD STEERING'));
+});
+
 test("actual mode pill draws only MANUAL/AUTONOMOUS and the small A button", () => {
   for (const [mode, expected] of [["manual", "MANUAL"], ["auto", "AUTONOMOUS"]]) {
     const { context, calls } = pillCanvas();

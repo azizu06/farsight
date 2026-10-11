@@ -3,6 +3,7 @@ import { SourceTruth } from "./source-banner.js";
 import { explainStop } from "./stop-reason.js";
 import { ControlSafety, stick } from "./control-safety.js";
 import { ForwardRamp, manualDrive, steerCurve } from "./manual-drive.js";
+import { HeadSteering } from "./head-steering.js";
 import { H264Viewer } from "./h264";
 import { cameraCrop, croppedBox } from "./camera-view.js";
 import { VRActionMenu, type VRAction } from "./vr-actions";
@@ -42,6 +43,7 @@ type ControlStatus = {
   requires_release?: boolean; reason?: string | null; link_ms?: number | null;
   mode?: string; autonomy_state?: string; target_id?: number | null;
   nav?: unknown;
+  heading?: {yaw_rad: number; age_ms: number; source: string; session_id: string; map_epoch: number; socket_generation: number} | null;
 };
 
 /** Same-origin only: Quest talks through USB/ADB to the operator relay. */
@@ -56,7 +58,7 @@ export class RoverExperience {
   private stopPanel = new THREE.Mesh(new THREE.PlaneGeometry(1.0, 0.15), new THREE.MeshBasicMaterial({ map: this.stopTexture, transparent: true, toneMapped: false, depthTest: false }));
   private stopKey = "";
   private bannerKey = "";
-  private bannerPending: { source: ReturnType<SourceTruth["state"]>; mode: "manual" | "auto"; tone: string; at: number } | null = null;
+  private bannerPending: { source: ReturnType<SourceTruth["state"]>; mode: "manual" | "auto" | "head"; tone: string; at: number } | null = null;
   private hintCanvas = document.createElement("canvas");
   private hintTexture = new THREE.CanvasTexture(this.hintCanvas);
   private hintPanel = new THREE.Mesh(new THREE.PlaneGeometry(1.6, 1.0), new THREE.MeshBasicMaterial({ map: this.hintTexture, transparent: true, toneMapped: false, depthTest: false, depthWrite: false }));
@@ -69,6 +71,11 @@ export class RoverExperience {
   private forwardRampState?: ForwardRamp;
   /** Lazily created so prototype-built test fixtures need no extra field. */
   private get forwardRamp() { return this.forwardRampState ??= new ForwardRamp(); }
+  private headSteeringState?: HeadSteering;
+  private get headSteering() { return this.headSteeringState ??= new HeadSteering(); }
+  private headToggleDown = true;
+  private headCenterDown = true;
+  private headSteeringButton?: HTMLButtonElement;
   private lastRoamAt = -Infinity;
   private roamTurnArmed = true;
   private voiceCanvas = document.createElement("canvas");
@@ -226,11 +233,12 @@ export class RoverExperience {
       <p id="rover-message" role="status">Waiting for live camera and rover</p>
       <p id="rover-details">Motion disabled until camera and control are fresh.</p>
       <button id="rover-intercom" aria-pressed="false">Talk to iPhone · Off</button><p id="rover-intercom-status" role="status">Connect iPhone capture for two-way audio.</p>
+      <button id="rover-head-steering" aria-pressed="false">Head steering · Off (left X)</button>
       <button id="rover-hold" class="hold-button">Hold to enable · WASD to drive</button>
       <button id="rover-explore" aria-pressed="false">Explore (E)</button>
       <button id="rover-nav-cancel">Cancel nav (C)</button>
       <p id="rover-nav" class="rover-nav" role="status" hidden></p>
-      <p class="rover-help">Quest: move the right joystick to drive. Press right A to switch to Autonomous; the rover explores while the joystick roams the 3D map. Press A again for Manual. Center the stick to stop manual motion. B stops the rover.<br>Desktop: hold Space + WASD in camera view; click a person to seek; E explores; double-click the map floor for go-to, C cancels. Stick/WASD takes back control.</p>`;
+      <p class="rover-help">Quest: move the right joystick to drive. Left X toggles head steering: look to turn, right stick forward/back to travel; sideways stick overrides the turn. Left Y aligns your current head direction. Head steering needs live phone tracking. B stops and disables head steering. Press right A for Autonomous; the rover explores while the joystick roams the 3D map. A again returns to Manual.<br>Desktop: hold Space + WASD in camera view; click a person to seek; E explores; double-click the map floor for go-to, C cancels. Stick/WASD takes back control.</p>`;
     document.querySelector("main")!.append(panel);
     this.sourceBanner = document.createElement("div");
     this.sourceBanner.className = "source-banner"; this.sourceBanner.setAttribute("role", "status");
@@ -242,6 +250,8 @@ export class RoverExperience {
     this.intercomStatus = panel.querySelector<HTMLElement>("#rover-intercom-status")!;
     this.intercom = new QuestIntercom(state => this.updateIntercomState(state));
     this.intercomButton.onclick = () => { void this.intercom.toggle(); };
+    this.headSteeringButton = panel.querySelector<HTMLButtonElement>("#rover-head-steering")!;
+    this.headSteeringButton.onclick = () => this.setHeadSteering(!this.headSteering.enabled);
     this.navStatus = panel.querySelector("#rover-nav")!;
     this.holdButton = panel.querySelector("#rover-hold")!;
     panel.querySelector<HTMLButtonElement>("#live-rover")!.onclick = () => this.setView("camera");
@@ -404,8 +414,10 @@ export class RoverExperience {
   private setMount(fixed: boolean, save: boolean) {
     if (save) { this.settings.origin.mount = "saved"; saveSettings(pageStorage(), { mount: fixed ? "fixed" : "servo" }); }
     this.mountSelect.value = fixed ? "fixed" : "servo";
-    if (fixed === this.digitalPan) return;
+    if (fixed === this.digitalPan) { this.updateHeadSteeringButton(); return; }
     this.digitalPan = fixed;
+    if (!fixed) this.setHeadSteering(false);
+    this.updateHeadSteeringButton();
     this.stop("Camera mount changed: release deadman"); this.dirty = true;
   }
   /** With no query or saved mount, a rover reporting no physical pan selects fixed. */
@@ -474,6 +486,8 @@ export class RoverExperience {
    * trigger release even in demo mode. Every other stop is transient. */
   stop(reason: string, hard = false) {
     this.forwardRamp.reset();
+    this.headSteering.recenter();
+    if (hard) this.setHeadSteering(false);
     // An accepted go-to goal stays armed (see AutonomyIntent.release); motion still needs a fresh deadman press.
     this.autonomy.release();
     this.scanGeneration++; this.scanReserved = false;
@@ -729,6 +743,12 @@ export class RoverExperience {
         this.stop("Stopped: center the joystick", true);
       }
       this.toggleDown = toggle; this.exploreDown = stop;
+      const headToggle = leftTracked && !!left?.gamepad?.buttons[4]?.pressed;
+      const headCenter = leftTracked && !!left?.gamepad?.buttons[5]?.pressed;
+      if (!this.auto && !stop && headToggle && !this.headToggleDown)
+        this.setHeadSteering(!this.headSteering.enabled);
+      if (headCenter && !this.headCenterDown) { this.headSteering.recenter(); this.recenter = true; }
+      if (leftTracked) { this.headToggleDown = headToggle; this.headCenterDown = headCenter; }
       this.actionMenu.visible = false; this.pointer.visible = this.aimedIntercom;
       this.navOverlay.setReticle(null);
       if (this.autoArming && !this.gate.needsRelease && this.status && !this.status.requires_release &&
@@ -736,7 +756,7 @@ export class RoverExperience {
         this.autoArming = false;
       // Moving the stick is the manual motion intent. Centering it releases immediately.
       // In autonomous mode the stick only moves the viewer, never the rover.
-      const held = this.auto ? !this.autoArming : !!(stick(stickX, XR_STICK_DEADZONE) || stick(stickY, XR_STICK_DEADZONE));
+      let held = this.auto ? !this.autoArming : !!(stick(stickX, XR_STICK_DEADZONE) || stick(stickY, XR_STICK_DEADZONE));
       this.euler.setFromQuaternion(this.quat, "YXZ");
       if (this.recenter && pose) this.anchorCockpit();
       const yaw = Math.atan2(Math.sin(this.euler.y - this.baseYaw), Math.cos(this.euler.y - this.baseYaw));
@@ -752,10 +772,19 @@ export class RoverExperience {
       if (this.auto) this.forwardRamp.reset();
       const forward = this.auto ? 0 : this.forwardRamp.step(-stick(stickY, XR_STICK_DEADZONE), now);
       const drive = manualDrive(forward, steerCurve(stickX, stickY));
+      if (!this.auto && this.headSteering.enabled) {
+        // A stop/release aligns at the current pose; it cannot preserve an old head target.
+        if (this.gate.needsRelease) this.headSteering.recenter();
+        const head = this.headSteering.step(this.euler.y, this.status?.heading,
+          now, this.gate.receivedAt, drive.w);
+        drive.w = head.w;
+        held ||= drive.w !== 0;
+        if (head.ready) this.cockpit.quaternion.setFromAxisAngle(this.cockpitUp, head.cameraYaw);
+      }
       this.input = { held,
         v: this.auto ? 0 : drive.v,
         w: this.auto ? 0 : drive.w,
-        pan: this.digitalPan ? 0 : this.panSmoother.step(-THREE.MathUtils.radToDeg(yaw), this.panDt()) };
+        pan: this.digitalPan || this.headSteering.enabled ? 0 : this.panSmoother.step(-THREE.MathUtils.radToDeg(yaw), this.panDt()) };
       if (this.auto && this.autonomy.mode === "teleop") this.autonomy.toggleExplore();
 
     } else {
@@ -818,6 +847,20 @@ export class RoverExperience {
     this.cockpit.position.copy(this.position);
     this.cockpit.quaternion.setFromAxisAngle(this.cockpitUp, this.baseYaw);
     this.panSmoother.reset(); this.recenter = false;
+  }
+  private setHeadSteering(enabled: boolean) {
+    this.headSteering.setEnabled(enabled && !this.auto && this.digitalPan);
+    this.recenter = true; this.dirty = true;
+    this.updateHeadSteeringButton();
+  }
+  private updateHeadSteeringButton() {
+    if (this.headSteeringButton) {
+      this.headSteeringButton.disabled = !this.digitalPan;
+      this.headSteeringButton.setAttribute("aria-pressed", String(this.headSteering.enabled));
+      this.headSteeringButton.textContent = this.digitalPan
+        ? `Head steering · ${this.headSteering.enabled ? "On" : "Off"} (left X)`
+        : "Head steering · Requires a fixed phone camera";
+    }
   }
   private updatePointer(frame: XRFrame | undefined, reference: XRReferenceSpace | null, right: XRInputSource | undefined) {
     if (!this.aimRay(frame, reference, right)) {
@@ -1263,6 +1306,7 @@ export class RoverExperience {
   }
   private latchLeftButtons() {
     this.recenterDown = this.scanDown = this.drillDown = this.talkDown = true;
+    this.headToggleDown = this.headCenterDown = true;
   }
   private createCameraTexture() {
     const texture = new THREE.CanvasTexture(this.canvas);
@@ -1329,7 +1373,7 @@ export class RoverExperience {
     this.sourceBanner.querySelector("strong")!.textContent = source.title;
     this.sourceBanner.querySelector("span")!.textContent = source.detail;
     // The headset chip repaints on a later frame than the HUD (see paint), and only when it changed.
-    const mode = this.auto ? "auto" : "manual";
+    const mode = this.auto ? "auto" : this.headSteering.enabled ? "head" : "manual";
     const key = `${source.kind}|${mode}|${tone}`;
     if (key === this.bannerKey) { this.bannerPending = null; return; }
     if (!this.bannerPending) this.bannerPending = { source, mode, tone, at: now };

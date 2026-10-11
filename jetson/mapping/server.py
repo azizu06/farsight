@@ -34,6 +34,7 @@ from jetson.identity_service import IdentityService
 from jetson.identity_api import identity_router
 from jetson.mission import Mission
 from jetson.replay import ReplayControl, ReplayPerception, ReplaySession
+from jetson.mapping.heading import measured_heading
 from jetson.control import ControlService
 from jetson.assistant import SceneAssistant, AssistantError
 from jetson.phrases import PhraseSpeaker, SpeechError
@@ -130,7 +131,10 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                              simulated_range=sim.sim.ultrasonic_cm if sim else None,
                              proximity_stop=proximity_stop, pan_mount=pan_mount,
                              autonomy_max_pwm=autonomy_max_pwm, navigator=nav,
-                             bonded=bonded_control, demo_mode=demo_mode)
+                             bonded=bonded_control, demo_mode=demo_mode,
+                             heading=lambda: measured_heading(state,
+                                 yaw_offset=getattr(control.state.profile, "camera_yaw_offset_rad", 0.0))
+                                 if control.state.pan_mount == "none" else None)
     if nav is not None:
         nav.attach(control.state)
         state.frame_observers.append(nav.offer_frame)

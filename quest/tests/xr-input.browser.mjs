@@ -26,13 +26,13 @@ try {
     const scene=new THREE.Scene();scene.background=new THREE.Color('#07111a');
     const camera=new THREE.PerspectiveCamera(70,1.5,.1,100);
     const subject=new RoverExperience(renderer,scene,()=>{},()=> 'camera');
-    subject.pollCamera=()=>{};subject.pollHealth=()=>{};subject.h264Enabled=false;
+    subject.pollCamera=()=>{};subject.pollHealth=()=>{};subject.h264Enabled=false;subject.setMount(true,false);
     const right={handedness:'right',gripSpace:{},targetRaySpace:{},gamepad:{connected:true,axes:[0,0,0,0],buttons:Array.from({length:6},()=>({pressed:false,value:0}))}};
     const left={handedness:'left',gripSpace:{},gamepad:{connected:true,axes:[0,0,0,0],buttons:Array.from({length:6},()=>({pressed:false,value:0}))}};
     const session={visibilityState:'visible',inputSources:[right,left]},reference={};
     renderer.xr.isPresenting=true;renderer.xr.getSession=()=>session;renderer.xr.getReferenceSpace=()=>reference;renderer.xr.getCamera=()=>camera;
-    let tracked=true,rayPosition={x:0,y:0,z:0};
-    const frame={getViewerPose:()=>({transform:{orientation:{x:0,y:0,z:0,w:1},position:{x:0,y:0,z:0}}}),
+    let tracked=true,rayPosition={x:0,y:0,z:0},headYaw=0,roverYaw=0;
+    const frame={getViewerPose:()=>({transform:{orientation:{x:0,y:Math.sin(headYaw/2),z:0,w:Math.cos(headYaw/2)},position:{x:0,y:0,z:0}}}),
       getPose:space=>tracked?(space===right.targetRaySpace?{transform:{orientation:{x:0,y:0,z:0,w:1},position:rayPosition}}:{}):null};
     let now=10000,messages=[];const realNow=performance.now.bind(performance);performance.now=()=>now;
     const socket={readyState:WebSocket.OPEN,bufferedAmount:0,send:raw=>messages.push(JSON.parse(raw)),close(){this.readyState=WebSocket.CLOSED;}};
@@ -42,7 +42,8 @@ try {
     const image=new Image();image.src=imageCanvas.toDataURL();await image.decode();subject.frame=image;subject.frameSource='SIMULATED';
     const tick=(dt=60,fresh=true)=>{
       now+=dt;
-      if(fresh){subject.status={session_id:'fixture',permit:`p${now}`,permit_ms:250,rover:true,simulated:true,requires_release:false,seq:messages.at(-1)?.seq??-1};subject.gate.acceptStatus(subject.status,now);subject.gate.acceptFrame(`f${now}`,0,now);}
+      if(fresh){subject.status={session_id:'fixture',permit:`p${now}`,permit_ms:250,rover:true,simulated:true,requires_release:false,seq:messages.at(-1)?.seq??-1,
+        heading:{yaw_rad:roverYaw,age_ms:0,source:'simulated',session_id:'phone',map_epoch:1,socket_generation:1}};subject.gate.acceptStatus(subject.status,now);subject.gate.acceptFrame(`f${now}`,0,now);}
       subject.lastCanvasDraw=now;subject.dirty=true;subject.update(now,frame);renderer.render(scene,camera);subject.afterRender(now);
       return {...messages.at(-1)};
     };
@@ -95,9 +96,32 @@ try {
       const picture=renderer.domElement.toDataURL();
       subject.paintIdentity(now+1100);
       const identityExpired={visible:subject.identityPanel.visible,cameraPaintUnchanged:subject.lastCanvasDraw===cameraPaintAt};
+      // Exercise the production XR controls, not just the head-steering math helper.
+      left.gamepad.buttons[4].pressed=true;tick();
+      const headEnabled=subject.headSteering?.enabled??false;
+      left.gamepad.buttons[4].pressed=false;tick();
+      headYaw=-Math.PI/6;const headPivot=tick();
+      right.gamepad.axes[3]=-1;tick();tick();const headForward=tick();
+      roverYaw=headYaw;const headCaught=tick();
+      const headCameraYaw=new THREE.Euler().setFromQuaternion(subject.cockpit.quaternion,'YXZ').y;
+      right.gamepad.axes[2]=1;const headOverride=tick();
+      right.gamepad.axes[2]=0;const headHandback=tick();
+      right.gamepad.axes[3]=0;tick();headYaw=-Math.PI/3;
+      left.gamepad.buttons[5].pressed=true;const headRecenter=tick();
+      left.gamepad.buttons[5].pressed=false;tick();headYaw=-Math.PI/2;
+      right.gamepad.buttons[5].pressed=true;const headStop=tick();
+      const headStoppedEnabled=subject.headSteering?.enabled??false;
+      right.gamepad.buttons[5].pressed=false;tick();
+      left.gamepad.buttons[4].pressed=true;tick();left.gamepad.buttons[4].pressed=false;tick();
+      right.gamepad.buttons[4].pressed=true;tick();tick();const headAuto=tick();
+      const headAutoEnabled=subject.headSteering?.enabled??false;
+      subject.setAuto(false);subject.setMount(false,false);subject.setHeadSteering(true);
+      const servoHeadEnabled=subject.headSteering.enabled;
       subject.dispose();renderer.dispose();
       return {initial,manual,centered,auto,autoOnPress,heldA,roaming,transition,heldAfterSwitch,rearmed,lost,stale,stopped,panels,
-        talkTarget,awayTarget,talkToggles,identityFresh,identityExpired,pixels:[...pixels],picture};
+        talkTarget,awayTarget,talkToggles,identityFresh,identityExpired,pixels:[...pixels],picture,
+        headEnabled,headPivot,headForward,headCaught,headCameraYaw,headOverride,headHandback,
+        headRecenter,headStop,headStoppedEnabled,headAuto,headAutoEnabled,servoHeadEnabled};
     }finally{performance.now=realNow;}
   });
   assert.deepEqual(result.initial,{auto:false,mode:'teleop'});
@@ -123,6 +147,16 @@ try {
   assert.equal(result.talkToggles,1,'only a right-trigger press aimed at Talk toggles it');
   assert.deepEqual(result.identityFresh,{visible:true,canvasHidden:true,cameraPaintUnchanged:true});
   assert.deepEqual(result.identityExpired,{visible:false,cameraPaintUnchanged:true});
+  assert.equal(result.headEnabled,true,'left X enables production head steering');
+  assert.equal(result.headPivot.deadman,true);assert.equal(result.headPivot.v,0);assert.ok(result.headPivot.w>0);
+  assert.ok(result.headForward.v>0&&result.headForward.w>0,'forward joystick continues during head turns');
+  assert.equal(result.headCaught.w,0);assert.ok(result.headCaught.v>0,'measured heading stops the turn while translation continues');
+  assert.ok(Math.abs(result.headCameraYaw+Math.PI/6)<1e-9,'camera panel follows measured chassis orientation');
+  assert.equal(result.headOverride.w,1);assert.equal(result.headHandback.w,0);
+  assert.equal(result.headRecenter.w,0,'left Y aligns the current head/rover headings');
+  assert.equal(result.headStop.deadman,false);assert.equal(result.headStoppedEnabled,false);
+  assert.equal(result.headAuto.mode,'explore');assert.equal(result.headAuto.w,0);assert.equal(result.headAutoEnabled,false);
+  assert.equal(result.servoHeadEnabled,false,'moving camera pose is not chassis heading');
   assert.ok(result.pixels.slice(0,3).some(v=>v>25),'actual camera pixels remain visible');
   const {writeFile}=await import('node:fs/promises');
   await writeFile('/tmp/farsight-minimal-vr.png',Buffer.from(result.picture.split(',')[1],'base64'));
