@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { SourceTruth } from "./source-banner.js";
 import { explainStop } from "./stop-reason.js";
 import { ControlSafety, stick } from "./control-safety.js";
-import { manualDrive } from "./manual-drive.js";
+import { manualDrive, steerCurve } from "./manual-drive.js";
 import { H264Viewer } from "./h264";
 import { cameraCrop, croppedBox } from "./camera-view.js";
 import { VRActionMenu, type VRAction } from "./vr-actions";
@@ -712,7 +712,8 @@ export class RoverExperience {
           leftAxes.length >= 4 ? leftAxes[3] : leftAxes[1]);
       }
       this.lastRoamAt = this.auto ? now : -Infinity;
-      const drive = manualDrive(-stick(stickY, XR_STICK_DEADZONE), stick(stickX, XR_STICK_DEADZONE));
+      // Forward keeps its full linear range; steering gets a deadzone, expo curve and straight-ahead lock.
+      const drive = manualDrive(-stick(stickY, XR_STICK_DEADZONE), steerCurve(stickX, stickY));
       this.input = { held,
         v: this.auto ? 0 : drive.v,
         w: this.auto ? 0 : drive.w,
