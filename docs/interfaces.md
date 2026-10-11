@@ -917,6 +917,19 @@ not an addition to its previous version. Mac renderer full-detail deltas use
 the delta contract above. The gray ARKit source is selected separately with
 `source=geometry`; it never overwrites calibrated RGB-D colors.
 
+## Offline measured capture archive
+
+`PhoneRunCapture` optionally saves each sampled JPEG with a bounded measured
+point file in the same run/session/epoch. `transforms.json` adds `points_format`,
+`points_coordinate_system`, per-frame `points_path`/`points_count`, and final
+`point_cloud` export metadata. The 15-byte `xyz_f32le_rgb8` records contain
+world-space float32 XYZ and RGB8. This is an on-disk archive, separate from the
+16-byte live delta feed; consumers must not decode it as live delta records.
+The writer publishes a capped measured `dense.ply` when the segment ends.
+See [post-run capture](postrun-capture.md) for disk/queue budgets, finalization,
+power-loss recovery and the offline export command. No live reset/TTL or control
+contract changes.
+
 ## Phone-built mesh lane (v1)
 
 The rover iPhone constructs ARKit mesh anchors. The Mac assembles their latest
