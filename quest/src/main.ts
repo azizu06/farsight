@@ -71,7 +71,7 @@ app.innerHTML = `
       <button data-view="camera" role="tab" aria-selected="false">Camera</button>
     </div>
     <div class="button-row"><button id="frame">Frame scan</button><button id="home">Reset view</button></div>
-    <label class="check"><input id="points-only" type="checkbox"/> Points only</label>
+    <label class="check"><input id="points-only" type="checkbox" checked/> Points only</label>
     <label class="check"><input id="follow" type="checkbox"/> Follow camera position</label>
     <div class="button-row"><button id="pause">Pause capture</button><button id="export">Export PLY</button></div>
     <div class="sensor-head"><h2>RGB + depth</h2><span id="sensor-age">No frames</span></div>
@@ -100,7 +100,7 @@ const settings = $<HTMLDialogElement>("settings");
 const scanMarkers = new THREE.Points(new THREE.BufferGeometry(), new THREE.PointsMaterial({ color: 0xffbb44, size: .12 }));
 let status: Status | undefined;
 let view = "3d",
-  pointsOnly = false,
+  pointsOnly = true,
   follow = false;
 let generation = -1,
   appliedMesh = -1,
@@ -286,8 +286,12 @@ if (navigator.xr) {
 } else $("xr-slot").hidden = true;
 const desktopPosition = new THREE.Vector3(),
   desktopQuaternion = new THREE.Quaternion();
+let desktopPointsOnly = pointsOnly;
 renderer.xr.addEventListener("sessionstart", () => {
   $("app").classList.add("immersive");
+  desktopPointsOnly = pointsOnly;
+  pointsOnly = false;
+  $<HTMLInputElement>("points-only").checked = false;
   desktopPosition.copy(camera.position);
   desktopQuaternion.copy(camera.quaternion);
   controls.enabled = false;
@@ -297,6 +301,8 @@ renderer.xr.addEventListener("sessionstart", () => {
 });
 renderer.xr.addEventListener("sessionend", () => {
   $("app").classList.remove("immersive");
+  pointsOnly = desktopPointsOnly;
+  $<HTMLInputElement>("points-only").checked = pointsOnly;
   camera.position.copy(desktopPosition);
   camera.quaternion.copy(desktopQuaternion);
   controls.enabled = true;
@@ -346,7 +352,7 @@ renderer.setAnimationLoop((_time, frame) => {
   if (rover) rover.navLayer.position.y = walking ? mapWalk.floorY : 0;
   if (rover) { const { packet, at } = rover.latestDetections; personMarkers.update(packet, at, start); }
   mapAxes.visible = false;
-  grid.visible = !walking;
+  grid.visible = renderer.xr.isPresenting && !walking;
   surfaces.material = renderer.xr.isPresenting ? immersiveSurfaceMaterial : desktopSurfaceMaterial;
   if (renderer.xr.isPresenting) {
     gridMaterial.uniforms.minor.value.set("#4d4d4d");
@@ -384,6 +390,7 @@ $("desktop-controls-toggle").onclick = () => {
   const open = !document.querySelector(".viewport")!.classList.contains("controls-open");
   document.querySelector(".viewport")!.classList.toggle("controls-open", open);
   $("desktop-controls-toggle").setAttribute("aria-expanded", String(open));
+  settings.close();
 };
 if (macViewEnabled(location.search)) macView = new MacAutoView(renderer, scene, () => appliedPoints >= 0 ? appliedPoints : null, macStereoEnabled(location.search));
 root.add(rover.navLayer);
@@ -474,6 +481,8 @@ function setView(next: string) {
   viewport.dataset.sceneView = view;
   viewport.classList.remove("controls-open");
   $("desktop-controls-toggle").setAttribute("aria-expanded", "false");
+  if (view === "camera") viewport.append($("desktop-controls-toggle"));
+  else settings.insertBefore($("desktop-controls-toggle"), settings.children[1]);
   // Source and connection details belong to the controls drawer in map mode.
   // Keep their original elements so the existing live updates remain authoritative.
   const panel = document.querySelector<HTMLElement>(".rover-controls");
@@ -771,6 +780,11 @@ window.addEventListener("keydown", (event) => {
     return;
   if (event.key === "Escape" && !settings.open && !confirmation.open) {
     event.preventDefault();
+    if (document.querySelector(".viewport")!.classList.contains("controls-open")) {
+      document.querySelector(".viewport")!.classList.remove("controls-open");
+      $("desktop-controls-toggle").setAttribute("aria-expanded", "false");
+      return;
+    }
     settings.showModal();
     return;
   }
