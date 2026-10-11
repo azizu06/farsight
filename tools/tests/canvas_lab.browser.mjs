@@ -69,6 +69,9 @@ try {
   }
   const requestedPoints = Number(option('points', url.searchParams.get('points') || 20000000));
   url.searchParams.set('points', requestedPoints);
+  // Full-draw assertions need the adaptive budget off — the default 'auto'
+  // intentionally draws only the subset the frame budget can hold.
+  if (!url.searchParams.has('budget')) url.searchParams.set('budget', 'off');
   report.url = url.href;
   report.requested_points = requestedPoints;
 

@@ -77,6 +77,9 @@ if (fixture) {
   window.__macRegisterLayer(fixture);
   await fixture.ready;
   fixture.setStyle('points');
+  // ?budget=auto (default) holds ~60fps by thinning the drawn subset;
+  // ?budget=<n> pins a fixed draw cap; ?budget=off always draws everything.
+  fixture.setDrawBudget(params.get('budget') ?? 'auto');
 }
 
 function setAutoOrbit(value) {

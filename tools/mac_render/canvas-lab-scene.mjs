@@ -8,7 +8,12 @@ export function createCanvasFixture({ points = 250_000 } = {}) {
   let ctx, THREE, group, meshGroup, pointGeometry, pointMaterial, cloud;
   let positionAttribute, colorAttribute, capacity = 0;
   let rebuildQueue = Promise.resolve();
-  let uploadStarted = 0, pendingUpload = false;
+  let uploadStarted = 0, pendingUpload = false, generated = 0;
+  // Adaptive draw budget: fixture points are generated iid across the
+  // surfaces, so drawRange(0,N) is already an unbiased spatial subsample —
+  // capping drawn count thins the cloud uniformly, no clustering.
+  let drawBudget = 'auto', drawn = 0, appliedDrawn = -1;
+  let frameEma = 0, lastPost = 0, lastAdjust = 0;
   const resources = [];
   const samples = [];
   const meshPositions = [], meshNormals = [], meshColors = [];
@@ -16,7 +21,7 @@ export function createCanvasFixture({ points = 250_000 } = {}) {
     source: 'SIMULATED', points: 0, uploaded_points: 0, triangles: 0,
     max_points: MAX_CANVAS_POINTS, buffer_bytes: 0,
     generate_ms: 0, upload_ms: 0, geometry_uploads: 0, rebuilding: false,
-    style: 'hybrid',
+    style: 'hybrid', drawn_points: 0, draw_budget: 'auto',
   };
   let totalArea = 0;
 
@@ -75,6 +80,28 @@ export function createCanvasFixture({ points = 250_000 } = {}) {
       layer.ready = layer.setPointCount(points);
     },
     poll() { return false; },
+    post() {
+      const now = performance.now();
+      if (lastPost) {
+        const dt = now - lastPost;
+        frameEma = frameEma ? frameEma * 0.85 + dt * 0.15 : dt;
+        if (drawBudget !== 'off' && now - lastAdjust >= 250) {
+          lastAdjust = now;
+          const targetMs = 16.7;
+          if (drawBudget === 'auto') {
+            if (frameEma > targetMs * 1.05) {
+              drawn = Math.max(100_000, Math.floor(Math.min(drawn || generated, generated) * targetMs / frameEma));
+            } else if (drawn < generated && frameEma < targetMs * 0.8) {
+              drawn = Math.min(generated, Math.ceil(Math.max(drawn, 100_000) * 1.25));
+            }
+          } else {
+            drawn = Math.min(drawBudget, generated);
+          }
+          applyDrawn();
+        }
+      }
+      lastPost = now;
+    },
     pre() {
       pointMaterial.uniforms.viewportHeight.value = ctx.renderer.domElement.height;
       if (pendingUpload) uploadStarted = performance.now();
@@ -96,6 +123,13 @@ export function createCanvasFixture({ points = 250_000 } = {}) {
       ctx.requestFrame();
     },
     setPointsVisible(visible) { cloud.visible = visible; ctx.requestFrame(); },
+    setDrawBudget(value) {
+      drawBudget = value === 'auto' || value === 'off' ? value : Math.max(0, Math.floor(Number(value) || 0));
+      lastAdjust = 0;
+      metrics.draw_budget = drawBudget;
+      applyDrawn();
+      ctx.requestFrame();
+    },
     setMeshVisible(visible) {
       meshGroup.visible = visible;
       pointMaterial.uniforms.colorGain.value = visible ? 0.36 : 1;
@@ -106,6 +140,17 @@ export function createCanvasFixture({ points = 250_000 } = {}) {
       for (const resource of resources) resource.dispose();
     },
   };
+
+  function applyDrawn() {
+    const target = drawBudget === 'off' ? generated
+      : drawBudget === 'auto' ? Math.min(drawn || generated, generated)
+      : Math.min(drawBudget, generated);
+    if (target === appliedDrawn) return;
+    appliedDrawn = target;
+    metrics.drawn_points = target;
+    pointGeometry.setDrawRange(0, target);
+    ctx?.requestFrame();
+  }
 
   function rgb(hex) {
     const c = new THREE.Color(hex);
@@ -317,10 +362,15 @@ export function createCanvasFixture({ points = 250_000 } = {}) {
     metrics.rebuilding = true;
     const grows = capacity < count;
     if (grows) {
+      const oldPositions = positionAttribute?.array, oldColors = colorAttribute?.array;
       capacity = count;
       metrics.buffer_bytes = capacity * 15;
       positionAttribute = new THREE.BufferAttribute(new Float32Array(capacity * 3), 3).setUsage(THREE.DynamicDrawUsage);
       colorAttribute = new THREE.BufferAttribute(new Uint8Array(capacity * 3), 3, true).setUsage(THREE.DynamicDrawUsage);
+      // Prefix copy keeps already-generated points stable (and skips their
+      // regeneration); only the tail [generated, count) is synthesized.
+      if (oldPositions) positionAttribute.array.set(oldPositions.subarray(0, generated * 3));
+      if (oldColors) colorAttribute.array.set(oldColors.subarray(0, generated * 3));
       colorAttribute.onUpload(() => {
         metrics.upload_ms = performance.now() - uploadStarted;
         metrics.geometry_uploads += 1;
@@ -331,18 +381,30 @@ export function createCanvasFixture({ points = 250_000 } = {}) {
     const positions = positionAttribute.array, colors = colorAttribute.array;
     const pointSize = count >= 1_000_000 ? 0.014 : count >= 250_000 ? 0.023 : 0.039;
     pointMaterial.uniforms.pointSize.value = pointSize;
-    let seed = 0x19ac0401;
+    // Area-CDF lookup: bucket -> first candidate sample index, built once per
+    // rebuild. Replaces the per-point binary search (~log2(N) probes) with one
+    // table read plus a short linear probe.
+    const LUT = 4096, invTotal = LUT / totalArea, lastSample = samples.length - 1;
+    const finder = new Uint32Array(LUT);
+    let cursor = 0;
+    for (let b = 0; b < LUT; b++) {
+      const t = (b * totalArea) / LUT;
+      while (cursor < lastSample && samples[cursor].end <= t) cursor++;
+      finder[b] = cursor;
+    }
+    // Fill only the tail [generated, count): per-index seeding keeps earlier
+    // points stable across grows, and shrinking skips generation entirely.
+    const from = generated < count ? generated : count;
     // Yield during large builds; the retained GPU scene remains visible.
-    for (let start = 0; start < count; start += 131_072) {
+    for (let start = from; start < count; start += 131_072) {
+      const chunkStarted = performance.now();
       const end = Math.min(count, start + 131_072);
       for (let i = start; i < end; i++) {
+        let seed = (0x19ac0401 ^ Math.imul(i + 1, 0x9e3779b9)) >>> 0;
         seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
         const target = seed / 4294967296 * totalArea;
-        let lo = 0, hi = samples.length - 1;
-        while (lo < hi) {
-          const mid = (lo + hi) >>> 1;
-          if (target < samples[mid].end) hi = mid; else lo = mid + 1;
-        }
+        let lo = finder[Math.min(LUT - 1, (target * invTotal) | 0)];
+        while (lo < lastSample && target >= samples[lo].end) lo++;
         const s = samples[lo];
         seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
         const u = Math.sqrt(seed / 4294967296);
@@ -371,24 +433,39 @@ export function createCanvasFixture({ points = 250_000 } = {}) {
         colors[k + 1] = (s.color[1] * shade * tile * 255 + 0.5) | 0;
         colors[k + 2] = (s.color[2] * shade * tile * 255 + 0.5) | 0;
       }
-      await new Promise(resolve => setTimeout(resolve, 0));
+      // Yield only when a chunk actually chewed real time — keeps the loop
+      // tight on fast machines while staying responsive on slow ones.
+      if (performance.now() - chunkStarted >= 8) {
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
     }
     if (grows) {
       pointGeometry.dispose();
       pointGeometry.setAttribute('position', positionAttribute);
       pointGeometry.setAttribute('color', colorAttribute);
     }
-    positionAttribute.clearUpdateRanges();
-    colorAttribute.clearUpdateRanges();
-    positionAttribute.addUpdateRange(0, count * 3);
-    colorAttribute.addUpdateRange(0, count * 3);
-    positionAttribute.needsUpdate = true;
-    colorAttribute.needsUpdate = true;
-    pointGeometry.setDrawRange(0, count);
+    if (count > from) {
+      // Upload only the newly-filled tail; shrink/steady-state touches no GPU
+      // data, just the draw range.
+      positionAttribute.clearUpdateRanges();
+      colorAttribute.clearUpdateRanges();
+      positionAttribute.addUpdateRange(from * 3, (count - from) * 3);
+      colorAttribute.addUpdateRange(from * 3, (count - from) * 3);
+      positionAttribute.needsUpdate = true;
+      colorAttribute.needsUpdate = true;
+      generated = Math.max(generated, count);
+      pendingUpload = true;
+    } else {
+      // Shrink or same-count: the prefix is untouched, so every requested
+      // point is already resident on the GPU — nothing to upload.
+      metrics.uploaded_points = count;
+    }
+    drawn = Math.min(drawn || count, generated);
+    appliedDrawn = -1;
+    applyDrawn();
     metrics.points = count;
     metrics.generate_ms = performance.now() - started;
     metrics.rebuilding = false;
-    pendingUpload = true;
     ctx.requestFrame();
     return metrics;
   }

@@ -333,6 +333,8 @@ farsight_bridge:
     explore_commitment_s: 2.0          # quick decisions (captain)
     explore_goal_timeout_s: 15.0       # backstop: skip a frontier Nav2 has not reached in 15 s
     explore_stall_s: 3.0               # skip a frontier when Nav2 got no 0.3 m closer for 3 s
+    explore_stall_heading_rad: 1.0     # count closing heading toward an off-nose frontier as progress
+    explore_skip_forward_rad: 1.0471975512  # prefer frontiers within 60 degrees after a skip
     explore_blacklist_s: 30.0          # a skipped frontier may be retried after 30 s
     explore_progress_window_s: 8.0     # stuck: the rover stayed within explore_progress_min_m for this long
     explore_progress_min_m: 0.4

@@ -17,9 +17,15 @@ for d in json.loads(sys.argv[1]):
 print(json.dumps(rows))
 `,JSON.stringify(inputs)],{cwd:root,encoding:'utf8'}));
 }
-test('straight and steering-priority commands reach actual configured maximum PWM',()=>{
-  const cases=[manualDrive(1,0),manualDrive(-1,0),manualDrive(1,.5),manualDrive(1,-.5),manualDrive(1,.25)];
-  assert.deepEqual(motorOutputs(cases),[[255,255],[-255,-255],[255,-255],[-255,255],[255,0]]);
+test('straight, pivot and forward arcs preserve full configured PWM',()=>{
+  const cases=[manualDrive(1,0),manualDrive(-1,0),manualDrive(0,1),manualDrive(0,-1),manualDrive(1,.5),manualDrive(1,-.5),manualDrive(1,.25)];
+  assert.deepEqual(motorOutputs(cases),[[255,255],[-255,-255],[255,-255],[-255,255],[255,132],[132,255],[255,181]]);
+});
+test('forward joystick diagonals keep translation instead of becoming pure spins',()=>{
+  // Actual Quest inputs after its .25 deadzone: 30- and 45-degree forward diagonals.
+  const forward=(Math.sqrt(3)/2-.25)/.75, diagonal=(Math.SQRT1_2-.25)/.75;
+  const cases=[manualDrive(forward,1/3),manualDrive(forward,-1/3),manualDrive(diagonal,diagonal),manualDrive(diagonal,-diagonal)];
+  assert.deepEqual(motorOutputs(cases),[[255,148],[148,255],[255,0],[0,255]]);
 });
 test('center and invalid inputs produce zero physical output',()=>{
   assert.deepEqual(motorOutputs([manualDrive(0,0),manualDrive(NaN,Infinity)]),[[0,0],[0,0]]);
