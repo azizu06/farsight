@@ -76,8 +76,21 @@ ros2 launch farsight_nav nav.launch.py                 # or the farsight-nav sys
     heading is confirmed does it turn in place to look, restarting after each
     full turn. It re-scores frontiers every 0.5 s, and the status names why the
     nose is blocked (map, obstacle, no return, short). A detected
-    person never switches Explore to Seek: people are moving obstacles in the
-    LiDAR costmaps. Seek runs only when the operator selects it.
+    person never switches Explore to Seek. The bridge projects depth-located
+    person torsos from `/ws/detections` into separate inferred body footprints:
+    0.3 m radius per person, with a filled rounded hull for people connected
+    within 1.2 m (`people_body_radius`, `people_crowd_distance`). Floor between
+    legs and inside a small crowd is therefore occupied for navigation.
+    Separate crowds leave wide aisles open. This layer contributes to both
+    Nav2 costmaps before their existing inflation and to the bridge's Explore
+    map. Nav2's mask filter runs through its Layer interface before inflation;
+    it samples occupancy without resizing the measured costmap or changing its
+    resolution. The mask is never fused into measured reconstruction. Fresh snapshots replace
+    old positions; the detector's existing 1 s freshness expires the overlay.
+    Phone session/epoch/socket changes clear it. People require depth-backed
+    `world` coordinates and a matching native capture key; RGB-only boxes do not
+    become guessed world obstacles. This adds no command stop or parked wait.
+    Seek runs only when the operator selects it.
     The 20 Hz motion arbiter forwards Nav2 whenever its command is moving.
     Otherwise (planning gaps, goal changes, a controller zero, a recovery
     hand-off) it drives itself, using the current validated depth and pose
@@ -159,7 +172,7 @@ Loopback only; one bridge at a time; other hosts get close code 1008.
 | server -> bridge | `hello {version, speed_mps, turn_radps, max_v, max_w, camera_height, frame, camera_yaw_offset_rad, drive_profile, generation, command_generation_required:true}` |
 | server -> bridge | `reset {generation, reason}` when the phone session or map epoch changes: the bridge cancels its goal, clears both costmaps and its odometry history |
 | server -> bridge | `pose {transform (16, column-major ARKit camera-to-world), tracking, source, generation, age_ms, floor_y}` every 40 ms, only with fresh normal tracking; `floor_y` is `-nav_camera_height` |
-| server -> bridge | binary depth: `uint32` header length, JSON header (`frame_id, width, height, fx, fy, cx, cy, transform, floor_y, source, age_ms, generation, tracking`; intrinsics scaled to the subsampled size), normal-tracking frames only, `uint16` millimetres (0 = no return), at most 160 px wide |
+| server -> bridge | binary depth: `uint32` header length, JSON header (`frame_id, width, height, fx, fy, cx, cy, transform, floor_y, source, age_ms, generation, tracking`, optional `sensor_key` matching detections; intrinsics scaled to the subsampled size), normal-tracking frames only, `uint16` millimetres (0 = no return), at most 160 px wide |
 | server -> bridge | `range {cm, age_ms}` at 10 Hz; `intent {generation, active, mode, goal {x, y, yaw} in odom, goal_id, target_id}` on change and every 200 ms |
 | bridge -> server | `cmd_vel {generation, linear, angular, goal_id}` (m/s, rad/s counter-clockwise) at the controller rate; Goto/Seek commands for another `goal_id` are dropped |
 | bridge -> server | `status {generation, state, goal_id, path, frontiers, message, controller_hz, recoveries, nav2}` at 4 Hz; `path` and `frontiers` in odom |
@@ -312,6 +325,14 @@ to `ros2/tests/out/scenarios.json` and per-run timelines to `*-timeline.json`.
 | Frame math, frontiers | `.venv/bin/python -m pytest -q ros2/farsight_nav/test` | 12 pass (host and container) |
 | Bringup smoke | `bash ros2/docker/run-tests.sh smoke` | PASS in 17-19 s: Nav2 lifecycle active, topics and `map -> camera_optical` TF present |
 | Closed-loop scenarios | `bash ros2/docker/run-tests.sh scenarios` | see below |
+
+The separate crowd-layer probe uses real Nav2 local/global costmaps and Smac
+paths over a synthetic floor with sparse feet. In an isolated Jazzy container
+with this checkout's `farsight_nav` built and sourced, run
+`ROS_DOMAIN_ID=91 python3 ros2/tests/crowds.py --out /out/crowds`.
+It tests a detour around the filled group, moved/empty footprint clearing, a
+wide aisle and preserved unknown/measured costs. It launches no rover server
+and sends no motor commands; its results are software evidence only.
 
 The Docker image is `ros2/docker/Dockerfile` (ROS 2 Jazzy ros-base + Nav2 on
 Apple silicon arm64). Nothing here has run on the Jetson or with real phone depth.

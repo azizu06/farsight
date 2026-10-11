@@ -108,6 +108,9 @@ def encode_depth(frame, *, floor_y, source, age_ms, generation=0, max_width=160,
                   transform=np.asarray(frame.transform, float).flatten(order="F").tolist(),
                   floor_y=floor_y, source=source, age_ms=age_ms, generation=generation,
                   tracking=frame.header.get("tracking"))
+    sensor_key = frame.header.get("_mapping_sensor_key")
+    if sensor_key is not None:
+        header["sensor_key"] = list(sensor_key)
     data = json.dumps(header, separators=(",", ":")).encode()
     return struct.pack("<I", len(data)) + data + millimetres.tobytes()
 
