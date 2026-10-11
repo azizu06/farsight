@@ -1,10 +1,41 @@
-"""Optional UltraFace RFB-320 pass; normalized face boxes for detection packets."""
+"""Normalized face boxes for detection packets: YOLO11-pose head keypoints, or an optional UltraFace RFB-320 pass."""
 from pathlib import Path
 
 import cv2
 import numpy as np
 
 from .pose.decode import nms
+
+HEAD_KEYPOINTS = 5  # COCO-17 starts nose, left eye, right eye, left ear, right ear
+
+
+def keypoint_faces(boxes, width, height, confidence=.5, min_points=3, scale=1.4):
+    """Face boxes from the head keypoints of pose person boxes (normalized kpts, as in packets).
+
+    A head needs min_points of nose/eyes/ears above confidence. Its box is a pixel square,
+    scale times the larger extent of those points, centred on them. Run 094259 (715
+    upright frames): 100 of 134 agreed faces versus UltraFace's 55, including people
+    facing away, at no extra model cost.
+    """
+    faces = []
+    for box in boxes:
+        kpts = box.get("kpts")
+        if box.get("cls") != "person" or not kpts:
+            continue
+        head = np.asarray(kpts[:HEAD_KEYPOINTS], float)
+        head = head[np.isfinite(head).all(axis=1) & (head[:, 2] > confidence)]
+        if len(head) < min_points:
+            continue
+        x, y = head[:, 0] * width, head[:, 1] * height
+        half = scale * max(np.ptp(x), np.ptp(y)) / 2
+        cx, cy = (x.min() + x.max()) / 2, (y.min() + y.max()) / 2
+        x1, y1 = max(0., cx - half), max(0., cy - half)
+        x2, y2 = min(float(width), cx + half), min(float(height), cy + half)
+        if x2 <= x1 or y2 <= y1:
+            continue
+        faces.append(dict(cls="face", conf=round(float(head[:, 2].mean()), 3),
+                          x=x1 / width, y=y1 / height, w=(x2 - x1) / width, h=(y2 - y1) / height))
+    return faces
 
 
 def decode(scores, boxes, confidence=.7, iou_threshold=.3):

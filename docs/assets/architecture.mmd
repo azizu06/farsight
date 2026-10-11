@@ -13,7 +13,7 @@ flowchart TB
     subgraph JS["<b>Jetson Orin Nano</b> · python -m jetson.server"]
       direction LR
       Cam["<b>CameraService</b><br/>/phone/rgb, /phone, or USB camera"]
-      Perc["<b>PerceptionService</b><br/>YOLO11n-pose, TensorRT FP16<br/>IoU tracker, optional UltraFace faces"]
+      Perc["<b>PerceptionService</b><br/>YOLO11n-pose, TensorRT FP16<br/>IoU tracker, keypoint head faces"]
       Vid["<b>VideoService</b><br/>H.264 fMP4 via FFmpeg, JPEG"]
       Map["<b>MapState + ScanService</b><br/>LiDAR fusion, or Depth Anything V2<br/>five-view scan (estimated depth)"]
       Mis["<b>Mission</b><br/>drill score, SBAR triage,<br/>report + snapshots, record / replay"]
