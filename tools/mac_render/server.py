@@ -623,7 +623,8 @@ def dense_proxy(upstream):
 
 def proxy(upstream):
     async def send(request):
-        return await proxy_one(upstream, "/map/" + request.match_info["tail"])(request)
+        query = "?" + request.query_string if request.query_string else ""
+        return await proxy_one(upstream, "/map/" + request.match_info["tail"] + query)(request)
     return send
 
 

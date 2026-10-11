@@ -677,6 +677,10 @@ and Rust still uses the stride, so capped mesh bytes differ between the two serv
 `/ws/map`) gains `capped: true` while either cap is decimating; `points` and `triangles` still
 count the full map. Fusion, Nav2 depth/occupancy and scan results keep full resolution.
 
+Python only: `GET /map/mesh.bin?triangles=N` overrides the triangle cap for that request
+(`0` = every stored triangle, max 2,000,000; 400 otherwise). It is for a client on a fast link
+such as the Mac renderer (`render.html?mesh_triangles=N`); requests without it keep the cap.
+
 ### Cellular map subscription (additive)
 
 `/ws/map?points=http` opts into status-only delivery. Each status acknowledges
@@ -824,6 +828,12 @@ lease, deadman, release, camera-stale and disconnect stops are unchanged.
 navigation geometry. The Mac mounts `/dense/manifest`, `/dense/chunk.bin`,
 `/dense/delta.bin`, `/dense/status` and `POST /dense/metrics` on relay 8080.
 See `docs/dense-map.md` for launch, budgets and evidence limits.
+Jetson visual samples skip depth-edge fringes (5x5 depth range above 20% of depth) and
+surfaces seen past 80 degrees from the view ray (86 for near-horizontal surfaces), which
+removes ARKit's smoothed flying-pixel sheets between foreground and background.
+The Mac's retained history fades cells in recent person footprints (torso points from
+`/ws/detections`, 0.45 m radius, ±0.9 m height, 60 s memory) once unobserved for 15 s,
+as journaled deletes; `/dense/status` adds `faded_footprint_cells` and `people_error`.
 Jetson visual ingestion is latest-only background work (default 8 Hz, 12,288 real
 pixels per job), disabled at startup by `FARSIGHT_DENSE=0`. The rate, samples/job
 and thread-CPU budget are configurable (`docs/dense-map.md`); costly jobs reduce

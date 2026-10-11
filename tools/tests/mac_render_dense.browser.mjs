@@ -8,7 +8,7 @@ try {
   browser = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
   const page = await browser.newPage({ viewport: { width: 320, height: 240 } });
   const errors = []; page.on('pageerror', error => errors.push(error.message));
-  await page.goto(`${origin}/tools/mac_render/render.html?upstream=${encodeURIComponent(origin)}&width=320&height=240&style=unlit&lod=0`);
+  await page.goto(`${origin}/tools/mac_render/render.html?upstream=${encodeURIComponent(origin)}&width=320&height=240&style=unlit&lod=0&msurf=0`);
   const waitDense = async count => page.waitForFunction(count => window.__mac.dense?.retained_cells === count &&
       window.__mac.dense?.gpu_uploaded_cells === count && window.__mac.dense?.gpu_drawn_cells === count,
     count, { timeout: 5000 });

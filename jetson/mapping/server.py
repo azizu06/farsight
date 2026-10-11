@@ -45,6 +45,8 @@ from jetson.bulk import BulkPacer, BulkPacketTooLarge
 from jetson.bulk_response import bulk_response, PacedStreamingResponse
 
 DIST = Path(__file__).resolve().parents[2] / "quest" / "dist"
+# Upper bound for an opt-in /map/mesh.bin?triangles= budget (0 = every stored triangle).
+MAX_MESH_TRIANGLES = 2_000_000
 
 
 async def _session_thread(function, *args):
@@ -327,13 +329,15 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
     def map_version():
         return state.generation, state.revision, state.surfaces.revision
 
-    def map_response(route, packet, accept_encoding, headers=None, snapshot=None):
+    def map_response(route, packet, accept_encoding, headers=None, snapshot=None, variant=None):
+        # A variant (e.g. a triangle budget) is part of the cached version.
+        current = map_version if variant is None else (lambda: (map_version(), variant))
         def build():
             with state.lock:  # version and captured data from the same fused frame
-                version = map_version()
+                version = current()
                 captured = snapshot() if snapshot else packet()
             return version, packet(captured) if snapshot else captured
-        body, coding = map_cache.get(route, map_version, build, accept_encoding)
+        body, coding = map_cache.get(route, current, build, accept_encoding)
         headers = dict(headers or {}, Vary="Accept-Encoding")
         if coding:
             headers["Content-Encoding"] = coding
@@ -363,9 +367,17 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
         return await asyncio.to_thread(build_dense)
 
     @app.get("/map/mesh.bin")
-    async def mesh(request: Request):
-        return await asyncio.to_thread(map_response, "mesh", state.mesh_packet,
-                                       request.headers.get("accept-encoding"), {"Cache-Control": "no-store"})
+    async def mesh(request: Request, triangles: int | None = None):
+        # Opt-in budget for a client on a fast link (the Mac renderer); 0 sends every
+        # stored triangle. Without it the wire cap applies (the Quest default).
+        if triangles is None:
+            return await asyncio.to_thread(map_response, "mesh", state.mesh_packet,
+                                           request.headers.get("accept-encoding"), {"Cache-Control": "no-store"})
+        if not 0 <= triangles <= MAX_MESH_TRIANGLES:
+            raise HTTPException(400, f"triangles must be 0..{MAX_MESH_TRIANGLES}")
+        return await asyncio.to_thread(map_response, "mesh-budget", lambda: state.mesh_packet(triangles),
+                                       request.headers.get("accept-encoding"), {"Cache-Control": "no-store"},
+                                       variant=triangles)
 
     @app.get("/map/export.ply")
     async def export(request: Request):

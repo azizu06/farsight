@@ -67,7 +67,7 @@ try {
     page.on('pageerror', error => report.errors.push(`${version}: ${error.message}`));
     page.on('websocket', socket => report.errors.push(`Unexpected socket: ${socket.url()}`));
     try {
-      await page.goto(`${origin}/tools/mac_render/render.html?upstream=${origin}&width=640&height=480&camera=snap&lod=1&presentation=canvas`);
+      await page.goto(`${origin}/tools/mac_render/render.html?upstream=${origin}&width=640&height=480&camera=snap&lod=1&presentation=canvas&msurf=0`);
       await page.waitForFunction(() => window.__macRawLayer && window.__macRegisterLayer);
       await page.evaluate(() => {
         window.__macCaptureDriven = true;

@@ -72,13 +72,19 @@ def backproject(pixels, depth, calibration):
                             (uv[:, 1] - calibration.cy) * z / calibration.fy, z))
 
 
-def valid_depth(depth, near=0.2, far=8.0, edge_ratio=0.08):
-    """Reject invalid/range-clipped depths and samples near depth discontinuities."""
+def valid_depth(depth, near=0.2, far=8.0, edge_ratio=0.08, window=3):
+    """Reject invalid/range-clipped depths and samples near depth discontinuities.
+
+    `window` is the square neighbourhood (pixels) whose depth range is compared
+    with `edge_ratio` times the depth; a wider window also drops the fringe of
+    pixels next to an edge.
+    """
     d = np.asarray(depth, np.float32)
     valid = np.isfinite(d) & (d >= near) & (d <= far)
     clean = np.where(valid, d, 0)
-    local_min = cv2.erode(clean, np.ones((3, 3), np.uint8))
-    local_max = cv2.dilate(clean, np.ones((3, 3), np.uint8))
+    kernel = np.ones((window, window), np.uint8)
+    local_min = cv2.erode(clean, kernel)
+    local_max = cv2.dilate(clean, kernel)
     return valid & ((local_max - local_min) <= edge_ratio * np.maximum(clean, near))
 
 
