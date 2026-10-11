@@ -58,7 +58,7 @@ controller_server:
       vx_std: 0.15
       vy_std: 0.0
       wz_std: 0.5
-      vx_max: 0.70                   # AUTONOMY_MAX_PWM 200 on the 2026-10-10 drive profile: 0.74 m/s, 3.8 rad/s
+      vx_max: 0.95                   # measured forward maximum at PWM 255; ControlState still applies the loaded AUTO PWM cap
       vx_min: -0.12
       vy_max: 0.0
       wz_max: 2.5                    # faster spins smear ARKit tracking; the profile allows 3.8
@@ -128,7 +128,7 @@ controller_server:
         mode: 0
     RPP:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-      desired_linear_vel: 0.70        # under the profile's 0.74 m/s at AUTONOMY_MAX_PWM 200 (captain: roam at speed)
+      desired_linear_vel: 0.95        # measured forward maximum at PWM 255; requires FARSIGHT_AUTONOMY_MAX_PWM=255 on the rig
       lookahead_dist: 0.35            # short: pure pursuit cuts corners by about the lookahead
       min_lookahead_dist: 0.2
       max_lookahead_dist: 0.5         # 0.9 cut the sim deadend divider corner at 0.7 m/s

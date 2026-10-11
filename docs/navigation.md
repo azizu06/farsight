@@ -189,11 +189,14 @@ the goal.
   with a 0.13 m radius RPP clipped a wall end.
 - **Planner:** `SmacPlanner2D`, `allow_unknown` (goals are often in unseen space),
   0.25 m tolerance.
-- **Controller:** Regulated Pure Pursuit by default (20 Hz, 0.70 m/s, 0.2-0.5 m
+- **Controller:** Regulated Pure Pursuit by default (20 Hz, 0.95 m/s maximum, 0.2-0.5 m
   speed-scaled lookahead, rotate in place only beyond 1.0 rad, otherwise arc), or MPPI
-  with `controller:=mppi` (1000 samples, 2 s horizon, `vx_max` 0.70 m/s, `wz_max`
-  2.5 rad/s). These suit `FARSIGHT_AUTONOMY_MAX_PWM=200` on the 2026-10-10 drive
-  profile (0.74 m/s, 3.8 rad/s); no cost-regulated slow zone near obstacles and
+  with `controller:=mppi` (1000 samples, 2 s horizon, `vx_max` 0.95 m/s, `wz_max`
+  2.5 rad/s). The floor-measured profile reaches 0.95 m/s at PWM 255; set
+  `FARSIGHT_AUTONOMY_MAX_PWM=255` on the demo rig to reach that forward ceiling.
+  The server still clamps commands to the loaded profile and this PWM setting.
+  Turns stay capped at 2.5 rad/s because faster turns smear ARKit tracking. There is
+  no cost-regulated slow zone near obstacles and
   only 0.2 m of goal approach slowing. The earlier simulated results used 0.28-0.30 m/s. Both are loaded; the bridge picks one through the latched
   `controller_selector` topic. RPP is the default because it was faster in every
   simulated world and lighter (see the results below); MPPI hesitated in 0.65 m
