@@ -5,6 +5,7 @@
 //! measured support.
 
 pub mod crust;
+pub mod depthfill;
 pub mod fit;
 pub mod planes;
 pub mod vispaint;
@@ -42,6 +43,12 @@ pub struct DensifyOptions {
     pub color_from_capture: bool,
     /// Reject fill points contradicting observed free space (needs capture).
     pub carve: bool,
+    /// Back-project completed learned depth maps inside camera frusta
+    /// (needs capture + FARSIGHT_DEPTH_MODEL; no-op without a model).
+    pub depth_prior: bool,
+    /// Take planes from the shared `planes::detect` (W2) instead of the
+    /// local bucket detector.
+    pub shared_planes: bool,
     /// Safety cap on generated points.
     pub max_fill: usize,
 }
@@ -59,6 +66,8 @@ impl Default for DensifyOptions {
             edge_deg: 55.0,
             color_from_capture: true,
             carve: true,
+            depth_prior: true,
+            shared_planes: false,
             max_fill: 3_000_000,
         }
     }
@@ -115,7 +124,52 @@ pub fn run(cloud: &PointCloud, capture: Option<&Capture>, depths: Option<&[crate
         occupied.insert(cell_of(*p, inv));
     }
     let (planes_found, fill_a) = if opts.plane_fill {
-        let planes = planes::detect(&cur, opts.min_plane_points, 0.04, edge_cos.max(0.8));
+        // Shared detector (W2) is opt-in until the pipeline wires it: its
+        // region-growing planes differ enough in extent that hole recall
+        // drops vs the local detector on the bench.
+        let (shared, _) = if opts.shared_planes {
+            crate::planes::detect(&cur, &crate::planes::PlaneOptions::default())
+        } else {
+            (
+                crate::planes::Planes {
+                    planes: Vec::new(),
+                    label: Vec::new(),
+                },
+                crate::Stats::default(),
+            )
+        };
+        let planes: Vec<planes::Plane> = if shared.planes.is_empty() {
+            planes::detect(&cur, opts.min_plane_points, 0.04, edge_cos.max(0.8))
+        } else {
+            // Shared planes carry canonical normals — re-orient them to face
+            // the observed side (majority of inlier point normals) or the
+            // fills invert the mesher's sign field.
+            let mut orient = vec![0.0f32; shared.planes.len()];
+            for (i, &lab) in shared.label.iter().enumerate() {
+                if lab == u32::MAX || cur.nrm.is_empty() {
+                    continue;
+                }
+                let p = &shared.planes[lab as usize];
+                orient[lab as usize] += dot(p.n, cur.nrm[i]);
+            }
+            shared
+                .planes
+                .iter()
+                .enumerate()
+                .map(|(pi, p)| {
+                    let s = if orient[pi] < 0.0 { -1.0 } else { 1.0 };
+                    let n = scale(p.n, s);
+                    planes::Plane {
+                        fit: fit::PlaneFit {
+                            n,
+                            c: scale(n, -p.d * s),
+                            rms: p.rms_m,
+                        },
+                        inliers: p.inliers as usize,
+                    }
+                })
+                .collect()
+        };
         let n = planes.len();
         let f = planes::fill(&planes, &cur, ts, reach, &mut occupied, &meas_grid);
         (n, f)
@@ -125,6 +179,29 @@ pub fn run(cloud: &PointCloud, capture: Option<&Capture>, depths: Option<&[crate
     st["planes"] = planes_found.into();
     st["fill_plane"] = fill_a.pos.len().into();
     st["t_planes_ms"] = (t.elapsed().as_secs_f64() * 1e3).round().into();
+
+    // --- Phase 2b: learned depth-prior back-projection (needs a model) -------
+    t = Instant::now();
+    let mut fill_d = depthfill::DepthFill::default();
+    if opts.depth_prior {
+        if let Some(cap) = capture {
+            let maps = crate::learned::complete_depth_opts(cap, &cur, &crate::learned::options());
+            fill_d = depthfill::fill_from_depth(
+                &maps,
+                cap,
+                &cur,
+                &meas_grid,
+                &mut occupied,
+                ts,
+                reach,
+                0.5,
+                0.8,
+            );
+            st["depth_maps"] = maps.len().into();
+        }
+    }
+    st["fill_depth"] = fill_d.pos.len().into();
+    st["t_depth_ms"] = (t.elapsed().as_secs_f64() * 1e3).round().into();
 
     // --- Phase 3: crust fill --------------------------------------------------
     t = Instant::now();
@@ -159,6 +236,9 @@ pub fn run(cloud: &PointCloud, capture: Option<&Capture>, depths: Option<&[crate
     fpos.append(&mut fill_b.pos);
     fnrm.append(&mut fill_b.nrm);
     fsup.append(&mut fill_b.support);
+    fpos.append(&mut fill_d.pos);
+    fnrm.append(&mut fill_d.nrm);
+    fsup.append(&mut fill_d.support);
     // Sort by position for full determinism regardless of hash/queue order.
     let mut order: Vec<usize> = (0..fpos.len()).collect();
     order.sort_unstable_by(|&a, &b| {
