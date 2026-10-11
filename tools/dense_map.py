@@ -7,6 +7,7 @@ The normal operator relay file is deliberately not modified.
 
 import argparse
 import asyncio
+import base64
 from collections import deque
 from contextlib import suppress
 import gzip
@@ -18,9 +19,11 @@ import time
 import uuid
 
 import aiohttp
+import numpy as np
 from aiohttp import web
 from jetson.mapping.compress import negotiate, encode, brotli
 from jetson.mapping.dense import DenseMap, RECORD, MAX_RECORDS, packet, unpack
+from jetson.mapping.revisit import DepthView
 
 CHUNK_MM = 2000
 VIEW_CHUNKS = 32
@@ -95,12 +98,13 @@ class MacCloud(DenseMap):
                     del self.snapshots[saved]
                     del self.snapshot_times[saved]
 
-    def apply(self, records):
+    def apply(self, records, authoritative=None):
         if self.retained_history:
             # RGB-D producer tombstones represent its expiring visual cache.
             # They do not erase samples already observed by the Mac. Native
             # geometry uses a separate cloud and retains its explicit deletes.
-            records = (record for record in records if record[6] != 0)
+            records = (record for i, record in enumerate(records)
+                       if record[6] != 0 or (authoritative is not None and authoritative[i]))
         return super().apply(records)
 
     def delta(self, *args, **kwargs):
@@ -117,6 +121,7 @@ class MacCloud(DenseMap):
         self.chunks.clear()
         self.chunk_revisions.clear()
         self.view_cache.clear()
+        self.people.clear()
 
     def _change(self, record):
         revision = super()._change(record)
@@ -202,6 +207,11 @@ class DenseAccumulator:
         self.poll = None
         self.people_poll = None
         self.people_error = None
+        self.revisit_key = None
+        self.revisit_view = None
+        self.revisit_at = 0.
+        self.revisit_protected = set()
+        self.revisit_error = None
 
     async def run_people(self):
         """Feed person torso points to the ghost fade; fade once a second."""
@@ -288,6 +298,7 @@ class DenseAccumulator:
                 connector=aiohttp.TCPConnector(limit=2, ssl=self.tls)) as session:
             while True:
                 delay = .1
+                requested = time.monotonic()
                 try:
                     async with session.get(self.upstream.with_path("/map/dense.bin"),
                             params=self.cursor, headers={"Accept-Encoding": "br, gzip"}) as response:
@@ -308,7 +319,7 @@ class DenseAccumulator:
                         if len(raw) > 1024 * 1024:
                             raise ValueError("Decoded dense response exceeds budget")
                         metadata, records = unpack(raw)
-                        await asyncio.to_thread(self.accept, metadata, records)
+                        await asyncio.to_thread(self.accept, metadata, records, time.monotonic() - requested)
                         self.error = None
                         delay = .01 if metadata["more"] else .1
                 except READ_ERRORS as exc:
@@ -316,16 +327,50 @@ class DenseAccumulator:
                     delay = 1
                 await asyncio.sleep(delay)
 
-    def accept(self, metadata, records):
+    def accept(self, metadata, records, transfer_seconds=0):
+        def flags(name):
+            encoded = metadata.get(name)
+            if encoded is None:
+                return np.zeros(len(records), bool)
+            raw = base64.b64decode(encoded, validate=True)
+            if len(raw) != (len(records) + 7) // 8:
+                raise ValueError("Invalid dense record flags")
+            return np.unpackbits(np.frombuffer(raw, np.uint8), bitorder="little")[:len(records)].astype(bool)
+
+        authoritative, newer = flags("authoritative_deletes"), flags("newer_than_view")
+        descriptor = metadata.get("view")
+        view, view_key, view_at = None, None, 0.
+        if descriptor is not None:
+            try:
+                candidate = DepthView.from_metadata(descriptor)
+                age = float(descriptor["age_ms"]) / 1000 + transfer_seconds
+                if (candidate.sensor_key is not None
+                        and tuple(candidate.sensor_key[:2]) == tuple(metadata.get("source") or ())
+                        and 0 <= age <= 2):
+                    view, view_key, view_at = candidate, descriptor["key"], time.monotonic() - age
+                self.revisit_error = None
+            except (ValueError, KeyError, TypeError) as exc:
+                self.revisit_error = str(exc)
+        source_changed = (metadata["epoch"] != self.upstream_epoch
+                          or metadata.get("source") != self.cloud.source)
+        new_view = view is not None and (source_changed or view_key != self.revisit_key)
         with self.cloud.lock:
             # A same-epoch reset only bootstraps the producer's bounded cache
             # after a missed journal page. It cannot reconstruct older history.
             if (metadata["epoch"] != self.upstream_epoch
                     or metadata.get("source") != self.cloud.source):
                 self.cloud.clear(metadata.get("source"))
+                self.revisit_key, self.revisit_view = None, None
+                self.revisit_protected.clear()
             self.upstream_epoch = metadata["epoch"]
             self.cloud.source = metadata.get("source")
-            self.cloud.apply(records)
+            if new_view:
+                self.revisit_key, self.revisit_view, self.revisit_at = view_key, view, view_at
+                self.revisit_protected.clear()
+            keys = [tuple(v // 10 for v in record[:3]) for record in records]
+            if self.revisit_view is not None:
+                self.revisit_protected.update(keys[i] for i in np.flatnonzero(newer))
+            self.cloud.apply(records, authoritative=authoritative)
             self.jetson_points = metadata["points"]
             self.received_points += sum(r[6] == 1 for r in records)
             self.last_update = time.monotonic()
@@ -333,12 +378,20 @@ class DenseAccumulator:
                                snapshot="true" if metadata["snapshot"] else "false")
             if metadata.get("anchor") is not None:
                 self.cursor["anchor"] = metadata["anchor"]
+            if self.revisit_key is not None:
+                self.cursor["view_after"] = self.revisit_key
+        # Projection and region selection do not hold the relay/cloud lock.
+        if ((descriptor is None or view is not None) and self.revisit_view is not None
+                and time.monotonic() - self.revisit_at <= 2):
+            self.cloud.reconcile(self.revisit_view, keys=None if new_view else keys,
+                                 protected=self.revisit_protected)
 
     def status(self):
         return dict(jetson_points=self.jetson_points, mac_points=len(self.cloud.cells),
                     retained_history=self.cloud.retained_history,
                     tailnet_bytes=self.bytes, faded_footprint_cells=self.cloud.faded,
                     people_error=self.people_error,
+                    revisited_cells=self.cloud.revisited_cells, revisit_error=self.revisit_error,
                     tailnet_bytes_per_s=self.bytes / max(.001, time.monotonic() - self.started),
                     age_s=time.monotonic() - self.last_update if self.last_update else None,
                     error=self.error, quest=self.quest)

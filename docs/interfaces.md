@@ -846,7 +846,9 @@ capture/control guards are unchanged.
 
 Delta query: `epoch` (opaque server/capture-generation token), `after` (last
 cursor, initially zero), `limit` (1–8192), `snapshot` (boolean), and `anchor`
-(snapshot-start revision, echoed while paging). Response body is little-endian
+(snapshot-start revision, echoed while paging). Optional `view_after` echoes the
+last received native view key and avoids repeating that view across pages.
+Response body is little-endian
 u32 JSON byte length, UTF-8 JSON, then zero or more **16-byte** records:
 signed i32 XYZ in millimetres, u8 RGB, u8 operation (1 upsert, 0 removal).
 The fine-cell key is floor(XYZ_mm / 10) on every axis, including negatives.
@@ -875,6 +877,37 @@ that supports the history flag retains the historical cloud across source
 disconnects and reports source age separately. Native geometry retains its
 explicit anchor-removal semantics. These history rules do not apply to rover
 camera/depth freshness or navigation geometry.
+
+Revisiting a region refreshes retained visual geometry using optional `view`
+metadata, published from accepted native RGB-D at up to 2 Hz independently of
+coalesced point updates. It contains `format:"farsight.depth-view"`, `version:1`,
+`key`, `age_ms`, trusted five-element `sensor_key`, native `width`/`height`, exact
+`intrinsics` and `transform` (both explicitly `matrix_order:"row_major"`), uniform
+`stride`, `depth_format:"uint16_mm_le"`, and Base64 `depth`. Each compact cell is
+the minimum depth of its native block, rounded down to millimetres; any rejected
+pixel makes the block unknown (zero). The grid is at most 128×96, fitting the
+existing 64 KiB header. Its depth/confidence/edge/facing acceptance matches the
+measured dense lane; it adds no generated geometry.
+
+The Mac projects retained cells into the same-world view outside its cloud lock
+and removes old foreground contradicted by the new measurement. Out-of-view,
+unknown and occluded cells remain intact. Depth correspondence uses two 1 cm
+cells plus 1 mm codec rounding, independent of navigation clearances. This also
+works after the Jetson cache has expired. Accepted views use the existing native
+2 s age bound including transfer time. Current positive observations newer than
+the view stay protected until the next view; same-epoch backfill cannot restore
+already contradicted foreground. Matching surface faces and camera textures are
+replaced selectively, including when the camera has not moved.
+
+Optional `authoritative_deletes` and `newer_than_view` are Base64 packed bitmaps
+over record indices (least-significant bit first, one bit per record, final byte
+zero-padded). The former lets the history pool distinguish observed removals
+from ordinary cache expiry; the latter identifies positive records newer than
+the published view. Existing 16-byte 0/1 records are unchanged, and older clients
+ignore these optional fields. Authoritative Mac removals become the same normal
+delete records consumed by renderer GPU buffers and the density mesh worker.
+`/dense/status` adds `revisited_cells` and `revisit_error`; these are visual-map
+updates and never change drive authority or request a stopped interval.
 
 The endpoints negotiate Brotli/gzip over bounded records; no complete
 multi-million-point body is transferred. Chunk replies use the same framing

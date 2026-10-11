@@ -36,16 +36,23 @@ export class RawView {
     this.fallbackCount=data.fallback_indices.length;geometry.setDrawRange(0,this.fallbackCount);
    }else geometry.setDrawRange(0,data.points);
    geometry.boundingBox=new THREE.Box3().setFromArray(data.positions);geometry.boundingSphere=geometry.boundingBox.getBoundingSphere(new THREE.Sphere());
-   const patch=data.patch,g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(patch.positions,3));g.setAttribute('uv',new THREE.BufferAttribute(patch.uv,2));g.setIndex(new THREE.BufferAttribute(patch.indices,1));
+   const removed=new Set(data.patch_removed??[]),updates=new Map((data.patch_updates??[]).map(p=>[p.id,p.indices]));
+   this.patches=this.patches.filter(old=>{
+    if(removed.has(old.userData.id)){this.remove(old);return false;}
+    const indices=updates.get(old.userData.id);
+    if(indices){const index=old.geometry.getIndex();index.array.set(indices);index.clearUpdateRanges();index.addUpdateRange(0,indices.length);index.needsUpdate=true;old.geometry.setDrawRange(0,indices.length);old.userData.triangles=indices.length/3;}
+    return true;
+   });
+   const patch=data.patch;
+   if(!patch.indices.length){patch.image.close();this.expire();this.onBounds?.(geometry.boundingBox);this.onChange();return;}
+   const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(patch.positions,3));g.setAttribute('uv',new THREE.BufferAttribute(patch.uv,2));g.setIndex(new THREE.BufferAttribute(patch.indices,1).setUsage(THREE.DynamicDrawUsage));
    const texture=new THREE.Texture(patch.image);texture.colorSpace=THREE.SRGBColorSpace;texture.flipY=false;texture.anisotropy=4;texture.needsUpdate=true;
    // ImageBitmap ignores texture.flipY; UV v is 1-y while bitmap is top-down,
    // so use a worker-flipped bitmap (see worker) for calibrated texture alignment.
    const mesh=new THREE.Mesh(g,new THREE.MeshBasicMaterial({map:texture,side:THREE.DoubleSide,toneMapped:false,polygonOffset:true,polygonOffsetFactor:-1,polygonOffsetUnits:-1}));
    if(!this.surfaceHistory){for(const old of this.patches)this.remove(old);this.patches=[];}
-   const last=this.patches.at(-1),m=patch.transform;
-   if(last){const old=last.userData.transform;const distance=Math.hypot(m[12]-old[12],m[13]-old[13],m[14]-old[14]);const cosine=m[8]*old[8]+m[9]*old[9]+m[10]*old[10];if(distance<.1&&cosine>Math.cos(8*Math.PI/180)){this.patches.pop();this.remove(last);}}
    mesh.renderOrder=1;mesh.visible=this.showSurfaces;
-   mesh.userData={transform:m,at:patch.at,triangles:patch.indices.length/3,vertices:patch.positions.length/3};this.group.add(mesh);this.patches.push(mesh);this.expire();
+   mesh.userData={id:patch.id,transform:patch.transform,at:patch.at,triangles:patch.indices.length/3,vertices:patch.positions.length/3};this.group.add(mesh);this.patches.push(mesh);this.expire();
    this.onBounds?.(geometry.boundingBox);this.onChange();
   };
   this.worker.onerror=e=>{this.busy=false;this.error=e.message;};
@@ -79,7 +86,7 @@ export class RawView {
    const age=Number(sourceAge)+Date.now()-this.received;
    if(sourceAge===null||Number(sourceAge)<0||!Number.isFinite(age)||age>2000)throw Error('Raw RGB-D age missing, invalid or expired during transfer');
    this.pendingAge=age;this.pendingAt=Date.now();
-   this.worker.postMessage({buffer:b,ttl:this.ttl,history:this.history,deadline:Date.now()+2000-age},[b]);
+   this.worker.postMessage({buffer:b,ttl:this.ttl,history:this.history,surfaceHistory:this.surfaceHistory,surfaceTtl:this.surfaceTtl,deadline:Date.now()+2000-age},[b]);
   }catch(e){this.error=String(e);this.busy=false;}
  }
  stats(){return {raw_mode:this.history?'history':'latest',raw_point_mode:this.fallbackOnly?'uncovered':'all',raw_fallback_points:this.fallbackCount,raw_point_draw_count:this.fallbackOnly?this.fallbackCount:this.count,raw_surface_history:this.surfaceHistory,raw_surface_ttl_s:this.surfaceTtl,raw_oldest_surface_age_ms:this.patches.length?Date.now()-this.patches[0].userData.at:null,raw_poll_interval_ms:this.pollInterval,raw_point_capacity:this.points.geometry.getAttribute('position')?.count??0,raw_point_transfer_bytes:this.pointTransfer,raw_patches:this.patches.length,raw_splat_m:this.points.material.size,raw_pixel_floor:1.25,raw_surfaces:this.showSurfaces,raw_point_overlay:this.showPoints,raw_source:this.source??null,raw_points:this.count,raw_triangles:this.patches.reduce((n,p)=>n+p.userData.triangles,0),raw_frame:this.frame??null,raw_identity:this.identity,raw_age_ms:this.lastGood?Date.now()-this.lastGood+(this.age||0):null,raw_bytes:this.bytes,raw_worker_ms:this.processing??null,raw_error:this.error,raw_ttl_s:this.ttl};}
