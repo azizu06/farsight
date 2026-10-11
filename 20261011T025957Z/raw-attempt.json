@@ -1,0 +1,9 @@
+{
+  "at": "2026-10-11T03:01:23.252623+00:00",
+  "url": "http://127.0.0.1:8080/phone/frame.bin",
+  "pulls": 1,
+  "http_status": 502,
+  "accepted": false,
+  "retried": false,
+  "note": "No accepted raw sample obtained. Single authorized attempt ended HTTP502. Raw polling remains off."
+}

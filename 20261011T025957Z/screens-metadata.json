@@ -1,0 +1,347 @@
+[
+  {
+    "file": "desktop-mirror-1.png",
+    "at": "2026-10-11T02:59:57.885026+00:00",
+    "view": "receive-only headset camera sample; no pose commands",
+    "state": {
+      "url": "http://127.0.0.1:8080/?view=map&inspect=0",
+      "canvas": {
+        "state": "rendering",
+        "frameId": "h264:1312:1309",
+        "layout": "sbs-left-eye",
+        "poseVerified": "false",
+        "poseFrame": "4889",
+        "source": "IPHONE LIDAR"
+      },
+      "status": "Mac rendering \u00b7 241 ms picture age \u00b7 Receive-only mirror \u00b7 headset camera",
+      "source": "IPHONE LIDAR \u00b7 120000 points \u00b7 157941 triangles \u00b7 retained",
+      "format": "Stereo stream \u00b7 left-eye preview \u00b7 1920 \u00d7 1080"
+    }
+  },
+  {
+    "file": "desktop-mirror-2.png",
+    "at": "2026-10-11T02:59:59.364463+00:00",
+    "view": "receive-only headset camera sample; no pose commands",
+    "state": {
+      "url": "http://127.0.0.1:8080/?view=map&inspect=0",
+      "canvas": {
+        "state": "rendering",
+        "frameId": "h264:1360:1357",
+        "layout": "sbs-left-eye",
+        "poseVerified": "false",
+        "poseFrame": "4931",
+        "source": "IPHONE LIDAR"
+      },
+      "status": "Mac rendering \u00b7 238 ms picture age \u00b7 Receive-only mirror \u00b7 headset camera",
+      "source": "IPHONE LIDAR \u00b7 120000 points \u00b7 157941 triangles \u00b7 retained",
+      "format": "Stereo stream \u00b7 left-eye preview \u00b7 1920 \u00d7 1080"
+    }
+  },
+  {
+    "file": "desktop-mirror-3.png",
+    "at": "2026-10-11T03:00:00.821060+00:00",
+    "view": "receive-only headset camera sample; no pose commands",
+    "state": {
+      "url": "http://127.0.0.1:8080/?view=map&inspect=0",
+      "canvas": {
+        "state": "rendering",
+        "frameId": "h264:1403:1400",
+        "layout": "sbs-left-eye",
+        "poseVerified": "false",
+        "poseFrame": "4969",
+        "source": "IPHONE LIDAR"
+      },
+      "status": "Mac rendering \u00b7 224 ms picture age \u00b7 Receive-only mirror \u00b7 headset camera",
+      "source": "IPHONE LIDAR \u00b7 120000 points \u00b7 157941 triangles \u00b7 retained",
+      "format": "Stereo stream \u00b7 left-eye preview \u00b7 1920 \u00d7 1080"
+    }
+  },
+  {
+    "file": "live-canvas-pose-1.png",
+    "at": "2026-10-11T03:00:02.489845+00:00",
+    "view": "independent local live-canvas review camera; no producer pose commands",
+    "state": {
+      "url": "http://127.0.0.1:8091/render/canvas-lab.html?source=live&upstream=http%3A%2F%2F127.0.0.1%3A8091&aa=0&width=1800&height=953&lod=1&presentation=canvas",
+      "stats": {
+        "points": 814826,
+        "triangles": 0,
+        "source": "WAITING \u00b7 SOURCE RGB-D SAMPLES",
+        "max_points": 20000000,
+        "frame_count": 5711,
+        "samples": 25,
+        "fps": 62.5312656309519,
+        "frame_ms_p50": 9,
+        "frame_ms_p95": 32.69999998807907,
+        "render_ms_p50": 0.800000011920929,
+        "render_ms_p95": 1.2999999821186066,
+        "gpu_renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M5 Pro, Unspecified Version)",
+        "capture_calls": 0,
+        "draw_calls": 102,
+        "drawn_points": 814826,
+        "grid_visible": true,
+        "canvas_width": 1800,
+        "canvas_height": 953,
+        "antialias": false,
+        "preserve_drawing_buffer": false,
+        "source_mode": "live",
+        "scope": "Direct desktop GPU canvas; no encode, headset, or physical latency measurement"
+      },
+      "mac": {
+        "ready": true,
+        "stereo": false,
+        "renderMs": 0.20000001788139343,
+        "captureMs": 0,
+        "draws": 5732,
+        "points": 814826,
+        "source": "WAITING \u00b7 SOURCE RGB-D SAMPLES",
+        "poseEcho": null,
+        "refreshBusy": true,
+        "poseValid": false,
+        "drawnPoints": 814826,
+        "drawnTriangles": 0,
+        "dense": {
+          "received_upserts": 814826,
+          "received_deletes": 0,
+          "retained_cells": 814826,
+          "local_evictions": 0,
+          "pending_gpu_chunks": 0,
+          "received_payload_bytes": 13065088,
+          "received_pages": 103,
+          "source_reported_cells": 814826,
+          "source_label": "SOURCE RGB-D SAMPLES",
+          "selected_source": "rgbd",
+          "bootstrap_incomplete": false,
+          "cursor": 2687490,
+          "resets": 1,
+          "request_active": true,
+          "error": null,
+          "gpu_uploaded_cells": 814826,
+          "gpu_uploaded_cell_writes": 814826,
+          "gpu_drawn_cells": 814826,
+          "gpu_chunks": 100
+        },
+        "rayVisible": false,
+        "viewPosition": [
+          10.096914594651448,
+          11.384650727263343,
+          18.601107358090324
+        ],
+        "triangles": 0,
+        "retained": true,
+        "mapError": "Error: Map HTTP 502",
+        "lod": {
+          "index": 1,
+          "pixelRatio": 1,
+          "fraction": 1,
+          "fx": 2,
+          "adaptive": false
+        },
+        "mapStatus": null
+      },
+      "pose": {
+        "position": [
+          10.09703964782258,
+          11.384650727263343,
+          18.601039477114877
+        ],
+        "target": [
+          -5.875499844551086,
+          1.002500057220459,
+          2.628499984741211
+        ]
+      }
+    }
+  },
+  {
+    "file": "live-canvas-pose-2.png",
+    "at": "2026-10-11T03:00:03.138028+00:00",
+    "view": "independent local live-canvas review camera; no producer pose commands",
+    "state": {
+      "url": "http://127.0.0.1:8091/render/canvas-lab.html?source=live&upstream=http%3A%2F%2F127.0.0.1%3A8091&aa=0&width=1800&height=953&lod=1&presentation=canvas",
+      "stats": {
+        "points": 814826,
+        "triangles": 0,
+        "source": "WAITING \u00b7 SOURCE RGB-D SAMPLES",
+        "max_points": 20000000,
+        "frame_count": 5715,
+        "samples": 29,
+        "fps": 47.14680539795321,
+        "frame_ms_p50": 9,
+        "frame_ms_p95": 41.60000002384186,
+        "render_ms_p50": 0.7000000178813934,
+        "render_ms_p95": 1.2999999821186066,
+        "gpu_renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M5 Pro, Unspecified Version)",
+        "capture_calls": 0,
+        "draw_calls": 102,
+        "drawn_points": 814826,
+        "grid_visible": true,
+        "canvas_width": 1800,
+        "canvas_height": 953,
+        "antialias": false,
+        "preserve_drawing_buffer": false,
+        "source_mode": "live",
+        "scope": "Direct desktop GPU canvas; no encode, headset, or physical latency measurement"
+      },
+      "mac": {
+        "ready": true,
+        "stereo": false,
+        "renderMs": 0.09999999403953552,
+        "captureMs": 0,
+        "draws": 5796,
+        "points": 814826,
+        "source": "WAITING \u00b7 SOURCE RGB-D SAMPLES",
+        "poseEcho": null,
+        "refreshBusy": true,
+        "poseValid": false,
+        "drawnPoints": 814826,
+        "drawnTriangles": 0,
+        "dense": {
+          "received_upserts": 814826,
+          "received_deletes": 0,
+          "retained_cells": 814826,
+          "local_evictions": 0,
+          "pending_gpu_chunks": 0,
+          "received_payload_bytes": 13065088,
+          "received_pages": 103,
+          "source_reported_cells": 814826,
+          "source_label": "SOURCE RGB-D SAMPLES",
+          "selected_source": "rgbd",
+          "bootstrap_incomplete": false,
+          "cursor": 2687490,
+          "resets": 1,
+          "request_active": true,
+          "error": null,
+          "gpu_uploaded_cells": 814826,
+          "gpu_uploaded_cell_writes": 814826,
+          "gpu_drawn_cells": 814826,
+          "gpu_chunks": 100
+        },
+        "rayVisible": false,
+        "viewPosition": [
+          -22.058368096950552,
+          10.71209499182962,
+          18.810911925247154
+        ],
+        "triangles": 0,
+        "retained": true,
+        "mapError": "Error: Map HTTP 502",
+        "lod": {
+          "index": 1,
+          "pixelRatio": 1,
+          "fraction": 1,
+          "fx": 2,
+          "adaptive": false
+        },
+        "mapStatus": null
+      },
+      "pose": {
+        "position": [
+          -22.058158068899715,
+          10.712094991829636,
+          18.81115820908984
+        ],
+        "target": [
+          -5.875499844551086,
+          1.002500057220459,
+          2.628499984741211
+        ]
+      }
+    }
+  },
+  {
+    "file": "live-canvas-pose-3.png",
+    "at": "2026-10-11T03:00:03.776726+00:00",
+    "view": "independent local live-canvas review camera; no producer pose commands",
+    "state": {
+      "url": "http://127.0.0.1:8091/render/canvas-lab.html?source=live&upstream=http%3A%2F%2F127.0.0.1%3A8091&aa=0&width=1800&height=953&lod=1&presentation=canvas",
+      "stats": {
+        "points": 814826,
+        "triangles": 0,
+        "source": "WAITING \u00b7 SOURCE RGB-D SAMPLES",
+        "max_points": 20000000,
+        "frame_count": 5717,
+        "samples": 31,
+        "fps": 24.492375760102743,
+        "frame_ms_p50": 9,
+        "frame_ms_p95": 58.900000005960464,
+        "render_ms_p50": 0.7999999821186066,
+        "render_ms_p95": 1.4000000059604645,
+        "gpu_renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M5 Pro, Unspecified Version)",
+        "capture_calls": 0,
+        "draw_calls": 102,
+        "drawn_points": 814826,
+        "grid_visible": true,
+        "canvas_width": 1800,
+        "canvas_height": 953,
+        "antialias": false,
+        "preserve_drawing_buffer": false,
+        "source_mode": "live",
+        "scope": "Direct desktop GPU canvas; no encode, headset, or physical latency measurement"
+      },
+      "mac": {
+        "ready": true,
+        "stereo": false,
+        "renderMs": 0.10000002384185791,
+        "captureMs": 0,
+        "draws": 5854,
+        "points": 814826,
+        "source": "WAITING \u00b7 SOURCE RGB-D SAMPLES",
+        "poseEcho": null,
+        "refreshBusy": true,
+        "poseValid": false,
+        "drawnPoints": 814826,
+        "drawnTriangles": 0,
+        "dense": {
+          "received_upserts": 814826,
+          "received_deletes": 0,
+          "retained_cells": 814826,
+          "local_evictions": 0,
+          "pending_gpu_chunks": 0,
+          "received_payload_bytes": 13065088,
+          "received_pages": 103,
+          "source_reported_cells": 814826,
+          "source_label": "SOURCE RGB-D SAMPLES",
+          "selected_source": "rgbd",
+          "bootstrap_incomplete": false,
+          "cursor": 2687490,
+          "resets": 1,
+          "request_active": true,
+          "error": null,
+          "gpu_uploaded_cells": 814826,
+          "gpu_uploaded_cell_writes": 814826,
+          "gpu_drawn_cells": 814826,
+          "gpu_chunks": 100
+        },
+        "rayVisible": false,
+        "viewPosition": [
+          -0.20522499438305677,
+          16.1232314608392,
+          -16.27241427701905
+        ],
+        "triangles": 0,
+        "retained": true,
+        "mapError": "Error: Map HTTP 502",
+        "lod": {
+          "index": 1,
+          "pixelRatio": 1,
+          "fraction": 1,
+          "fx": 2,
+          "adaptive": false
+        },
+        "mapStatus": null
+      },
+      "pose": {
+        "position": [
+          -0.20522556819405935,
+          16.1232314608392,
+          -16.272414269782217
+        ],
+        "target": [
+          -5.875499844551086,
+          1.002500057220459,
+          2.628499984741211
+        ]
+      }
+    }
+  }
+]

@@ -1,0 +1,13 @@
+{
+  "source_pin": "04ad5482f76a19a66386bed62e5bd3ddc25b6273",
+  "pid": 9521,
+  "upstream": "http://127.0.0.1:8080",
+  "stereo": "sbs-left-right",
+  "width": 1920,
+  "height": 1080,
+  "fps": 30,
+  "bitrate": 4000000,
+  "hardware": "videotoolbox",
+  "browser": "Google Chrome",
+  "raw_layer_bundle_present": false
+}
