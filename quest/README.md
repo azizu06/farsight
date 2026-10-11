@@ -21,6 +21,10 @@ renderer, or `?view=map&mac=http://localhost:8091` for a direct local connection
 `&stereo=1` pins packed stereo, `&stereo=0` pins flat; without either, the preview
 negotiates by trying the two existing stream routes. A disconnected renderer
 shows only the subtle waiting grid; it never substitutes a simulated scene.
+Packed rendering also remains available when a connected headset is unworn:
+the renderer marks its own desktop camera fallback separately, and tracked
+headset output resumes when valid paired poses return. Quest rejects the
+desktop fallback as tracking output; the browser can inspect its real pixels.
 
 The local desktop map is a bare canvas for the incoming 3D points: right-drag orbits,
 left-drag pans, scroll zooms, and F frames the scan. **Escape** opens settings;

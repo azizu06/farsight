@@ -27,6 +27,7 @@ import { decodeMesh, decodePoints } from "/quest/src/protocol.js";
 import { mapResponseRevision } from "/quest/src/map-response.js";
 import { DenseCloudState, DenseCloudReceiver, DenseGpuChunks } from "./dense-cloud.mjs";
 import { StereoPass, SBS_LAYOUT } from "./stereo-pass.mjs";
+import { DesktopPreviewCamera } from "./desktop-preview.mjs";
 
 const params = new URLSearchParams(location.search);
 const upstream = (params.get("upstream") || "").replace(/\/$/, "");
@@ -79,6 +80,7 @@ scene.fog = sceneFog;
 const camera = new THREE.PerspectiveCamera(50, width / height, 0.01, 2000);
 camera.position.set(9, 6, 9);
 camera.lookAt(0, 0, 0);
+const desktopPreview = new DesktopPreviewCamera({ THREE, camera, width, height });
 
 const root = new THREE.Group();
 scene.add(root);
@@ -725,7 +727,10 @@ function drawScene(measure) {
       window.__mac.layout = SBS_LAYOUT;
       window.__mac.eye_width = width / 2; window.__mac.eye_height = height;
       try {
-        if (!window.__mac.poseValid || !window.__mac.poseEcho) throw new Error("Waiting for tracked eye pair");
+        if (!window.__mac.poseValid || !window.__mac.poseEcho) {
+          window.__mac.poseEcho = desktopPreview.next();
+          window.__mac.previewMode = "desktop-preview";
+        } else window.__mac.previewMode = "tracked-eyes";
         const eyes = window.__mac.poseEcho.eyes;
         if (!Array.isArray(eyes) || eyes.length !== 2 || eyes[0]?.eye !== "left" || eyes[1]?.eye !== "right")
           throw new Error("Stereo wire eyes must be ordered left then right");

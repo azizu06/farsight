@@ -164,7 +164,7 @@ def segment_sidecar(frame_id, pose, capture_mono_ms, capture_wall_ms, media_star
     """JSON sent immediately before each fMP4 fragment."""
     echoed = None if pose is None else {key: pose[key] for key in
         ("session_id", "frame_id", "pose_id", "client_nonce", "sent_mono_ms", "sent_wall_ms", "received_mono_ms",
-         "space", "fov_y_deg", "aspect", "map_revision", "eyes") if key in pose}
+         "space", "fov_y_deg", "aspect", "map_revision", "eyes", "desktop_preview") if key in pose}
     return {
         # video_init/video_segment names match quest/src/h264.ts so the existing
         # player accepts the stream. macview_* fields are the extra measurements.
@@ -200,7 +200,7 @@ def frame_age_ms(capture_wall_ms, now_wall_ms):
 
 def pose_to_frame_ms(pose, capture_mono_ms):
     """Mac-side pose-in to capture-out, both on the Mac monotonic clock."""
-    if pose is None:
+    if pose is None or pose.get("desktop_preview") is True:
         return None
     received = pose.get("received_mono_ms")
     if not finite(received) or not finite(capture_mono_ms):

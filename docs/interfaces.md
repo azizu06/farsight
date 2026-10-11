@@ -1018,6 +1018,16 @@ its layout is invalid or its echo lacks this page's `session_id`, names an unkno
 `pose_id`, or has no valid left and right eye pose and projection. Any echo naming
 another `session_id` is rejected, flat or stereo.
 
+Without a current tracked pose, the packed Mac renderer keeps a **desktop
+preview** running from the retained camera with illustrative 64 mm eye spacing.
+Its echo uses a separate `desktop-preview-*` session and `desktop_preview: true`;
+`pose_to_frame_ms` is null because no tracking input produced that picture.
+Current valid headset eyes always replace this fallback. Headset clients reject
+the marked desktop frames, including any that accidentally match their session;
+the desktop canvas can display them. Geometry source/age/counts are unchanged.
+This works even when an unworn headset keeps its visual pose socket connected.
+It does not qualify headset stereo, tracking or pose-to-photon latency.
+
 The Mac server's packed mode is explicit: `--stereo sbs-left-right`, default
 coded size 1920×1080 (960×1080 per eye); `--width 1280 --height 720` selects the
 smaller pair. Without that mode the server remains mono. A packed producer

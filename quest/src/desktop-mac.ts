@@ -46,7 +46,7 @@ let origin = streamOrigin(query.get("mac") || location.origin);
 input.value = origin;
 let viewer: H264Viewer;
 let format: ReturnType<typeof macFormat> = null;
-let stereo = query.get("stereo") === "1", explicitLayout = query.has("stereo");
+let stereo = query.get("stereo") !== "0", explicitLayout = query.has("stereo");
 let pose: WebSocket | null = null, poseRetry = 0, frameLoop = 0, disposed = false;
 let session = crypto.randomUUID(), sequence = 0, lastPoseAt = -Infinity;
 let lastFrame = "", lastPaintAt = -Infinity, startedAt = 0, cameraState = "Connecting visual camera";
@@ -145,7 +145,8 @@ function tick(now: number) {
     lastStatusAt = now;
     const fresh = frame && format && drawnFormat && frame.age < 1000;
     canvas.dataset.state = fresh ? "rendering" : lastPaintAt > -Infinity ? "retained" : "waiting";
-    status.textContent = `${fresh ? `Mac rendering · ${Math.ceil(frame.age)} ms picture age` : lastPaintAt > -Infinity ? "Render paused · last decoded picture retained" : viewer.state} · ${cameraState}`;
+    const viewState = frame?.pose?.desktop_preview === true ? "Mac desktop fallback · headset inactive" : cameraState;
+    status.textContent = `${fresh ? `Mac rendering · ${Math.ceil(frame.age)} ms picture age` : lastPaintAt > -Infinity ? "Render paused · last decoded picture retained" : viewer.state} · ${viewState}`;
     formatText.textContent = format ? `${format.stereo ? "Stereo stream · left-eye preview" : "Flat stream"} · ${viewer.video.videoWidth} × ${viewer.video.videoHeight}` : "Waiting for matching flat/stereo stream";
   }
   frameLoop = requestAnimationFrame(tick);
