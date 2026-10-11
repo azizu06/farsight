@@ -19,7 +19,7 @@ from tools.operator_relay import create_app as relay_app
 def pair():
     return [dict(eye=eye, position=[x, 1.6, 0], quaternion=[0, 0, 0, 1],
                  projection=[1.2, 0, 0, 0, 0, 1.4, 0, 0, x, .07, -1.0002, -1, 0, 0, -.020002, 0])
-            for eye, x in [('right', .032), ('left', -.032)]]
+            for eye, x in [('left', -.032), ('right', .032)]]
 
 
 def metadata():
@@ -57,11 +57,11 @@ class StereoContractTests(unittest.TestCase):
                 self.assertGreater(int(picture[120, 80, 0]), int(picture[120, 80, 2]) + 100)
                 self.assertGreater(int(picture[120, 240, 2]), int(picture[120, 240, 0]) + 100)
 
-    def test_labels_and_asymmetric_projections_survive_parser_in_any_order(self):
+    def test_labels_and_asymmetric_projections_survive_ordered_wire_parser(self):
         parsed = parse_pose(dict(type='pose', version=1, stereo=True, eyes=pair(),
             sent_mono_ms=1, sent_wall_ms=2, head=dict(position=[0, 1.6, 0], quaternion=[0, 0, 0, 1])), 3)
         self.assertEqual(parsed['eyes'], pair())
-        for invalid in [pair()[:1], [pair()[0], pair()[0]],
+        for invalid in [pair()[:1], pair()[::-1], [pair()[0], pair()[0]],
                         [{**eye, 'projection': [1] * 16} for eye in pair()]]:
             with self.assertRaises(ValueError): eye_views(invalid, require_pair=True)
 
@@ -71,6 +71,7 @@ class StereoContractTests(unittest.TestCase):
             dict(stereo=True, layout=SBS, eye_width=960, eye_height=1080))
         for invalid in [{}, {**valid, 'stereo': False}, {**valid, 'layout': 'unknown'},
                         {**valid, 'eye_width': 640}, {**valid, 'poseEcho': None},
+                        {**valid, 'poseEcho': {**valid['poseEcho'], 'eyes': pair()[::-1]}},
                         {**valid, 'poseEcho': {**valid['poseEcho'], 'eyes': pair()[:1]}}]:
             self.assertIsNone(capture_format(invalid, SBS, 1920, 1080))
         self.assertEqual(capture_format({}, None, 1280, 720), {'stereo': False})

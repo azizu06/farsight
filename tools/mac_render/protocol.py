@@ -79,6 +79,8 @@ def eye_views(eyes, require_pair=False):
         raise ValueError("duplicate eye label")
     if require_pair and (len(result) != 2 or set(labels) != {"left", "right"}):
         raise ValueError("stereo requires labeled left and right eyes")
+    if require_pair and labels != ["left", "right"]:
+        raise ValueError("stereo wire eyes must be ordered left then right")
     return result
 
 

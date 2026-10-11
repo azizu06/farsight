@@ -26,11 +26,13 @@ import * as THREE from "/quest/node_modules/three/build/three.module.js";
 import { decodeMesh, decodePoints } from "/quest/src/protocol.js";
 import { mapResponseRevision } from "/quest/src/map-response.js";
 import { DenseCloudState, DenseCloudReceiver, DenseGpuChunks } from "./dense-cloud.mjs";
+import { StereoPass, SBS_LAYOUT } from "./stereo-pass.mjs";
 
 const params = new URLSearchParams(location.search);
 const upstream = (params.get("upstream") || "").replace(/\/$/, "");
 const width = Number(params.get("width") || 1280);
 const height = Number(params.get("height") || 720);
+const stereoRequested = params.get("layout") === SBS_LAYOUT;
 
 const style = params.get("style") === "unlit" ? "unlit" : "lit";
 // Cinematic is the default look; ?quality=flat reproduces the pre-cine
@@ -66,6 +68,7 @@ renderer.toneMappingExposure = 1.05;
 renderer.shadowMap.enabled = style === "lit";
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 document.body.prepend(renderer.domElement);
+const stereoPass = stereoRequested ? new StereoPass({ THREE, renderer }) : null;
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(GRAPHITE);
@@ -475,6 +478,7 @@ let bannerText = "";
 let cloudShown = -1;
 let trisShown = -1;
 let sourceShown = "";
+let layoutShown = "";
 let retainedShown = null;
 let errorShown = null;
 function exposeMap() {
@@ -510,11 +514,13 @@ function exposeMap() {
     mac.mapStatus = mapStatusView;
   } else mac.mapStatus = null;
   // DOM writes only when the banner actually changes — never per frame.
-  if (points !== cloudShown || triangles !== trisShown || source !== sourceShown ||
+  const layoutLabel = window.__mac.stereo ? "STEREO · SBS" : stereoRequested ? "STEREO UNAVAILABLE" : "NOT STEREO";
+  if (points !== cloudShown || triangles !== trisShown || source !== sourceShown || layoutLabel !== layoutShown ||
       retained !== retainedShown || mapError !== errorShown) {
     cloudShown = points; trisShown = triangles; sourceShown = source;
     retainedShown = retained; errorShown = mapError;
-    bannerText = `MAC RENDER · ${cine ? "CINE" : "FLAT"} · ${source} · ${points} pts · ${triangles} tris${retained ? " · RETAINED" : ""}${mapError ? " · map unavailable" : ""} · NOT STEREO · GRID: DISPLAY GUIDE`;
+    layoutShown = layoutLabel;
+    bannerText = `MAC RENDER · ${cine ? "CINE" : "FLAT"} · ${source} · ${points} pts · ${triangles} tris${retained ? " · RETAINED" : ""}${mapError ? " · map unavailable" : ""} · ${layoutLabel} · GRID: DISPLAY GUIDE`;
     banner.textContent = bannerText;
   }
 }
@@ -724,15 +730,41 @@ function drawScene(measure) {
   }
   if (frameDirty || measure === "capture") {
     denseGpu.beginFrame();
-    for (const layer of layers) layer.pre?.(layerContext);
-    renderer.render(scene, camera);
-    for (const layer of layers) layer.post?.(layerContext);
+    if (stereoPass) {
+      window.__mac.stereo = false;
+      window.__mac.stereo_eye_draws = null;
+      window.__mac.layout = SBS_LAYOUT;
+      window.__mac.eye_width = width / 2; window.__mac.eye_height = height;
+      try {
+        if (!window.__mac.poseValid || !window.__mac.poseEcho) throw new Error("Waiting for tracked eye pair");
+        const eyes = window.__mac.poseEcho.eyes;
+        if (!Array.isArray(eyes) || eyes.length !== 2 || eyes[0]?.eye !== "left" || eyes[1]?.eye !== "right")
+          throw new Error("Stereo wire eyes must be ordered left then right");
+        const eyeContext = view => ({ ...layerContext, ...view });
+        const pair = stereoPass.render(scene, window.__mac.poseEcho.eyes, { width, height,
+          pre: view => { for (const layer of layers) layer.pre?.(eyeContext(view)); },
+          post: view => { for (const layer of layers) layer.post?.(eyeContext(view)); },
+        });
+        Object.assign(window.__mac, pair.metadata);
+        window.__mac.stereo_eye_draws = pair.eye_draws;
+        window.__mac.stereo_error = null;
+        window.__mac.drawnPoints = (pair.eye_draws.left.points || 0) + (pair.eye_draws.right.points || 0);
+        window.__mac.drawnTriangles = Math.max(0, (pair.eye_draws.left.triangles || 0) - gradeTris)
+          + Math.max(0, (pair.eye_draws.right.triangles || 0) - gradeTris);
+      } catch (error) {
+        // No partial or duplicate mono pair may leave the encoder as stereo.
+        window.__mac.stereo_error = String(error).slice(0, 160);
+        window.__mac.drawnPoints = window.__mac.drawnTriangles = 0;
+      }
+    } else {
+      for (const layer of layers) layer.pre?.(layerContext);
+      renderer.render(scene, camera);
+      for (const layer of layers) layer.post?.(layerContext);
+      window.__mac.drawnPoints = renderer.info.render.points;
+      window.__mac.drawnTriangles = renderer.info.render.triangles - gradeTris;
+    }
     denseGpu.endFrame();
     frameDirty = false;
-    window.__mac.drawnPoints = renderer.info.render.points;
-    // drawnTriangles means map geometry; the in-framebuffer grade quad is
-    // overlay, not counted data.
-    window.__mac.drawnTriangles = renderer.info.render.triangles - gradeTris;
   }
   Object.assign(denseMetricsView, denseReceiver.metrics(), denseGpu.metrics());
   window.__mac.dense = denseMetricsView;
