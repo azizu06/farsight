@@ -173,7 +173,14 @@ async fn test_forward_rendering() {
     );
     let img_size = glam::uvec2(64, 64);
     let result = render_splats(splats, &camera, img_size, Vec3::ZERO).await;
-    assert!(result.num_visible > 0, "no splats rendered");
+    let counts: Vec<u32> = result
+        .counts
+        .into_data_async()
+        .await
+        .expect("counts readback")
+        .try_into_vec::<u32>()
+        .expect("counts dtype");
+    assert!(counts[0] > 0, "no splats rendered");
     let data = result
         .img
         .into_data_async()

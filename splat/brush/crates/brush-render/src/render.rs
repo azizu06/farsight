@@ -10,12 +10,11 @@ use crate::{
     sh::sh_degree_from_coeffs,
     shaders,
 };
-use brush_cube::create_tensor;
+use brush_cube::{CubeCount, create_tensor};
 use brush_scan::prefix_sum;
-use brush_sort::radix_argsort;
+use brush_sort::radix_argsort_len;
 use burn::backend::TensorMetadata;
-use burn::backend::ops::TransactionPrimitive;
-use burn::backend::ops::{FloatTensorOps, IntTensorOps, TransactionOps};
+use burn::backend::ops::{FloatTensorOps, IntTensorOps};
 use burn::backend::tensor::FloatTensor;
 use burn::cubecl::CubeDim;
 use burn::cubecl::calculate_cube_count_elemwise;
@@ -165,50 +164,58 @@ impl SplatOps for CubeBackend {
             )
         };
 
-        // Read both atomic counts in one transaction BEFORE the sort.
-        let (num_visible, num_intersections) = if total_splats == 0 {
-            (0, 0)
-        } else {
-            let tp = TransactionPrimitive::<Self>::new(
-                vec![],
-                vec![],
-                vec![num_visible_buf, num_intersections_buf],
-                vec![],
-            );
-            let data = <Self as TransactionOps<Self>>::tr_execute(tp)
-                .await
-                .expect("Failed to read counts");
-            let num_visible = data.read_ints[0]
-                .clone()
-                .try_into_vec::<u32>()
-                .expect("num_visible")[0];
-            let num_intersections = data.read_ints[1]
-                .clone()
-                .try_into_vec::<u32>()
-                .expect("num_intersections")[0];
-            (num_visible, num_intersections)
-        };
+        // splat-turbo T7: no GPU->CPU readback inside render(). A single-cube
+        // kernel collapses the two PF atomics into `counts` on-GPU
+        // ([num_visible, isect_used]); every buffer below is allocated by
+        // capacity and every kernel bounds itself with the GPU counts, so the
+        // whole forward stays in-flight while the host builds it. The counts
+        // tensor rides along in the aux so callers can read it back on their
+        // own schedule (train defers it to the end of the step).
+        let tile_bounds: glam::UVec2 = project_uniforms.tile_bounds.into();
+        let num_tiles = tile_bounds.x * tile_bounds.y;
+        // Intersection capacity: a splat can cover at most num_tiles tiles;
+        // 8x total_splats covers dense scenes while bounding memory. If the
+        // cap binds, the overflow tail is dropped for that step only (the
+        // clamp is read from counts[1] by get_tile_offsets).
+        let isect_cap = total_splats
+            .saturating_mul(8)
+            .min(total_splats.saturating_mul(num_tiles))
+            .max(1);
+        let counts = create_tensor([2], &device, DType::U32);
+        kernels::counts::write_counts::launch(
+            &client,
+            CubeCount::Static(1, 1, 1),
+            CubeDim::new_single(),
+            num_visible_buf.clone().into_tensor_arg(),
+            num_intersections_buf.clone().into_tensor_arg(),
+            counts.clone().into_tensor_arg(),
+            isect_cap,
+        );
 
-        project_uniforms.num_visible = num_visible;
+        // Kept capacity-sized: kernels take their bounds from `counts`.
+        project_uniforms.num_visible = total_splats;
 
         let mip_splat = matches!(render_mode, SplatRenderMode::Mip);
         let img_size: glam::UVec2 = project_uniforms.img_size.into();
-        let tile_bounds: glam::UVec2 = project_uniforms.tile_bounds.into();
-        let num_visible_sz = (num_visible as usize).max(1);
 
         let global_from_compact_gid = {
-            let depths = Self::float_slice(depths, &[(0..num_visible_sz).into()]);
-            let global_from_presort_gid =
-                Self::int_slice(global_from_presort_gid, &[(0..num_visible_sz).into()]);
+            // Sort only the compacted prefix: the sort kernels early-out
+            // workgroups past counts[0].
+            let num_visible_slice = Self::int_slice(counts.clone(), &[(0..1).into()]);
             let (_, global_from_compact_gid) = tracing::trace_span!("DepthSort")
-                .in_scope(|| radix_argsort(depths, global_from_presort_gid, 32));
+                .in_scope(|| radix_argsort_len(
+                    depths,
+                    global_from_presort_gid,
+                    32,
+                    num_visible_slice,
+                ));
             global_from_compact_gid
         };
         let compact_counts = Self::int_gather(0, intersect_counts, global_from_compact_gid.clone());
         let cum_tiles_hit =
             tracing::trace_span!("PrefixSumGaussHits").in_scope(|| prefix_sum(compact_counts));
         let projected_splats = create_tensor(
-            [num_visible_sz, kernels::helpers::PROJECTED_LANES_USIZE],
+            [total_splats as usize, kernels::helpers::PROJECTED_LANES_USIZE],
             &device,
             DType::F32,
         );
@@ -217,13 +224,14 @@ impl SplatOps for CubeBackend {
             let cube_dim = CubeDim::new_1d(kernels::project_visible::WG_SIZE);
             kernels::project_visible::project_visible_kernel::launch(
                 &client,
-                calculate_cube_count_elemwise(&client, num_visible as usize, cube_dim),
+                calculate_cube_count_elemwise(&client, total_splats as usize, cube_dim),
                 cube_dim,
                 transforms.into_tensor_arg(),
                 sh_coeffs.into_tensor_arg(),
                 raw_opacities.into_tensor_arg(),
                 min_scale.into_tensor_arg(),
                 global_from_compact_gid.clone().into_tensor_arg(),
+                counts.clone().into_tensor_arg(),
                 compact_from_global.clone().into_tensor_arg(),
                 projected_splats.clone().into_tensor_arg(),
                 uniforms,
@@ -234,15 +242,13 @@ impl SplatOps for CubeBackend {
                 camera.camera_model,
             );
         });
-        let num_tiles = tile_bounds.x * tile_bounds.y;
-        let buffer_size = (num_intersections as usize).max(1);
-        let tile_id_from_isect = create_tensor([buffer_size], &device, DType::U32);
-        let compact_gid_from_isect = create_tensor([buffer_size], &device, DType::U32);
+        let tile_id_from_isect = create_tensor([isect_cap as usize], &device, DType::U32);
+        let compact_gid_from_isect = create_tensor([isect_cap as usize], &device, DType::U32);
         tracing::trace_span!("MapGaussiansToIntersect").in_scope(|| {
             let cube_dim = CubeDim::new_1d(kernels::map_gaussians::WG_SIZE);
             kernels::map_gaussians::map_gaussians_to_intersect_kernel::launch(
                 &client,
-                calculate_cube_count_elemwise(&client, num_visible as usize, cube_dim),
+                calculate_cube_count_elemwise(&client, total_splats as usize, cube_dim),
                 cube_dim,
                 projected_splats.clone().into_tensor_arg(),
                 cum_tiles_hit.clone().into_tensor_arg(),
@@ -250,12 +256,22 @@ impl SplatOps for CubeBackend {
                 compact_gid_from_isect.clone().into_tensor_arg(),
                 project_uniforms.tile_bounds[0],
                 project_uniforms.tile_bounds[1],
-                num_visible,
+                counts.clone().into_tensor_arg(),
+                isect_cap,
             );
         });
         let bits = u32::BITS - num_tiles.leading_zeros();
-        let (tile_id_from_isect, compact_gid_from_isect) = tracing::trace_span!("Tile sort")
-            .in_scope(|| radix_argsort(tile_id_from_isect, compact_gid_from_isect, bits));
+        let (tile_id_from_isect, compact_gid_from_isect) = {
+            let isect_used_slice = Self::int_slice(counts.clone(), &[(1..2).into()]);
+            tracing::trace_span!("Tile sort").in_scope(|| {
+                radix_argsort_len(
+                    tile_id_from_isect,
+                    compact_gid_from_isect,
+                    bits,
+                    isect_used_slice,
+                )
+            })
+        };
         let cube_dim = CubeDim::new_1d(256);
         let tile_offsets = Self::int_zeros(
             [tile_bounds.y as usize, tile_bounds.x as usize, 2].into(),
@@ -267,11 +283,11 @@ impl SplatOps for CubeBackend {
                 &client,
                 calculate_cube_count_elemwise(
                     &client,
-                    num_intersections as usize,
+                    isect_cap as usize,
                     CubeDim::new_1d(cube_dim.x * CHECKS_PER_ITER),
                 ),
                 cube_dim,
-                num_intersections,
+                counts.clone().into_tensor_arg(),
                 num_tiles,
                 tile_id_from_isect.into_tensor_arg(),
                 tile_offsets.clone().into_tensor_arg(),
@@ -334,8 +350,7 @@ impl SplatOps for CubeBackend {
         RenderOutput {
             out_img,
             aux: RenderAuxInner {
-                num_visible,
-                num_intersections,
+                counts,
                 visible,
                 max_radius,
                 opacities,

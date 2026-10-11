@@ -34,6 +34,37 @@ pub fn radix_argsort(
 
     let _span = tracing::trace_span!("Radix sort").entered();
 
+    let max_n = input_keys.shape()[0] as u32;
+    let device = input_keys.device.clone();
+    let num_keys_buf = create_tensor_from_slice(&[max_n as i32], &device, DType::I32);
+    radix_argsort_len(input_keys, input_values, sorting_bits, num_keys_buf)
+}
+
+/// Radix argsort over capacity-sized buffers where the true element count
+/// lives on-GPU (`num_keys[0]`). All launches use the buffer capacity for
+/// their grid and the sort kernels early-out workgroups past the GPU count,
+/// so the host never needs to read the count back.
+pub fn radix_argsort_len(
+    input_keys: CubeTensor,
+    input_values: CubeTensor,
+    sorting_bits: u32,
+    num_keys_buf: CubeTensor,
+) -> (CubeTensor, CubeTensor) {
+    assert_eq!(
+        input_keys.shape()[0],
+        input_values.shape()[0],
+        "Input keys and values must have the same number of elements"
+    );
+    assert!(sorting_bits <= 32, "Can only sort up to 32 bits");
+    assert!(
+        input_keys.is_contiguous(),
+        "Please ensure input keys are contiguous"
+    );
+    assert!(
+        input_values.is_contiguous(),
+        "Please ensure input keys are contiguous"
+    );
+
     let client = input_keys.client.clone();
     let max_n = input_keys.shape()[0] as u32;
     let device = input_keys.device.clone();
@@ -46,7 +77,6 @@ pub fn radix_argsort(
 
     let cube_dim = CubeDim::new_1d(WG);
 
-    let num_keys_buf = create_tensor_from_slice(&[max_n as i32], &device, DType::I32);
     let num_wgs =
         calculate_cube_count_elemwise(&client, max_n as usize, CubeDim::new_1d(BLOCK_SIZE));
     let num_reduce_wgs = calculate_cube_count_elemwise(

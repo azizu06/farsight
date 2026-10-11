@@ -9,11 +9,13 @@ pub const CHECKS_PER_ITER: u32 = 8;
 
 #[cube(launch)]
 pub fn get_tile_offsets(
-    num_inter: u32,
+    counts: &Tensor<u32>,
     num_tiles: u32,
     tile_id_from_isect: &Tensor<u32>,
     tile_offsets: &mut Tensor<u32>,
 ) {
+    // counts[1] = isects actually emitted (min(num_intersections, isect_cap)).
+    let num_inter = counts[1];
     // Compute linear position from 2D dispatch (for large dispatches that exceed 65535 workgroups)
     let workgroup_id = CUBE_POS_X + CUBE_POS_Y * CUBE_COUNT_X;
     let absolute_pos = workgroup_id * CUBE_DIM_X + UNIT_POS;

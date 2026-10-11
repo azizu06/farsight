@@ -19,7 +19,7 @@ use burn::{
         },
         tensor::{FloatTensor, IntTensor},
     },
-    tensor::{DType, Shape, Tensor},
+    tensor::{DType, Int, Shape, Tensor},
 };
 use glam::Vec3;
 
@@ -232,7 +232,9 @@ impl<B: Backend + SplatBwdOps> Backward<B, NUM_BWD_ARGS> for RenderBackwards {
 pub struct SplatOutputDiff {
     /// Rendered image, on the autodiff graph (this is what the loss backprops through).
     pub img: Tensor<3>,
-    pub num_visible: u32,
+    /// GPU-side `[num_visible, isect_used]` — read lazily; the read forces a
+    /// sync so the trainer defers it until the step is fully queued.
+    pub counts: Tensor<1, Int>,
     /// Per-splat visibility aux — on the **inner** backend (no gradients).
     pub visible: Tensor<1>,
     /// Per-splat max screen radius aux — on the **inner** backend (no gradients).
@@ -324,7 +326,7 @@ pub async fn render_splats_with_pass(
 
     SplatOutputDiff {
         img: Tensor::from_dispatch(output.out_img),
-        num_visible: output.aux.num_visible,
+        counts: Tensor::from_dispatch(output.aux.counts),
         visible: Tensor::from_dispatch(output.aux.visible).without_autodiff(),
         max_radius: Tensor::from_dispatch(output.aux.max_radius).without_autodiff(),
         opacities: Tensor::from_dispatch(output.aux.opacities).without_autodiff(),
@@ -420,8 +422,9 @@ impl<B: Backend + SplatOps + SplatBwdOps, C: CheckpointStrategy> SplatOps for Au
         crate::RenderOutput {
             out_img: img_ad,
             aux: crate::RenderAuxInner {
-                num_visible: output.aux.num_visible,
-                num_intersections: output.aux.num_intersections,
+                // Int tensors share the inner backend's primitive — passes
+                // through unchanged, same as tile_offsets below.
+                counts: output.aux.counts,
                 visible: lift(output.aux.visible),
                 max_radius: lift(output.aux.max_radius),
                 opacities: lift(output.aux.opacities),

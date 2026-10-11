@@ -19,10 +19,13 @@ pub fn map_gaussians_to_intersect_kernel(
     compact_gid_from_isect: &mut Tensor<u32>,
     tile_bw: u32,
     tile_bh: u32,
-    num_visible: u32,
+    // counts[0] = num_visible (GPU-side, avoids the readback that used to
+    // size this launch); isect_cap bounds the output buffers.
+    counts: &Tensor<u32>,
+    isect_cap: u32,
 ) {
     let compact_gid = ABSOLUTE_POS as u32;
-    if compact_gid >= num_visible {
+    if compact_gid >= counts[0] {
         terminate!();
     }
 
@@ -64,8 +67,12 @@ pub fn map_gaussians_to_intersect_kernel(
         {
             let tile_id = tx + ty * tile_bw;
             let isect_id = base_isect_id + num_tiles_hit;
-            tile_id_from_isect[isect_id as usize] = tile_id;
-            compact_gid_from_isect[isect_id as usize] = compact_gid;
+            // isect_cap clamp: if the total hits overflow the capacity the
+            // tail is dropped for this step rather than scribbling OOB.
+            if isect_id < isect_cap {
+                tile_id_from_isect[isect_id as usize] = tile_id;
+                compact_gid_from_isect[isect_id as usize] = compact_gid;
+            }
             num_tiles_hit += 1u32;
         }
     }
@@ -74,7 +81,9 @@ pub fn map_gaussians_to_intersect_kernel(
     // `[base_isect_id, base_isect_id + pf_count)` is left uninitialised.
     for pad_idx in num_tiles_hit..pf_count {
         let isect_id = base_isect_id + pad_idx;
-        tile_id_from_isect[isect_id as usize] = sentinel_tile_id;
-        compact_gid_from_isect[isect_id as usize] = compact_gid;
+        if isect_id < isect_cap {
+            tile_id_from_isect[isect_id as usize] = sentinel_tile_id;
+            compact_gid_from_isect[isect_id as usize] = compact_gid;
+        }
     }
 }

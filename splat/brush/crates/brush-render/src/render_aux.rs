@@ -32,29 +32,35 @@ pub struct RenderOutput<B: Backend> {
 }
 
 impl<B: Backend> RenderOutput<B> {
-    /// Count-only invariants — cheap (no readback), always on.
-    pub fn validate_counts(&self) {
-        let num_visible = self.aux.num_visible;
-        let num_intersections = self.aux.num_intersections;
-        let total_splats = self.project_uniforms.total_splats;
-        assert!(
-            num_visible <= total_splats,
-            "num_visible ({num_visible}) > total_splats ({total_splats})",
-        );
-        let max_isects = (num_visible as u64)
-            * (self.project_uniforms.tile_bounds[0] as u64)
-            * (self.project_uniforms.tile_bounds[1] as u64);
-        assert!(
-            (num_intersections as u64) <= max_isects,
-            "num_intersections ({num_intersections}) > max possible {max_isects}",
-        );
-    }
-
     /// Full validation; gated on `debug-validation` feature / `cfg(test)`.
     /// Takes self by value to avoid Send issues with the async readbacks.
+    ///
+    /// Reads `aux.counts` — a GPU sync — but validation only runs on debug
+    /// paths, never in the training hot loop.
     #[allow(unused_variables)]
     pub async fn validate(self) {
-        self.validate_counts();
+        #[cfg(any(feature = "debug-validation", test))]
+        {
+            let data = <B as burn::backend::ops::IntTensorOps<B>>::int_into_data(
+                self.aux.counts,
+            )
+            .await
+            .expect("counts readback");
+            let counts: &[u32] = data.as_slice::<u32>().expect("counts dtype");
+            let (num_visible, num_intersections) = (counts[0], counts[1]);
+            let total_splats = self.project_uniforms.total_splats;
+            assert!(
+                num_visible <= total_splats,
+                "num_visible ({num_visible}) > total_splats ({total_splats})",
+            );
+            let max_isects = (num_visible as u64)
+                * (self.project_uniforms.tile_bounds[0] as u64)
+                * (self.project_uniforms.tile_bounds[1] as u64);
+            assert!(
+                (num_intersections as u64) <= max_isects,
+                "num_intersections ({num_intersections}) > max possible {max_isects}",
+            );
+        }
         // Heavy validation lives at the public API boundary where we have Tensor<D>.
     }
 }
@@ -63,8 +69,10 @@ impl<B: Backend> RenderOutput<B> {
 /// pipeline and the backward registration.
 #[derive(Debug, Clone, ExtensionType)]
 pub struct RenderAuxInner<B: Backend> {
-    pub num_visible: u32,
-    pub num_intersections: u32,
+    /// GPU-side `[num_visible, isect_used]` written by the write_counts
+    /// kernel. Read it back on your own schedule — reading forces a sync, so
+    /// the training loop defers it until the rest of the step is queued.
+    pub counts: IntTensor<B>,
     pub visible: FloatTensor<B>,
     /// Per-splat maximum screen-space radius in pixels (global-gid indexed).
     /// Zero for splats that were culled / invisible in this view.
@@ -79,8 +87,8 @@ pub struct RenderAuxInner<B: Backend> {
 /// Public, backend-agnostic aux. Holds `Tensor<D>` for the user.
 #[derive(Debug, Clone)]
 pub struct RenderAux {
-    pub num_visible: u32,
-    pub num_intersections: u32,
+    /// GPU-side `[num_visible, isect_used]`. Read lazily — forces a sync.
+    pub counts: Tensor<1, Int>,
     pub visible: Tensor<1>,
     /// Per-splat maximum screen-space radius in pixels (global-gid indexed).
     /// Zero for splats that were culled / invisible in this view.

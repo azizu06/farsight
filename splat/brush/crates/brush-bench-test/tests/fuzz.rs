@@ -24,6 +24,7 @@ use brush_render::{
     kernels::camera_model::CameraModel::Pinhole,
     shaders::helpers::TILE_WIDTH,
 };
+use burn::backend::ops::IntTensorOps;
 use burn::backend::wgpu::WgpuDevice;
 use burn::tensor::DType;
 use burn_cubecl::tensor::CubeTensor;
@@ -244,24 +245,29 @@ fn rand_img_size(rng: &mut Sm64) -> glam::UVec2 {
     TABLE[(rng.u64() as usize) % TABLE.len()]
 }
 
-fn assert_basic_counts(
-    out: &RenderOutput<MainBackendBase>,
-    n: usize,
-    img_size: glam::UVec2,
-    tag: &str,
-) {
+/// Reads the GPU-side [num_visible, isect_used] pair. Tests may sync.
+async fn read_counts(out: &RenderOutput<MainBackendBase>) -> Vec<u32> {
+    MainBackendBase::int_into_data(out.aux.counts.clone())
+        .await
+        .expect("counts readback")
+        .as_slice::<u32>()
+        .expect("counts dtype")
+        .to_vec()
+}
+
+fn assert_basic_counts(counts: &[u32], n: usize, img_size: glam::UVec2, tag: &str) {
     assert!(
-        out.aux.num_visible <= n as u32,
+        counts[0] <= n as u32,
         "{tag}: num_visible {} > n {n}",
-        out.aux.num_visible,
+        counts[0],
     );
     let tx = img_size.x.div_ceil(TILE_WIDTH) as u64;
     let ty = img_size.y.div_ceil(TILE_WIDTH) as u64;
-    let max_isects = (out.aux.num_visible as u64) * tx * ty;
+    let max_isects = (counts[0] as u64) * tx * ty;
     assert!(
-        (out.aux.num_intersections as u64) <= max_isects,
+        (counts[1] as u64) <= max_isects,
         "{tag}: num_intersections {} > {max_isects}",
-        out.aux.num_intersections,
+        counts[1],
     );
 }
 
@@ -296,7 +302,7 @@ async fn fuzz_single_bad_slot_combinations() {
                 SplatRenderMode::Default,
             )
             .await;
-            assert_basic_counts(&out, n, img_size, &format!("slot={slot} poison={poison:?}"));
+            assert_basic_counts(&read_counts(&out).await, n, img_size, &format!("slot={slot} poison={poison:?}"));
             out.validate().await;
         }
     }
@@ -320,7 +326,7 @@ async fn fuzz_random_scenes() {
         let scene = poisoned_scene(seed, n, poison_rate);
         let out = render_raw(&device, &cam, img_size, &scene, mode).await;
         let tag = format!("seed={seed} n={n} rate={poison_rate:.2} img={img_size:?} mode={mode:?}");
-        assert_basic_counts(&out, n, img_size, &tag);
+        assert_basic_counts(&read_counts(&out).await, n, img_size, &tag);
         out.validate().await;
     }
 }
@@ -436,12 +442,9 @@ async fn fuzz_bad_geometry_is_fully_culled() {
         let mut rng = Sm64::new(0xDEAD_BEEF);
         let scene = make(&mut rng, n);
         let out = render_raw(&device, &cam, img_size, &scene, SplatRenderMode::Default).await;
-        assert_eq!(
-            out.aux.num_visible, 0,
-            "{tag}: {} visible, expected 0",
-            out.aux.num_visible
-        );
-        assert_eq!(out.aux.num_intersections, 0);
+        let counts = read_counts(&out).await;
+        assert_eq!(counts[0], 0, "{tag}: {} visible, expected 0", counts[0]);
+        assert_eq!(counts[1], 0);
         out.validate().await;
     }
 }
@@ -467,7 +470,7 @@ async fn fuzz_valid_but_extreme_stays_visible() {
         );
         let out = render_raw(&device, &cam, img_size, &scene, SplatRenderMode::Default).await;
         assert_eq!(
-            out.aux.num_visible, n as u32,
+            read_counts(&out).await[0], n as u32,
             "log_scale={ls_val} over-culled"
         );
         out.validate().await;
@@ -482,7 +485,7 @@ async fn fuzz_valid_but_extreme_stays_visible() {
             vec![3.0; n],
         );
         let out = render_raw(&device, &cam, img_size, &scene, SplatRenderMode::Default).await;
-        assert_eq!(out.aux.num_visible, n as u32, "color mag={mag} over-culled");
+        assert_eq!(read_counts(&out).await[0], n as u32, "color mag={mag} over-culled");
         out.validate().await;
     }
 }

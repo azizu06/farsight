@@ -457,12 +457,10 @@ pub async fn render_splats(
     output.clone().validate().await;
 
     let img_size = output.aux.img_size;
-    let num_visible = output.aux.num_visible;
-    let num_intersections = output.aux.num_intersections;
+    let counts = output.aux.counts;
 
     let aux = RenderAux {
-        num_visible,
-        num_intersections,
+        counts: Tensor::from_dispatch(counts),
         visible: Tensor::from_dispatch(output.aux.visible),
         max_radius: Tensor::from_dispatch(output.aux.max_radius),
         opacities: Tensor::from_dispatch(output.aux.opacities),

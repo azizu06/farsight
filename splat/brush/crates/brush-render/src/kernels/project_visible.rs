@@ -26,6 +26,9 @@ pub fn project_visible_kernel(
     raw_opacities: &Tensor<f32>,
     min_scale: &Tensor<f32>,
     global_from_compact_gid: &Tensor<u32>,
+    // GPU-side counts: counts[0] = num_visible. Lets the host launch this
+    // kernel over the full capacity without a readback.
+    counts: &Tensor<u32>,
     compact_from_global: &mut Tensor<u32>,
     projected: &mut Tensor<f32>,
     u: ProjectUniforms,
@@ -36,7 +39,7 @@ pub fn project_visible_kernel(
     #[comptime] camera_model: CameraModel,
 ) {
     let compact_gid = ABSOLUTE_POS as u32;
-    if compact_gid >= u.num_visible {
+    if compact_gid >= counts[0] {
         terminate!();
     }
 

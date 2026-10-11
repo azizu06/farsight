@@ -110,8 +110,16 @@ async fn renders_many_splats() {
     let (output, aux) =
         render_splats(splats, &cam, img_size, Vec3::ZERO, None, TextureMode::Float).await;
 
+    let counts: Vec<u32> = aux
+        .counts
+        .clone()
+        .into_data_async()
+        .await
+        .unwrap()
+        .try_into_vec::<u32>()
+        .unwrap();
     assert!(
-        aux.num_visible > 0,
+        counts[0] > 0,
         "30M splats in front of camera, none survived projection"
     );
     let pixels = read_finite(output).await;
@@ -357,9 +365,24 @@ async fn viewer_scale_matches_materialized_transforms() {
                         actual.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
                         expected.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
                     );
-                    assert_eq!(aux.num_visible, 2);
-                    assert_eq!(aux.num_visible, expected_aux.num_visible);
-                    assert_eq!(aux.num_intersections, expected_aux.num_intersections);
+                    let counts: Vec<u32> = aux
+                        .counts
+                        .clone()
+                        .into_data_async()
+                        .await
+                        .unwrap()
+                        .try_into_vec::<u32>()
+                        .unwrap();
+                    let expected_counts: Vec<u32> = expected_aux
+                        .counts
+                        .clone()
+                        .into_data_async()
+                        .await
+                        .unwrap()
+                        .try_into_vec::<u32>()
+                        .unwrap();
+                    assert_eq!(counts[0], 2);
+                    assert_eq!(counts, expected_counts);
                     for (actual, expected) in [
                         (aux.max_radius, expected_aux.max_radius),
                         (aux.opacities, expected_aux.opacities),

@@ -423,7 +423,7 @@ impl SplatTrainer {
         let mut aux_max_radius: Option<Tensor<1>> = None;
         let mut coeffs_grad_sq_sum: Option<Tensor<3>> = None;
         let mut refine_weights: Vec<Tensor<1>> = Vec::with_capacity(batches.len());
-        let mut num_visible_acc = 0u64;
+        let mut counts_sum: Option<Tensor<1, Int>> = None;
 
         for batch in batches {
             let [img_h, img_w] = batch.img_size();
@@ -468,7 +468,10 @@ impl SplatTrainer {
 
             let pred_image = diff_out.img;
             let refine_weight_holder = diff_out.refine_weight_holder;
-            num_visible_acc += diff_out.num_visible as u64;
+            counts_sum = Some(match counts_sum {
+                Some(c) => c + diff_out.counts,
+                None => diff_out.counts,
+            });
 
             // RGB loss is `(1 - w) * L1 + (-w) * SSIM` per pixel. Bg
             // compositing always runs in the kernel; for synthesised opaque
@@ -545,7 +548,7 @@ impl SplatTrainer {
         let opacities = aux_opacities.expect("at least one view");
         let max_radius = aux_max_radius.expect("at least one view");
         let coeffs_grad_sq_holder = coeffs_grad_sq_sum.expect("at least one view") / n_views;
-        let num_visible = (num_visible_acc as f32 / n_views) as u32;
+        let counts = counts_sum.expect("at least one view");
 
         // Strip the autodiff graph off the loss so consumers can read the
         // scalar later without keeping the backward pass alive.
@@ -721,6 +724,18 @@ impl SplatTrainer {
             let out = inner.slice_assign(s![.., 0..3], noised_means);
             Tensor::from_inner(out).require_grad()
         });
+
+        // splat-turbo T7: the only remaining per-step GPU->CPU read. It is
+        // deferred to here — every kernel for this step (forward, loss,
+        // backward, optimizer, noise) is already queued, so this wait
+        // overlaps real GPU work instead of idling the pipe mid-forward.
+        let counts: Vec<u32> = counts
+            .into_data_async()
+            .await
+            .expect("counts readback")
+            .try_into_vec::<u32>()
+            .expect("counts dtype");
+        let num_visible = (counts[0] as f32 / n_views) as u32;
 
         let stats = TrainStepStats {
             num_visible,

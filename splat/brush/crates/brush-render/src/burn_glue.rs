@@ -142,8 +142,7 @@ impl SplatOps for Fusion<CubeBackend> {
             compact_from_global,
         } = out;
         let RenderAuxInner {
-            num_visible,
-            num_intersections,
+            counts,
             visible,
             max_radius,
             opacities,
@@ -156,8 +155,7 @@ impl SplatOps for Fusion<CubeBackend> {
         RenderOutput {
             out_img: bind(out_img),
             aux: RenderAuxInner {
-                num_visible,
-                num_intersections,
+                counts: bind(counts),
                 visible: bind(visible),
                 max_radius: bind(max_radius),
                 opacities: bind(opacities),
