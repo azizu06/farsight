@@ -196,11 +196,11 @@ the goal.
   with a 0.13 m radius RPP clipped a wall end.
 - **Planner:** `SmacPlanner2D`, `allow_unknown` (goals are often in unseen space),
   0.25 m tolerance.
-- **Translation floor:** the server raises any moving forward Nav2 (Explore, Seek, Goto)
+- **Translation floor:** in Explore the server raises any moving forward Nav2
   translation slower than 0.15 m/s (`NavService.MIN_LINEAR_MPS`) to 0.15 m/s on the
-  same arc (the turn rate scales with it, then the server clamps it). Reverse stays as
-  Nav2 sent it: raising its slow reverse recovery motions drove the simulated dead end
-  into its walls (3 of 4 runs failed; forward-only 2 of 2 passed). The bridge's
+  same arc (the turn rate scales with it, then the server clamps it). Reverse, Seek and
+  Goto stay as Nav2 sent them: Goto is kept exactly as before for the demo while the
+  dead-end go-to scenario is flaky on main (it failed there too on 2026-10-11). The bridge's
   local Explore motion applies the same floor, and so does the reactive policy without
   Nav2 (`ControlState._reactive_floor`). Exact zero (an in-place turn or a stop) stays zero.
   The floor holds at the real speed only with a drive profile that matches the loaded

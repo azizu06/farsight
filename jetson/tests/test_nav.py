@@ -1074,7 +1074,7 @@ class DemoSensorPauseTests(unittest.TestCase):
 
 
 class TranslationFloorTests(unittest.TestCase):
-    """A moving forward Nav2 translation is never slower than MIN_LINEAR_MPS; zero and reverse stay as sent."""
+    """A moving forward Explore translation is never slower than MIN_LINEAR_MPS; zero, reverse, Seek and Goto stay."""
 
     def setUp(self):
         self.nav = NavService(MapState(), clock=Clock())
@@ -1094,6 +1094,14 @@ class TranslationFloorTests(unittest.TestCase):
                 self.assertAlmostEqual(si[0], v)
                 self.assertAlmostEqual(si[1], w)
                 self.assertAlmostEqual(normalized[0], v / self.nav.speed_mps)
+
+    def test_seek_and_goto_commands_pass_unchanged(self):
+        for mode in ("goto", "seek"):
+            with self.subTest(mode=mode):
+                self.nav.mode = mode
+                self.nav.receive(dict(type="cmd_vel", linear=0.05, angular=0.1, generation=self.nav.generation,
+                                      goal_id=self.nav.goal_id))
+                self.assertEqual(self.nav.cmd[3:5], (0.05, 0.1))
 
     def test_the_floor_reaches_the_wheels_through_the_server(self):
         clock = Clock()
