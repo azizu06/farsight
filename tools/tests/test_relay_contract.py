@@ -30,6 +30,7 @@ class RelayContractTests(unittest.TestCase):
         paths = quest_paths()
         for known in ("/speak", "/ask", "/ws/control", "/camera.jpg"):
             self.assertIn(known, paths)
+        self.assertTrue(is_proxied("/ws/intercom"), "the opt-in Quest/iPhone audio socket must reach the Jetson")
 
     def test_every_quest_path_is_proxied(self):
         missing = {p: f for p, f in quest_paths().items() if p not in LOCAL and not is_proxied(p)}
