@@ -49,8 +49,10 @@ export class DenseMapView {
 
   update(now: number, camera: THREE.Camera, enabled: boolean) {
     if (this.stopped) return;
-    this.resumeUpload?.();
     this.group.visible = enabled;
+    // Abort first: its listener releases a waiting upload without admitting more work.
+    if (!enabled) this.request?.abort();
+    else this.resumeUpload?.();
     this.frames++;
     if (now - this.sampleAt >= 1000) {
       this.fps = this.frames * 1000 / Math.max(1, now - this.sampleAt);
@@ -63,7 +65,7 @@ export class DenseMapView {
         body: JSON.stringify({ points: this.active ? this.renderer.info.render.points : 0,
           uploaded_points: this.points, fps: this.fps, xr: this.renderer.xr.isPresenting }) }).catch(() => {});
     }
-    if (!enabled) { this.request?.abort(); return; }
+    if (!enabled) return;
     if (!this.busy && now - this.lastPull > 750) {
       this.root.updateWorldMatrix(true, false);
       camera.getWorldPosition(this.viewer);
@@ -81,6 +83,7 @@ export class DenseMapView {
       const response = await fetch(`/dense/manifest?${query}`, { signal: abort.signal, cache: "no-store" });
       if (!response.ok) throw new Error(`Dense manifest ${response.status}`);
       const manifest = await response.json();
+      if (abort.signal.aborted) return;
       if (typeof manifest.epoch !== "string" || !Array.isArray(manifest.chunks)
           || manifest.chunks.length > DENSE_VIEW_CHUNKS) throw new Error("Invalid dense manifest");
       if (manifest.epoch !== this.epoch) { this.clear(); this.epoch = manifest.epoch; }
@@ -89,6 +92,7 @@ export class DenseMapView {
       const wanted = new Set<string>(manifest.chunks.map((chunk: ChunkRef) => chunk.id));
       for (const [id, slot] of this.slots) if (!wanted.has(id)) this.remove(id, slot);
       for (const chunk of manifest.chunks as ChunkRef[]) {
+        if (abort.signal.aborted) return;
         if (!/^-?\d+_-?\d+_-?\d+$/.test(chunk.id) || !Number.isSafeInteger(chunk.revision)
             || !Number.isInteger(chunk.lod) || chunk.lod < 0 || chunk.lod > 4) throw new Error("Invalid dense chunk reference");
         const key = `${chunk.revision}:${chunk.lod}`;
@@ -96,8 +100,9 @@ export class DenseMapView {
         const params = new URLSearchParams({ id: chunk.id, lod: String(chunk.lod), source: this.sourceKind });
         const reply = await fetch(`/dense/chunk.bin?${params}`, { signal: abort.signal, cache: "no-store" });
         if (!reply.ok) throw new Error(`Dense chunk ${reply.status}`);
-        const data = decodeDenseChunk(await reply.arrayBuffer());
+        const body = await reply.arrayBuffer();
         if (abort.signal.aborted) return;
+        const data = decodeDenseChunk(body);
         if (data.metadata.epoch !== this.epoch || data.metadata.revision < chunk.revision
             || data.metadata.chunk?.join("_") !== chunk.id || data.metadata.lod !== chunk.lod) continue;
         let slot = this.slots.get(chunk.id);
