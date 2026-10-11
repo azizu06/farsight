@@ -20,7 +20,7 @@ function fixture() {
     identityCanvas:{getContext:()=>context,hidden:false},identityTexture:{needsUpdate:false},
     identityPanel:{visible:true},identityDirty:false,lastIdentityPaint:0,identityPaintSource:'PHONE RGB',
     identityCards:{draw:(_ctx,{now,source})=>{draws++; return source==='PHONE RGB' && now<1000 ? 1:0;}},
-    frameSource:'PHONE RGB',gate,renderer:{xr:{isPresenting:true}},actionMenu:{visible:false},
+    frameSource:'PHONE RGB',gate,renderer:{xr:{isPresenting:false}},actionMenu:{visible:false},
     h264Enabled:true,h264:{video:{readyState:2},displayedFrame:null},dirty:true,lastCanvasDraw:0,
     lastHudAt:0,bannerPending:null,drawHUD(){},
   });
@@ -48,4 +48,14 @@ test('displayed source change clears an old card immediately within the paint in
   assert.equal(view.identityPanel.visible,false);
   assert.equal(view.identityCanvas.hidden,true);
   assert.equal(view.identityPaintSource,'USB CAMERA');
+});
+
+
+test('minimal immersive view suppresses identity cards without renewing camera evidence',()=>{
+  const {view,clears,draws}=fixture(); view.renderer.xr.isPresenting=true;
+  view.paintIdentity(20);
+  assert.equal(view.identityPanel.visible,false);
+  assert.equal(view.identityCanvas.hidden,true);
+  assert.equal(clears(),0); assert.equal(draws(),0);
+  assert.equal(view.gate.videoAge(20),120);
 });

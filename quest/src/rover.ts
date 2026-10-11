@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { SourceTruth } from "./source-banner.js";
 import { explainStop } from "./stop-reason.js";
-import { ControlSafety, stick, triggerHeld } from "./control-safety.js";
+import { ControlSafety, stick } from "./control-safety.js";
 import { H264Viewer } from "./h264";
 import { cameraCrop, croppedBox } from "./camera-view.js";
 import { VRActionMenu, type VRAction } from "./vr-actions";
@@ -62,6 +62,8 @@ export class RoverExperience {
   private hintKey = "";
   /** AUTO / free roam: Explore drives the rover, the right stick only moves the operator through the map. */
   private auto = false;
+  /** A mode change sends a release before autonomous heartbeats begin. */
+  private autoArming = false;
   private lastRoamAt = -Infinity;
   private roamTurnArmed = true;
   private voiceCanvas = document.createElement("canvas");
@@ -211,7 +213,7 @@ export class RoverExperience {
       <button id="rover-explore" aria-pressed="false">Explore (E)</button>
       <button id="rover-nav-cancel">Cancel nav (C)</button>
       <p id="rover-nav" class="rover-nav" role="status" hidden></p>
-      <p class="rover-help">Quest (right hand only): starts in MANUAL, hold the trigger and the right stick drives the rover. Tap A: AUTO, the rover explores on its own (hands-free in the demo build) and the stick walks you through the 3D map, with the live camera in a corner window; tap A again for MANUAL. B: stop, back to MANUAL. Hold A: actions menu (point, then trigger or grip). Grip: pick a person (MANUAL) or set a floor goal (AUTO); click the stick to cancel go-to. Left Y: controller diagram. Left X: recenter. Add ?demo=0 to restore every client guard.<span id="rover-voice-help" hidden> Hold left trigger: ask by voice (enable in Settings first).</span><br>Desktop: hold Space + WASD in camera view; click a person to seek; E explores; double-click the map floor for go-to, C cancels. Stick/WASD takes back control.</p>`;
+      <p class="rover-help">Quest: move the right joystick to drive. Press right A to switch to Autonomous; the rover explores while the joystick roams the 3D map. Press A again for Manual. Center the stick to stop manual motion. B stops the rover.<br>Desktop: hold Space + WASD in camera view; click a person to seek; E explores; double-click the map floor for go-to, C cancels. Stick/WASD takes back control.</p>`;
     document.querySelector("main")!.append(panel);
     this.sourceBanner = document.createElement("div");
     this.sourceBanner.className = "source-banner"; this.sourceBanner.setAttribute("role", "status");
@@ -264,8 +266,7 @@ export class RoverExperience {
     this.voiceTexture.colorSpace = THREE.SRGBColorSpace;
     this.voicePanel.position.set(-2.15, 0.15, -2.1); this.voicePanel.rotation.y = 0.35; this.voicePanel.renderOrder = 12; this.voicePanel.visible = false;
     this.pointer.visible = false; this.pointer.renderOrder = 30;
-    this.cockpit.add(screen, this.drillPanel, this.bannerPanel, this.stopPanel, this.voicePanel,
-      this.actionMenu.panel, this.hintPanel, this.pointer); this.cockpit.visible = false;
+    this.cockpit.add(screen, this.bannerPanel); this.cockpit.visible = false;
     this.cameraScreen = screen;
     this.identityCanvas.width = 300; this.identityCanvas.height = 160;
     this.identityCanvas.hidden = true;
@@ -292,7 +293,7 @@ export class RoverExperience {
       this.rightSource = null; this.leftSource = null;
       this.inputValid = false; this.keys.clear(); this.pointerHeld = false;
       this.recenter = true; this.actionMenu.visible = false; this.setView("camera");
-      this.auto = false; mapWalk.setMode("overview"); mapWalk.reset(); this.lastRoamAt = -Infinity; this.showHint();
+      this.auto = false; this.autoArming = false; mapWalk.setMode("overview"); mapWalk.reset(); this.lastRoamAt = -Infinity; this.showHint();
       this.renderer.xr.getSession()?.addEventListener("visibilitychange", () => {
         this.suspended = this.renderer.xr.getSession()?.visibilityState !== "visible";
         if (this.suspended) { this.voice?.stopListening("Headset inactive: voice question cancelled"); this.stop("Headset inactive: release trigger"); }
@@ -678,77 +679,40 @@ export class RoverExperience {
       }
       this.lastXRAt = now;
       const axes = right?.gamepad?.axes ?? [];
-      // Hands-free AUTO (demo): Explore heartbeats carry deadman=true without the trigger; A or B ends AUTO.
-      const handsFree = this.auto && this.gate.demo;
-      const held = handsFree || triggerHeld(this.input.held, right?.gamepad?.buttons[0]);
-      const scan = leftTracked && !!left?.gamepad?.buttons[5]?.pressed;
+      const stickX = axes.length >= 4 ? axes[2] : axes[0], stickY = axes.length >= 4 ? axes[3] : axes[1];
       const toggle = !!right?.gamepad?.buttons[4]?.pressed;
-      const explore = !!right?.gamepad?.buttons[5]?.pressed;
-      const center = leftTracked && !!left?.gamepad?.buttons[4]?.pressed;
-      const drill = leftTracked && !!left?.gamepad?.buttons[1]?.pressed;
-      const talk = leftTracked && !!left?.gamepad?.buttons[0]?.pressed;
-      // Free on the right controller: grip (squeeze) sets a go-to goal, thumbstick click cancels nav.
-      const goal = !!right?.gamepad?.buttons[1]?.pressed;
-      const cancel = !!right?.gamepad?.buttons[3]?.pressed;
-      const aim = !this.auto || this.actionMenu.visible ? null : this.aimFloor(frame, reference, right);
-      this.navOverlay.setReticle(aim);
-      const menuAction = this.updatePointer(frame!, reference, right);
-      if (this.actionMenu.visible) {
-        const pick = (goal && !this.goalDown) || (held && !this.menuTriggerDown);
-        if (pick && menuAction && !Number.isFinite(this.menuCloseAt)) this.chooseAction(menuAction, now);
-      } else if (goal && !this.goalDown) {
-        if (!this.auto) {
-          const point = this.panelPoint(frame, reference, right);
-          if (!point || !this.selectAt(point)) this.noteNav("Point at a person, then right grip to select Seek");
-        }
-        else if (aim) void this.setGoal(aim);
-        else this.noteNav("Go-to: point the right controller at the floor");
+      const stop = !!right?.gamepad?.buttons[5]?.pressed;
+      // A has one meaning: switch mode on the press edge. Holding it never opens a menu.
+      if (toggle && !this.toggleDown) this.setAuto(!this.auto);
+      if (stop && !this.exploreDown) {
+        this.setAuto(false);
+        this.stop("Stopped: center the joystick", true);
       }
-      if (cancel && !this.cancelDown) void this.cancelNav();
-      this.goalDown = goal; this.cancelDown = cancel; this.menuTriggerDown = held;
-      if (talk && !this.talkDown) this.talkPressed();
-      else if (!talk && this.talkDown) this.voice?.pushEnd();
-      if (leftTracked) this.talkDown = talk;
-      if (center && !this.recenterDown && this.voice?.pendingAction) this.voice.dismissAction();
-      if (drill && !this.drillDown) void this.startDrill();
-      if (leftTracked) this.drillDown = drill;
-      // A: tap switches MANUAL/AUTO; hold opens Actions so the right hand alone reaches every mode.
-      if (toggle && !this.toggleDown) this.aPressedAt = now;
-      let aHold = false;
-      if (this.aPressedAt !== null) {
-        if (toggle && now - this.aPressedAt >= A_HOLD_MS) { aHold = true; this.aPressedAt = null; }
-        else if (!toggle) { this.aPressedAt = null; this.setAuto(!this.auto); }
-      }
-      if (explore && !this.exploreDown) {
-        // B always lands in MANUAL so nothing re-arms Explore behind the stop.
-        this.actionMenu.visible = false; this.auto = false; mapWalk.setMode("overview"); this.autonomy.clear();
-        this.stop("Stopped: release trigger", true);
-        if (navActive(this.nav)) void this.cancelNav("Stopped: navigation cancelled");
-      }
-      if (center && !this.recenterDown) { this.stop("View recentered: release trigger"); this.recenter = true; }
-      this.toggleDown = toggle; this.exploreDown = explore;
-      if (leftTracked) this.recenterDown = center;
+      this.toggleDown = toggle; this.exploreDown = stop;
+      this.actionMenu.visible = false; this.pointer.visible = false;
+      this.navOverlay.setReticle(null);
+      if (this.autoArming && !this.gate.needsRelease && this.status && !this.status.requires_release &&
+          this.socket?.readyState === WebSocket.OPEN && now - this.gate.receivedAt < 200)
+        this.autoArming = false;
+      // Moving the stick is the manual motion intent. Centering it releases immediately.
+      // In autonomous mode the stick only moves the viewer, never the rover.
+      const held = this.auto ? !this.autoArming : !!(stick(stickX, XR_STICK_DEADZONE) || stick(stickY, XR_STICK_DEADZONE));
       this.euler.setFromQuaternion(this.quat, "YXZ");
       if (this.recenter && pose) this.anchorCockpit();
       const yaw = Math.atan2(Math.sin(this.euler.y - this.baseYaw), Math.cos(this.euler.y - this.baseYaw));
-      this.inputValid = !this.actionMenu.visible;
-      const stickX = axes.length >= 4 ? axes[2] : axes[0], stickY = axes.length >= 4 ? axes[3] : axes[1];
-      // AUTO: the stick is virtual locomotion only. Physical v/w stay 0, so it can never be a stick override.
-      if (this.auto) this.roamStep(now, stickX, stickY);
+      this.inputValid = true;
+      if (this.auto) {
+        const leftAxes = leftTracked ? left?.gamepad?.axes ?? [] : [];
+        this.roamStep(now, stickX, stickY, leftAxes.length >= 4 ? leftAxes[2] : leftAxes[0],
+          leftAxes.length >= 4 ? leftAxes[3] : leftAxes[1]);
+      }
       this.lastRoamAt = this.auto ? now : -Infinity;
       this.input = { held,
         v: this.auto ? 0 : -stick(stickY, XR_STICK_DEADZONE),
         w: this.auto ? 0 : stick(stickX, XR_STICK_DEADZONE),
         pan: this.digitalPan ? 0 : this.panSmoother.step(-THREE.MathUtils.radToDeg(yaw), this.panDt()) };
-      if (aHold) {
-        this.stop("Actions open: release trigger");
-        this.actionMenu.visible = !this.actionMenu.visible;
-        this.inputValid = !this.actionMenu.visible;
-      }
-      if (scan && !this.scanDown) this.showHint(now >= this.hintUntil);
-      // Explore stays armed in AUTO (re-armed only while released); the held deadman still gates every heartbeat.
-      if (this.auto && this.autonomy.mode === "teleop" && (handsFree || !held)) this.autonomy.toggleExplore();
-      if (leftTracked) this.scanDown = scan;
+      if (this.auto && this.autonomy.mode === "teleop") this.autonomy.toggleExplore();
+
     } else {
       this.inputValid = true;
       this.input = {
@@ -765,7 +729,7 @@ export class RoverExperience {
     }
     if (!xr) this.navOverlay.setReticle(null);
     this.navOverlay.update(this.nav, now);
-    this.navOverlay.group.visible = !(xr && !this.auto);
+    this.navOverlay.group.visible = !xr;
     if (this.input.v || this.input.w) this.scanArmed = false;
     this.cockpit.visible = xr;
     this.cameraScreen.visible = !this.actionMenu.visible;
@@ -774,7 +738,7 @@ export class RoverExperience {
     this.placeCameraScreen();
     if (Number.isFinite(this.menuCloseAt) && now >= this.menuCloseAt) { this.actionMenu.visible = false; this.menuCloseAt = -Infinity; }
     // A mode switch briefly enlarges the chip so MANUAL/AUTO is unmistakable.
-    this.bannerPanel.scale.setScalar(now < this.modeFlashUntil ? 1.8 : 1);
+    this.bannerPanel.scale.setScalar(1);
     this.updateHint(now);
     if (this.h264Enabled) {
       this.h264.update();
@@ -842,6 +806,7 @@ export class RoverExperience {
     if (this.bannerPending && (!painted || now - this.bannerPending.at > 100)) this.drawBanner();
   }
   private paintIdentity(now: number) {
+    if (this.renderer.xr.isPresenting) { this.identityPanel.visible = false; this.identityCanvas.hidden = true; return; }
     if (!this.identityCanvas || (!this.identityDirty && this.identityPaintSource === this.frameSource
         && now - this.lastIdentityPaint < 100)) return;
     const context = this.identityCanvas.getContext("2d")!;
@@ -950,23 +915,25 @@ export class RoverExperience {
   /** AUTO walk-through state for diagnostics/tests; main.ts renders mapWalk itself. */
   get freeRoam() { return { active: this.renderer.xr.isPresenting && this.auto, x: mapWalk.x, z: mapWalk.z, yaw: mapWalk.yaw }; }
   /** AUTO locomotion on mapWalk: stick forward/back walks along the gaze, a sideways flick snap-turns. */
-  private roamStep(now: number, stickX: number, stickY: number) {
+  private roamStep(now: number, stickX: number, stickY: number, leftX = 0, leftY = 0) {
     const dt = Number.isFinite(this.lastRoamAt) ? Math.min(0.1, Math.max(0, (now - this.lastRoamAt) / 1000)) : 0;
-    const forward = -stick(stickY, XR_STICK_DEADZONE), side = stick(stickX, XR_STICK_DEADZONE);
+    const strafe = stick(leftX, XR_STICK_DEADZONE), leftForward = -stick(leftY, XR_STICK_DEADZONE);
+    const forward = leftForward || -stick(stickY, XR_STICK_DEADZONE), side = stick(stickX, XR_STICK_DEADZONE);
+    const length = Math.max(1, Math.hypot(forward, strafe));
     let turn = 0;
     if (!side) this.roamTurnArmed = true;
     else if (this.roamTurnArmed && Math.abs(side) > 0.5) { turn = -Math.sign(side) * ROAM_SNAP; this.roamTurnArmed = false; }
-    mapWalk.moveViewer(forward * ROAM_SPEED * dt, 0, 0, turn);
+    mapWalk.moveViewer(forward / length * ROAM_SPEED * dt, strafe / length * ROAM_SPEED * dt, 0, turn);
   }
-  /** MANUAL: the right stick drives the rover. AUTO: Explore drives it, the stick roams the map.
-   * Either switch stops and needs a fresh trigger release/press; leaving AUTO cancels navigation. */
+  /** A switches between direct joystick driving and autonomous exploration with map roaming.
+   * Returning to manual requires centering the joystick before it can drive the rover. */
   private setAuto(auto: boolean) {
     if (auto === this.auto) return;
     this.actionMenu.visible = false; this.auto = auto; this.dirty = true; this.modeFlashUntil = performance.now() + 1500;
     mapWalk.setMode(auto ? "walk" : "overview"); this.lastRoamAt = -Infinity; this.roamTurnArmed = true;
-    // Leaving AUTO always needs a real release before manual driving. Entering it is hard only when the
-    // trigger must be held (demo off); hands-free AUTO sends its own release, then Explore heartbeats.
-    this.stop(auto ? "Auto: release trigger" : "Manual: release trigger", !auto || !this.gate.demo);
+    // Send a release during the transition; AUTO starts only after the release latch clears.
+    this.autoArming = auto;
+    this.stop(auto ? "Autonomous: arming" : "Manual: center the joystick", true);
     this.autonomy.clear();
     if (!auto && navActive(this.nav)) void this.cancelNav("Manual: navigation cancelled");
     if (auto) this.autonomy.toggleExplore();
@@ -979,24 +946,14 @@ export class RoverExperience {
     this.cameraScreen.position.set(windowed ? 0.95 : 0, windowed ? 0.7 : 0, windowed ? -2.2 : -2.35);
   }
   private showHint(visible = true) { this.hintUntil = visible ? performance.now() + HINT_MS : -Infinity; }
-  private updateHint(now: number) {
-    const left = this.hintUntil + HINT_FADE_MS - now;
-    const opacity = this.renderer.xr.isPresenting && !this.actionMenu.visible ? Math.min(1, Math.max(0, left / HINT_FADE_MS)) : 0;
-    this.hintPanel.visible = opacity > 0;
-    (this.hintPanel.material as THREE.MeshBasicMaterial).opacity = opacity;
-    const key = this.auto ? "auto" : "manual";
-    if (opacity > 0 && key !== this.hintKey) {
-      this.hintKey = key;
-      drawControllerHint(this.hintCanvas.getContext("2d")!, this.hintCanvas.width, this.hintCanvas.height, { mode: key });
-      this.hintTexture.needsUpdate = true;
-    }
-  }
+  private updateHint(_now: number) { this.hintPanel.visible = false; }
+
   get deadmanHeld() { return this.input.held; }
   /** Newest detections packet and when its frame arrived, for 3D person markers (display only). */
   get latestDetections(): { packet: Detections | null; at: number } { return { packet: this.detections, at: this.detectionsAt }; }
   get videoStreaming() { return this.h264Enabled; }
   /** Head-locked panel beside the camera, e.g. the diagnostics overlay. */
-  addCockpitPanel(panel: THREE.Object3D) { this.cockpit.add(panel); }
+  addCockpitPanel(panel: THREE.Object3D) { panel.visible = false; }
   /** Read-only figures for the diagnostics overlay. */
   diagnostics() {
     const now = performance.now();
@@ -1283,7 +1240,7 @@ export class RoverExperience {
     this.drawStop(stop, cue);
     this.drawVoice();
     const drawn = this.drillHud.draw(now);
-    this.drillPanel.visible = drawn; this.drillHud.canvas.hidden = !drawn;
+    this.drillPanel.visible = false; this.drillHud.canvas.hidden = !drawn;
     if (drawn) this.drillTexture.needsUpdate = true;
   }
 
@@ -1308,7 +1265,7 @@ export class RoverExperience {
   }
   /** Full cause and recovery on the 2D page; one icon and 1-3 words in the headset, only when relevant. */
   private drawStop(stop: ReturnType<typeof explainStop>, cue: ReturnType<typeof cueFor>) {
-    this.stopPanel.visible = !!cue && this.renderer.xr.isPresenting && !this.actionMenu.visible;
+    this.stopPanel.visible = false;
     const key = `${stop ? `${stop.tone}|${stop.cause}|${stop.recovery}` : ""}|${cue ? `${cue.tone}|${cue.icon}|${cue.words}` : ""}`;
     if (key === this.stopKey) return;
     this.stopKey = key;
@@ -1322,29 +1279,7 @@ export class RoverExperience {
     drawCue(this.stopCanvas.getContext("2d")!, this.stopCanvas.width, this.stopCanvas.height, cue);
     this.stopTexture.needsUpdate = true;
   }
-  private drawVoice() {
-    const voice = this.voice, action = voice?.pendingAction ?? null;
-    const visible = !!voice && this.renderer.xr.isPresenting && (voice.phase !== "idle" || !!action);
-    this.voicePanel.visible = visible;
-    if (!visible) return;
-    const c = this.voiceCanvas.getContext("2d")!;
-    const accent = { idle: "#dce5ee", permission: "#ffc779", listening: "#ff8a7a", processing: "#a6c9ec", answer: "#a6edc4", error: "#ffb3a8" }[voice.phase];
-    c.clearRect(0, 0, 768, 512); c.fillStyle = "#111b25ee"; c.fillRect(0, 0, 768, 512);
-    c.strokeStyle = accent; c.lineWidth = 6; c.strokeRect(3, 3, 762, 506);
-    c.fillStyle = accent; c.font = "bold 44px system-ui";
-    c.fillText({ idle: "VOICE", permission: "OPENING MIC", listening: "● LISTENING", processing: "PROCESSING", answer: "ANSWER", error: "VOICE ERROR" }[voice.phase], 28, 60);
-    c.fillStyle = "#dce5ee"; c.font = "28px system-ui";
-    const body = voice.phase === "answer" && voice.answerText ? voice.answerText : voice.statusText;
-    let y = 110;
-    for (const line of wrapLines(c, body, 712).slice(0, action ? 8 : 11)) { c.fillText(line, 28, y); y += 36; }
-    if (action) {
-      c.fillStyle = "#ffc779"; c.font = "bold 30px system-ui";
-      c.fillText(action.type === "seek" ? `Seek person #${action.target_id}?` : "Scan the room?", 28, 432);
-      c.font = "26px system-ui"; c.fillText("Left trigger: confirm · X: dismiss", 28, 476);
-    }
-    this.voiceTexture.needsUpdate = true;
-  }
-
+  private drawVoice() { this.voicePanel.visible = false; }
   private addAssistant() {
     const parent = document.querySelector("#settings")!;
     const block = document.createElement("section");

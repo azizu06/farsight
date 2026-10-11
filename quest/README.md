@@ -7,9 +7,9 @@ relay instead of trying to reach the Jetson directly.
 Build with `npm ci && npm run build` from `quest/`. Run `npm test` for protocol,
 full-frame geometry, action-menu hit testing, and control safety checks. `npm run test:browser` runs the
 production `RoverExperience` in headless Chromium (SwiftShader, simulated XR
-poses, generated camera pixels, stubbed microphone, no backend) for resize,
-tracking loss, A/B/X/Y actions, menu motion blocking, recentering, transformed
-map goal coordinates, left-trigger push-to-talk and source-banner cases;
+poses and generated camera pixels, no backend) for the two-mode interface,
+direct joystick driving, autonomous map roaming, tracking/permit expiry,
+mode transition release and the minimal rendered cockpit;
 run `npx playwright install chromium-headless-shell` once first. `npm run perf`
 profiles the built app under an emulated Quest 2 (IWER) against a running
 simulator; see the [first-run guide](../docs/quest-first-run.md#7-frame-budget).
@@ -35,91 +35,56 @@ qualification. The scoped redesign measurement is saved in
 
 ## Controls
 
-- Quest, right hand only. The headset starts in **MANUAL**: hold the right trigger
-  and the right thumbstick drives the rover; release the trigger to stop. The
-  trigger has hysteresis (engages above 0.6, releases below 0.25). The left stick
-  is ignored, and the left controller may be idle, asleep or missing. Right-stick
-  input inside a 0.25 deadzone counts as centered. Forward speed is capped at 45%
-  of the server's PWM ceiling; calibrate that ceiling on the actual car.
-- **Tap right A** to switch to **AUTO**. Explore drives the rover, the 3D map
-  becomes a 1:1 walk-through (`mapWalk`), and the right stick only moves you
-  through it (forward/back along your gaze, a sideways flick snap-turns 30°). It
-  never sends physical v/w and cannot cancel autonomy. The live camera stays in a
-  small upper-right window: it is still the motion freshness source and the rover's
-  sensor provenance. Tap A again for MANUAL: autonomy and navigation are cancelled
-  and the trigger needs a fresh release. **B** stops at once, cancels navigation and
-  returns to MANUAL. A mode switch briefly enlarges the mode chip.
-- **Hold right A** (0.6 s) opens the actions menu (Controls, Scan, Rescue drill,
-  Close). Point and press the trigger or grip; the chosen card flashes green and
-  the menu closes. In MANUAL, right grip on a pointed person selects Seek; in AUTO,
-  right grip on the floor sets a go-to goal; a right stick click cancels go-to.
-  Left Y shows the controller diagram again; left X recenters the view.
-  Head turns command pan only with a servo mount; fixed mode shows the full frame.
+- VR starts in **MANUAL**. Move the right joystick to drive and turn the rover;
+  no trigger press is needed. Center it to stop. Its full-scale commands use the
+  configured server motor ceiling. The left joystick does not drive the rover.
+- Press **right A** to switch to **AUTONOMOUS**. The rover explores with its own
+  code while the joysticks move the viewer through the reconstructed map. Left
+  stick moves/strafe; right stick moves forward/back and snap-turns 30°. These
+  virtual movements always send physical `v=0, w=0`; they do not override autonomy.
+- Press A again for Manual. Center the joystick before driving after the switch.
+  A toggles on its press edge; holding it has no secondary action. B stops and
+  returns to Manual. The VR HUD contains only the mode pill and A affordance;
+  telemetry, action menus, controller diagrams and auxiliary panels are absent.
+  Operator telemetry and advanced controls remain on the laptop page.
 - **Demo mode** (`src/demo-config.js`) is ON by default; `?demo=0` restores every
   client guard. While immersive it removes the client 500 ms camera-stale block
-  (a VIDEO STALE cue warns instead), rides out right-controller blips or a
+   rides out right-controller blips or a
   re-enumerated controller for up to 1 s, and replaces the forced trigger re-press
   after a transient stop with one client-sent release. AUTO is hands-free:
   Explore heartbeats carry deadman=true without the trigger until A or B. Hard
   stops (B, a MANUAL/AUTO switch, session start/end, viewer closed) still need a
-  real release. Permits, leases and link-loss stops are unchanged, and `video_fresh`
+  centered joystick before manual movement. Permits, leases and link-loss stops are unchanged, and `video_fresh`
   stays truthful; the rover's own camera checks follow its separate
   `--demo-mode` / `FARSIGHT_DEMO_MODE` (see `docs/interfaces.md`). The desktop
   page keeps every guard.
-- Voice controls appear only when the rover's `/health` reports `assistant.whisper`;
-  otherwise they stay hidden and the left trigger only confirms a pending proposal.
-  With a Whisper model, hold the left trigger to ask the local assistant by voice;
-  release to send.
-  First select **Enable in-VR voice** in settings before entering VR: it asks for
-  the microphone once and releases it immediately. A question stops driving,
-  scan and autonomy, and blocks motion while the microphone is requested or open;
-  the right trigger then needs a release. Recording stops at 10 seconds, and
-  tracking loss, a controller change, a hidden headset or leaving VR stop the
-  microphone. Audio goes only to the rover's `/ask` (local whisper); there is no
-  browser speech recognition. Listening, processing, the answer and errors show
-  on a panel left of the camera. A proposed Seek or scan acts only after a fresh
-  left-trigger press (X dismisses), and still needs the held deadman.
+- Voice and assistant controls remain on the laptop page when the rover has the
+  required models. They are absent from the two-mode headset interface.
 - With guards on (`?demo=0`, or the desktop page), the right controller must be
   connected with a fresh grip pose each frame, and the newest XR sample must be
   under 150 ms old (`performance.now()` observation time, never the predicted
   display time). Losing tracking, a missing XR frame, a hidden or blurred session,
-  or replacing the right controller stops driving; the trigger and every button
-  then need an observed release, so a button held through tracking loss never
+  or replacing the right controller stops driving; the joystick must be centered
+  and held mode buttons released, so a button held through tracking loss never
   fires on recovery. Control is renewed only after `renderer.render()` returns
   (`afterRender`), and new camera freshness counts only once a visible render
   showed it.
-- Headset HUD, minimal by design: a tiny chip above the view with a motion dot
-  (green moving, amber waiting, red blocked), MANUAL/AUTO and the truthful source
-  (LIVE, NOT VERIFIED, SIMULATED, REPLAY; see `src/source-banner.js`), and, only
-  when something needs the operator, one icon with 1-3 words under the view
-  (`src/vr-hud.js` maps every stop, e.g. NO VIDEO, LINK LOST, RELEASE TRIGGER).
-  An icon controller diagram shows for 8 s on entry. Full cause/recovery text and
-  telemetry stay on the desktop page (`src/stop-reason.js` maps every server
-  `control_status.reason` code and client latch; add a mapping and a test there
-  when adding one).
+- The headset shows only **MANUAL / AUTONOMOUS** and a small **A** toggle hint.
+  Full source labels, stop causes, recovery instructions and telemetry stay on
+  the laptop page. No actions menu or secondary button mode exists in VR.
 - Desktop: select Live rover, hold Space, then use WASD. The on-screen hold button
   can replace Space. STOP, Escape, opening settings, losing focus, or a connection
   failure stop driving.
-- Navigation (optional server `nav` status, see
-  [interfaces](../docs/interfaces.md#optional-navigation-status-and-go-to-goals)): the
-  planned path glows on the map floor (cyan driving, blue planning, amber
-  recovering, green arrived, red failed) with a goal beacon and violet frontier
-  markers, in the desktop 3D/2D map and the VR map view. The HUD and the desktop
-  panel show backend, mode and state, e.g. `Nav2 · Go-to driving · 2.4 m path`.
-  In VR, press A for the map view, point the right controller at the floor (a
-  white reticle marks the spot) and press the **right grip** to send a go-to goal;
-  **right thumbstick click** cancels navigation in either view. On the desktop,
-  double-click the map floor for a goal; **Cancel nav** or `C` cancels. Only a
-  `202` arms go-to: then the held deadman sends `mode: "goto"` heartbeats, a view
-  change or release keeps the goal armed but needs a fresh deadman press, and any
-  stick input, STOP or cancel disarms it and posts `/nav/cancel`. Go-to needs
-  `/nav/*` routed to the Jetson; the operator relay must proxy it.
+- Optional navigation paths, goals and frontier markers remain on the desktop
+  map. Double-click its floor to set a goal; **Cancel nav** or `C` cancels.
+  Headset autonomous mode uses Explore directly; grip-based goals and reticles
+  are absent from the minimal interface.
 - In settings, select the camera mounting. Servo mode shows the full frame and
   sends head yaw as physical pan; the server and Uno block forward driving while
   pan is more than 10° off center. Fixed-camera mode keeps physical pan at zero
   and shows the entire measured image with its original aspect ratio. The screen
-  stays anchored when you turn your head; X recenters it.
-  The HUD names the mount and video format. A mode change requires a new deadman press.
+  stays anchored when you turn your head.
+  The laptop panel names the mount and video format.
 - Mount, H.264, in-VR voice and diagnostics are saved in `localStorage` and can be
   deep-linked: `?mount=fixed|servo&h264=0|1&voice=0|1&diag=0|1`. A query value
   beats the saved choice and is saved; a saved choice beats the default. With no
