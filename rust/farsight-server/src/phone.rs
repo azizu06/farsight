@@ -310,31 +310,76 @@ pub fn measured_points(
 /// Coarser grid strides kept per keyframe for the capped visual mesh export.
 /// Matches jetson/mapping/phone.py VISUAL_LODS.
 pub const VISUAL_LODS: [usize; 2] = [4, 8];
+/// Voxel-cloud sampling stride (#176): ~3k samples per 256x192 frame keeps
+/// integrate under ~30ms — the mesh and its LODs keep their own sampling.
+pub const VOXEL_POINT_STRIDE: usize = 4;
 
 /// Project measured samples and build triangles only across observed surfaces.
 /// Port of reconstruct: strided sampling, depth-edge rejection, vertex compaction.
 pub fn reconstruct(frame: &RgbdFrame, stride: usize, min_confidence: u8) -> (Vec<[f32; 3]>, Vec<[u8; 3]>, Mesh) {
-    let (points, colors, mesh, _) = reconstruct_lods(frame, stride, min_confidence, &[]);
+    let (points, colors, mesh, _) = reconstruct_lods(frame, stride, min_confidence, &[], None);
     (points, colors, mesh)
 }
 
 /// Like `reconstruct`, plus a coarse triangulation of the same depth grid per
 /// entry in `lods` — (stride, mesh) pairs for the capped visual export.
+/// `point_stride` samples the returned points more coarsely than the mesh
+/// (#176: the voxel cloud takes stride-4 samples while the mesh keeps `stride`).
 pub fn reconstruct_lods(
     frame: &RgbdFrame,
     stride: usize,
     min_confidence: u8,
     lods: &[usize],
+    point_stride: Option<usize>,
 ) -> (Vec<[f32; 3]>, Vec<[u8; 3]>, Mesh, Vec<(usize, Mesh)>) {
     let (dw, dh) = (frame.depth_width, frame.depth_height);
     let usable_full = valid_depth(&frame.depth, dw, dh, 0.15, 8.0, 0.12);
-    let (points, colors, mesh) =
+    let (mut points, mut colors, mesh) =
         reconstruct_at(frame, stride, min_confidence, &usable_full);
+    if let Some(ps) = point_stride {
+        (points, colors) = sample_points(frame, ps, min_confidence, &usable_full);
+    }
     let lod_meshes: Vec<(usize, Mesh)> = lods
         .iter()
         .map(|&step| (step, grid_mesh(frame, step, min_confidence, &usable_full)))
         .collect();
     (points, colors, mesh, lod_meshes)
+}
+
+/// Strided point-only sampling — the same projection/usable rules as
+/// `reconstruct_at` without the triangle build (phone.py sample(point_stride)).
+fn sample_points(
+    frame: &RgbdFrame,
+    stride: usize,
+    min_confidence: u8,
+    usable_full: &[bool],
+) -> (Vec<[f32; 3]>, Vec<[u8; 3]>) {
+    let (dw, dh) = (frame.depth_width, frame.depth_height);
+    let h2 = dh.div_ceil(stride);
+    let w2 = dw.div_ceil(stride);
+    let k = &frame.calibration;
+    let mut positions = Vec::with_capacity(h2 * w2);
+    let mut colors = Vec::with_capacity(h2 * w2);
+    for vy in 0..h2 {
+        let v = vy * stride;
+        for ux in 0..w2 {
+            let u = ux * stride;
+            let src = v * dw + u;
+            if !(usable_full[src] && frame.confidence[src] >= min_confidence) {
+                continue;
+            }
+            let z = frame.depth[src] as f64;
+            let local = [
+                (u as f64 - k.cx) * z / k.fx,
+                -((v as f64 - k.cy) * z / k.fy),
+                -z,
+            ];
+            let w = crate::geometry::transform_point(&frame.transform, local);
+            positions.push([w[0] as f32, w[1] as f32, w[2] as f32]);
+            colors.push([frame.rgb[src * 3], frame.rgb[src * 3 + 1], frame.rgb[src * 3 + 2]]);
+        }
+    }
+    (positions, colors)
 }
 
 /// Triangulate one strided sampling of the depth grid — the `grid_mesh` port.

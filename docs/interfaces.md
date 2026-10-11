@@ -225,7 +225,13 @@ reconnect or a new controller socket), `controller_disconnected`, `camera_stale`
 sensor faults (`nav_pose_lost`, `nav_tracking_limited`, `nav_depth_lost`,
 `nav_sensor_reset`). The next fresh `deadman: true` heartbeat with a valid permit
 resumes. Teleop heartbeats skip the camera-freshness checks (`camera_stale`,
-`video_fresh` / `video_age_ms`); autonomy, scan and drive-profile modes keep them.
+`video_fresh` / `video_age_ms`). Explore, Seek and Goto heartbeats skip them too:
+demo autonomy drives on the rover's own camera, pose and depth, never on the
+viewer's picture. While it is engaged, a `camera_stale`, `nav_pose_lost`,
+`nav_tracking_limited` or `nav_depth_lost` stall shorter than 2 s holds the motors
+at zero without stopping. The session, lease, goal and Nav2 intent stay, and
+motion resumes by itself on fresh sensors. A longer stall stops as above.
+Scan and drive-profile modes keep both checks.
 Unchanged: the 250 ms lease, the first press after server start needs one release,
 protocol faults (`invalid_*`, `wrong_session`, `unsupported_mode`, oversized or
 binary frames, `uno_rejected_command`) still latch, the Nav2 sensor gate still
