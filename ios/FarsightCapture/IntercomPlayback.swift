@@ -115,6 +115,7 @@ final class IntercomPlayback {
     private var captureURL: URL?
     private var generation = UUID()
     private var retryWork: DispatchWorkItem?
+    private var pingWork: DispatchWorkItem?
     private var retryDelay: TimeInterval = 0.25
     private var session: URLSession?
     private var socket: URLSessionWebSocketTask?
@@ -149,12 +150,15 @@ final class IntercomPlayback {
         guard self.generation == generation, let captureURL,
               let receiverURL = IntercomPCMFrame.receiverURL(from: captureURL) else { return }
         let network = URLSession(configuration: .ephemeral)
-        let task = network.webSocketTask(with: receiverURL)
+        var request = URLRequest(url: receiverURL)
+        request.timeoutInterval = 5
+        let task = network.webSocketTask(with: request)
         task.maximumMessageSize = 4096
         session = network
         socket = task
         task.resume()
         receive(task, generation: generation)
+        schedulePing(task, generation: generation)
     }
 
     private func receive(_ task: URLSessionWebSocketTask, generation: UUID) {
@@ -182,6 +186,24 @@ final class IntercomPlayback {
         }
     }
 
+    private func schedulePing(_ task: URLSessionWebSocketTask, generation: UUID) {
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.generation == generation, self.socket === task else { return }
+            task.sendPing { error in
+                self.queue.async {
+                    guard self.generation == generation, self.socket === task else { return }
+                    if error != nil {
+                        self.retry(generation: generation)
+                    } else {
+                        self.schedulePing(task, generation: generation)
+                    }
+                }
+            }
+        }
+        pingWork = work
+        queue.asyncAfter(deadline: .now() + 10, execute: work)
+    }
+
     private func retry(generation: UUID) {
         guard self.generation == generation else { return }
         closeSocket()
@@ -196,6 +218,8 @@ final class IntercomPlayback {
     private func closeSocket() {
         retryWork?.cancel()
         retryWork = nil
+        pingWork?.cancel()
+        pingWork = nil
         socket?.cancel(with: .normalClosure, reason: nil)
         socket = nil
         session?.invalidateAndCancel()
@@ -252,7 +276,6 @@ private final class IPhoneIntercomPCMOutput: IntercomPCMOutput {
             guard let self else { return }
             self.queue.async { self.window.complete(generation: scheduledGeneration) }
         }
-        _ = engine
     }
 
     func stop() {
