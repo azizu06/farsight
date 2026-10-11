@@ -8,6 +8,8 @@ set -euo pipefail
 scheme=http
 [ -z "${FARSIGHT_SSL_CERTFILE:-}" ] || scheme=https
 H="$scheme://127.0.0.1:${FARSIGHT_PORT:-8443}"
+# The vision model only runs on a camera frame; give the phone up to 10 min to reconnect after boot.
+for _ in $(seq 120); do curl -sfk -m 3 "$H/health" | grep -q '"camera": *true' && break; sleep 5; done
 ask() { curl -sSfk --retry 30 --retry-delay 5 --retry-all-errors -m 90 "$H/ask" "$@"; }
 reply="$(ask -H 'content-type: application/json' -d '{"text":"What do you see in front of you?"}')"
 printf 'text ask: %.600s\n' "$reply"
