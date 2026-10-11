@@ -34,6 +34,7 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate, AV
     private let queue = DispatchQueue(label: "farsight.capture", qos: .userInitiated)
     private let context = CIContext(options: [.cacheIntermediates: false])
     private let network = URLSession(configuration: .ephemeral)
+    private let intercomPlayback = IntercomPlayback()
     private var socket: URLSessionWebSocketTask?
     private var generation: UUID?
     private var uiGeneration: UUID?
@@ -222,6 +223,7 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate, AV
         task.maximumMessageSize = 65_536
         socket = task
         guard admission.withIntent(request.intent, { task.resume(); receive(task, id: id); return true }) == true else { disconnect(); return }
+        intercomPlayback.beginAttempt(from: url)
         do {
             let hello: [String: Any] = ["type": "hello", "version": 1,
                 "session_id": sessionID, "map_epoch": 1, "device": device,
@@ -295,6 +297,7 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate, AV
     }
 
     private func disconnect() {
+        intercomPlayback.disconnect()
         geometryRetry?.cancel(); geometryRetry = nil; geometryReady = false
         geometryServer.stop(); geometryFeed.stop()
         permitWatchdog?.cancel(); permitWatchdog = nil
