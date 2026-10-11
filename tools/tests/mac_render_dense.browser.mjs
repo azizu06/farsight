@@ -28,6 +28,10 @@ try {
   assert.ok(deleted.meta.dense.received_deletes >= 1);
   await command('reset'); await waitDense(0);
   assert.equal((await page.evaluate(() => window.__mac)).dense.gpu_chunks, 0);
+  await page.waitForFunction(() => window.__mac.drawnPoints === 0 && window.__mac.points === 0,
+    null, { timeout: 3000 });
+  assert.equal((await page.evaluate(() => window.__macCapture())).meta.drawnPoints, 0,
+    'an empty authoritative dense scene must not reveal older coarse dots');
   await command('refill'); await waitDense(320);
   await command('mismatch'); await page.evaluate(() => window.__macRefreshMap());
   const mismatch = await page.evaluate(() => window.__macCapture());

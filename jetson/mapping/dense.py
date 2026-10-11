@@ -57,6 +57,9 @@ class DenseMap:
                  cache_only=False):
         self.capacity, self.ttl, self.clock = capacity, ttl, clock
         self.cache_only = cache_only
+        # The producer's bounded cache needs the same regional selection as the
+        # retained Mac cloud; do not project the whole room on every revisit.
+        self.spatial_chunks = {} if cache_only else None
         self.lock = threading.RLock()
         self.cells = OrderedDict()
         self.journal = deque(maxlen=journal_size)
@@ -65,6 +68,7 @@ class DenseMap:
         self.source = None
         self.snapshots = OrderedDict()
         self.snapshot_times = {}
+        self.snapshot_keys = {}
         self.depth_view = None
         self.view_key = None
         self.view_received = 0.
@@ -81,8 +85,11 @@ class DenseMap:
             self.source = source
             self.snapshots.clear()
             self.snapshot_times.clear()
+            self.snapshot_keys.clear()
             self.depth_view, self.view_key = None, None
             self.authoritative_deletes.clear()
+            if self.spatial_chunks is not None:
+                self.spatial_chunks.clear()
 
     def _change(self, record):
         if self.journal and len(self.journal) == self.journal.maxlen:
@@ -93,12 +100,32 @@ class DenseMap:
 
     def _delete(self, key, authoritative=False):
         self.cells.pop(key, None)
+        self._unindex(key)
         self._change(RECORD.pack(*(v * 10 for v in key), 0, 0, 0, 0))
         if authoritative:
             self.authoritative_deletes.add(self.revision)
+            # A slow bootstrap can outlive this deletion's journal record.
+            # Retire the saved upsert too, without restarting its page cursor.
+            for keys in self.snapshot_keys.values():
+                keys.discard(key)
+
+    def _unindex(self, key):
+        if self.spatial_chunks is not None:
+            chunk = tuple(v // 200 for v in key)
+            members = self.spatial_chunks.get(chunk)
+            if members is not None:
+                members.discard(key)
+                if not members:
+                    del self.spatial_chunks[chunk]
 
     def publish_view(self, view, received_at=None):
         """Carry native revisit evidence independently of coalesced point changes."""
+        if (self.cache_only and view.sensor_key is not None
+                and tuple(view.sensor_key[:2]) == tuple(self.source or ())):
+            # Remove obsolete producer samples as well as retained Mac samples.
+            # Otherwise a resync resurrects them, and an identical returning
+            # object is coalesced against the stale cache for up to five seconds.
+            self.reconcile(view)
         metadata = view.to_metadata()
         key = json.dumps(metadata["sensor_key"], separators=(",", ":"))
         with self.lock:
@@ -124,8 +151,9 @@ class DenseMap:
             epoch = self.epoch
             if keys is not None:
                 keys = list(keys)
-            elif hasattr(self, "chunks"):
-                keys = [key for chunk, members in self.chunks.items()
+            elif self.spatial_chunks is not None or hasattr(self, "chunks"):
+                chunks = self.spatial_chunks if self.spatial_chunks is not None else self.chunks
+                keys = [key for chunk, members in chunks.items()
                         if all(low[i] <= chunk[i] <= high[i] for i in range(3)) for key in members]
             else:
                 keys = list(self.cells)
@@ -152,6 +180,7 @@ class DenseMap:
                 if self.clock() - self.snapshot_times[saved] > 30:
                     del self.snapshots[saved]
                     del self.snapshot_times[saved]
+                    self.snapshot_keys.pop(saved, None)
             cutoff = self.clock() - self.ttl
             # cells are ordered by last wire refresh, at most 5 s behind receipt.
             while self.cells:
@@ -197,11 +226,14 @@ class DenseMap:
                     continue
                 rev = self._change(encoded)
                 self.cells[key] = (rev, encoded, now)
+                if old is None and self.spatial_chunks is not None:
+                    self.spatial_chunks.setdefault(tuple(v // 200 for v in key), set()).add(key)
                 self.cells.move_to_end(key)
             while len(self.cells) > self.capacity:
                 key = next(iter(self.cells))
                 if self.cache_only:
                     self.cells.pop(key)  # Mac retains points beyond Jetson's cache budget.
+                    self._unindex(key)
                 else:
                     self._delete(key)
 
@@ -221,15 +253,29 @@ class DenseMap:
                 # than rescan millions of cells for every 8192-point page.
                 self.snapshots[anchor] = list(self.cells.values())
                 self.snapshot_times[anchor] = self.clock()
+                if self.cache_only:
+                    self.snapshot_keys[anchor] = set(self.cells)
                 while len(self.snapshots) > 2:
                     stale, _ = self.snapshots.popitem(last=False)
                     del self.snapshot_times[stale]
+                    self.snapshot_keys.pop(stale, None)
             if snapshot and anchor is None:
                 raise ValueError("Snapshot continuation requires its journal anchor")
             if snapshot:
                 entries = self.snapshots[anchor]
                 start = bisect_right(entries, after, key=lambda v: v[0])
-                rows = [(v[0], v[1]) for v in entries[start:start + limit + 1]]
+                live_keys = self.snapshot_keys.get(anchor)
+                if live_keys is None:
+                    rows = [(v[0], v[1]) for v in entries[start:start + limit + 1]]
+                else:
+                    rows = []
+                    for index in range(start, len(entries)):
+                        value = entries[index]
+                        key = tuple(v // 10 for v in RECORD.unpack(value[1])[:3])
+                        if key in live_keys:
+                            rows.append((value[0], value[1]))
+                            if len(rows) > limit:
+                                break
             else:
                 # Revisions are contiguous. Copy one bounded page instead of
                 # allocating/reversing the entire outstanding 200k journal.

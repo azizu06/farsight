@@ -19,7 +19,8 @@ export class RawView {
   this.worker.onmessage=({data})=>{
    this.busy=false;
    if(data.error){this.error=data.error;return;}
-   if(!this.active){data.patch.image.close();return;}
+   // Keep accepted capture state in sync while the group is hidden. The worker
+   // has committed this revisit and the fetch cursor has already advanced.
    if(data.identity!==this.identity){this.clear();this.identity=data.identity;}
    this.error=null;this.source=data.source;this.count=data.points;this.lastGood=Date.now();this.age=this.pendingAge+Date.now()-this.pendingAt;this.frame=data.frame;this.processing=data.processing_ms;this.pointTransfer=data.point_transfer_bytes;
    let geometry=this.points.geometry;

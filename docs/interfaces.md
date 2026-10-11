@@ -899,6 +899,15 @@ the view stay protected until the next view; same-epoch backfill cannot restore
 already contradicted foreground. Matching surface faces and camera textures are
 replaced selectively, including when the camera has not moved.
 
+Before publishing the view, the producer also retires contradicted samples in
+its working cache, selecting only overlapping 2 m spatial chunks. Those
+observed removals retain their authoritative journal flags. Cache resyncs cannot
+restore obsolete dots after the compact view expires, and an identical object
+returning to the same position immediately emits a fresh upsert rather than
+waiting for the five-second unchanged-sample renewal.
+Saved producer snapshots also retire those upserts, preserving page progress
+even if their corresponding deletion has already rolled out of the journal.
+
 Optional `authoritative_deletes` and `newer_than_view` are Base64 packed bitmaps
 over record indices (least-significant bit first, one bit per record, final byte
 zero-padded). The former lets the history pool distinguish observed removals

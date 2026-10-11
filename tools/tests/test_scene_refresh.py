@@ -1,7 +1,9 @@
 """Native view -> retained Mac region refresh, including an expired source cache."""
 
 import base64
+from collections import deque
 import unittest
+from unittest import mock
 
 import numpy as np
 
@@ -105,8 +107,84 @@ class SceneRefreshTests(unittest.TestCase):
         self.assertNotIn(key(FOREGROUND), self.mac.cloud.cells)
         self.assertIn(key(BACKGROUND), self.mac.cloud.cells)
 
-    def test_unknown_pixels_foreign_capture_and_expired_view_preserve_scene(self):
+    def test_identical_returning_object_is_sent_immediately_after_revisit(self):
+        self.source.apply([FOREGROUND, BACKGROUND])
+        self.pull()
+        self.now = .1
+        self.source.publish_view(view())
+        self.pull()
+        self.assertNotIn(key(FOREGROUND), self.mac.cloud.cells)
+        self.now = .2
+        self.source.apply([FOREGROUND])  # Exactly the same coordinates and RGB.
+        metadata, rows = self.pull()
+        self.assertIn(FOREGROUND, rows)
+        self.assertIn('newer_than_view', metadata)
+        self.assertIn(key(FOREGROUND), self.mac.cloud.cells)
+        self.source.publish_view(view(depth=1, frame_id=3))
+        self.pull()
+        self.assertIn(key(FOREGROUND), self.mac.cloud.cells)
+
+    def test_expired_view_and_same_epoch_resync_do_not_resurrect_removed_dots(self):
+        self.source.ttl = 30
+        self.source.apply([FOREGROUND, BACKGROUND, OCCLUDED, OUTSIDE])
+        self.pull()
+        self.now = .1
+        self.source.publish_view(view())
+        self.pull()
+        self.now = 2.5  # Native evidence expires before the cache does.
+        metadata, rows = self.pull(epoch=None, after=0)
+        self.assertGreater(metadata['view']['age_ms'], 2000)
+        self.assertNotIn(FOREGROUND, rows)
+        self.assertNotIn(key(FOREGROUND), self.mac.cloud.cells)
+        self.assertEqual(set(self.mac.cloud.cells), {key(r) for r in (BACKGROUND, OCCLUDED, OUTSIDE)})
+
+    def test_source_revisit_index_is_regional_and_tracks_cache_eviction_and_clear(self):
+        self.source.capacity = 3
+        self.source.apply([FOREGROUND, BACKGROUND, OCCLUDED, OUTSIDE])
+        self.assertNotIn(key(FOREGROUND), set().union(*self.source.spatial_chunks.values()))
         self.source.apply([FOREGROUND])
+        original = DepthView.contradicted
+        with mock.patch.object(DepthView, 'contradicted', autospec=True) as project:
+            project.side_effect = original
+            self.source.publish_view(view())
+            self.assertEqual(len(project.call_args.args[1]), 1)  # Distant and occluded chunks were not projected.
+        indexed = set().union(*self.source.spatial_chunks.values())
+        self.assertEqual(indexed, set(self.source.cells))
+        self.source.clear([SESSION, 1])
+        self.assertFalse(self.source.spatial_chunks)
+
+    def test_saved_snapshot_cannot_restore_a_delete_that_rolled_out_of_journal(self):
+        self.source.ttl = 30
+        self.source.journal = deque(maxlen=2)
+        self.source.apply([BACKGROUND, FOREGROUND, OUTSIDE])
+        first, rows = self.pull(limit=1)
+        self.assertTrue(first['snapshot'])
+        anchor = first['anchor']
+        self.now = .1
+        self.source.publish_view(view())
+        for green in (10, 11, 12):
+            self.source.apply([(*OUTSIDE[:3], 255, green, 0, 1)])
+        self.assertFalse(self.source.authoritative_deletes)  # The tiny journal has wrapped.
+        self.now = 3  # Compact view is now too old for retained-history projection.
+        while self.mac.cursor['snapshot'] == 'true':
+            metadata, rows = self.pull(limit=1)
+            self.assertFalse(metadata['reset'])  # Bootstrap continues instead of starving.
+            self.assertEqual(metadata['anchor'], anchor)
+            self.assertNotIn(FOREGROUND, rows)
+        self.pull()  # Journal gap recovers from the producer's current cache.
+        self.assertNotIn(key(FOREGROUND), self.mac.cloud.cells)
+        self.assertIn(key(BACKGROUND), self.mac.cloud.cells)
+        self.assertIn(key(OUTSIDE), self.mac.cloud.cells)
+        self.source.clear([SESSION, 1])
+        self.assertFalse(self.source.snapshot_keys)
+
+    def test_unknown_pixels_foreign_capture_and_expired_view_preserve_scene(self):
+        # Exercise retained history beyond the producer cache, where only the
+        # compact view can retire a point (not an authoritative source delete).
+        self.source.capacity = 1
+        self.source.apply([FOREGROUND])
+        self.pull()
+        self.source.apply([OUTSIDE])
         self.pull()
         unknown = view()
         unknown.depth_mm.setflags(write=True)
@@ -139,7 +217,10 @@ class SceneRefreshTests(unittest.TestCase):
         self.assertIn(key(FOREGROUND), self.mac.cloud.cells)
 
     def test_view_transfer_age_and_epoch_reset_with_same_capture_key(self):
+        self.source.capacity = 1
         self.source.apply([FOREGROUND])
+        self.pull()
+        self.source.apply([OUTSIDE])
         self.pull()
         current = view()
         self.source.publish_view(current)
