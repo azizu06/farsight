@@ -15,9 +15,14 @@ try{
  await page.waitForFunction(()=>window.denseLab.stats().raw_points===48,{timeout:10000});
  await page.waitForFunction(()=>window.denseLab.stats().raw_frame===1);
  const followed=await page.evaluate(()=>window.denseLab.stats());assert.ok(followed.target[0]>4,'live view follows a moved/reset measured scan');
- await page.evaluate(()=>{window.denseLab.setFrozen(true);window.denseLab.pose(0);window.denseLab.setSize(.1);});
+ assert.equal(followed.raw_splat_m,.012,'initial raw splat size matches the 12mm UI');
+ assert.equal(followed.raw_pixel_floor,1.25);
+ await page.evaluate(async()=>{await window.denseLab.setFrozen(true);window.denseLab.pose(0);window.denseLab.setSize(.1);});
+ const captureReads=requests.filter(u=>u.includes('/capture/frame.bin')).length;
  await page.waitForTimeout(1200);
  const stats=await page.evaluate(()=>window.denseLab.stats()),coverage=await page.evaluate(()=>window.denseLab.coverage());
+ assert.equal(requests.filter(u=>u.includes('/capture/frame.bin')).length,captureReads,'frozen sample does not start new capture requests');
+ assert.equal(stats.raw_frame,1,'frozen comparison keeps the accepted frame');
  // With a supported measured plane, coplanar points must not paint over its
  // interior texture; hiding the plane must restore the retained samples.
  const interior=()=>{window.denseLab.render();const c=window.denseLab.canvas,d=document.createElement('canvas');d.width=c.width;d.height=c.height;const x=d.getContext('2d');x.drawImage(c,0,0);return [...x.getImageData(Math.floor(c.width*.4),Math.floor(c.height*.4),Math.floor(c.width*.2),Math.floor(c.height*.2)).data];};

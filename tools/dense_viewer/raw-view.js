@@ -4,8 +4,11 @@ export class RawView {
   this.endpoint=endpoint;this.onChange=onChange;
   this.showSurfaces=true;this.showPoints=true;
   this.group=new THREE.Group();root.add(this.group);this.onBounds=onBounds;
-  this.points=new THREE.Points(new THREE.BufferGeometry(),new THREE.PointsMaterial({size:.024,vertexColors:true,toneMapped:false}));
-  this.points.material.onBeforeCompile=shader=>{shader.fragmentShader=shader.fragmentShader.replace('#include <clipping_planes_fragment>','#include <clipping_planes_fragment>\nif(distance(gl_PointCoord,vec2(0.5))>0.5)discard;');};
+  this.points=new THREE.Points(new THREE.BufferGeometry(),new THREE.PointsMaterial({size:.012,vertexColors:true,toneMapped:false}));
+  this.points.material.onBeforeCompile=shader=>{
+   shader.vertexShader=shader.vertexShader.replace('#include <logdepthbuf_vertex>','gl_PointSize = clamp(gl_PointSize, 1.25, 64.0);\n#include <logdepthbuf_vertex>');
+   shader.fragmentShader=shader.fragmentShader.replace('#include <clipping_planes_fragment>','#include <clipping_planes_fragment>\nif(distance(gl_PointCoord,vec2(0.5))>0.5)discard;');
+  };
   // Draw measured surfaces first; their depth offsets suppress coplanar dots.
   // Points remain retained and reappear wherever no recent surface covers them.
   this.points.renderOrder=2;this.points.material.depthFunc=THREE.LessDepth;
@@ -60,6 +63,6 @@ export class RawView {
    this.worker.postMessage({buffer:b,ttl:this.ttl,deadline:Date.now()+2000-age},[b]);
   }catch(e){this.error=String(e);this.busy=false;}
  }
- stats(){return {raw_surfaces:this.showSurfaces,raw_point_overlay:this.showPoints,raw_source:this.source??null,raw_points:this.count,raw_triangles:this.patches.reduce((n,p)=>n+p.userData.triangles,0),raw_frame:this.frame??null,raw_identity:this.identity,raw_age_ms:this.lastGood?Date.now()-this.lastGood+(this.age||0):null,raw_bytes:this.bytes,raw_worker_ms:this.processing??null,raw_error:this.error,raw_ttl_s:this.ttl};}
+ stats(){return {raw_splat_m:this.points.material.size,raw_pixel_floor:1.25,raw_surfaces:this.showSurfaces,raw_point_overlay:this.showPoints,raw_source:this.source??null,raw_points:this.count,raw_triangles:this.patches.reduce((n,p)=>n+p.userData.triangles,0),raw_frame:this.frame??null,raw_identity:this.identity,raw_age_ms:this.lastGood?Date.now()-this.lastGood+(this.age||0):null,raw_bytes:this.bytes,raw_worker_ms:this.processing??null,raw_error:this.error,raw_ttl_s:this.ttl};}
  dispose(){this.worker.terminate();this.clear();this.points.geometry.dispose();this.points.material.dispose();}
 }

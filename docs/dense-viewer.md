@@ -107,6 +107,14 @@ Compare the same captured samples with and without textures:
 node tools/observe_dense_viewer.mjs --mode raw --compare-surfaces --sizes 0.012 --out .cache/raw-compare
 ```
 
+Open `.cache/raw-compare/index.html` for a dark screenshot review page with paired
+coverage, source, frame and capture identity. `report.json` includes the same
+pairs and the read-only request audit, including when a run fails. Comparisons
+require frozen raw mode and reject `--live`; every row must retain the same
+accepted frame, identity and geometry. Freezing stops new pulls before draining
+the in-flight frame. The raw view starts at the displayed 12 mm world size and
+uses a 1.25 pixel floor for distant measured samples.
+
 The owner-mounted Mac adapter is `tools/dense_viewer/mac-layer.js`. Build it with `node quest/node_modules/vite/bin/vite.js build --config tools/dense_viewer/vite.layer.config.mjs`. The resulting `.cache/dense-layer-dist/raw-texture-layer.mjs` exports `rawTextureLayer({endpoint:'/phone/frame.bin'})`; mount its adjacent `assets/` worker directory at the same origin, import it and pass the result to `window.__macRegisterLayer`. It shares the renderer's existing Three.js, uses `ctx.root` and `ctx.requestFrame()`, and exposes `layer.stats()`. Registration, native route proxying and dense/coarse visibility remain the renderer owner's integration work.
 
 Raw exports negotiate br/gzip and retain only the newest encoded packet variants. The relay owner must include `/phone/frame.bin` in its compression pass-through paths before this helps the tailnet hop. A recorded 270,259-byte physical packet compressed to 70,557 bytes with Brotli q4 in 3.1 ms on this Mac; that is a local compression measurement, not Jetson CPU or live link proof. Initial live uncompressed reads sometimes took 2.8 s and were rejected by the unchanged 2 s capture freshness limit. No service is restarted by the lab or adapter.
