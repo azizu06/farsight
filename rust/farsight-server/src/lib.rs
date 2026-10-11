@@ -28,6 +28,7 @@ pub mod people;
 pub mod perception;
 pub mod phone;
 pub mod phrases;
+pub mod raw_capture;
 pub mod replay;
 pub mod scan;
 pub mod server;

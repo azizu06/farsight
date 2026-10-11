@@ -125,6 +125,9 @@ pub struct AppState {
     /// Opt-in enrolled-face identity (jetson identity_service.py port);
     /// created unconditionally like Python, silently disabled with no models.
     pub identity: Arc<IdentityService>,
+    /// Opt-in same-frame RGB-D export (raw_capture.py port); mounted only
+    /// when FARSIGHT_RAW_CAPTURE=1, like the Python conditional import.
+    pub raw_capture: Option<Arc<crate::raw_capture::RawCapture>>,
 }
 
 pub fn build_state(
@@ -419,6 +422,22 @@ pub fn build_state(
         identity_gallery,
         3.0,
     ));
+    // raw_capture.mount() parity: FARSIGHT_RAW_CAPTURE=1 installs the
+    // observer + route; anything else leaves the lane inactive.
+    let raw_capture = if std::env::var("FARSIGHT_RAW_CAPTURE").ok().as_deref() == Some("1") {
+        let capture = crate::raw_capture::RawCapture::new(mapping.clone());
+        let observer = capture.clone();
+        mapping
+            .frame_observers
+            .lock()
+            .unwrap()
+            .push(Arc::new(move |frame: &crate::phone::RgbdFrame| {
+                observer.observe(frame)
+            }));
+        Some(capture)
+    } else {
+        None
+    };
     Arc::new(AppState {
         mapping,
         camera,
@@ -448,6 +467,7 @@ pub fn build_state(
         sim,
         sim_world,
         identity,
+        raw_capture,
     })
 }
 
@@ -1395,6 +1415,48 @@ async fn control_status(State(s): State<Arc<AppState>>) -> Json<Value> {
 
 // ---------- WebSocket routes ----------
 
+/// GET /phone/frame.bin — raw_capture.py snapshot(): 503 waiting/scope/
+/// stale, 204 on after==key, else the paced bulk body.
+async fn phone_frame_bin(
+    State(s): State<Arc<AppState>>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let Some(capture) = &s.raw_capture else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    match capture.snapshot(q.get("after").map(|v| v.as_str())) {
+        Ok(snap) => {
+            let mut response = match snap.body {
+                None => StatusCode::NO_CONTENT.into_response(),
+                Some(body) => {
+                    let mut r = Response::new(paced_body(body));
+                    r.headers_mut().insert(
+                        header::CONTENT_TYPE,
+                        "application/octet-stream".parse().unwrap(),
+                    );
+                    r
+                }
+            };
+            response.headers_mut().insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+            response.headers_mut().insert("X-Capture-Key", snap.key.parse().unwrap());
+            // Python str(round(ms, 2)) keeps a trailing .0 on whole values.
+            response.headers_mut().insert(
+                "X-Capture-Age-Ms",
+                format!("{:?}", snap.age_ms).parse().unwrap(),
+            );
+            response
+        }
+        Err(e) => {
+            let (status, detail) = e.status();
+            (
+                StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                Json(json!({"detail": detail})),
+            )
+                .into_response()
+        }
+    }
+}
+
 async fn ws_map(
     ws: WebSocketUpgrade,
     State(s): State<Arc<AppState>>,
@@ -2306,6 +2368,13 @@ pub fn router(state: Arc<AppState>, dist: Option<PathBuf>) -> Router {
     // --bonded-control; /ws/control keeps its single-owner behaviour.
     let app = if state.bonded.is_some() {
         app.route("/ws/control/bonded", get(ws_control_bonded))
+    } else {
+        app
+    };
+    // raw_capture.mount() parity: explicit route ahead of the static
+    // fallback, present only under FARSIGHT_RAW_CAPTURE=1.
+    let app = if state.raw_capture.is_some() {
+        app.route("/phone/frame.bin", get(phone_frame_bin))
     } else {
         app
     };
