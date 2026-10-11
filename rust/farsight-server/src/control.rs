@@ -482,7 +482,12 @@ impl ControlState {
             None
         };
         let video_age = message.get("video_age_ms").and_then(Self::json_num);
+        // Board-agreed (issue #24): AUTO modes are exempt from the viewer-video
+        // freshness gate — Quest H.264 runs ~450ms so the 500ms stop fired every
+        // few seconds and cancelled goals mid-drive. Manual teleop keeps it.
+        let auto_mode = mode == "explore" || mode == "seek" || mode == "goto";
         if !teleop_ungated
+            && !auto_mode
             && (message.get("video_fresh") != Some(&Value::Bool(true))
                 || !video_age.map(|a| (0.0..=500.0).contains(&a)).unwrap_or(false))
         {
