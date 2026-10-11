@@ -8,7 +8,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host 0.0.0.0",
     "test": "node --test tests/*.test.mjs",
-    "test:browser": "node tests/xr-input.browser.mjs && node tests/health-page.browser.mjs",
+    "test:browser": "node tests/xr-input.browser.mjs && node tests/health-page.browser.mjs && node tests/splat-input.browser.mjs",
     "test:judge": "node tests/judge-flow.e2e.mjs",
     "perf": "node tests/frame-budget.browser.mjs"
   },

@@ -266,6 +266,26 @@ liveness timing are unchanged. The diagnostics overlay (`src/diagnostics.js`,
 `src/diagnostics-overlay.ts`) is off by default: Settings, the I key or
 `?diag=1` (saved like the other viewer settings). It is display only and never feeds the control gate.
 
+## Post-run splat walkthrough
+
+`splat.html?scene=scenes/<room>.ply&type=ply` is separate from driving. With
+Quest Touch controllers, press **ENTER VR** first: left stick walks/strafe at
+1.5 m/s relative to the head, right stick turns 30° per push, A/X resets. In the
+flat browser panel, drag/scroll to orbit/zoom; standard gamepads also walk/turn.
+Touch pads are XR input sources and are not returned by `navigator.getGamepads()`;
+the flat panel cannot read their sticks when Quest Browser does not expose them.
+
+The scene uses ARKit's Y-up world, matching the [capture format](../docs/postrun-capture.md).
+The first camera in `<room>.transforms.json` (preferred) or `transforms.json`
+beside the scene supplies the initial eye and heading. Without a sidecar, start
+at the bounds centre in X/Z, at eye height above the bottom of the bounds.
+`flip=1`/Flip upright rotates a Y-down scene; `pos=x,y,z` (floor position) and
+`yaw=degrees` override the start. Reset and VR entry use the same interior start.
+`window.__splatStats` exposes input, eye/rig position, heading, start source and
+frame rate for CDP diagnosis. `node quest/tests/splat-input.browser.mjs` exercises
+the production frame loop, sidecar loading, flat gamepad and XR navigation with
+synthetic input; wearer confirmation remains a separate physical check.
+
 ## First headset rehearsal
 
 Step-by-step setup and failure checks: [docs/quest-first-run.md](../docs/quest-first-run.md).
