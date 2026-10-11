@@ -112,6 +112,11 @@ Expect a TensorRT version, `models/yolo11n-pose.engine`, and `NV Power Mode: 15W
   `install_service.sh` also enables `farsight-warmup.timer`: 90 s after boot it re-runs `jetson_clocks`
   (the early boot pin lost the CPU minimum on 2026-10-11) and asks once by text and once by voice so the first
   question is warm (`journalctl -u farsight-warmup`).
+- *Tailnet slow or lossy after replugging the phone*: `ip route | grep ^default` must show Wi-Fi. A new iPhone
+  NIC gets an auto profile that can win the default route over cellular (measured 400-585 ms, 25% loss versus
+  28 ms on Wi-Fi). `install_service.sh` installs `jetson/90-farsight-phone-tether.conf` (metric 2000 for `enx*`);
+  for a profile that already exists: `sudo nmcli con modify '<name>' ipv4.never-default yes ipv6.never-default yes`
+  then `sudo nmcli dev reapply <enx...>`.
 - *Camera not found at the end checks*: step 4.
 - *Uno not found*: unplug the ESP32 camera module, try another cable, `dmesg | tail`.
 

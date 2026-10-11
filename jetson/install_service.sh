@@ -131,6 +131,11 @@ if systemctl is-enabled --quiet systemd-networkd-wait-online.service 2>/dev/null
     && ! networkctl list --no-legend 2>/dev/null | awk '$5 != "unmanaged" {found = 1} END {exit !found}'; then
   run sudo systemctl disable systemd-networkd-wait-online.service
 fi
+# Each iPhone replug is a new enx* NIC; keep its tether off the default route so the tailnet stays on Wi-Fi.
+if [ -d /etc/NetworkManager/conf.d ]; then
+  run sudo install -m 644 "$REPO/jetson/90-farsight-phone-tether.conf" /etc/NetworkManager/conf.d/
+  run sudo nmcli general reload conf
+fi
 run sudo systemctl daemon-reload
 [ "$LLM" = 0 ] || run sudo systemctl enable --now farsight-llm.service
 [ "$WHISPER" = 0 ] || run sudo systemctl enable --now farsight-whisper.service
