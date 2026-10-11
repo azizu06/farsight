@@ -1370,6 +1370,9 @@ mod fixture_tests {
         let state = Arc::new(AppState {
             origin: bond.origins[0].clone(),
             geometry: None,
+            render: None,
+            render_connections: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            listen_port: 0,
             dist: PathBuf::from("/nonexistent-dist"),
             http: client.clone(),
             control: client.clone(),
