@@ -667,6 +667,121 @@ fn polygonise_cube(
     }
 }
 
+/// Fit a weighted least-squares plane to `idx` measured points.
+/// Returns (unit normal, centroid, smallest eigenvalue ratio l0/l1).
+fn fit_plane(pts: &[V3], idx: &[u32], c_out: &mut V3, n_out: &mut V3) -> Option<f32> {
+    let mut c = [0.0f32; 3];
+    for &i in idx {
+        c = add(c, pts[i as usize]);
+    }
+    c = scale(c, 1.0 / idx.len() as f32);
+    let mut cov = [[0.0f32; 3]; 3];
+    for &i in idx {
+        let d = sub(pts[i as usize], c);
+        for a in 0..3 {
+            for b in 0..3 {
+                cov[a][b] += d[a] * d[b];
+            }
+        }
+    }
+    let (eval, ev) = sym_eigen3(cov);
+    // smallest eigenvalue -> its eigenvector column is the plane normal
+    let mut o = [0usize, 1, 2];
+    o.sort_by(|&a, &b| eval[a].partial_cmp(&eval[b]).unwrap());
+    if eval[o[1]] <= 1e-12 {
+        return None;
+    }
+    *c_out = c;
+    *n_out = normalize([ev[0][o[0]], ev[1][o[0]], ev[2][o[0]]]);
+    Some(eval[o[0]] / eval[o[1]])
+}
+
+/// Snap mesh vertices onto locally fitted planes so genuinely flat surfaces
+/// render perfectly flat instead of showing marching-cubes terracing.
+/// A strongly planar neighbourhood (smallest PCA eigenvalue << second)
+/// snaps the vertex onto the plane and takes its normal; a two-plane
+/// (corner/edge) neighbourhood snaps the vertex onto the planes'
+/// intersection line via alternating projection (dual-contouring style).
+/// Only *measured* points vote, and only within `max_d` of the vertex.
+fn snap_to_planes(pos: &mut [V3], nrm: &mut [V3], cloud: &PointCloud, grid: &Grid, snap_r: f32, max_d: f32) {
+    let pts = grid.points();
+    pos.par_iter_mut()
+        .zip(nrm.par_iter_mut())
+        .for_each_init(
+            || (Vec::<u32>::new(), Vec::<u32>::new(), Vec::<u32>::new()),
+            |(scratch, sa, sb), (p, n)| {
+                scratch.clear();
+                grid.radius(*p, snap_r, scratch);
+                // measured points only
+                let mut cnt = 0usize;
+                for &i in scratch.iter() {
+                    if cloud.flag(i as usize) & FLAG_INTERPOLATED == 0 {
+                        cnt += 1;
+                    }
+                }
+                if cnt < 4 {
+                    return;
+                }
+                sa.clear();
+                for &i in scratch.iter() {
+                    if cloud.flag(i as usize) & FLAG_INTERPOLATED == 0 {
+                        sa.push(i);
+                    }
+                }
+                let mut c = [0.0f32; 3];
+                let mut n0 = [0.0f32; 3];
+                let Some(ratio) = fit_plane(pts, sa, &mut c, &mut n0) else { return };
+                if ratio < 0.06 {
+                    // single plane: orthogonal projection
+                    let dv = dot(sub(*p, c), n0);
+                    if dv.abs() <= max_d {
+                        *p = sub(*p, scale(n0, dv));
+                        *n = if dot(*n, n0) >= 0.0 { n0 } else { scale(n0, -1.0) };
+                    }
+                    return;
+                }
+                // corner hypothesis: split by residual sign of the global fit
+                sb.clear();
+                for &i in sa.iter() {
+                    if dot(sub(pts[i as usize], c), n0) < 0.0 {
+                        sb.push(i);
+                    }
+                }
+                let nsb = sb.len();
+                sa.retain(|&i| dot(sub(pts[i as usize], c), n0) >= 0.0);
+                if sa.len() < 4 || nsb < 4 {
+                    return;
+                }
+                let mut ca = [0.0f32; 3];
+                let mut cb = [0.0f32; 3];
+                let mut na = [0.0f32; 3];
+                let mut nb = [0.0f32; 3];
+                let (Some(ra), Some(rb)) = (fit_plane(pts, sa, &mut ca, &mut na), fit_plane(pts, sb, &mut cb, &mut nb)) else {
+                    return;
+                };
+                if ra > 0.15 || rb > 0.15 {
+                    return; // halves aren't planar either
+                }
+                if dot(na, nb).abs() > 0.94 {
+                    return; // ~parallel: not a corner
+                }
+                // alternating projection onto both planes -> intersection line
+                let da = dot(na, ca);
+                let db = dot(nb, cb);
+                let mut x = *p;
+                for _ in 0..4 {
+                    x = sub(x, scale(na, dot(na, x) - da));
+                    x = sub(x, scale(nb, dot(nb, x) - db));
+                }
+                if length(sub(x, *p)) <= max_d * 1.5 {
+                    let blend = normalize(add(na, nb));
+                    *p = x;
+                    *n = if dot(*n, blend) >= 0.0 { blend } else { scale(blend, -1.0) };
+                }
+            },
+        );
+}
+
 #[cfg(test)]
 fn debug_check_cube(
     field: &Field,
@@ -1035,6 +1150,9 @@ pub fn reconstruct(cloud: &PointCloud, opts: &SurfaceOptions) -> (Mesh, Stats) {
             sup.push(c.sup);
         }
     }
+
+    // --- plane snap: flat regions become exactly flat ---
+    snap_to_planes(&mut pos, &mut nrm, cloud, &grid, obs_r, opts.band_vox * voxel * 0.6);
 
     // --- trim ---
     let trim = opts.trim_m;
