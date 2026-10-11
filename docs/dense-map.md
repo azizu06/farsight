@@ -12,9 +12,12 @@ coarse voxel/mesh fusion only.
 Dense integration runs on a single background worker, with at most one pending
 frame plus one active frame. New frames replace the pending frame; capture and
 control never wait for dense reconstruction/integration. The default budget is
-**2 jobs/s and 4096 measured pixels/job**; sampling rotates across valid native
-pixels over accepted jobs. This bounds CPU use at the cost of slower detail
-accumulation. The 30-second RGB-D lifetime still applies. Delta reads copy one
+**8 jobs/s and 12,288 measured pixels/job**; sampling rotates across valid native
+pixels over accepted jobs. Vectorized record construction retains exactly the
+previous measured bytes and ordering. A thread-CPU budget lowers admission when
+projection/integration becomes costly; it does not accumulate old frames or add
+an extra recovery delay after a visual lock wait. The 30-second RGB-D lifetime
+still applies. Delta reads copy one
 bounded journal page, rather than rebuilding all pending changes; the Mac
 polls at 2 Hz when caught up and drains pending bounded pages faster.
 
@@ -24,6 +27,16 @@ default; no CLI flag is required. `FARSIGHT_FUSION_BYPASS` and legacy visual cap
 are independent. `/health` includes `dense_worker` with enabled state, budgets,
 processed/dropped/queued jobs, worker duration and error. `processing_ms` remains
 the camera/coarse-frame path timing, separate from background dense duration.
+
+Startup settings are `FARSIGHT_DENSE_HZ` (1–30, default 8),
+`FARSIGHT_DENSE_FRAME_POINTS` (128–65,536, default 12,288), and
+`FARSIGHT_DENSE_CPU_BUDGET` (0.05–0.75, default 0.25). Invalid values use the
+bounded defaults. For the previous low-bandwidth profile, select 2 Hz / 4096.
+`dense_worker.admission_hz` reports the current CPU-limited ceiling, `cpu_ms`
+reports thread execution time, and `sampled_points` counts observations rather
+than retained unique cells. The rig owner selects and records the deployed
+budget using actual CPU/link measurements; source defaults do not establish
+that a running service has loaded them.
 
 ## Launch and ownership
 
