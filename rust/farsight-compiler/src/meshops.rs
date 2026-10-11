@@ -61,6 +61,14 @@ pub struct MeshOptions {
     pub decimate_planar_error: f32,
     /// meshopt_simplifySloppy instead of QEM (faster, ignores locks/attrs).
     pub decimate_sloppy: bool,
+    /// Max face-centroid -> cloud distance to inherit a plane label (m).
+    pub plane_assign_dist: f32,
+    /// Project plane-assigned vertices onto their plane during smoothing.
+    pub plane_smooth: bool,
+    /// Split crease vertices + exact per-plane normals after decimation.
+    pub plane_normals: bool,
+    /// Lock plane-intersection crease vertices during decimation.
+    pub decimate_lock_creases: bool,
 }
 
 impl Default for MeshOptions {
@@ -87,6 +95,10 @@ impl Default for MeshOptions {
             decimate_error: 1.0,
             decimate_planar_error: 0.002,
             decimate_sloppy: false,
+            plane_assign_dist: 0.05,
+            plane_smooth: true,
+            plane_normals: true,
+            decimate_lock_creases: true,
         }
     }
 }
@@ -206,6 +218,205 @@ fn boundary_vertex_mask_b(nv: usize, idx: &[u32], bedges: &[u32]) -> Vec<bool> {
 
 fn boundary_vertex_mask(nv: usize, idx: &[u32]) -> Vec<bool> {
     boundary_vertex_mask_b(nv, idx, &boundary_edges(idx))
+}
+
+// ---------------- plane machinery ----------------
+// `planes_nd` = (unit normal, offset d) with plane eqn n.x + d = 0.
+// `labels` = per-cloud-point plane id (u32::MAX = none).
+
+/// Per-face plane id from the cloud label of the nearest point to the
+/// face centroid. u32::MAX = unlabelled.
+fn face_plane_labels(pos: &[V3], idx: &[u32], g: &Grid, labels: &[u32], max_dist: f32) -> Vec<u32> {
+    idx.par_chunks_exact(3)
+        .map(|t| {
+            let c = scale(add(add(pos[t[0] as usize], pos[t[1] as usize]), pos[t[2] as usize]), 1.0 / 3.0);
+            match g.nearest(c, max_dist) {
+                Some((i, _)) => labels[i as usize],
+                None => u32::MAX,
+            }
+        })
+        .collect()
+}
+
+/// Per-vertex plane id: the single distinct non-MAX face label on the fan,
+/// else u32::MAX (unlabelled or crease vertex).
+fn vertex_plane_ids(vf: &(Vec<u32>, Vec<u32>), flabel: &[u32]) -> Vec<u32> {
+    let (off, items) = vf;
+    (0..off.len() - 1)
+        .into_par_iter()
+        .map(|v| {
+            let mut l = u32::MAX;
+            let mut mixed = false;
+            for &f in &items[off[v] as usize..off[v + 1] as usize] {
+                let lf = flabel[f as usize];
+                if lf == u32::MAX {
+                    continue;
+                }
+                if l == u32::MAX {
+                    l = lf;
+                } else if l != lf {
+                    mixed = true;
+                }
+            }
+            if mixed {
+                u32::MAX
+            } else {
+                l
+            }
+        })
+        .collect()
+}
+
+/// Crease vertices: incident faces span >=2 distinct label groups
+/// (u32::MAX counts as its own group, so plane/non-plane borders are creases).
+fn crease_mask(vf: &(Vec<u32>, Vec<u32>), flabel: &[u32]) -> Vec<bool> {
+    let (off, items) = vf;
+    (0..off.len() - 1)
+        .into_par_iter()
+        .map(|v| {
+            let mut first = u32::MAX;
+            let mut have = false;
+            for &f in &items[off[v] as usize..off[v + 1] as usize] {
+                let lf = flabel[f as usize];
+                if !have {
+                    first = lf;
+                    have = true;
+                } else if lf != first {
+                    return true;
+                }
+            }
+            false
+        })
+        .collect()
+}
+
+/// Project plane-assigned vertices exactly onto their plane.
+fn reproject_planes(mesh: &mut Mesh, planes_nd: &[(V3, f32)], vlabel: &[u32]) {
+    mesh.pos.par_iter_mut().enumerate().for_each(|(v, p)| {
+        let l = vlabel[v];
+        if l == u32::MAX {
+            return;
+        }
+        let (n, d) = planes_nd[l as usize];
+        *p = sub(*p, scale(n, dot(n, *p) + d));
+    });
+}
+
+/// Split vertices along plane-label creases so every face group gets the exact
+/// plane normal -> flat shading on planes, crisp edges where planes meet.
+/// Returns (crease_vertices, appended_vertices).
+fn split_crease_normals(mesh: &mut Mesh, planes_nd: &[(V3, f32)], flabel: &[u32]) -> (usize, usize) {
+    let n = mesh.pos.len();
+    if n == 0 {
+        return (0, 0);
+    }
+    let vf = vertex_faces(n, &mesh.idx);
+    let (off, items) = &vf;
+    // distinct incident face labels per vertex (includes u32::MAX group)
+    let groups_of = |v: usize| -> Vec<u32> {
+        let mut seen: Vec<u32> = Vec::new();
+        for &f in &items[off[v] as usize..off[v + 1] as usize] {
+            let lf = flabel[f as usize];
+            if !seen.contains(&lf) {
+                seen.push(lf);
+            }
+        }
+        seen
+    };
+    let mut extra: Vec<(u32, V3)> = Vec::new(); // (src vert, placeholder normal)
+    let mut creases = 0usize;
+    let mut gstore: Vec<(u32, u32)> = Vec::new(); // (label, vert_id), contiguous per v
+    let mut goff = vec![0u32; n + 1];
+    for v in 0..n {
+        goff[v + 1] = goff[v] + groups_of(v).len() as u32;
+    }
+    for v in 0..n as u32 {
+        let seen = groups_of(v as usize);
+        if seen.len() > 1 {
+            creases += 1;
+        }
+        for (gi, &lab) in seen.iter().enumerate() {
+            let vid = if gi == 0 {
+                v
+            } else {
+                let id = n as u32 + extra.len() as u32;
+                extra.push((v, [0.0; 3]));
+                id
+            };
+            gstore.push((lab, vid));
+        }
+    }
+    // group normals: labelled -> exact plane n (sign vs face winding);
+    // unlabelled -> average of the group's face normals
+    let group_normal = |v: u32, lab: u32| -> V3 {
+        let mut acc = [0.0f32; 3];
+        for &f in &items[off[v as usize] as usize..off[v as usize + 1] as usize] {
+            if flabel[f as usize] == lab {
+                let t = [mesh.idx[3 * f as usize] as usize, mesh.idx[3 * f as usize + 1] as usize, mesh.idx[3 * f as usize + 2] as usize];
+                acc = add(acc, cross(sub(mesh.pos[t[1]], mesh.pos[t[0]]), sub(mesh.pos[t[2]], mesh.pos[t[0]])));
+            }
+        }
+        if lab == u32::MAX {
+            return normalize(acc);
+        }
+        let (pn, _) = planes_nd[lab as usize];
+        if dot(acc, pn) < 0.0 {
+            scale(pn, -1.0)
+        } else {
+            pn
+        }
+    };
+    let gnorms: Vec<V3> = gstore
+        .iter()
+        .enumerate()
+        .map(|(gi, &(lab, _))| {
+            // vertex = the group owner (binary search goff for gi)
+            let v = (goff.partition_point(|&o| o <= gi as u32) - 1) as u32;
+            group_normal(v, lab)
+        })
+        .collect();
+    // rewrite each face corner to its label-group vertex
+    for f in 0..flabel.len() {
+        let lab = flabel[f];
+        for k in 0..3 {
+            let v = mesh.idx[3 * f + k];
+            for gi in goff[v as usize] as usize..goff[v as usize + 1] as usize {
+                if gstore[gi].0 == lab {
+                    mesh.idx[3 * f + k] = gstore[gi].1;
+                    break;
+                }
+            }
+        }
+    }
+    // append extra verts (copy all attrs from src); set normals per group
+    let appended = extra.len();
+    if appended > 0 {
+        let src: Vec<u32> = extra.iter().map(|e| e.0).collect();
+        for &s in &src {
+            mesh.pos.push(mesh.pos[s as usize]);
+            if !mesh.col.is_empty() {
+                mesh.col.push(mesh.col[s as usize]);
+            }
+            if !mesh.uv.is_empty() {
+                mesh.uv.push(mesh.uv[s as usize]);
+            }
+            if !mesh.support.is_empty() {
+                mesh.support.push(mesh.support[s as usize]);
+            }
+        }
+        mesh.nrm.resize(n + appended, [0.0; 3]);
+    } else if mesh.nrm.len() != n {
+        mesh.nrm.resize(n, [0.0; 3]);
+    }
+    // labelled groups get the exact plane normal; appended unlabelled verts
+    // get their group's average face normal (kept verts keep smooth normals)
+    for gi in 0..gstore.len() {
+        let (lab, vid) = gstore[gi];
+        if lab != u32::MAX || vid as usize >= n {
+            mesh.nrm[vid as usize] = gnorms[gi];
+        }
+    }
+    (creases, appended)
 }
 
 /// Keep faces where `keep[f]`; drop unreferenced vertices; fix all arrays.
@@ -836,11 +1047,21 @@ pub fn compute_vertex_normals(mesh: &mut Mesh) {
     compute_vertex_normals_csr(mesh, &vf);
 }
 
+/// Plane context for constrained smoothing: exact normals on plane faces,
+/// projection of plane-assigned vertices, crease verts already in `pin`.
+struct PlaneCtx<'a> {
+    planes_nd: &'a [(V3, f32)],
+    assign: &'a [u32],
+    flabel: &'a [u32],
+}
+
 /// Bilateral normal-filter smoothing (Zheng et al.): filter face normals
 /// bilaterally over vertex-incident neighbourhoods, then update vertices toward
 /// the filtered face planes. Boundary vertices (`pin`) are pinned; `vf` is the
-/// vertex->faces CSR table (topology is constant across iterations).
-fn bilateral_smooth(mesh: &mut Mesh, opts: &MeshOptions, vf: &(Vec<u32>, Vec<u32>), pin: &[bool]) {
+/// vertex->faces CSR table (topology is constant across iterations). With
+/// `pc`, plane-labelled faces filter with the exact plane normal and
+/// plane-assigned vertices are re-projected each iteration.
+fn bilateral_smooth(mesh: &mut Mesh, opts: &MeshOptions, vf: &(Vec<u32>, Vec<u32>), pin: &[bool], pc: Option<&PlaneCtx>) {
     let nf = mesh.triangles();
     if nf == 0 || opts.smooth_iters == 0 {
         return;
@@ -850,7 +1071,18 @@ fn bilateral_smooth(mesh: &mut Mesh, opts: &MeshOptions, vf: &(Vec<u32>, Vec<u32
         let (mut fnrm, mut fcent, mut farea) = (vec![[0.0f32; 3]; nf], vec![[0.0f32; 3]; nf], vec![0.0f32; nf]);
         fnrm.par_iter_mut().zip(fcent.par_iter_mut()).zip(farea.par_iter_mut()).enumerate().for_each(|(f, ((n, c), a))| {
             let (p0, p1, p2) = (mesh.pos[mesh.idx[3 * f] as usize], mesh.pos[mesh.idx[3 * f + 1] as usize], mesh.pos[mesh.idx[3 * f + 2] as usize]);
-            *n = tri_normal(p0, p1, p2);
+            let tn = tri_normal(p0, p1, p2);
+            *n = match pc {
+                Some(pc) if pc.flabel[f] != u32::MAX => {
+                    let pn = pc.planes_nd[pc.flabel[f] as usize].0;
+                    if dot(pn, tn) < 0.0 {
+                        scale(pn, -1.0)
+                    } else {
+                        pn
+                    }
+                }
+                _ => tn,
+            };
             *c = scale(add(add(p0, p1), p2), 1.0 / 3.0);
             *a = tri_area(p0, p1, p2);
         });
@@ -914,6 +1146,14 @@ fn bilateral_smooth(mesh: &mut Mesh, opts: &MeshOptions, vf: &(Vec<u32>, Vec<u32
                 d = add(d, scale(n, dot(n, sub(fcent[f as usize], *p))));
             }
             *p = add(*p, scale(d, opts.smooth_strength / fs.len() as f32));
+            // plane constraint: keep the vertex on its assigned plane
+            if let Some(pc) = pc {
+                let l = pc.assign[v];
+                if l != u32::MAX {
+                    let (pn, pd) = pc.planes_nd[l as usize];
+                    *p = sub(*p, scale(pn, dot(pn, *p) + pd));
+                }
+            }
         });
     }
 }
@@ -1119,7 +1359,19 @@ pub fn lod_chain(mesh: &Mesh, ratios: &[f32], opts: &MeshOptions) -> Vec<Mesh> {
 
 // ---------------- entry ----------------
 
+/// Same as `run` plus plane constraints. `planes_nd` = (unit normal, offset)
+/// pairs, `labels` = per-cloud-point plane id (u32::MAX = none) — the shape
+/// produced by `planes::detect` (`planes.planes.iter().map(|p| (p.n, p.d))`,
+/// `&planes.label`).
+pub fn run_with_planes(mesh: &mut Mesh, cloud: &PointCloud, opts: &MeshOptions, planes_nd: &[(V3, f32)], labels: &[u32]) -> Stats {
+    run_inner(mesh, cloud, opts, planes_nd, labels)
+}
+
 pub fn run(mesh: &mut Mesh, cloud: &PointCloud, opts: &MeshOptions) -> Stats {
+    run_inner(mesh, cloud, opts, &[], &[])
+}
+
+fn run_inner(mesh: &mut Mesh, cloud: &PointCloud, opts: &MeshOptions, planes_nd: &[(V3, f32)], labels: &[u32]) -> Stats {
     let t0 = Instant::now();
     let mut s = serde_json::json!({});
     macro_rules! ms {
@@ -1173,13 +1425,40 @@ pub fn run(mesh: &mut Mesh, cloud: &PointCloud, opts: &MeshOptions) -> Stats {
     // one edge sort serves the smoothing pin mask and the decimate border lock
     let t = Instant::now();
     let bedges = boundary_edges(&mesh.idx);
-    let bmask = boundary_vertex_mask_b(mesh.pos.len(), &mesh.idx, &bedges);
+    let mut bmask = boundary_vertex_mask_b(mesh.pos.len(), &mesh.idx, &bedges);
     let vf = vertex_faces(mesh.pos.len(), &mesh.idx);
     ms!("adjacency_ms", t);
 
+    // plane assignment (face + vertex labels, crease mask) when planes given
+    let t = Instant::now();
+    let lg = if planes_nd.is_empty() || cloud.pos.is_empty() {
+        None
+    } else {
+        Some(Grid::build(&cloud.pos, opts.plane_assign_dist.max(0.02)))
+    };
+    let flabel = lg.as_ref().map(|g| face_plane_labels(&mesh.pos, &mesh.idx, g, labels, opts.plane_assign_dist));
+    let vlabel = flabel.as_ref().map(|fl| vertex_plane_ids(&vf, fl));
+    let pctx = match (&flabel, &vlabel) {
+        (Some(fl), Some(vl)) => Some(PlaneCtx { planes_nd, assign: vl, flabel: fl }),
+        _ => None,
+    };
+    if let (Some(fl), true) = (&flabel, opts.decimate_lock_creases || opts.plane_smooth) {
+        let cm = crease_mask(&vf, fl);
+        let mut nc = 0usize;
+        for (i, c) in cm.iter().enumerate() {
+            if *c && !bmask[i] {
+                bmask[i] = true;
+                nc += 1;
+            }
+        }
+        s["crease_locked"] = nc.into();
+        s["plane_faces"] = fl.iter().filter(|&&l| l != u32::MAX).count().into();
+    }
+    ms!("planes_ms", t);
+
     let t = Instant::now();
     compute_vertex_normals_csr(mesh, &vf);
-    bilateral_smooth(mesh, opts, &vf, &bmask);
+    bilateral_smooth(mesh, opts, &vf, &bmask, if opts.plane_smooth { pctx.as_ref() } else { None });
     ms!("smooth_ms", t);
 
     // measured-only grids for resnap/support; full cloud for colour fallback
@@ -1196,6 +1475,10 @@ pub fn run(mesh: &mut Mesh, cloud: &PointCloud, opts: &MeshOptions) -> Stats {
 
     let t = Instant::now();
     let snapped = mg.as_ref().map(|g| resnap(mesh, g, cloud, opts)).unwrap_or(0);
+    // resnap can pull plane verts off their plane; re-project them on
+    if let Some(vl) = &vlabel {
+        reproject_planes(mesh, planes_nd, vl);
+    }
     ms!("resnap_ms", t);
     s["resnapped"] = snapped.into();
 
@@ -1214,6 +1497,17 @@ pub fn run(mesh: &mut Mesh, cloud: &PointCloud, opts: &MeshOptions) -> Stats {
     compute_vertex_normals(mesh);
     ms!("final_ms", t);
     s["post_degenerate"] = post.into();
+
+    // crisp plane shading: split crease verts, exact per-plane normals
+    if opts.plane_normals && !planes_nd.is_empty() && !labels.is_empty() {
+        let t = Instant::now();
+        let lg2 = Grid::build(&cloud.pos, opts.plane_assign_dist.max(0.02));
+        let fl2 = face_plane_labels(&mesh.pos, &mesh.idx, &lg2, labels, opts.plane_assign_dist);
+        let (creases, appended) = split_crease_normals(mesh, planes_nd, &fl2);
+        s["crease_verts"] = creases.into();
+        s["split_verts"] = appended.into();
+        s["planesplit_ms"] = serde_json::json!((t.elapsed().as_secs_f64() * 1e3).round() as u64);
+    }
 
     s["total_ms"] = serde_json::json!((t0.elapsed().as_secs_f64() * 1e3).round() as u64);
     s["vertices"] = mesh.pos.len().into();
@@ -1342,7 +1636,7 @@ mod tests {
         let opts = MeshOptions { smooth_iters: 3, ..Default::default() };
         let vf = vertex_faces(m.pos.len(), &m.idx);
         let pin = boundary_vertex_mask(m.pos.len(), &m.idx);
-        bilateral_smooth(&mut m, &opts, &vf, &pin);
+        bilateral_smooth(&mut m, &opts, &vf, &pin, None);
         assert_eq!(m.pos, before); // all verts are boundary -> pinned
     }
 
