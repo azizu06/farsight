@@ -25,6 +25,7 @@ from jetson.sim.worlds import WORLDS, load as load_world
 from .people import PersonLocator
 from .phone import Hello, decode_frame, validate_pose
 from .state import MapState
+from .run_capture import PhoneRunCapture
 from jetson.camera import CameraService, adjusted_receipt
 from jetson.capture_permits import CapturePermits
 from jetson.video import VideoService
@@ -112,6 +113,10 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
     nav = NavService(state, speed_mps=nav_speed_mps, turn_radps=nav_turn_radps, max_v=nav_max_v,
                      max_w=nav_max_w, camera_height=nav_camera_height,
                      camera_snapshot=camera_service.snapshot) if nav2 else None
+    run_capture = PhoneRunCapture.from_environment(
+        demo_mode=demo_mode, synthetic=demo or replay is not None)
+    if run_capture is not None:
+        state.frame_observers.append(run_capture.offer_frame)
     people = PersonLocator()
     state.frame_observers.append(people.offer_frame)
     perception = ReplayPerception(camera_service) if replay is not None else PerceptionService(camera_service, model=detector_model, mode=detector, on_detection=mission.detect, face_model=face_model, annotate=people.annotate)
@@ -178,6 +183,8 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
 
     @asynccontextmanager
     async def lifespan(app):
+        if run_capture is not None:
+            run_capture.start()
         task = (asyncio.create_task(stream_world(state, camera_service, sim)) if sim else
                 asyncio.create_task(stream_demo(state, camera_service)) if demo else None)
         replay_task = asyncio.create_task(replay_session.run.play(replay_session.publish)) if replay_session else None
@@ -192,6 +199,8 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
         try:
             yield
         finally:
+            if run_capture is not None:
+                await asyncio.to_thread(run_capture.close)
             await scanner.close()
             await asyncio.to_thread(state.dense_worker.close)
             for stream_task in (sample_task, record_task, replay_task):
@@ -217,6 +226,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
 
     app = FastAPI(title="Farsight RGB-D mapper", lifespan=lifespan)
     app.state.mapping = state
+    app.state.run_capture = run_capture
     app.state.phone_owner = None
     app.state.camera = camera_service
     app.state.video = video_service
@@ -259,6 +269,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
         status = await asyncio.to_thread(state.status)
         status.update(camera_service.status())
         status["scan"] = scanner.result
+        status["run_capture"] = run_capture.status() if run_capture else dict(enabled=False)
         rover = control.status()
         status.update(perception.health())
         status.update(replay=replay is not None, recording=record, rover=rover["rover"], estop=rover["estop"], control=rover,
