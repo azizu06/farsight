@@ -12,11 +12,13 @@ from . import frames
 
 
 class LocalMotion:
+    MIN_TRANSLATION_MPS = 0.15
+
     def __init__(self, min_width=0.7, creep_mps=0.2, turn_radps=0.82, budget_s=4.0, scan_budget_s=10.0):
         if (not all(math.isfinite(v) and v > 0 for v in (min_width, creep_mps, turn_radps, budget_s, scan_budget_s))
                 or min_width < 0.34):
             raise ValueError("Local Explore motion needs finite positive limits and a rover-width corridor")
-        self.min_width, self.creep_mps = min_width, creep_mps
+        self.min_width, self.creep_mps = min_width, max(self.MIN_TRANSLATION_MPS, creep_mps)
         self.turn_radps, self.budget_s = turn_radps, budget_s
         self.scan_budget_s = scan_budget_s
         self.reset()
@@ -57,7 +59,8 @@ class LocalMotion:
                 pose_at, depth, header, depth_at, support, resolution, origin, map_at, to_map=None, body_clear=None):
         """SI (m/s, rad/s CCW). None means the existing Nav2 forwarding owns output.
 
-        A fresh moving Nav2 command is forwarded. Anything else never stands still
+        A fresh moving Nav2 command keeps its curvature while translation is
+        raised to at least 0.15 m/s. Anything else never stands still
         (captain's order): planning gaps, goal changes, a controller zero or a
         recovery hand-off creep along the most open measured arc, or turn in place
         to look when none is open. Something inside the body disc backs off over
@@ -69,6 +72,10 @@ class LocalMotion:
             return None
         if nav_command is not None and now - nav_at <= 0.2 and any(nav_command):
             self.reset()
+            linear, angular = nav_command
+            if linear and abs(linear) < self.MIN_TRANSLATION_MPS:
+                scale = self.MIN_TRANSLATION_MPS / abs(linear)
+                return math.copysign(self.MIN_TRANSLATION_MPS, linear), angular * scale
             return nav_command
         if self.gap_since is None:
             self.gap_since = now

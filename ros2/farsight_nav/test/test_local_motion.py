@@ -3,6 +3,7 @@ import os
 import sys
 
 import numpy as np
+import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from farsight_nav import frontiers, local_motion  # noqa: E402
@@ -19,6 +20,65 @@ def scene():
                             fx=60, fy=60, cx=60, cy=40),
                 support=frontiers.clearance_map(grid != 0, 0.1),
                 resolution=0.1, origin=(-2, -4))
+
+
+@pytest.mark.parametrize("nominal, expected", [(0.02, 0.15), (0.15, 0.15), (0.3, 0.3)])
+def test_configured_creep_has_the_same_minimum_forward_and_reverse(nominal, expected):
+    motion = local_motion.LocalMotion(creep_mps=nominal)
+    args = scene()
+    assert motion.command(now=0, pose_at=0, depth_at=0, map_at=0, **args) == (expected, 0)
+    args['depth'][:] = 0.25
+    assert motion.command(now=0.1, pose_at=0.1, depth_at=0.1, map_at=0.1, **args) == (-expected, 0)
+
+
+@pytest.mark.parametrize("nominal", [0.02, 0.15])
+def test_curved_coverage_projects_the_executed_minimum_speed(nominal):
+    motion = local_motion.LocalMotion(creep_mps=nominal, min_width=0.36)
+    motion.heading = 0.2  # smooth continuation of a previously chosen left arc
+    checked = []
+    project_depth = motion.depth_clear
+
+    def record_projection(points, depth, header):
+        clear = project_depth(points, depth, header)
+        checked.append((np.asarray(points), clear))
+        return clear
+
+    motion.depth_clear = record_projection
+    args = scene()
+    assert motion.command(now=0, pose_at=0, depth_at=0, map_at=0, **args) == (0.15, 0.1)
+    # A 0.15 m/s, 0.1 rad/s turn has a 1.5 m radius. The body centres after
+    # 0.55, 0.75 and 0.95 m of travel must be the ones checked against depth.
+    centres = np.array([[0.5377585064, 0.0997086772],
+                        [0.7191383079, 0.1836261572],
+                        [0.8877523574, 0.2909111894]])
+    assert any(clear and np.allclose(points.reshape(3, 7, 3, 3).mean(axis=(1, 2))[:, :2], centres)
+               for points, clear in checked)
+
+
+@pytest.mark.parametrize("command", [(0.02, 0.004), (-0.02, 0.004), (0.1, -0.2), (-0.1, -0.2)])
+def test_slow_nav_commands_raise_translation_without_changing_curvature(command):
+    motion = local_motion.LocalMotion()
+    args = scene()
+    args.update(nav_command=command, nav_at=0)
+    linear, angular = motion.command(now=0, pose_at=0, depth_at=0, map_at=0, **args)
+    assert abs(linear) == pytest.approx(0.15)
+    assert np.sign(linear) == np.sign(command[0])
+    assert angular / linear == pytest.approx(command[1] / command[0])
+
+
+@pytest.mark.parametrize("command", [(0.15, 0.2), (0.3, -0.5), (-0.3, 0.5), (0, 0.82), (0, -0.82)])
+def test_fast_nav_commands_and_pivots_are_forwarded_unchanged(command):
+    motion = local_motion.LocalMotion()
+    args = scene()
+    args.update(nav_command=command, nav_at=0)
+    assert motion.command(now=0, pose_at=0, depth_at=0, map_at=0, **args) == command
+
+
+def test_nav_zero_uses_measured_fallback_at_the_minimum_speed():
+    motion = local_motion.LocalMotion(creep_mps=0.02)
+    args = scene()
+    args.update(nav_command=(0, 0), nav_at=0)
+    assert motion.command(now=0, pose_at=0, depth_at=0, map_at=0, **args) == (0.15, 0)
 
 
 def test_no_idle_gap_during_goal_changes_and_noisy_depth():
