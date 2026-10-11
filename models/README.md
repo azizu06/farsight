@@ -92,8 +92,9 @@ including its current host load, rather than target Jetson performance.
 ## Optional rescue-drill face detector (Hugging Face Hub)
 
 Rescue-drill faces now come from the pose detector by default (`--face-detector pose`,
-`jetson/face.py` `keypoint_faces`): a square 1.4x the extent of at least 3 nose/eye/ear
-keypoints above 0.5 confidence, no extra model. Over the 715 upright frames of run
+`jetson/face.py` `keypoint_faces`): a square 2.8x the extent of at least 3 nose/eye/ear
+keypoints above 0.5 confidence (half-side 1.4x), at least half the person's width, no
+extra model. Over the 715 upright frames of run
 094259 it caught 100 of 134 faces that at least 3 of 6 methods agreed on; UltraFace
 caught 55. UltraFace stays as the rollback, `--face-detector ultraface` (env
 `FARSIGHT_FACE_DETECTOR=ultraface`) plus `--face-model`:
