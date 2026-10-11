@@ -24,3 +24,4 @@ ureq = "2"
 meshopt = "0.4"
 bytemuck = { version = "1", features = ["derive"] }
 rustc-hash = "2"
+tiny_http = "0.12"

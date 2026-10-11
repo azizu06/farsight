@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use farsight_compiler::{core::*, export, io, metrics, pipeline, synth};
+use farsight_compiler::{core::*, export, io, metrics, pipeline, synth, view};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -35,6 +35,18 @@ enum Cmd {
         out: PathBuf,
         #[arg(long, default_value_t = 7)]
         seed: u64,
+    },
+    /// Serve the three.js viewer for a compiled output dir (scene.glb, mesh.ply, splat.ply, points.ply, report.json).
+    View {
+        /// Compiler output directory to serve.
+        out: PathBuf,
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+        #[arg(long, default_value_t = 8765)]
+        port: u16,
+        /// Open the viewer URL in the default browser.
+        #[arg(long)]
+        open: bool,
     },
     /// Synthetic scan -> compile -> quality metrics vs ground truth.
     Bench {
@@ -106,6 +118,9 @@ fn main() -> Result<()> {
             std::fs::write(out.join("scene.json"), serde_json::to_vec_pretty(&scene)?)?;
             synth::write_capture(&out.join("capture"), &scan.capture)?;
             eprintln!("[synth] {} measured points, {} truth samples, {} images -> {}", scan.cloud.len(), scan.truth.len(), scan.capture.images.len(), out.display());
+        }
+        Cmd::View { out, host, port, open } => {
+            view::serve(&out, &host, port, open)?;
         }
         Cmd::Bench { out, preset, seed, no_capture, config } => {
             let opts = options(&preset, &config)?;

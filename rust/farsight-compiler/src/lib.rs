@@ -16,6 +16,7 @@ pub mod export;
 pub mod synth;
 pub mod metrics;
 pub mod pipeline;
+pub mod view;
 
 /// Free-form per-stage statistics written into report.json.
 pub type Stats = serde_json::Value;
