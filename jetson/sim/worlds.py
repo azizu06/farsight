@@ -61,7 +61,14 @@ def seek():
     return World("seek", blocks, people=[person], description="Seek a walking person; standoff 0.8 m.")
 
 
-WORLDS = dict(popup=popup, doorway=doorway, deadend=deadend, floorplan=floorplan, seek=seek)
+def wander():
+    """One 4 x 5 m room with a box: frontiers run out in seconds and Explore keeps wandering."""
+    blocks = room(-2.0, -4.0, 2.0, 1.0)
+    blocks.append(Block(-0.4, -2.2, 0.4, -1.6, 0.6, color=(66, 150, 145), name="box"))
+    return World("wander", blocks, description="Explore after the last frontier: wander, never stall or spin forever.")
+
+
+WORLDS = dict(popup=popup, doorway=doorway, deadend=deadend, floorplan=floorplan, seek=seek, wander=wander)
 
 
 def load(name):

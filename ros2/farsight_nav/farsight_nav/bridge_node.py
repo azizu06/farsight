@@ -486,10 +486,11 @@ class FarsightBridge(Node):
         # current body disc. Only lethal measured cells veto the physical sweep;
         # raw live depth below independently vetoes newly arrived objects.
         obstacles = frontiers.clearance_map(cells >= 100, info.resolution)
+        unseen = frontiers.clearance_map(cells < 0, info.resolution)  # LocalMotion escape arcs
         with self.lock:
             if session != self.explore_session or not self.exploring:
                 return
-            self.local_support = (support, info.resolution, origin, obstacles)
+            self.local_support = (support, info.resolution, origin, obstacles, unseen)
             self.lethal = (cells >= 100, info.resolution, origin)
             if now - self.pose_at >= 0.5 or now - self.depth_at >= 0.5 or now - self.global_grid_at >= 2.5:
                 return  # server capture-loss interlock owns stopping and explicit rearming
@@ -572,7 +573,10 @@ class FarsightBridge(Node):
                     self.no_frontier_since = now
                     self.cancel_goal("No reachable frontier")
                 self.explore_target = None
-                self.goal_state, self.goal_message = "planning", "No reachable frontier: wandering toward open space"
+                # Name what blocks the nose (field diagnosis: the logger records this message).
+                blocked = sorted(self.local_motion.blocked.items(), key=lambda item: -item[1])[:2]
+                why = f" (nose blocked: {', '.join(f'{name} {n}' for name, n in blocked)})" if blocked else ""
+                self.goal_state, self.goal_message = "planning", f"No reachable frontier: wandering toward open space{why}"
                 return
             self.no_frontier_since = None
             running = self.goal_handle is not None or (
@@ -606,7 +610,7 @@ class FarsightBridge(Node):
             if self.explore_finished or not self.ready():
                 self.send(protocol.cmd_vel(0, 0, self.goal_id, self.generation))
                 return
-            support, resolution, origin, obstacles = self.local_support or (None, 1, (0, 0), None)
+            support, resolution, origin, obstacles, unseen = self.local_support or (None, 1, (0, 0), None, None)
             depth, header = self.depth_snapshot or (None, {})
             robot = self.robot
             # Support is map-frame; measured depth projection is odom-frame.
@@ -625,7 +629,7 @@ class FarsightBridge(Node):
                 now=now, active=True, nav_command=self.nav_command, nav_at=self.nav_command_at,
                 robot=robot, pose_at=self.pose_at, depth=depth, header=header, depth_at=self.depth_at,
                 support=support, resolution=resolution, origin=origin, map_at=self.global_grid_at,
-                to_map=to_map, body_clear=body_clear)
+                to_map=to_map, body_clear=body_clear, lethal=obstacles, unseen=unseen)
             if command is not None:
                 command = speed.limit(command, clearance, speed.top_speed(self.config), **self.speed_bands)
                 self.send(protocol.cmd_vel(*command, self.goal_id, self.generation))
