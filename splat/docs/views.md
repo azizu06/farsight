@@ -117,6 +117,19 @@ Verified on lavapipe (`/tmp/cap_sel`, 60 iters, `--appearance-lr 5e-3`):
 trained end-to-end with no grad/state errors, eval printed
 `PSNR (appearance-fair) 23.620` next to raw `PSNR 14.9956`.
 
+## Small-JPEG drop (stock Brush vs this fork)
+
+Stock Brush v0.3.0's loader demanded a ~16,387-byte initial read per image —
+the 29 real-capture JPEGs under that size were silently dropped, and
+Dechante's `after_run.py` worked around it by transcoding them to padded
+PNGs. Our vendored loader does NOT have the drop: `LoadImage::dimensions`
+goes through `brush_vfs::read_until_parsed` (chunked, EOF-tolerant) and
+`decode_jpeg_scaled` reads the full buffer. Verified: a 6-view capture of
+5,426-byte JPEGs loads all views (`5 training, 1 eval` — no drops). No
+padding hacks needed; the padded-PNG workaround is unnecessary for this
+pipeline. Side find: `--eval-split-every 0` panics in nerfstudio.rs:351
+(divide-by-zero) — use eval-split >= 1.
+
 ## brush-dataset loader rework (commits f6d2287…)
 
 - **Eager disjoint prefetch**: view indices are partitioned round-robin across
