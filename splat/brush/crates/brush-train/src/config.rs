@@ -132,6 +132,18 @@ pub struct TrainConfig {
     #[arg(long, help_heading = "Refine options", default_value = "0.05")]
     pub mcmc_opac_reset: f32,
 
+    /// Final-quality export prune: once the schedule reaches
+    /// `1 - quest_prune_finetune_frac`, the splat set is pruned to this count
+    /// by accumulated blend weight (the 300k Quest budget) and refinement is
+    /// frozen so the remaining steps fine-tune the survivors. 0 disables.
+    #[arg(long, help_heading = "Refine options", default_value = "0")]
+    pub quest_prune_target: u32,
+
+    /// Fraction of the schedule reserved for post-quest-prune fine-tuning
+    /// (the "short 200-step" tail). Fires when `progress >= 1 - frac`.
+    #[arg(long, help_heading = "Refine options", default_value = "0.05")]
+    pub quest_prune_finetune_frac: f32,
+
     /// Split any splat whose max screen-space extent exceeds this fraction of
     /// the image dimension, shrinking the children so they land at (at most)
     /// this size on screen. 0 disables.

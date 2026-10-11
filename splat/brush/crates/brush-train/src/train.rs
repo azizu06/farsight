@@ -104,6 +104,12 @@ pub struct SplatTrainer {
     /// `budget` mode: the splat count when the growth window opened — the
     /// start of the target ramp. Lazily set on first use.
     growth_anchor: Option<u32>,
+    /// Run-lifetime accumulated blend weight per splat:
+    /// `Σ_steps Σ_views visible·opacity·radius²`. Unlike
+    /// [`RefineRecord::contrib`] (reset every refine window) this survives
+    /// the whole run — the importance ranking for the export prune. Kept
+    /// aligned by `prune_points`; new children start at 0.
+    contrib_lifetime: Option<Tensor<1>>,
     /// Wall-clock start of the training loop (set on the first `step` so
     /// dataset loading doesn't count against the budget). Drives every
     /// schedule when `--budget-s` is set.
@@ -259,6 +265,7 @@ impl SplatTrainer {
             lr_mean_columns,
             optim: None,
             refine_record: None,
+            contrib_lifetime: None,
             ssim_enabled,
             bounds,
             step_count: 0,
@@ -314,6 +321,57 @@ impl SplatTrainer {
         (anchor as f32 + (target - anchor as f32) * p)
             .round()
             .max(1.0) as u32
+    }
+
+    /// The run-lifetime accumulated blend weight per splat
+    /// (`Σ_steps Σ_views visible·opacity·radius²`) — clone of the live
+    /// tensor, for callers that want the export-prune score.
+    pub fn contrib_lifetime(&self) -> Option<Tensor<1>> {
+        self.contrib_lifetime.clone()
+    }
+
+    /// Final-quality prune to `target` splats (e.g. the 300k Quest export
+    /// budget): drops the lowest run-lifetime blend-weight splats and keeps
+    /// optimizer, refine stats and momentum aligned so training can continue
+    /// (a short fine-tune settles the survivors). Ranked by
+    /// `contrib_lifetime`; falls back to opacity·area early in a run.
+    pub async fn quest_prune(&mut self, splats: Splats, target: u32) -> Splats {
+        let n = splats.num_splats();
+        if n <= target {
+            return splats;
+        }
+        let device = splats.device();
+        let mut optim = self
+            .optim
+            .take()
+            .expect("Can only quest-prune after optimizer is initialized");
+        let refiner = self
+            .refine_record
+            .take()
+            .unwrap_or_else(|| RefineRecord::new(n, &device.clone().inner()));
+
+        let score = self.contrib_lifetime.clone().unwrap_or_else(|| {
+            splats.opacities()
+                * splats
+                    .scales()
+                    .powi_scalar(2)
+                    .sum_dim(1)
+                    .squeeze_dim::<1>(1)
+        });
+        let drop = lowest_contrib_inds(&score, None, n - target).await;
+        let mask = inds_to_mask(&drop, n, &device.inner());
+        let (splats, refiner, _dropped) = prune_points(
+            splats,
+            &mut optim,
+            refiner,
+            mask,
+            self.contrib_lifetime.as_mut(),
+        )
+        .await;
+
+        self.optim = Some(optim);
+        self.refine_record = Some(refiner);
+        splats
     }
 
     /// Mark the run as ply-seeded (LiDAR init): enables the `seeded_*`
@@ -496,6 +554,7 @@ impl SplatTrainer {
         let mut aux_visible: Option<Tensor<1>> = None;
         let mut aux_opacities: Option<Tensor<1>> = None;
         let mut aux_max_radius: Option<Tensor<1>> = None;
+        let mut contrib_delta: Option<Tensor<1>> = None;
         let mut coeffs_grad_sq_sum: Option<Tensor<3>> = None;
         let mut refine_weights: Vec<Tensor<1>> = Vec::with_capacity(batches.len());
         let mut counts_sum: Option<Tensor<1, Int>> = None;
@@ -614,6 +673,21 @@ impl SplatTrainer {
                 Some(l) => l + view_loss,
                 None => view_loss,
             });
+            // Run-lifetime blend weight: per-view Σ visible·opacity·radius² —
+            // the export-prune importance score. Cloned; the unions below
+            // move `diff_out`'s fields.
+            contrib_delta = Some(match contrib_delta {
+                Some(c) => {
+                    c + diff_out.visible.clone()
+                        * diff_out.opacities.clone()
+                        * diff_out.max_radius.clone().powi_scalar(2)
+                }
+                None => {
+                    diff_out.visible.clone()
+                        * diff_out.opacities.clone()
+                        * diff_out.max_radius.clone().powi_scalar(2)
+                }
+            });
             // Aux merges: union of contributing splats across views.
             aux_visible = Some(match aux_visible {
                 Some(v) => v.max_pair(diff_out.visible),
@@ -639,6 +713,14 @@ impl SplatTrainer {
         let max_radius = aux_max_radius.expect("at least one view");
         let coeffs_grad_sq_holder = coeffs_grad_sq_sum.expect("at least one view") / n_views;
         let counts = counts_sum.expect("at least one view");
+
+        // Accumulate into the run-lifetime blend weight (pruned/relocated
+        // rows are zeroed elsewhere so indices stay aligned).
+        let delta = contrib_delta.expect("at least one view");
+        self.contrib_lifetime = Some(match self.contrib_lifetime.take() {
+            Some(c) => c + delta,
+            None => delta,
+        });
 
         // Strip the autodiff graph off the loss so consumers can read the
         // scalar later without keeping the backward pass alive.
@@ -947,13 +1029,20 @@ impl SplatTrainer {
                 relocate_mask,
                 &mut self.rng,
                 &self.config,
+                self.contrib_lifetime.as_mut(),
             )
             .await;
             num_relocated = moved;
             (s, r, 0)
         } else {
-            let (mut splats, mut refiner, pruned_count) =
-                prune_points(splats, &mut optim, refiner, prune_mask).await;
+            let (mut splats, mut refiner, pruned_count) = prune_points(
+                splats,
+                &mut optim,
+                refiner,
+                prune_mask,
+                self.contrib_lifetime.as_mut(),
+            )
+            .await;
 
             // Permanent contribution removals: the Speedy-Splat fraction
             // inside the window plus, in `budget` mode, any count over the
@@ -967,7 +1056,14 @@ impl SplatTrainer {
                 let drop = lowest_contrib_inds(&refiner.contrib, None, drop_n).await;
                 if !drop.is_empty() {
                     let mask = inds_to_mask(&drop, splats.num_splats(), &splats.device().inner());
-                    let (s, r, dropped) = prune_points(splats, &mut optim, refiner, mask).await;
+                    let (s, r, dropped) = prune_points(
+                        splats,
+                        &mut optim,
+                        refiner,
+                        mask,
+                        self.contrib_lifetime.as_mut(),
+                    )
+                    .await;
                     splats = s;
                     refiner = r;
                     num_pruned_low_contrib = dropped;
@@ -1095,6 +1191,19 @@ impl SplatTrainer {
         // split shrink so oversized splats' children land at `split_at_screen_size`.
         let screen_sizes = refiner.max_screen_size.clone();
         splats = self.refine_splats(&device, optim, splats, split_inds, screen_sizes, iter);
+
+        // Children appended by `refine_splats` get zero lifetime blend weight.
+        if let Some(lt) = self.contrib_lifetime.take() {
+            let n_new = splats.num_splats() - lt.dims()[0] as u32;
+            self.contrib_lifetime = Some(if n_new > 0 {
+                Tensor::cat(
+                    vec![lt, Tensor::<1>::zeros([n_new as usize], &device)],
+                    0,
+                )
+            } else {
+                lt
+            });
+        }
 
         // Update current bounds based on the splats.
         self.bounds = get_splat_bounds(splats.clone(), BOUND_PERCENTILE).await;
@@ -1347,6 +1456,7 @@ async fn relocate_points(
     relocate_mask: Tensor<1, Bool>,
     rng: &mut rand::rngs::StdRng,
     config: &TrainConfig,
+    contrib_lifetime: Option<&mut Tensor<1>>,
 ) -> (Splats, RefineRecord, u32) {
     let device = splats.device();
     let dead_inds = relocate_mask.clone().argwhere_async().await.squeeze_dim(1);
@@ -1442,7 +1552,12 @@ async fn relocate_points(
             .select_assign(0, dead_inds_host.clone(), zeros_k.clone(), Assign);
     refiner.contrib = refiner
         .contrib
-        .select_assign(0, dead_inds_host, zeros_k, Assign);
+        .select_assign(0, dead_inds_host.clone(), zeros_k.clone(), Assign);
+    if let Some(lt) = contrib_lifetime {
+        *lt = lt
+            .clone()
+            .select_assign(0, dead_inds_host, zeros_k, Assign);
+    }
 
     (splats, refiner, k as u32)
 }
@@ -1456,6 +1571,7 @@ async fn prune_points(
     optim: &mut SplatOptim,
     mut refiner: RefineRecord,
     prune: Tensor<1, Bool>,
+    contrib_lifetime: Option<&mut Tensor<1>>,
 ) -> (Splats, RefineRecord, u32) {
     assert_eq!(
         prune.dims()[0] as u32,
@@ -1490,7 +1606,10 @@ async fn prune_points(
             |x| x.select(0, valid_inds.clone()),
             |x| x.select(0, valid_inds.clone()),
         );
-        refiner = refiner.keep(inner_valid_inds);
+        refiner = refiner.keep(inner_valid_inds.clone());
+        if let Some(lt) = contrib_lifetime {
+            *lt = lt.clone().select(0, inner_valid_inds);
+        }
     }
     (splats, refiner, start_splats - new_points)
 }

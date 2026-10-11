@@ -156,6 +156,8 @@ pub(crate) async fn train_stream(
     // clone to the `Slot` after every modification (train
     // step, refine, LOD decimation).
     let mut splats: Splats = init_splats.clone();
+    // Once the quest export prune fires, refinement stays frozen.
+    let mut quest_pruned = false;
     let bounds = get_splat_bounds(init_splats.clone(), BOUND_PERCENTILE).await;
     slot.set(0, splats.clone());
     emitter
@@ -354,6 +356,20 @@ pub(crate) async fn train_stream(
         let (new_diff_splats, stats) = trainer.step_multi(&batches, diff_splats).await;
         splats = new_diff_splats.valid();
 
+        // Quest export prune (T4): at `progress >= 1 - finetune_frac`, drop
+        // to `quest_prune_target` by run-lifetime blend weight and freeze
+        // refinement so the tail fine-tunes the survivors.
+        let tc = &train_stream_config.train_config;
+        if tc.quest_prune_target > 0
+            && !quest_pruned
+            && trainer.progress(iter) >= 1.0 - tc.quest_prune_finetune_frac
+        {
+            splats = trainer
+                .quest_prune(splats, tc.quest_prune_target)
+                .await;
+            quest_pruned = true;
+        }
+
         // Phase-local iteration for refine gating
         let phase_iter = if current_lod == 0 {
             iter
@@ -365,6 +381,7 @@ pub(crate) async fn train_stream(
         // budget so the refine window always fills the real budget; in iter
         // mode it equals iter/total (same as before for LOD 0).
         let refine = if phase_iter > 0
+            && !quest_pruned
             && phase_iter.is_multiple_of(train_stream_config.train_config.refine_every)
             && trainer.progress(iter) <= 0.95
         {
