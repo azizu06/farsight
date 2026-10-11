@@ -18,7 +18,7 @@ const { AssistantVoice } = await import(pathToFileURL(join(temporary, "assistant
 rmSync(temporary, { recursive: true, force: true });
 
 const flush = () => new Promise(resolve => setImmediate(resolve));
-function fixture(fetchResponse = null) {
+function fixture(fetchResponse = null, vrPushToTalk = true) {
   const originals = new Map(["document", "window", "navigator", "MediaRecorder", "fetch"].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
   const listeners = new Map(), closeListeners = new Map(), buttons = new Map();
   const pendingPermissions = [], pendingDenials = [], recorders = [], stopEvents = [], timers = new Map();
@@ -45,7 +45,7 @@ function fixture(fetchResponse = null) {
   set("fetch", () => { requests++; if (fetchResponse) return Promise.resolve(fetchResponse); throw new Error("Cancelled recordings must not submit audio"); });
   const textButton = { disabled: false };
   const confirmed = [], starts = [];
-  const voice = new AssistantVoice({ append() {} }, settings, textButton, () => starts.push(Date.now()), () => {}, action => confirmed.push(action));
+  const voice = new AssistantVoice({ append() {} }, settings, textButton, () => starts.push(Date.now()), () => {}, action => confirmed.push(action), vrPushToTalk);
   const stream = () => { const track = { stops: 0, stop() { this.stops++; } }; return { track, getTracks: () => [track] }; };
   const cleanup = () => {
     voice.dispose();
@@ -271,5 +271,32 @@ test("without a rover Whisper the voice controls hide and the left trigger start
     assert.equal(f.permissionCalls(), 0);   // a saved voice=1 never opens the mic either
     f.voice.setAvailable(true);
     for (const id of ["#voice-record", "#voice-cancel", "#voice-vr-enable"]) assert.equal(f.buttons.get(id).hidden, false, id);
+  } finally { f.cleanup(); }
+});
+
+test("a page without VR push-to-talk keeps desktop questions without offering or restoring the removed control", async () => {
+  const f = fixture({ ok: true, json: async () => ({ answer: "A doorway ahead" }) }, false);
+  try {
+    f.voice.setAvailable(false); f.voice.setAvailable(true);
+    assert.equal(f.buttons.get("#voice-vr-enable").hidden, true);
+    assert.equal(f.buttons.get("#voice-record").hidden, false);
+    f.voice.restoreVR();
+    f.buttons.get("#voice-vr-enable").onclick();
+    assert.equal(f.voice.pushStart(), false);
+    assert.equal(f.permissionCalls(), 0, "a saved VR preference cannot open an unsupported microphone control");
+    assert.equal(f.voice.phase, "idle");
+
+    f.buttons.get("#voice-record").onclick();
+    assert.equal(f.permissionCalls(), 1, "the desktop record button still opens its microphone");
+    const stream = f.stream(); f.pendingPermissions.shift()(stream); await flush();
+    assert.equal(f.voice.phase, "listening");
+    f.recorders[0].ondataavailable({ data: new Blob(["audio"], { type: "audio/webm" }) });
+    f.buttons.get("#voice-record").onclick();
+    f.stopEvents.shift()(); await flush(); await flush();
+    assert.equal(stream.track.stops >= 1, true);
+    assert.equal(f.requests(), 1);
+    assert.equal(f.voice.answerText, "A doorway ahead");
+    assert.equal(f.voice.phase, "answer");
+    assert.equal(f.textButton.disabled, false);
   } finally { f.cleanup(); }
 });

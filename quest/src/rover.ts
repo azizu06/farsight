@@ -1383,7 +1383,7 @@ export class RoverExperience {
         this.stop(`Seek person #${action.target_id}: release, then hold deadman`);
         this.autonomy.select(action.target_id);
         result.textContent = `Seek person #${action.target_id} armed: hold the deadman to approach; move the stick to cancel.`;
-      });
+      }, false); // This interface has no left-trigger assistant handler; desktop voice still works.
     this.voice.onVREnabled = () => saveSettings(pageStorage(), { voice: true });
     this.voice.setAvailable(false);  // until /health reports the rover's Whisper
     const phrase = block.querySelector<HTMLSelectElement>(".survivor-phrases select")!, phraseStatus = block.querySelector<HTMLElement>("#phrase-status")!;

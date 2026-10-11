@@ -50,6 +50,7 @@ export class AssistantVoice {
     private onStart: () => void,
     private onAnswer: (reply: Reply) => void,
     private onConfirm: (action: Action) => void = () => {},
+    private readonly vrPushToTalk = true,
   ) {
     const block = document.createElement("div"); block.className = "voice-assistant";
     block.innerHTML = '<div class="button-row"><button type="button" id="voice-record">Ask by voice</button><button type="button" id="voice-cancel" disabled>Cancel</button><button type="button" id="voice-play" disabled>Play answer</button></div><p role="status">Optional voice: records up to 10 seconds, transcribes on the rover.</p><button type="button" id="voice-vr-enable">Enable in-VR voice (hold left trigger)</button><p id="voice-action" hidden></p><div class="button-row"><button type="button" id="voice-confirm" disabled>Confirm</button><button type="button" id="voice-dismiss" disabled>Dismiss</button></div>';
@@ -63,6 +64,7 @@ export class AssistantVoice {
     this.confirmButton = block.querySelector("#voice-confirm")!;
     this.dismissButton = block.querySelector("#voice-dismiss")!;
     this.enableButton = block.querySelector("#voice-vr-enable")!;
+    this.enableButton.hidden = !this.vrPushToTalk;
     this.confirmButton.onclick = () => this.confirmAction();
     this.dismissButton.onclick = () => this.dismissAction();
     this.recordButton.onclick = () => {
@@ -104,13 +106,14 @@ export class AssistantVoice {
     this.available = available;
     if (!available) this.cancelCapture();
     for (const control of [this.recordButton, this.cancelButton, this.enableButton]) control.hidden = !available;
+    this.enableButton.hidden = !available || !this.vrPushToTalk;
     this.say(available ? "Optional voice: records up to 10 seconds, transcribes on the rover."
       : "Voice questions are off: this rover has no speech recognizer. The text question works.", "idle");
   }
   /** Re-enable in-VR voice saved from an earlier visit; no-op where recording is unavailable. */
-  restoreVR() { if (this.available && !this.enableButton.disabled) void this.enableVR(); }
+  restoreVR() { if (this.vrPushToTalk && this.available && !this.enableButton.disabled) void this.enableVR(); }
   private async enableVR() {
-    if (this.disposed || this.vrEnabled) return;
+    if (!this.vrPushToTalk || this.disposed || this.vrEnabled) return;
     this.enableButton.disabled = true;
     try {
       // One deliberate permission request; the probe tracks stop immediately.
@@ -127,7 +130,7 @@ export class AssistantVoice {
   }
   /** Left-trigger press in VR. Returns false when nothing started. */
   pushStart() {
-    if (this.disposed || document.hidden || !this.available) return false;
+    if (!this.vrPushToTalk || this.disposed || document.hidden || !this.available) return false;
     if (!this.vrEnabled) { this.say("In-VR voice is off: enable it in Settings before entering VR.", "error"); return false; }
     if (this.textButton.disabled || this.recorder || this.request || this.capturing) return false;
     void this.record(true);
