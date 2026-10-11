@@ -24,9 +24,9 @@ class DenseBudgetTests(unittest.TestCase):
 
     def test_processing_cost_reduces_admission_instead_of_building_a_backlog(self):
         worker = self.worker({})
-        self.assertAlmostEqual(worker.interval(.1), .4)
-        self.assertAlmostEqual(worker.interval(.25), 1)
-        self.assertGreaterEqual(worker.interval(.25) - .25, .75)
+        self.assertAlmostEqual(worker.interval(.1), 2 / 3)
+        self.assertAlmostEqual(worker.interval(.25), 5 / 3)
+        self.assertGreaterEqual(worker.interval(.25) - .25, 1.4)
 
     def test_operator_can_select_the_previous_cellular_budget(self):
         worker = self.worker({'FARSIGHT_DENSE_HZ': '2', 'FARSIGHT_DENSE_FRAME_POINTS': '4096',
@@ -38,7 +38,7 @@ class DenseBudgetTests(unittest.TestCase):
         for value in ('0', '-1', 'NaN', 'infinity', '1000000', 'bad'):
             worker = self.worker({'FARSIGHT_DENSE_HZ': value, 'FARSIGHT_DENSE_FRAME_POINTS': value,
                                   'FARSIGHT_DENSE_CPU_BUDGET': value})
-            self.assertEqual((worker.hz, worker.frame_points, worker.cpu_budget), (8, 12_288, .25))
+            self.assertEqual((worker.hz, worker.frame_points, worker.cpu_budget), (8, 12_288, .15))
 
     def test_a_blocked_visual_lock_does_not_add_a_long_recovery_delay(self):
         worker = self.worker({})

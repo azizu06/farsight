@@ -16,10 +16,10 @@ control never wait for dense reconstruction/integration. The default budget is
 pixels over accepted jobs. Vectorized record construction retains exactly the
 previous measured bytes and ordering. A thread-CPU budget lowers admission when
 projection/integration becomes costly; it does not accumulate old frames or add
-an extra recovery delay after a visual lock wait. The 30-second RGB-D lifetime
-still applies. Delta reads copy one
+an extra recovery delay after a visual lock wait. The Jetson working cache has
+a 30-second lifetime; the Mac retains already observed room detail. Delta reads copy one
 bounded journal page, rather than rebuilding all pending changes; the Mac
-polls at 2 Hz when caught up and drains pending bounded pages faster.
+polls at 10 Hz when caught up and drains pending bounded pages faster.
 
 Set **`FARSIGHT_DENSE=0`** in the Jetson service environment and have the service
 owner restart it to disable the visual worker completely. It is enabled by
@@ -30,7 +30,7 @@ the camera/coarse-frame path timing, separate from background dense duration.
 
 Startup settings are `FARSIGHT_DENSE_HZ` (1–30, default 8),
 `FARSIGHT_DENSE_FRAME_POINTS` (128–65,536, default 12,288), and
-`FARSIGHT_DENSE_CPU_BUDGET` (0.05–0.75, default 0.25). Invalid values use the
+`FARSIGHT_DENSE_CPU_BUDGET` (0.05–0.75, default 0.15). Invalid values use the
 bounded defaults. For the previous low-bandwidth profile, select 2 Hz / 4096.
 `dense_worker.admission_hz` reports the current CPU-limited ceiling, `cpu_ms`
 reports thread execution time, and `sampled_points` counts observations rather
@@ -74,11 +74,15 @@ to an anchored, paginated snapshot if the client misses its history.
 Snapshots never repeatedly reset per page, and replay changes since their
 start to capture removals/updates during bootstrap.
 
-Unsegmented RGB-D samples expire after **30 seconds** on both machines;
-refreshes renew that lifetime. This conservative first version bounds moving
-body ghosts without pretending to have person segmentation. It also means
-an abandoned room fades out after 30 seconds: this is a rolling dense scan,
-not a permanent room archive. Native ARKit anchors are a separate gray source
+The Jetson's RGB-D cache expires after **30 seconds**. The Mac keeps measured
+RGB-D history for the capture session, up to its cell capacity. Producer cache
+expiry tombstones and same-epoch snapshot bootstraps do not erase that history;
+a true producer epoch change clears it. Snapshot pagination still expires after
+30 seconds. Historical points can include earlier positions of moving objects;
+they are observed visual history, not current navigation geometry. Optional
+`retained_history:true` metadata identifies this behavior. Legacy clients receive
+`ttl_s:86400`; clients that consume the history flag retain the room across a
+source disconnect and report source age separately. Native ARKit anchors are a separate gray source
 with explicit anchor replacements/removals and a 24-hour cache bound. Gray
 mesh vertices are not labeled calibrated RGB or a million-point LiDAR scan.
 The viewer prefers RGB-D when available and otherwise uses native geometry;
