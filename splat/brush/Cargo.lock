@@ -1025,6 +1025,7 @@ dependencies = [
  "brush-async",
  "brush-process",
  "clap",
+ "cubecl-environment",
  "env_logger",
  "getrandom 0.4.3",
  "humantime",
