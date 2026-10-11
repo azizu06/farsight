@@ -97,16 +97,16 @@ impl Default for PlaneOptions {
         PlaneOptions {
             enabled: true,
             k: 10,
-            grow_angle_deg: 20.0,
+            grow_angle_deg: 15.0,
             dist_m: 0.0,
-            min_inliers: 150,
+            min_inliers: 600,
             merge_angle_deg: 5.0,
             merge_gap_m: 0.05,
             manhattan: true,
             manhattan_snap_deg: 2.0,
             max_planes: 96,
             max_rms_m: 0.0,
-            assign_unlabelled: true,
+            assign_unlabelled: false,
         }
     }
 }
@@ -212,7 +212,8 @@ fn refit(pos: &[V3], members: &[u32], weights: Option<&[f32]>, irls: bool) -> Op
                     n = scale(n2, -1.0);
                 }
                 c = [cc[0] as f32, cc[1] as f32, cc[2] as f32];
-                rms = (sym3_eigvals(mcov)[0]).max(0.0).sqrt();
+                // eigvals are descending: [2] is the thinnest (off-plane) axis.
+                rms = (sym3_eigvals(mcov)[2]).max(0.0).sqrt();
             }
         }
     }
@@ -303,10 +304,10 @@ pub fn detect(cloud: &PointCloud, opts: &PlaneOptions) -> (Planes, crate::Stats)
                 c[4] += d[1] * d[2];
                 c[5] += d[2] * d[2];
             }
-            let ev = sym3_eigvals(c);
+            let ev = sym3_eigvals(c); // descending
             let tr = ev[0] + ev[1] + ev[2];
             if tr > 0.0 {
-                ev[0] / tr
+                ev[2] / tr // surface variation: smallest eigenvalue share
             } else {
                 f32::MAX
             }
@@ -365,6 +366,11 @@ pub fn detect(cloud: &PointCloud, opts: &PlaneOptions) -> (Planes, crate::Stats)
 
     // Refit each sufficiently large region (parallel); rms-capped to reject
     // curved-surface or corner-fused groups.
+    if std::env::var("PLANES_DEBUG").is_ok() {
+        let mut sizes: Vec<usize> = comp.iter().map(|m| m.len()).collect();
+        sizes.sort_unstable_by(|a, b| b.cmp(a));
+        eprintln!("[planes dbg] comp={} top_sizes={:?} min_inliers={}", comp.len(), &sizes[..sizes.len().min(12)], opts.min_inliers);
+    }
     let mut fits: Vec<(u32, usize, V3, f32, V3, f32)> = comp
         .par_iter()
         .enumerate()
@@ -374,9 +380,14 @@ pub fn detect(cloud: &PointCloud, opts: &PlaneOptions) -> (Planes, crate::Stats)
             }
             let w = if cloud.weight.len() == n { Some(&cloud.weight[..]) } else { None };
             let rms_cap = if opts.max_rms_m > 0.0 { opts.max_rms_m } else { eps * 1.5 };
-            refit(&cloud.pos, members, w, true)
+            let out = refit(&cloud.pos, members, w, true)
                 .filter(|(_, _, _, rms)| *rms <= rms_cap)
-                .map(|(nr, d, c, rms)| (root as u32, members.len(), nr, d, c, rms))
+                .map(|(nr, d, c, rms)| (root as u32, members.len(), nr, d, c, rms));
+            if std::env::var("PLANES_DEBUG").is_ok() && out.is_none() {
+                let rr = refit(&cloud.pos, members, w, true);
+                eprintln!("[planes dbg] reject root={root} len={} refit={:?} cap={rms_cap}", members.len(), rr.map(|x| (x.3)));
+            }
+            out
         })
         .collect();
     // Canonical sign + sort by size desc for determinism.
@@ -499,6 +510,12 @@ pub fn detect(cloud: &PointCloud, opts: &PlaneOptions) -> (Planes, crate::Stats)
         }
     }
 
+    if std::env::var("PLANES_DEBUG").is_ok() {
+        for (i, p) in planes.iter().enumerate() {
+            eprintln!("[planes dbg] #{i} n={:?} d={:.3} inl={} rms={:.4}", p.n, p.d, p.inliers, p.rms_m);
+        }
+    }
+
     // Post-assign stragglers to a fitting plane (boundaries, missed inliers).
     let mut assigned = 0usize;
     if opts.assign_unlabelled && !planes.is_empty() {
@@ -555,11 +572,16 @@ mod tests {
         clean::run(&mut cloud, &clean::CleanOptions::default());
         normals::estimate(&mut cloud, &normals::NormalOptions::default());
         let (planes, _st) = detect(&cloud, &PlaneOptions::default());
-        // Smoke-level until region-growing parameters are tuned for the
-        // synth noise model: must not panic, labels must align with pos.
-        assert_eq!(planes.label.len(), cloud.len());
-        assert!(planes.label.iter().all(|&l| (l as usize) < planes.planes.len() || l == u32::MAX));
-        // nearest() on an empty or populated list must be safe.
-        let _ = planes.nearest([0.0, 0.02, 0.0], [0.0, 1.0, 0.0], 0.05, 10.0);
+        assert!(planes.planes.len() >= 4, "found {} planes", planes.planes.len());
+        let labelled = planes.label.iter().filter(|&&l| l != u32::MAX).count();
+        assert!(labelled as f32 / cloud.len() as f32 > 0.5, "labelled {labelled}/{}", cloud.len());
+        // Biggest plane should be near-axis-aligned (Manhattan) and tight.
+        let big = &planes.planes[0];
+        assert!(big.rms_m < 0.02, "rms {}", big.rms_m);
+        let ax = big.n.iter().map(|v| v.abs()).fold(0.0f32, f32::max);
+        assert!(ax > 0.999, "manhattan snap: n={:?}", big.n);
+        // nearest() finds a horizontal plane under a floor-ish query.
+        let hit = planes.nearest([0.0, 0.02, 0.0], [0.0, 1.0, 0.0], 0.05, 10.0);
+        assert!(hit.is_some());
     }
 }

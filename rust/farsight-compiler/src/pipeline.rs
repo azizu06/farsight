@@ -1,8 +1,9 @@
 //! Stage orchestration. OWNER: orchestrator. Stage owners change only their
 //! own module; wire new options through their `*Options` struct (serde default).
 
-use crate::core::{Capture, Mesh, PointCloud};
-use crate::{clean, densify, export, meshops, normals, planes, surface, texture, Stats};
+use crate::core::{dot, Capture, Mesh, PointCloud, V3};
+use rayon::prelude::*;
+use crate::{clean, densify, export, meshops, normals, planes, spatial, surface, texture, Stats};
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
@@ -79,11 +80,57 @@ pub fn compile(mut cloud: PointCloud, capture: Option<&Capture>, opts: &CompileO
     cloud.validate();
     timed(&mut report, "normals", || ((), normals::estimate(&mut cloud, &opts.normals)));
     cloud.validate();
+    // Shared plane detection (W2) + inlier snapping onto planes (<2.5 sigma).
+    let planes = timed(&mut report, "planes", || {
+        let (pl, st) = planes::detect(&cloud, &opts.planes);
+        let snap = if std::env::var("FS_NO_SNAP").is_ok() {
+            serde_json::json!({"snapped":0})
+        } else {
+            clean::snap_to_planes(&mut cloud, &pl, &opts.clean)
+        };
+        let mut st = st;
+        st["snapped"] = snap["snapped"].clone();
+        (pl, st)
+    });
+    cloud.validate();
     let dense = timed(&mut report, "densify", || densify::run(&cloud, capture, &opts.densify));
     dense.validate();
     let mut mesh = timed(&mut report, "surface", || surface::reconstruct(&dense, &opts.surface));
     mesh.validate();
-    timed(&mut report, "meshops", || ((), meshops::run(&mut mesh, &dense, &opts.mesh)));
+    // Label each dense point by evaluating the plane equations directly
+    // (same contract as meshops' internal fallback: dense coverage, nearest
+    // plane within eps). Input-cloud labels are only used upstream.
+    let planes_nd: Vec<(V3, f32)> = planes.planes.iter().map(|p| (p.n, p.d)).collect();
+    let dense_labels: Vec<u32> = if planes_nd.is_empty() {
+        Vec::new()
+    } else {
+        let mut r: Vec<f32> = cloud.radius.iter().copied().filter(|x| x.is_finite() && *x > 0.0).collect();
+        let spacing = if r.is_empty() { 0.05 } else { r.sort_by(|a, b| a.total_cmp(b)); r[r.len() / 2] };
+        let eps2 = (1.8 * spacing * 1.8 * spacing).max(1e-6);
+        dense
+            .pos
+            .par_iter()
+            .map(|p| {
+                let mut best = u32::MAX;
+                let mut bd = eps2;
+                for (l, &(n, d)) in planes_nd.iter().enumerate() {
+                    let t = dot(n, *p) + d;
+                    if t * t < bd {
+                        bd = t * t;
+                        best = l as u32;
+                    }
+                }
+                best
+            })
+            .collect()
+    };
+    timed(&mut report, "meshops", || {
+        ((), if planes_nd.is_empty() {
+            meshops::run(&mut mesh, &dense, &opts.mesh)
+        } else {
+            meshops::run_with_planes(&mut mesh, &dense, &opts.mesh, &planes_nd, &dense_labels)
+        })
+    });
     mesh.validate();
     timed(&mut report, "texture", || ((), texture::bake(&mut mesh, &dense, capture, &opts.texture)));
     mesh.validate();
