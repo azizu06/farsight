@@ -34,6 +34,7 @@ class AfterRunTests(unittest.TestCase):
                 self.assertEqual(argv[0], 'rsync')
                 self.assertIn('--bwlimit=1024', argv)
                 self.assertIn('--include=/images/*.jpg', argv)
+                self.assertIn('--include=/dense.ply', argv)
                 return subprocess.CompletedProcess(argv, 0)
             with patch.object(pipeline, 'inventory', observe), \
                  patch.object(pipeline.time, 'monotonic', side_effect=[0, 0, 30, 60, 60, 61]), \
@@ -48,7 +49,7 @@ class AfterRunTests(unittest.TestCase):
             run = root / 'run-saved'
             (run / 'photos').mkdir(parents=True)
             (run / 'photos/transforms.json').write_text('{}')
-            (run / 'init.ply').write_text('seed')
+            (run / 'dense.ply').write_text('native measured seed')
             args = argparse.Namespace(host='offline', run_id=None, local_root=root, work_dir=root / 'work')
             with patch.object(pipeline, 'inventory', side_effect=subprocess.CalledProcessError(255, 'ssh')), \
                  patch.object(pipeline, 'pull') as pull:
@@ -60,7 +61,7 @@ class AfterRunTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / 'new.done.json').write_text('{}')
-            args = argparse.Namespace(host='jetson', work_dir=root, poll_seconds=30)
+            args = argparse.Namespace(host='jetson', work_dir=root, poll_seconds=30, since=None)
             signatures = {'old': [1, 2, 3, 4], 'new': [1, 2, 3, 4]}
             with patch.object(pipeline, 'inventory', return_value=signatures), \
                  patch.object(pipeline, 'finished', return_value=({}, ['old', 'new'])), \
@@ -90,13 +91,77 @@ class AfterRunTests(unittest.TestCase):
             broken = source / 'images/000002.jpg'
             broken.write_bytes(broken.read_bytes()[:-500])
             (source / 'transforms.json').write_text(json.dumps(dict(frames=frames)))
-            (source / 'init.ply').write_text('ply\nelement vertex 1\nend_header\n')
+            (source / 'dense.ply').write_text('ply\nelement vertex 1\nend_header\n')
             dataset, receipt = pipeline.prepare(source, root / 'prepared')
             self.assertEqual(receipt['rejected'][0]['file'], 'images/000002.jpg')
             selected = json.loads((dataset / 'transforms.json').read_text())
             self.assertEqual(selected['ply_file_path'], 'init.ply')
             self.assertNotIn('images/000002.jpg', [f['file_path'] for f in selected['frames']])
-            self.assertEqual((dataset / 'init.ply').read_bytes(), (source / 'init.ply').read_bytes())
+            self.assertEqual((dataset / 'init.ply').read_bytes(), (source / 'dense.ply').read_bytes())
+
+    def test_short_valid_jpegs_survive_as_padded_png_and_long_pauses_stay_one_run(self):
+        import numpy as np
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / 'run'
+            (source / 'images').mkdir(parents=True)
+            frames = []
+            for i, t in enumerate([0, 1, 2, 40, 41, 42]):
+                name = f'images/{i:06d}.jpg'
+                Image.new('RGB', (64, 64), (100, 120, 140)).save(source / name)
+                pose = np.eye(4)
+                pose[0, 3] = i
+                frames.append(dict(file_path=name, transform_matrix=pose.tolist(), t_capture=t))
+            (source / 'transforms.json').write_text(json.dumps(dict(frames=frames)))
+            (source / 'init.ply').write_text('ply\nelement vertex 1\nend_header\n')
+            dataset, whole = pipeline.prepare(source, root / 'whole', 60)
+            _, cut = pipeline.prepare(source, root / 'cut', 12)
+            self.assertEqual(whole['selection'], 'whole-run')
+            self.assertEqual(whole['drive_frames'], 6)
+            self.assertLess(cut['drive_frames'], 6)
+            self.assertEqual(len(whole['normalized_short_jpegs']), 6)
+            self.assertEqual(whole['rejected'], [])
+            selected = json.loads((dataset / 'transforms.json').read_text())
+            for frame in selected['frames']:
+                image = dataset / frame['file_path']
+                self.assertEqual(image.suffix, '.png')
+                self.assertGreaterEqual(image.stat().st_size, 20000)
+                with Image.open(image) as decoded:
+                    decoded.load()
+                    with Image.open(source / image.with_suffix('.jpg').relative_to(dataset)) as original:
+                        self.assertEqual(decoded.getpixel((0, 0)), original.getpixel((0, 0)))
+                self.assertTrue((root / 'whole/decoded/images' / image.with_suffix('.jpg').name).exists())
+
+    def test_xr_start_pose_transforms_camera_with_same_flip_as_scene(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dataset = Path(tmp)
+            matrix = [[-1, 0, 0, 1], [0, -1, 0, 2], [0, 0, 1, 3], [0, 0, 0, 1]]
+            (dataset / 'transforms.json').write_text(json.dumps(dict(frames=[
+                dict(file_path='images/000017.jpg', frame_id=17, transform_matrix=matrix)])))
+            pose = pipeline.start_pose(dataset)
+            self.assertEqual(pose['frame_id'], 17)
+            self.assertEqual(pose['camera_position'], [1, -2, -3])
+            self.assertEqual(pose['floor_position'], [1, -3.6, -3])
+            self.assertAlmostEqual(abs(pose['yaw_degrees']), 180)
+            self.assertEqual(pose['flip'], 1)
+            self.assertTrue(pose['desktop_uses_orbit'])
+
+    def test_armed_watcher_ignores_archive_backlog_before_since_time(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            args = argparse.Namespace(host='jetson', work_dir=root, poll_seconds=30,
+                                      since='20261011T122834')
+            old, new = 'run-20261011T094259', '20261011T130000.000Z-test'
+            signatures = {old: [1, 2, 3, 4], new: [1, 2, 3, 4]}
+            with patch.object(pipeline, 'inventory', return_value=signatures), \
+                 patch.object(pipeline, 'finished', return_value=({}, [old, new])), \
+                 patch.object(pipeline, 'pull', return_value=root / new) as pull, \
+                 patch.object(pipeline, 'process'), \
+                 patch.object(pipeline.time, 'sleep', side_effect=KeyboardInterrupt):
+                with self.assertRaises(KeyboardInterrupt):
+                    pipeline.watch(args)
+            pull.assert_called_once_with(args, new)
 
     def test_atomic_publication_and_single_process_lock(self):
         with tempfile.TemporaryDirectory() as tmp:
