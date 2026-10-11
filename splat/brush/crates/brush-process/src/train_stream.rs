@@ -18,6 +18,7 @@ use brush_train::{
 };
 use brush_vfs::BrushVfs;
 use burn::module::Module;
+use burn::tensor::Tensor;
 use rand::SeedableRng;
 use std::{path::PathBuf, sync::Arc};
 
@@ -636,6 +637,12 @@ async fn run_eval(
     let mut count_app = 0usize;
     log::info!("Running evaluation for iteration {iter}");
 
+    // splat-turbo T7: keep every view's scalar as a GPU tensor and read them
+    // all back in ONE transaction after the render loop — per-view
+    // `into_scalar().await` drains the queue between views (N stalls).
+    let mut psnr_t: Vec<Tensor<1>> = Vec::new();
+    let mut ssim_t: Vec<Tensor<1>> = Vec::new();
+    let mut psnr_app_t: Vec<Tensor<1>> = Vec::new();
     for (i, view) in eval_scene.views.iter().enumerate() {
         brush_async::yield_now().await;
 
@@ -652,11 +659,10 @@ async fn run_eval(
         .context("Failed to run eval for sample.")?;
 
         count += 1;
-        psnr += sample.psnr.clone().into_scalar_async::<f32>().await?;
-        ssim += sample.ssim.clone().into_scalar_async::<f32>().await?;
+        psnr_t.push(sample.psnr.clone());
+        ssim_t.push(sample.ssim.clone());
         if let Some(p) = sample.psnr_appearance.clone() {
-            psnr_app += p.into_scalar_async::<f32>().await?;
-            count_app += 1;
+            psnr_app_t.push(p);
         }
 
         #[cfg(not(target_family = "wasm"))]
@@ -679,6 +685,27 @@ async fn run_eval(
         visualize
             .log_eval_sample(iter, i as u32, sample, rerun_max_img_size)
             .await?;
+    }
+    // One fused readback for all accumulated scalars.
+    let mut tx = burn::tensor::Transaction::default();
+    for t in psnr_t.iter().chain(ssim_t.iter()).chain(psnr_app_t.iter()) {
+        tx = tx.register(t.clone());
+    }
+    let data = tx.execute_async().await?;
+    let mut it = data.into_iter().map(|d| {
+        d.try_into_vec::<f32>()
+            .map(|v| v[0])
+            .map_err(|_| anyhow::anyhow!("eval scalar readback"))
+    });
+    for _ in 0..psnr_t.len() {
+        psnr += it.next().expect("psnr readback")?;
+    }
+    for _ in 0..ssim_t.len() {
+        ssim += it.next().expect("ssim readback")?;
+    }
+    for _ in 0..psnr_app_t.len() {
+        psnr_app += it.next().expect("app readback")?;
+        count_app += 1;
     }
     psnr /= count as f32;
     ssim /= count as f32;
