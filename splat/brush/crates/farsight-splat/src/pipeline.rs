@@ -170,6 +170,11 @@ pub async fn run(opts: &RunOptions, pipeline: &Pipeline) -> Result<RunReport> {
     // --- write prepared dataset ---
     t = Instant::now();
     let prepared = opts.out_dir.join("prepared");
+    // Wipe stale prepared/ first: its images are hard links into the capture,
+    // and leftovers from a killed run can share inodes with capture files.
+    if prepared.exists() {
+        let _ = std::fs::remove_dir_all(&prepared);
+    }
     std::fs::create_dir_all(&prepared)?;
     cap.write_subset(&prepared, &keep)?;
     let mut prep_cap = Capture::load(&prepared)?;
@@ -189,6 +194,9 @@ pub async fn run(opts: &RunOptions, pipeline: &Pipeline) -> Result<RunReport> {
         match opts.seed_kind {
             SeedKind::Farsight => {
                 let seeded = opts.out_dir.join("seeded");
+                if seeded.exists() {
+                    let _ = std::fs::remove_dir_all(&seeded);
+                }
                 let srep = crate::seed::run_farsight_seed(&prepared, &seeded, &opts.seed_args)?;
                 rep.seed = Some(srep);
                 dataset_dir = seeded;

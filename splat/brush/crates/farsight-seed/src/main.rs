@@ -139,6 +139,9 @@ fn main() -> Result<()> {
         if let Some(p) = dst.parent() {
             std::fs::create_dir_all(p)?;
         }
+        // unlink first: copy() onto an existing hard link would truncate the
+        // shared inode (src == dst) and wipe the capture frame.
+        let _ = std::fs::remove_file(&dst);
         if std::fs::hard_link(&src, &dst).is_err() {
             std::fs::copy(&src, &dst)?;
         }
