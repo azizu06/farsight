@@ -116,6 +116,8 @@ step "systemd units"
 [ "$WHISPER" = 0 ] || install_unit farsight-whisper.service farsight-whisper.service
 [ "$LLM$WHISPER" != 00 ] || echo "assistant units skipped (need target-native llama/whisper builds and a complete vision pair or Whisper model; re-run after optional assistant setup)"
 install_unit farsight.service farsight.service
+install_unit farsight-warmup.service farsight-warmup.service
+install_unit farsight-warmup.timer farsight-warmup.timer
 
 step "Preflight of $ENV_FILE (missing models, certs or devices would start the server degraded)"
 if [ "$DRY" = 1 ]; then echo "  [dry-run] $REPO/jetson/.venv/bin/python -m jetson.launch --check --env-file $ENV_FILE"
@@ -133,6 +135,7 @@ run sudo systemctl daemon-reload
 [ "$LLM" = 0 ] || run sudo systemctl enable --now farsight-llm.service
 [ "$WHISPER" = 0 ] || run sudo systemctl enable --now farsight-whisper.service
 run sudo systemctl enable farsight.service
+run sudo systemctl enable farsight-warmup.timer  # 90 s after each boot: re-pin clocks, warm the voice assistant
 run sudo systemctl restart farsight.service
 
 echo

@@ -1,4 +1,5 @@
 import unittest
+import os
 import shlex
 import subprocess
 import tempfile
@@ -230,6 +231,19 @@ class RenderTests(unittest.TestCase):
             path.write_text(rendered)
             actual = launch.read_env_file(path)
         self.assertEqual(actual["FARSIGHT_LLM_MODEL"], selection["FARSIGHT_LLM_MODEL"])
+
+    def test_warmup_timer_reruns_the_quoted_warmup_script_once_per_boot(self):
+        repo, envfile = "/home/jet/project space", "/etc/farsight config.env"
+        selection = envgen.model_selection(repo, exists=lambda value: True)
+        text = envgen.render_unit(EXAMPLE.with_name("farsight-warmup.service").read_text(), repo, "/src", "jet",
+                                  selection, envfile)
+        exec_line = next(line for line in text.splitlines() if line.startswith("ExecStart="))
+        self.assertEqual(shlex.split(exec_line.partition("=")[2]), [f"{repo}/jetson/warmup.sh"])
+        self.assertIn(f"EnvironmentFile={envfile}", text.splitlines())
+        self.assertIn("OnBootSec=90s", EXAMPLE.with_name("farsight-warmup.timer").read_text().splitlines())
+        script = EXAMPLE.with_name("warmup.sh")
+        self.assertTrue(os.access(script, os.X_OK))
+        subprocess.run(["bash", "-n", str(script)], check=True)
 
     def test_nav_unit_waits_for_a_live_pose_before_launching_nav2(self):
         # Nav2's lifecycle bringup aborts without base_link TF for ~60 s; a boot before the phone connects

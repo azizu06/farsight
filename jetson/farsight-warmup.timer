@@ -1,0 +1,10 @@
+# Installed and enabled by jetson/install_service.sh; runs farsight-warmup.service once per boot.
+[Unit]
+Description=Farsight post-boot warm-up, 90 s after boot
+
+[Timer]
+OnBootSec=90s
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

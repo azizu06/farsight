@@ -109,6 +109,9 @@ Expect a TensorRT version, `models/yolo11n-pose.engine`, and `NV Power Mode: 15W
   barrel) held 25W mode, VLM + whisper + CPU load and +/-255 wheels-up motor pulses for 3 minutes, VDD_IN peak
   15.3 W, with no under-voltage or reset (`docs/qualification/power-bank-load-2026-10-10.json`).
   `sudo jetson_clocks` only pins clocks within the active mode.
+  `install_service.sh` also enables `farsight-warmup.timer`: 90 s after boot it re-runs `jetson_clocks`
+  (the early boot pin lost the CPU minimum on 2026-10-11) and asks once by text and once by voice so the first
+  question is warm (`journalctl -u farsight-warmup`).
 - *Camera not found at the end checks*: step 4.
 - *Uno not found*: unplug the ESP32 camera module, try another cable, `dmesg | tail`.
 
