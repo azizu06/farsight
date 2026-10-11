@@ -30,7 +30,7 @@ the camera/coarse-frame path timing, separate from background dense duration.
 
 Startup settings are `FARSIGHT_DENSE_HZ` (1–30, default 8),
 `FARSIGHT_DENSE_FRAME_POINTS` (128–65,536, default 12,288), and
-`FARSIGHT_DENSE_CPU_BUDGET` (0.05–0.75, default 0.25). Invalid values use the
+`FARSIGHT_DENSE_CPU_BUDGET` (0.05–0.75, default 0.15). Invalid values use the
 bounded defaults. For the previous low-bandwidth profile, select 2 Hz / 4096.
 `dense_worker.admission_hz` reports the current CPU-limited ceiling, `cpu_ms`
 reports thread execution time, and `sampled_points` counts observations rather
