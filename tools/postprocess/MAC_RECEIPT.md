@@ -140,7 +140,7 @@ prefix: 59.69 s, 119 photos, original measured seed strided to 290,811 points,
 
 | Stage | Seconds |
 |---|---:|
-| Prep | 1.10 |
+| Prep | 1.33 |
 | Brush including final eval/export | 112.19 |
 | CPU faces, overlapping Brush | 61.58 |
 | Face wait after Brush | 0.00008 |
