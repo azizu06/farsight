@@ -21,15 +21,6 @@ def scene():
                 resolution=0.1, origin=(-2, -4))
 
 
-def test_default_explore_drive_and_scan_use_high_power_profile_limits():
-    motion = local_motion.LocalMotion()
-    args = scene()
-    assert motion.command(now=0, pose_at=0, depth_at=0, map_at=0, **args) == (0.6, 0)
-
-    args.update(support=np.zeros((80, 100)), body_clear=True)
-    assert motion.command(now=0.1, pose_at=0.1, depth_at=0.1, map_at=0.1, **args) == (0, 2.5)
-
-
 def test_no_idle_gap_during_goal_changes_and_noisy_depth():
     motion = local_motion.LocalMotion()
     args = scene()

@@ -119,8 +119,8 @@ class FarsightBridge(Node):
             for name, field in frontiers.ExploreConfig.__dataclass_fields__.items()})
         self.local_motion = local_motion.LocalMotion(
             min_width=self.explore_config.min_corridor_width,
-            creep_mps=p("explore_creep_mps", 0.6).value,
-            turn_radps=p("explore_scan_radps", 2.5).value,
+            creep_mps=p("explore_creep_mps", 0.2).value,
+            turn_radps=p("explore_scan_radps", 0.82).value,
             budget_s=p("explore_gap_budget_s", 4.0).value,
             scan_budget_s=p("explore_scan_budget_s", 10.0).value)
         self.swept = frontiers.SweptFootprint(radius=p("explore_body_radius", 0.35).value)

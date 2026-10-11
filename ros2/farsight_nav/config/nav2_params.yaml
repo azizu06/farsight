@@ -339,8 +339,8 @@ farsight_bridge:
     explore_tick_s: 0.5                # frontier re-score / goal decision period
     explore_switch_margin: 0.8
     explore_transition_distance: 0.6
-    explore_creep_mps: 0.6             # higher-power local Explore; the drive profile and autonomy PWM cap still apply
-    explore_scan_radps: 2.5            # match the Nav2 controller angular ceiling; profile and autonomy PWM cap still apply
+    explore_creep_mps: 0.3           # above both wheel floors (PWM 70/40) on the drive profile
+    explore_scan_radps: 1.8           # ~PWM 95 per side; 0.82 rad/s sat at L75/R60, just above the floors, and stalled on the floor
     explore_gap_budget_s: 4.0
     explore_scan_budget_s: 10.0
     explore_body_radius: 0.2          # rover half-width + 2.5 cm: body-disc and driven-floor checks

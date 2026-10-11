@@ -65,10 +65,9 @@ ros2 launch farsight_nav nav.launch.py                 # or the farsight-nav sys
     near-field cells; measured costs remain intact. Something measured inside
     the body disc makes it back straight off (at most 0.35 m, only over floor
     the costmap has seen or the rover has driven), then turn away from it.
-    The fallback selects the widest supported arc at 0.6 m/s, or turns
-    in place at 2.5 rad/s; the drive profile and autonomy PWM ceiling still
-    clamp the output. The prior 0.82 rad/s skid-steer spin mapped to L75/R60,
-    just above the floors, and stalled under payload. It never
+    The fallback selects the widest supported gentle arc at 0.25 m/s, or turns
+    in place at 1.8 rad/s (about PWM 95 per side; at 0.82 rad/s the skid-steer
+    sat at L75/R60, just above the floors, and stalled under payload); it never
     stands still waiting for Nav2 (captain,
     2026-10-10). Only a stale pose, depth or costmap stops it. Server deadman, B/STOP, the lease
     (link-loss stop) and the Nav2 sensor gate still apply; the
@@ -447,7 +446,7 @@ Explore press; visits persist until the sensor session resets.
 | `distance_weight`, `turn_weight`, `clutter_weight`, `revisit_weight` | 0.35, 0.8, 3.0, 3.0 | Penalize long routes, turns, thin clutter, revisits |
 | `commitment_s`, `switch_margin` | 4 s, 0.8 | Resist oscillation; unsafe targets bypass commitment |
 | `transition_distance`, `revisit_decay_s` | 0.6 m, 60 s | Preselect next patch; revisit decay |
-| `creep_mps`, `scan_radps`, `gap_budget_s` | 0.6 m/s, 2.5 rad/s, 4 s | Higher-power fresh-depth planning fallback; drive-profile and autonomy-PWM limits still apply |
+| `creep_mps`, `scan_radps`, `gap_budget_s` | 0.2 m/s, 0.82 rad/s, 4 s | Fresh-depth planning fallback |
 | `body_radius`, `scan_budget_s` | 0.35 m, 10 s | Actual swept-body support; scan stops after one measured full turn or the time ceiling |
 
 Synthetic scenario (`test_frontiers.py`, 10 cm cells): the prior chooser selected
