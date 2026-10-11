@@ -484,8 +484,15 @@ impl MapState {
         if !may_fuse {
             return Ok(());
         }
-        let (points, colors, mesh, lods) =
-            crate::phone::reconstruct_lods(frame, 2, 1, &crate::phone::VISUAL_LODS);
+        // #176: the voxel cloud samples at stride 4 (VOXEL_POINT_STRIDE) while
+        // the mesh and its LODs keep their own finer sampling.
+        let (points, colors, mesh, lods) = crate::phone::reconstruct_lods(
+            frame,
+            2,
+            1,
+            &crate::phone::VISUAL_LODS,
+            Some(crate::phone::VOXEL_POINT_STRIDE),
+        );
         let point_count = points.len();
         // Admit under `inner`, then take `geometry` while still holding it
         // (lock order inner -> geometry) so a reset/disconnect cannot clear
