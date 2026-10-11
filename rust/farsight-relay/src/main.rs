@@ -683,7 +683,7 @@ async fn relay_ws(local: WebSocket, s: Arc<AppState>, target: &str, control: boo
                         // the upstream origin; parse/serialize only then, or
                         // when the video lane needs segment instrumentation.
                         let mut data: Option<String> = None;
-                        if camera_video {
+                        if camera_video && text.contains("video_segment") {
                             match serde_json::from_str::<Value>(&text) {
                                 Ok(mut packet) if packet.is_object()
                                     && packet.get("type").and_then(|v| v.as_str()) == Some("video_segment") =>
@@ -730,15 +730,10 @@ async fn relay_ws(local: WebSocket, s: Arc<AppState>, target: &str, control: boo
                                         return;
                                     }
                                 }
-                                _ => {
-                                    if text.contains(origin.as_str()) {
-                                        if let Ok(v) = serde_json::from_str::<Value>(&text) {
-                                            data = Some(rewrite_json(&v, &origin).to_string());
-                                        }
-                                    }
-                                }
+                                _ => {}
                             }
-                        } else if text.contains(origin.as_str()) {
+                        }
+                        if data.is_none() && text.contains(origin.as_str()) {
                             if let Ok(v) = serde_json::from_str::<Value>(&text) {
                                 data = Some(rewrite_json(&v, &origin).to_string());
                             }
