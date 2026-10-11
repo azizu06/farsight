@@ -51,11 +51,14 @@ test('displayed source change clears an old card immediately within the paint in
 });
 
 
-test('minimal immersive view suppresses identity cards without renewing camera evidence',()=>{
+test('fresh identity cards appear in VR without renewing camera evidence',()=>{
   const {view,clears,draws}=fixture(); view.renderer.xr.isPresenting=true;
-  view.paintIdentity(20);
-  assert.equal(view.identityPanel.visible,false);
+  view.paintIdentity(120);
+  assert.equal(view.identityPanel.visible,true);
   assert.equal(view.identityCanvas.hidden,true);
-  assert.equal(clears(),0); assert.equal(draws(),0);
-  assert.equal(view.gate.videoAge(20),120);
+  assert.equal(clears(),1); assert.equal(draws(),1);
+  assert.equal(view.gate.videoAge(120),220);
+  view.paintIdentity(1200);
+  assert.equal(view.identityPanel.visible,false);
+  assert.equal(view.gate.videoAge(1200),1300);
 });
