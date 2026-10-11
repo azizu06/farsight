@@ -46,3 +46,20 @@ Same 1,904-frame run on an M2 8 GB Mac: ~37 min. Aziz's M5 Pro: ~40–45 steps/s
 - `refine.py`: AI image cleanup (Nano Banana / gpt-image) of renders. **Not for judge-facing output**: gpt-image-2
   invented a room where the splat had no data.
 - 400k extra "simulated" dots sampled on the Poisson surface: ~3× slower and near 11.4/12.3 GB VRAM; stopped.
+
+## Fast mode: train fewer steps (measured 2026-10-11, run 094259)
+
+Same room, same 1,454,055-dot seed, same 90 held-out photos, separate full runs at each step budget
+(not checkpoints of the 30k run, so each one finishes its own learning-rate schedule). RTX 4070.
+
+| Steps | Train time | Held-out PSNR | vs 30k |
+|---|---|---|---|
+| 2,000 | **81 s** | 19.0 dB | 16× faster, −2.9 dB |
+| 5,000 | **174 s** | **20.4 dB** | 7.6× faster, −1.5 dB |
+| 10,000 | pending | pending | |
+| 30,000 | 1,325 s | 21.9 dB | baseline |
+
+Sai's `farsight-compiler` (dots + painted photos, no training) on the same run and photos: **12.3 dB**, 61 s on an
+M2 8 GB CPU. So even a 2k-step seeded splat beats the untrained textured mesh by ~6.7 dB.
+
+Run a fast room: `train_job.ps1 <dataset> fast "--total-steps 5000"` (later args override the 30k default).
