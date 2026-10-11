@@ -67,7 +67,7 @@ class SimFeed:
 
 
 async def stream_world(state, camera, feed):
-    fusion, next_frame = None, 0.0
+    fusion, pose_worker, next_frame = None, None, 0.0
     # Existing depth observers (including Nav) run before detections publish.
     state.frame_observers.append(feed.offer_frame)
     try:
@@ -85,11 +85,32 @@ async def stream_world(state, camera, feed):
                 next_frame = now + 1 / FRAME_HZ
             else:
                 pose = feed.sim.camera_pose()
-                state.observe_pose(feed.header(now, pose), pose)
+                # Fusion holds the map lock while integrating. Waiting for it
+                # here must not also block camera/control's event loop. Keep
+                # one awaited pose job, with the receipt and socket lifetime
+                # captured before its executor wait, never a queued backlog.
+                socket_generation = state.socket_generation
+                pose_worker = asyncio.create_task(asyncio.to_thread(
+                    state.observe_pose, feed.header(now, pose), pose,
+                    received_at=now, socket_generation=socket_generation))
+                await asyncio.shield(pose_worker)
+                pose_worker = None
             await asyncio.sleep(max(0, 1 / POSE_HZ - (time.monotonic() - now)))
     finally:
         try:
-            if fusion is not None:
-                await asyncio.shield(fusion)
+            workers = [worker for worker in (pose_worker, fusion) if worker is not None]
+            if workers:
+                # Cancellation cannot stop an executor job. Repeated cancel
+                # requests must not remove observers while either job still
+                # uses them, even when another worker raises an exception.
+                drained = asyncio.gather(*workers, return_exceptions=True)
+                while not drained.done():
+                    try:
+                        await asyncio.shield(drained)
+                    except asyncio.CancelledError:
+                        continue
+                for result in drained.result():
+                    if isinstance(result, BaseException):
+                        raise result
         finally:
             state.frame_observers.remove(feed.offer_frame)
