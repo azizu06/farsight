@@ -1074,7 +1074,7 @@ class DemoSensorPauseTests(unittest.TestCase):
 
 
 class TranslationFloorTests(unittest.TestCase):
-    """A moving Nav2/Explore translation is never slower than MIN_LINEAR_MPS; exact zero stays zero."""
+    """A moving forward Nav2 translation is never slower than MIN_LINEAR_MPS; zero and reverse stay as sent."""
 
     def setUp(self):
         self.nav = NavService(MapState(), clock=Clock())
@@ -1086,7 +1086,7 @@ class TranslationFloorTests(unittest.TestCase):
         return self.nav.command(si=True), self.nav.command()
 
     def test_slow_translations_rise_to_the_floor_on_the_same_arc(self):
-        for (linear, angular), (v, w) in (((0.05, 0.1), (0.15, 0.3)), ((-0.03, 0.0), (-0.15, 0.0)),
+        for (linear, angular), (v, w) in (((0.05, 0.1), (0.15, 0.3)), ((-0.03, 0.0), (-0.03, 0.0)),
                                           ((0.0, 1.2), (0.0, 1.2)), ((0.0, 0.0), (0.0, 0.0)),
                                           ((0.15, -0.4), (0.15, -0.4)), ((0.3, 0.5), (0.3, 0.5))):
             with self.subTest(linear=linear, angular=angular):

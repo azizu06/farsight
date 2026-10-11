@@ -219,8 +219,8 @@ class ControlState:
     REACTIVE_FULL_MPS = 0.45  # without a drive profile: normalized 1.0, as Nav2's normalized commands
 
     def _reactive_floor(self, v, w):
-        """Raise a slow reactive translation to MIN_LINEAR_MPS on the same arc; zero stays zero."""
-        if v == 0:
+        """Raise a slow forward reactive translation to MIN_LINEAR_MPS on the same arc; zero and reverse stay."""
+        if v <= 0:
             return v, w
         if self.profile is not None:  # the profiled PWM for the floor, on this output's affine PWM scale
             top = self.autonomy_max_pwm
@@ -228,9 +228,9 @@ class ControlState:
             least = max(0.0, (floor_pwm - self.min_pwm) / max(1, top - self.min_pwm))
         else:
             least = self.MIN_LINEAR_MPS / self.REACTIVE_FULL_MPS
-        if abs(v) >= least:
+        if v >= least:
             return v, w
-        return math.copysign(least, v), w * least / abs(v)
+        return least, w * least / v
 
     def _sensor_pause(self, fault):
         """Caller holds the lock. True while a demo-autonomy sensor stall may hold instead of stop."""
