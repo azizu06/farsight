@@ -6,6 +6,8 @@ import threading
 import time
 
 from .phone import measured_points
+from .revisit import DepthView
+from jetson.camera import adjusted_receipt
 
 DENSE_HZ = 8
 DENSE_FRAME_POINTS = 12_288
@@ -38,6 +40,8 @@ class DenseWorker:
         self.processing_ms = 0.
         self.cpu_ms = 0.
         self.error = None
+        self.view_at = -math.inf
+        self.views = 0
 
     def offer(self, frame, cloud, generation):
         if not self.enabled:
@@ -73,11 +77,17 @@ class DenseWorker:
                 if not self.current(generation, cloud):
                     continue
                 xyz, rgb = measured_points(frame, max_points=self.frame_points, phase=self.processed)
+                view = DepthView.from_frame(frame) if started - self.view_at >= .5 else None
                 if self.current(generation, cloud):
                     # Only the visual cloud lock; never acquire MapState.lock.
                     cloud.integrate(xyz, rgb)
                     self.processed += 1
                     self.sampled_points += len(xyz)
+                    if view is not None:
+                        cloud.publish_view(view, adjusted_receipt(frame.header,
+                            frame.header.get("_received_monotonic", started)))
+                        self.view_at = started
+                        self.views += 1
                 self.error = None
             except Exception as exc:
                 self.error = f"{type(exc).__name__}: {exc}"
@@ -99,6 +109,7 @@ class DenseWorker:
         return dict(enabled=self.enabled, hz=self.hz, frame_points=self.frame_points,
                     cpu_budget=self.cpu_budget, admission_hz=self.admission_hz,
                     sampled_points=self.sampled_points,
+                    revisit_views=self.views,
                     queued=int(self.pending is not None), offered=self.offered,
                     processed=self.processed, dropped=self.dropped,
                     processing_ms=self.processing_ms, cpu_ms=self.cpu_ms, error=self.error)

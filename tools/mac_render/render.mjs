@@ -28,6 +28,8 @@ import { mapResponseRevision } from "/quest/src/map-response.js";
 import { DenseCloudState, DenseCloudReceiver, DenseGpuChunks } from "./dense-cloud.mjs";
 import { StereoPass, SBS_LAYOUT } from "./stereo-pass.mjs";
 import { DesktopPreviewCamera } from "./desktop-preview.mjs";
+import { sceneAnchor } from "./scene-anchor.mjs";
+import { measuredSurfaceLayer, measuredSurfaceOptions } from "./measured-surface.mjs";
 
 const params = new URLSearchParams(location.search);
 const upstream = (params.get("upstream") || "").replace(/\/$/, "");
@@ -36,6 +38,11 @@ const height = Number(params.get("height") || 720);
 const stereoRequested = params.get("layout") === SBS_LAYOUT;
 const canvasPresentation = params.get("presentation") === "canvas";
 const localFixture = params.get("fixture") === "1";
+// Opt-in mesh budget (?mesh_triangles=N, 0 = all stored triangles) for a fast
+// link to the map source; without it the source's wire cap applies.
+const meshTrianglesParam = Number(params.get("mesh_triangles"));
+const meshPath = params.has("mesh_triangles") && Number.isSafeInteger(meshTrianglesParam) && meshTrianglesParam >= 0
+  ? `/map/mesh.bin?triangles=${meshTrianglesParam}` : "/map/mesh.bin";
 
 const style = params.get("style") === "unlit" ? "unlit" : "lit";
 // Cinematic is the default look; ?quality=flat reproduces the pre-cine
@@ -308,6 +315,7 @@ function uploadMesh(data) {
 }
 
 function clearGeometry() {
+  sceneView = null; sceneAnchorAt = -Infinity;
   cloudMerger.clear();
   cloudMerger.sync(cloudGeometry, cloudAttribute);
   cloudCount = cloudHalf = cloudQuarter = 0;
@@ -493,6 +501,16 @@ function registerLayer(layer) {
 }
 window.__macRegisterLayer = registerLayer;
 
+// Spacing-sized samples plus a density mesh built from the dense cloud
+// (measured-surface.mjs). ?msurf=0 keeps the original fixed-size discs.
+const measuredSurface = params.get("msurf") === "0" ? null : measuredSurfaceLayer({
+  THREE, state: denseState, denseGroup: denseGpu.group, options: measuredSurfaceOptions(params),
+});
+if (measuredSurface) {
+  registerLayer(measuredSurface);
+  window.__macMeasuredSurface = measuredSurface;
+}
+
 // Dense crew's raw-texture layer (#170/#173 contract): the bundle is optional —
 // when .cache/dense-layer-dist is not built the import fails and no layer
 // registers. Raw networking is opt-in (default off): ?raw=1 enables pulls,
@@ -510,6 +528,7 @@ import("/dense-layer/raw-texture-layer.mjs")
   .catch(() => {});
 
 const mapStatusView = {};
+let sceneAnchorAt = -Infinity, sceneView = null;
 let bannerText = "";
 let cloudShown = -1;
 let trisShown = -1;
@@ -522,22 +541,32 @@ function exposeMap() {
   const statusAge = status && Number.isFinite(status.age_ms) ? status.age_ms + Math.max(0, performance.now() - statusReceivedAt) : Infinity;
   const fresh = status?.fresh === true && statusAge < 2000;
   const points = denseState.size || cloudCount || 0;
-  const triangles = surfaces.visible ? meshTris : 0;
+  const densityTris = measuredSurface?.view.triangles || 0;
+  const triangles = (surfaces.visible ? meshTris : 0) + densityTris;
   const sourceLabel = status?.geometry_source || status?.source || "WAITING";
   const source = denseState.size ? `${sourceLabel} · ${denseReceiver.sourceLabel}` : sourceLabel;
   const retained = points > 0 && (mapError !== null || !fresh || status?.geometry?.retained === true);
   mac.points = points;
   mac.triangles = triangles;
+  mac.measuredSurface = measuredSurface?.view ?? null;
   mac.source = source;
   mac.retained = retained;
   mac.mapError = mapError;
   mac.lod = lodView;
   if (status) {
+    const now = performance.now();
+    if (now - sceneAnchorAt >= 1000) {
+      sceneAnchorAt = now;
+      sceneView = sceneAnchor(denseState.chunks, cloudGeometry.getAttribute("position")?.array, cloudCount);
+    }
     mapStatusView.source = status.source;
     mapStatusView.geometry_source = status.geometry_source ?? null;
     mapStatusView.points = status.points;
     mapStatusView.triangles = status.triangles;
     mapStatusView.generation = status.generation;
+    mapStatusView.session_id = status.session_id ?? null;
+    mapStatusView.map_epoch = status.map_epoch ?? null;
+    mapStatusView.scene = sceneView;
     mapStatusView.revision = status.revision;
     mapStatusView.mesh_revision = status.mesh_revision;
     mapStatusView.applied_points_revision = appliedPoints;
@@ -680,7 +709,7 @@ async function refresh(force = false) {
       const kind = fullDue ? pickFullKind(next, meshStale, pointsStale, deltaServer) : null;
       if (kind === "mesh") {
         lastFullAt = now;
-        const result = await pull("/map/mesh.bin", { ...next, revision: next.mesh_revision }, abort.signal, meshEtag);
+        const result = await pull(meshPath, { ...next, revision: next.mesh_revision }, abort.signal, meshEtag);
         if (result.notModified) appliedMesh = next.mesh_revision;
         else {
           if (!await snapshotStillCurrent(nextIdentity, next.generation, abort.signal)) return false;

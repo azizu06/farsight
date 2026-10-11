@@ -191,12 +191,13 @@ class MapState:
             self.fps = round(1 / max(duration, 1e-4), 1)
             return
         points, colors, mesh, lods = reconstruct(frame, lods=VISUAL_LODS, point_stride=VOXEL_POINT_STRIDE)
+        revisit = self.surfaces.prepare_revisit(frame)
         with self.lock:
             if (generation != self.processing_generation or not self.connected
                     or self.paused or self.tracking != "normal"):
                 return
             self.cloud.integrate(points, colors)
-            self.surfaces.integrate(mesh, frame.transform, lods)
+            self.surfaces.integrate(mesh, frame.transform, lods, revisit=revisit)
             self.frames += 1
             self.revision += 1
             duration = time.monotonic() - started
@@ -258,14 +259,16 @@ class MapState:
         (points, colors), cap = self.point_snapshot() if snapshot is None else snapshot
         return decimate_points_bin(encode_points(points, colors), cap)
 
-    def mesh_packet(self):
+    def mesh_packet(self, limit=None):
+        """mesh.bin under `limit` triangles (0 = every stored triangle); None uses the wire cap."""
         with self.lock:
-            if 0 < self.triangles_cap < self.surfaces.count:
-                meshes = self.surfaces.visual(self.triangles_cap)
+            limit = self.triangles_cap if limit is None else limit
+            if 0 < limit < self.surfaces.count:
+                meshes = self.surfaces.visual(limit)
                 if meshes is not None:
                     return self.surfaces.pack(meshes)
             # Keyframes without stored LODs keep the stride fallback (Rust parity).
-            return decimate_mesh_bin(self.surfaces.encode(), self.triangles_cap)
+            return decimate_mesh_bin(self.surfaces.encode(), limit)
 
     def ply(self, snapshot=None):
         """Follows the capped points, like the Rust server's PLY derived from points.bin."""

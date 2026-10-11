@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { SourceTruth } from "./source-banner.js";
 import { explainStop } from "./stop-reason.js";
 import { ControlSafety, stick } from "./control-safety.js";
-import { manualDrive } from "./manual-drive.js";
+import { ForwardRamp, manualDrive, steerCurve } from "./manual-drive.js";
 import { H264Viewer } from "./h264";
 import { cameraCrop, croppedBox } from "./camera-view.js";
 import { VRActionMenu, type VRAction } from "./vr-actions";
@@ -23,6 +23,7 @@ import { frameOrder } from "./frame-order.js";
 import { mapWalk } from "./map-walk.js";
 import { DEMO_BLIP_MS, DEMO_MODE } from "./demo-config.js";
 import { cueFor, drawChip, drawControllerHint, drawCue, motionTone } from "./vr-hud.js";
+import { QuestIntercom, type IntercomState } from "./intercom.js";
 
 /** Quest sticks drift; a slightly off-center right stick must not override Explore/Seek/go-to. */
 const XR_STICK_DEADZONE = 0.25;
@@ -65,6 +66,9 @@ export class RoverExperience {
   private auto = false;
   /** A mode change sends a release before autonomous heartbeats begin. */
   private autoArming = false;
+  private forwardRampState?: ForwardRamp;
+  /** Lazily created so prototype-built test fixtures need no extra field. */
+  private get forwardRamp() { return this.forwardRampState ??= new ForwardRamp(); }
   private lastRoamAt = -Infinity;
   private roamTurnArmed = true;
   private voiceCanvas = document.createElement("canvas");
@@ -186,6 +190,17 @@ export class RoverExperience {
   private videoToggle!: HTMLInputElement;
   private drawnPan = 0;
   private cameraScreen: THREE.Mesh;
+  private intercomCanvas = document.createElement("canvas");
+  private intercomTexture = new THREE.CanvasTexture(this.intercomCanvas);
+  private intercomPanel = new THREE.Mesh(new THREE.PlaneGeometry(.9, .3), new THREE.MeshBasicMaterial({
+    map: this.intercomTexture, transparent: true, toneMapped: false, depthTest: false, depthWrite: false,
+  }));
+  private intercomContext!: CanvasRenderingContext2D;
+  private intercom!: QuestIntercom;
+  private intercomButton!: HTMLButtonElement;
+  private intercomStatus!: HTMLElement;
+  private aimedIntercom = false;
+  private xrSession: XRSession | null = null;
   private lastVideoAt = 0;
   private dirty = true;
   private lastHudAt = 0;
@@ -210,6 +225,7 @@ export class RoverExperience {
     panel.innerHTML = `<div class="rover-tabs"><button id="live-rover">Live rover</button><button id="rover-map">3D map</button><button id="rover-scan">Scan</button><button id="rover-stop">STOP</button></div>
       <p id="rover-message" role="status">Waiting for live camera and rover</p>
       <p id="rover-details">Motion disabled until camera and control are fresh.</p>
+      <button id="rover-intercom" aria-pressed="false">Talk to iPhone · Off</button><p id="rover-intercom-status" role="status">Connect iPhone capture for two-way audio.</p>
       <button id="rover-hold" class="hold-button">Hold to enable · WASD to drive</button>
       <button id="rover-explore" aria-pressed="false">Explore (E)</button>
       <button id="rover-nav-cancel">Cancel nav (C)</button>
@@ -222,6 +238,10 @@ export class RoverExperience {
     document.querySelector("main")!.append(this.sourceBanner);
     this.message = panel.querySelector("#rover-message")!;
     this.details = panel.querySelector("#rover-details")!;
+    this.intercomButton = panel.querySelector<HTMLButtonElement>("#rover-intercom")!;
+    this.intercomStatus = panel.querySelector<HTMLElement>("#rover-intercom-status")!;
+    this.intercom = new QuestIntercom(state => this.updateIntercomState(state));
+    this.intercomButton.onclick = () => { void this.intercom.toggle(); };
     this.navStatus = panel.querySelector("#rover-nav")!;
     this.holdButton = panel.querySelector("#rover-hold")!;
     panel.querySelector<HTMLButtonElement>("#live-rover")!.onclick = () => this.setView("camera");
@@ -267,8 +287,13 @@ export class RoverExperience {
     this.voiceTexture.colorSpace = THREE.SRGBColorSpace;
     this.voicePanel.position.set(-2.15, 0.15, -2.1); this.voicePanel.rotation.y = 0.35; this.voicePanel.renderOrder = 12; this.voicePanel.visible = false;
     this.pointer.visible = false; this.pointer.renderOrder = 30;
-    this.cockpit.add(screen, this.bannerPanel); this.cockpit.visible = false;
+    this.intercomCanvas.width = 640; this.intercomCanvas.height = 192;
+    this.intercomContext = this.intercomCanvas.getContext("2d")!;
+    this.intercomTexture.colorSpace = THREE.SRGBColorSpace;
+    this.intercomPanel.position.set(.96, -.78, -2.31); this.intercomPanel.renderOrder = 14;
+    this.cockpit.add(screen, this.bannerPanel, this.intercomPanel, this.pointer); this.cockpit.visible = false;
     this.cameraScreen = screen;
+    this.drawIntercomPanel({ enabled: false, phoneConnected: false, status: "Enter VR or connect iPhone capture" });
     this.identityCanvas.width = 300; this.identityCanvas.height = 160;
     this.identityCanvas.hidden = true;
     this.identityCanvas.setAttribute("aria-label", "Recently recognized faces");
@@ -295,12 +320,17 @@ export class RoverExperience {
       this.inputValid = false; this.keys.clear(); this.pointerHeld = false;
       this.recenter = true; this.actionMenu.visible = false; this.setView("camera");
       this.auto = false; this.autoArming = false; mapWalk.setMode("overview"); mapWalk.reset(); this.lastRoamAt = -Infinity; this.showHint();
+      this.intercom.connectIfNeeded();
+      this.xrSession = this.renderer.xr.getSession();
+      this.xrSession?.addEventListener("selectstart", this.onXRSelectStart);
       this.renderer.xr.getSession()?.addEventListener("visibilitychange", () => {
         this.suspended = this.renderer.xr.getSession()?.visibilityState !== "visible";
-        if (this.suspended) { this.voice?.stopListening("Headset inactive: voice question cancelled"); this.stop("Headset inactive: release trigger"); }
+        if (this.suspended) { this.intercom.disable(true); this.voice?.stopListening("Headset inactive: voice question cancelled"); this.stop("Headset inactive: release trigger"); }
       });
     });
     this.renderer.xr.addEventListener("sessionend", () => {
+      this.xrSession?.removeEventListener("selectstart", this.onXRSelectStart); this.xrSession = null;
+      this.aimedIntercom = false; this.intercom.disconnect();
       this.voice?.stopListening("VR session ended: voice question cancelled");
       this.stop("VR session ended: release deadman", true); this.suspended = false;
       this.lastXRAt = -Infinity;
@@ -366,7 +396,9 @@ export class RoverExperience {
   private keyUp = (event: KeyboardEvent) => { this.keys.delete(event.code); };
   private blur = () => { this.keys.clear(); this.pointerHeld = false; this.stop("Window inactive: release deadman"); };
   private visibility = () => {
-    if (document.hidden && !(this.renderer.xr.isPresenting && this.renderer.xr.getSession()?.visibilityState === "visible")) this.blur();
+    if (document.hidden && !(this.renderer.xr.isPresenting && this.renderer.xr.getSession()?.visibilityState === "visible")) {
+      this.intercom?.disable(true); this.blur();
+    }
   };
   /** Fixed: show the full measured frame and command pan 0. Servo: send head yaw as pan. */
   private setMount(fixed: boolean, save: boolean) {
@@ -441,6 +473,7 @@ export class RoverExperience {
   /** `hard`: a deliberate stop (B, MANUAL/AUTO switch, session start/end, viewer closed) that needs a real
    * trigger release even in demo mode. Every other stop is transient. */
   stop(reason: string, hard = false) {
+    this.forwardRamp.reset();
     // An accepted go-to goal stays armed (see AutonomyIntent.release); motion still needs a fresh deadman press.
     this.autonomy.release();
     this.scanGeneration++; this.scanReserved = false;
@@ -656,13 +689,14 @@ export class RoverExperience {
       if (!tracked && this.gate.demo && pose && session.visibilityState === "visible" && now - this.lastXRAt < DEMO_BLIP_MS) {
         // Demo: ride out a short right-controller tracking blip without a stop or re-press. The deadman
         // state carries over, but manual v/w go to 0 until tracking returns; > DEMO_BLIP_MS still stops.
-        this.input = { ...this.input, v: 0, w: 0 };
+        this.input = { ...this.input, v: 0, w: 0 }; this.forwardRamp.reset();
         this.navOverlay.setReticle(null); this.pointer.visible = false;
         this.cockpit.visible = true; this.cameraScreen.visible = !this.actionMenu.visible;
         this.paint(now);
         return;
       }
       if (!tracked) {
+        this.forwardRamp.reset();
         this.inputValid = false;
         this.voice?.stopListening("XR tracking lost: voice question cancelled");
         if (Number.isFinite(this.lastXRAt) || this.input.held)
@@ -683,6 +717,7 @@ export class RoverExperience {
         this.latchLeftButtons();
       }
       this.lastXRAt = now;
+      this.updatePointer(frame, reference, right);
       const axes = right?.gamepad?.axes ?? [];
       const stickX = axes.length >= 4 ? axes[2] : axes[0], stickY = axes.length >= 4 ? axes[3] : axes[1];
       const toggle = !!right?.gamepad?.buttons[4]?.pressed;
@@ -712,7 +747,11 @@ export class RoverExperience {
           leftAxes.length >= 4 ? leftAxes[3] : leftAxes[1]);
       }
       this.lastRoamAt = this.auto ? now : -Infinity;
-      const drive = manualDrive(-stick(stickY, XR_STICK_DEADZONE), stick(stickX, XR_STICK_DEADZONE));
+      // Forward eases in from rest (~90% after 0.3 s, full after ~2 s held); easing off or releasing is
+      // immediate. Steering gets a deadzone, expo curve and straight-ahead lock.
+      if (this.auto) this.forwardRamp.reset();
+      const forward = this.auto ? 0 : this.forwardRamp.step(-stick(stickY, XR_STICK_DEADZONE), now);
+      const drive = manualDrive(forward, steerCurve(stickX, stickY));
       this.input = { held,
         v: this.auto ? 0 : drive.v,
         w: this.auto ? 0 : drive.w,
@@ -780,17 +819,48 @@ export class RoverExperience {
     this.cockpit.quaternion.setFromAxisAngle(this.cockpitUp, this.baseYaw);
     this.panSmoother.reset(); this.recenter = false;
   }
-  private updatePointer(frame: XRFrame, reference: XRReferenceSpace | null, right: XRInputSource | undefined) {
+  private updatePointer(frame: XRFrame | undefined, reference: XRReferenceSpace | null, right: XRInputSource | undefined) {
     if (!this.aimRay(frame, reference, right)) {
-      this.pointer.visible = false; this.actionMenu.hover(null); return null;
+      this.pointer.visible = false; this.aimedIntercom = false; this.actionMenu.hover(null); return null;
     }
     this.cockpit.updateMatrixWorld(true);
-    const panel = this.actionMenu.visible ? this.actionMenu.panel : this.cameraScreen;
-    const hit = panel ? this.raycaster.intersectObject(panel, false)[0] : undefined;
+    const targets = this.actionMenu.visible ? [this.actionMenu.panel] : [this.intercomPanel, this.cameraScreen];
+    const hit = this.raycaster.intersectObjects(targets, false)[0];
+    this.aimedIntercom = hit?.object === this.intercomPanel;
     this.pointer.visible = !!hit;
     if (hit) { this.pointer.position.copy(this.cockpit.worldToLocal(hit.point.clone())); this.pointer.position.z += .015; }
     const action = this.actionMenu.hit(hit?.uv); this.actionMenu.hover(action);
     return action;
+  }
+
+  private onXRSelectStart = (event: XRInputSourceEvent) => {
+    if (event.inputSource.handedness !== "right" || !this.aimedIntercom) return;
+    void this.intercom.toggle();
+  };
+
+  private updateIntercomState(state: IntercomState) {
+    this.intercomButton.textContent = `Talk to iPhone · ${state.enabled ? "On" : "Off"}`;
+    this.intercomButton.setAttribute("aria-pressed", String(state.enabled));
+    this.intercomStatus.textContent = state.status;
+    this.drawIntercomPanel(state);
+  }
+
+  private drawIntercomPanel(state: IntercomState) {
+    const c = this.intercomContext;
+    if (!c) return;
+    c.clearRect(0, 0, 640, 192);
+    c.fillStyle = state.enabled ? "#07583e" : "#10232f";
+    c.strokeStyle = state.enabled ? "#53f3ae" : state.phoneConnected ? "#58d7ef" : "#8295a0";
+    c.lineWidth = 6;
+    c.beginPath(); c.roundRect(4, 4, 632, 184, 26); c.fill(); c.stroke();
+    c.textAlign = "center"; c.textBaseline = "middle";
+    c.fillStyle = "#f4fbff"; c.font = "bold 48px system-ui";
+    c.fillText(`TALK ${state.enabled ? "ON" : "OFF"}`, 320, 69);
+    c.fillStyle = "#c8d8df"; c.font = "22px system-ui";
+    c.fillText("QUEST MIC → iPHONE · iPHONE MIC → QUEST", 320, 118);
+    c.fillStyle = state.enabled ? "#a7f2d2" : "#c8d8df"; c.font = "20px system-ui";
+    c.fillText(state.status, 320, 158);
+    this.intercomTexture.needsUpdate = true;
   }
   private chooseAction(action: VRAction, now: number) {
     // Flash the chosen card, then close; the stop below already latches a fresh trigger release.
@@ -952,6 +1022,7 @@ export class RoverExperience {
     const windowed = this.cameraWindowed, k = windowed ? 0.3 : 1;
     this.cameraScreen.scale.set(this.screenFitX * k, this.screenFitY * k, 1);
     this.cameraScreen.position.set(windowed ? 0.95 : 0, windowed ? 0.7 : 0, windowed ? -2.2 : -2.35);
+    this.intercomPanel.position.set(windowed ? 0.95 : .96, windowed ? .43 : -.78, windowed ? -2.16 : -2.31);
   }
   private showHint(visible = true) { this.hintUntil = visible ? performance.now() + HINT_MS : -Infinity; }
   private updateHint(_now: number) { this.hintPanel.visible = false; }
@@ -983,6 +1054,8 @@ export class RoverExperience {
     if (this.voice?.capturing) this.gate.invalidate("Voice question: release trigger");
     const moving = this.gate.decide(this.input.held, now, connected, available,
       this.renderer.xr.isPresenting ? this.lastXRAt : undefined);
+    // Any tick that does not move restarts the forward ease-in, so resuming never jumps to full.
+    if (!moving) this.forwardRamp.reset();
     // Never add another command behind buffered traffic. Reset the session instead.
     if (connected && this.socket!.bufferedAmount > 0) {
       // A permit callback and the 50 ms timer can run in the same browser turn.
@@ -1424,6 +1497,7 @@ export class RoverExperience {
   }
   dispose() {
     this.stop("Viewer closed", true); this.stopped = true;
+    this.intercom.dispose();
     this.timers.forEach(timer => { window.clearInterval(timer); window.clearTimeout(timer); });
     this.socket?.close(); this.detectionsSocket?.close();
     this.identityCards.close();
@@ -1435,7 +1509,7 @@ export class RoverExperience {
     window.removeEventListener("blur", this.blur); window.removeEventListener("click", this.click);
     this.renderer.domElement.removeEventListener("dblclick", this.mapGoal); this.navOverlay.dispose(); document.removeEventListener("visibilitychange", this.visibility);
     document.removeEventListener("keydown", this.escapeStop);
-    this.cameraTexture.dispose(); this.hintTexture.dispose(); this.hintPanel.geometry.dispose(); (this.hintPanel.material as THREE.Material).dispose(); this.drillTexture.dispose(); this.drillHud.canvas.remove();
+    this.cameraTexture.dispose(); this.intercomPanel.geometry.dispose(); this.intercomTexture.dispose(); (this.intercomPanel.material as THREE.Material).dispose(); this.hintTexture.dispose(); this.hintPanel.geometry.dispose(); (this.hintPanel.material as THREE.Material).dispose(); this.drillTexture.dispose(); this.drillHud.canvas.remove();
     this.bannerTexture.dispose(); this.stopTexture.dispose(); this.voiceTexture.dispose(); this.sourceBanner.remove();
     this.actionMenu.dispose(); this.pointer.geometry.dispose(); this.pointer.material.dispose();
   }

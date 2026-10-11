@@ -21,6 +21,7 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate, AV
     @Published var resolvedEndpoint = ""
     @Published var geometryStatus = "Phone 3D disabled"
     @Published var clockDiagnostic = "Capture clock not checked"
+    @Published var intercomStatus = "Talk off"
 
     let supportsMesh = ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh)
     let supportsDepth = ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth)
@@ -34,6 +35,7 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate, AV
     private let queue = DispatchQueue(label: "farsight.capture", qos: .userInitiated)
     private let context = CIContext(options: [.cacheIntermediates: false])
     private let network = URLSession(configuration: .ephemeral)
+    private let intercomPlayback = IntercomPlayback()
     private var socket: URLSessionWebSocketTask?
     private var generation: UUID?
     private var uiGeneration: UUID?
@@ -78,7 +80,7 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate, AV
     private var withDepth = false
     private var helloSent = false
     private var inFlight = false
-    private var lastCapture = -Double.infinity
+    private var cadence = CaptureCadence()
     private var frameID = 0
     private var sentCount = 0
     private var skippedCount = 0
@@ -86,6 +88,7 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate, AV
 
     override init() {
         super.init()
+        intercomPlayback.onStatus = { [weak self] value in self?.intercomStatus = value }
         capture.delegate = self
         capture.delegateQueue = queue
         geometryFeed.onRecord = { [weak self] session, packet in
@@ -196,7 +199,7 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate, AV
         withDepth = depth
         helloSent = false
         inFlight = false
-        lastCapture = -.infinity
+        cadence = CaptureCadence()
         frameID = 0
         sentCount = 0
         skippedCount = 0
@@ -222,6 +225,7 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate, AV
         task.maximumMessageSize = 65_536
         socket = task
         guard admission.withIntent(request.intent, { task.resume(); receive(task, id: id); return true }) == true else { disconnect(); return }
+        intercomPlayback.beginAttempt(from: url)
         do {
             let hello: [String: Any] = ["type": "hello", "version": 1,
                 "session_id": sessionID, "map_epoch": 1, "device": device,
@@ -295,6 +299,7 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate, AV
     }
 
     private func disconnect() {
+        intercomPlayback.disconnect()
         geometryRetry?.cancel(); geometryRetry = nil; geometryReady = false
         geometryServer.stop(); geometryFeed.stop()
         permitWatchdog?.cancel(); permitWatchdog = nil
@@ -430,13 +435,13 @@ final class CaptureController: NSObject, ObservableObject, ARSessionDelegate, AV
             skippedCount += 1
             return
         }
-        let fps = withDepth ? 6.0 : 15.0
-        guard captureTime - lastCapture >= 1 / fps else { return }
+        let fps = withDepth ? CaptureCadence.depthFPS : CaptureCadence.rgbFPS
+        guard cadence.isDue(at: captureTime) else { return }
         if withDepth && frame?.sceneDepth == nil {
             publish(id) { $0.status = "Waiting for same-frame LiDAR depth; no synthetic depth is sent" }
             return
         }
-        lastCapture = captureTime
+        cadence.didCapture(at: captureTime, fps: fps)
         inFlight = true
         do {
             let image = CIImage(cvPixelBuffer: pixels)

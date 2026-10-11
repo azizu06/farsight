@@ -7,6 +7,7 @@ import { ControlSafety } from '../src/control-safety.js';
 import { SourceTruth } from '../src/source-banner.js';
 import * as cameraView from '../src/camera-view.js';
 import * as frameOrderModule from '../src/frame-order.js';
+import * as manualDriveModule from '../src/manual-drive.js';
 
 const code = ts.transpileModule(readFileSync(new URL('../src/rover.ts', import.meta.url), 'utf8'), {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
@@ -26,7 +27,7 @@ function fixture({ decode = () => Promise.resolve() } = {}) {
       return decode(this).finally(() => { urls.decoding--; });
     }
   }
-  vm.runInNewContext(code, { exports: module.exports, require: name => name === './camera-view.js' ? cameraView : name === './frame-order.js' ? frameOrderModule : {}, document,
+  vm.runInNewContext(code, { exports: module.exports, require: name => name === './camera-view.js' ? cameraView : name === './frame-order.js' ? frameOrderModule : name === './manual-drive.js' ? manualDriveModule : {}, document,
     performance: { now: () => clock.now }, AbortController, Image: ImageFixture,
     window: { setTimeout, clearTimeout }, WebSocket: { OPEN: 1 },
     URL: { createObjectURL: () => { urls.created++; return 'blob:fixture'; }, revokeObjectURL() { urls.revoked++; } },

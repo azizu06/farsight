@@ -677,6 +677,10 @@ and Rust still uses the stride, so capped mesh bytes differ between the two serv
 `/ws/map`) gains `capped: true` while either cap is decimating; `points` and `triangles` still
 count the full map. Fusion, Nav2 depth/occupancy and scan results keep full resolution.
 
+Python only: `GET /map/mesh.bin?triangles=N` overrides the triangle cap for that request
+(`0` = every stored triangle, max 2,000,000; 400 otherwise). It is for a client on a fast link
+such as the Mac renderer (`render.html?mesh_triangles=N`); requests without it keep the cap.
+
 ### Cellular map subscription (additive)
 
 `/ws/map?points=http` opts into status-only delivery. Each status acknowledges
@@ -824,6 +828,12 @@ lease, deadman, release, camera-stale and disconnect stops are unchanged.
 navigation geometry. The Mac mounts `/dense/manifest`, `/dense/chunk.bin`,
 `/dense/delta.bin`, `/dense/status` and `POST /dense/metrics` on relay 8080.
 See `docs/dense-map.md` for launch, budgets and evidence limits.
+Jetson visual samples skip depth-edge fringes (5x5 depth range above 20% of depth) and
+surfaces seen past 80 degrees from the view ray (86 for near-horizontal surfaces), which
+removes ARKit's smoothed flying-pixel sheets between foreground and background.
+The Mac relay can fade retained cells in recent person footprints (off by default, `FADE_FOOTPRINTS` in `tools/dense_map.py`, because it also erased cells that had only gone out of view) (torso points from
+`/ws/detections`, 0.45 m radius, ±0.9 m height, 60 s memory) once unobserved for 15 s,
+as journaled deletes; `/dense/status` adds `faded_footprint_cells` and `people_error`.
 Jetson visual ingestion is latest-only background work (default 8 Hz, 12,288 real
 pixels per job), disabled at startup by `FARSIGHT_DENSE=0`. The rate, samples/job
 and thread-CPU budget are configurable (`docs/dense-map.md`); costly jobs reduce
@@ -836,7 +846,9 @@ capture/control guards are unchanged.
 
 Delta query: `epoch` (opaque server/capture-generation token), `after` (last
 cursor, initially zero), `limit` (1–8192), `snapshot` (boolean), and `anchor`
-(snapshot-start revision, echoed while paging). Response body is little-endian
+(snapshot-start revision, echoed while paging). Optional `view_after` echoes the
+last received native view key and avoids repeating that view across pages.
+Response body is little-endian
 u32 JSON byte length, UTF-8 JSON, then zero or more **16-byte** records:
 signed i32 XYZ in millimetres, u8 RGB, u8 operation (1 upsert, 0 removal).
 The fine-cell key is floor(XYZ_mm / 10) on every axis, including negatives.
@@ -866,6 +878,37 @@ disconnects and reports source age separately. Native geometry retains its
 explicit anchor-removal semantics. These history rules do not apply to rover
 camera/depth freshness or navigation geometry.
 
+Revisiting a region refreshes retained visual geometry using optional `view`
+metadata, published from accepted native RGB-D at up to 2 Hz independently of
+coalesced point updates. It contains `format:"farsight.depth-view"`, `version:1`,
+`key`, `age_ms`, trusted five-element `sensor_key`, native `width`/`height`, exact
+`intrinsics` and `transform` (both explicitly `matrix_order:"row_major"`), uniform
+`stride`, `depth_format:"uint16_mm_le"`, and Base64 `depth`. Each compact cell is
+the minimum depth of its native block, rounded down to millimetres; any rejected
+pixel makes the block unknown (zero). The grid is at most 128×96, fitting the
+existing 64 KiB header. Its depth/confidence/edge/facing acceptance matches the
+measured dense lane; it adds no generated geometry.
+
+The Mac projects retained cells into the same-world view outside its cloud lock
+and removes old foreground contradicted by the new measurement. Out-of-view,
+unknown and occluded cells remain intact. Depth correspondence uses two 1 cm
+cells plus 1 mm codec rounding, independent of navigation clearances. This also
+works after the Jetson cache has expired. Accepted views use the existing native
+2 s age bound including transfer time. Current positive observations newer than
+the view stay protected until the next view; same-epoch backfill cannot restore
+already contradicted foreground. Matching surface faces and camera textures are
+replaced selectively, including when the camera has not moved.
+
+Optional `authoritative_deletes` and `newer_than_view` are Base64 packed bitmaps
+over record indices (least-significant bit first, one bit per record, final byte
+zero-padded). The former lets the history pool distinguish observed removals
+from ordinary cache expiry; the latter identifies positive records newer than
+the published view. Existing 16-byte 0/1 records are unchanged, and older clients
+ignore these optional fields. Authoritative Mac removals become the same normal
+delete records consumed by renderer GPU buffers and the density mesh worker.
+`/dense/status` adds `revisited_cells` and `revisit_error`; these are visual-map
+updates and never change drive authority or request a stopped interval.
+
 The endpoints negotiate Brotli/gzip over bounded records; no complete
 multi-million-point body is transferred. Chunk replies use the same framing
 with only upserts plus `chunk`, `revision`, `lod`, `sample_voxel_m` and
@@ -873,6 +916,19 @@ with only upserts plus `chunk`, `revision`, `lod`, `sample_voxel_m` and
 not an addition to its previous version. Mac renderer full-detail deltas use
 the delta contract above. The gray ARKit source is selected separately with
 `source=geometry`; it never overwrites calibrated RGB-D colors.
+
+## Offline measured capture archive
+
+`PhoneRunCapture` optionally saves each sampled JPEG with a bounded measured
+point file in the same run/session/epoch. `transforms.json` adds `points_format`,
+`points_coordinate_system`, per-frame `points_path`/`points_count`, and final
+`point_cloud` export metadata. The 15-byte `xyz_f32le_rgb8` records contain
+world-space float32 XYZ and RGB8. This is an on-disk archive, separate from the
+16-byte live delta feed; consumers must not decode it as live delta records.
+The writer publishes a capped measured `dense.ply` when the segment ends.
+See [post-run capture](postrun-capture.md) for disk/queue budgets, finalization,
+power-loss recovery and the offline export command. No live reset/TTL or control
+contract changes.
 
 ## Phone-built mesh lane (v1)
 
@@ -1082,6 +1138,19 @@ decoded eye assignment and actual headset acceptance remain separate gates.
 The viewer finds a frame's render pose by the echoed `pose_id`, or failing
 that by an exact `sent_mono_ms`. It sizes the picture from the echoed
 `video_segment.fov_y_deg`, which defaults to 50.
+
+### Standalone VR exploration
+
+The standalone `quest/explore.html` viewer uses these same visual sockets and
+version-1 poses, with packed stereo by default. It sends `stereo: true` with a
+labeled pair; desktop eyes use illustrative 64 mm spacing, while immersive eyes
+come from that XR frame. It opens no rover socket and downloads no geometry.
+The Mac adds optional `video_segment.map.scene` metadata: `{floor_y, center[3],
+span}` in AR-map metres, estimated from at most 4,096 retained point samples
+once a second. This positions the virtual floor and first desktop view; it
+is a display anchor, not a reconstructed floor mesh. Optional `map.session_id`
+and `map.map_epoch` identify the anchor's world. Existing consumers ignore
+these fields; point, pose and stereo formats remain unchanged.
 
 ### Optional read-only native RGB-D preview
 
