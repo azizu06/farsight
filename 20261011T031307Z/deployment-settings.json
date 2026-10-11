@@ -1,0 +1,19 @@
+{
+  "source_pin": "98d8d1279b794806b865c35518a9d5524d8ccc77",
+  "renderer_pid": 30496,
+  "previous_renderer_pid": 9521,
+  "previous_pin": "04ad5482f76a19a66386bed62e5bd3ddc25b6273",
+  "relay_pid_unchanged": 87345,
+  "stereo": "sbs-left-right",
+  "width": 1920,
+  "height": 1080,
+  "fps": 30,
+  "bitrate": 4000000,
+  "hardware": "videotoolbox",
+  "browser": "Google Chrome",
+  "raw_networking": false,
+  "adapter_built": true,
+  "headset_touched": false,
+  "relay_restarted": false,
+  "canvas_camera_poses": "fixed-poses.json from initial062 set"
+}

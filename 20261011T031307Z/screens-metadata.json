@@ -1,0 +1,725 @@
+{
+  "records": [
+    {
+      "file": "desktop-mirror-1.png",
+      "at": "2026-10-11T03:13:08.742963+00:00",
+      "state": {
+        "url": "http://127.0.0.1:8080/?view=map&inspect=0&qaShots=farsight-densemap",
+        "canvas": {
+          "state": "rendering",
+          "frameId": "h264:11:11",
+          "layout": "sbs-left-eye",
+          "poseVerified": "false",
+          "poseFrame": "25462",
+          "source": "unreported"
+        },
+        "status": "Mac rendering \u00b7 302 ms picture age \u00b7 Receive-only mirror \u00b7 headset camera",
+        "source": "Mac render \u00b7 geometry source unreported",
+        "format": "Stereo stream \u00b7 left-eye preview \u00b7 1920 \u00d7 1080",
+        "inspect": false,
+        "view": "receive-only headset camera sample; no pose commands"
+      }
+    },
+    {
+      "file": "desktop-mirror-2.png",
+      "at": "2026-10-11T03:13:09.934845+00:00",
+      "state": {
+        "url": "http://127.0.0.1:8080/?view=map&inspect=0&qaShots=farsight-densemap",
+        "canvas": {
+          "state": "rendering",
+          "frameId": "h264:34:34",
+          "layout": "sbs-left-eye",
+          "poseVerified": "false",
+          "poseFrame": "25489",
+          "source": "unreported"
+        },
+        "status": "Mac rendering \u00b7 472 ms picture age \u00b7 Receive-only mirror \u00b7 headset camera",
+        "source": "Mac render \u00b7 geometry source unreported",
+        "format": "Stereo stream \u00b7 left-eye preview \u00b7 1920 \u00d7 1080",
+        "inspect": false,
+        "view": "receive-only headset camera sample; no pose commands"
+      }
+    },
+    {
+      "file": "desktop-mirror-3.png",
+      "at": "2026-10-11T03:13:11.103930+00:00",
+      "state": {
+        "url": "http://127.0.0.1:8080/?view=map&inspect=0&qaShots=farsight-densemap",
+        "canvas": {
+          "state": "rendering",
+          "frameId": "h264:63:63",
+          "layout": "sbs-left-eye",
+          "poseVerified": "false",
+          "poseFrame": "25524",
+          "source": "unreported"
+        },
+        "status": "Mac rendering \u00b7 298 ms picture age \u00b7 Receive-only mirror \u00b7 headset camera",
+        "source": "Mac render \u00b7 geometry source unreported",
+        "format": "Stereo stream \u00b7 left-eye preview \u00b7 1920 \u00d7 1080",
+        "inspect": false,
+        "view": "receive-only headset camera sample; no pose commands"
+      }
+    },
+    {
+      "file": "live-canvas-pose-1.png",
+      "at": "2026-10-11T03:15:13.814267+00:00",
+      "state": {
+        "url": "http://127.0.0.1:8091/render/canvas-lab.html?source=live&upstream=http%3A%2F%2F127.0.0.1%3A8091&aa=0&qaShots=farsight-densemap&width=1800&height=953&lod=1&presentation=canvas",
+        "stats": {
+          "points": 814826,
+          "triangles": 0,
+          "source": "WAITING \u00b7 SOURCE RGB-D SAMPLES",
+          "max_points": 20000000,
+          "frame_count": 176,
+          "samples": 135,
+          "fps": 1.1188083282435013,
+          "frame_ms_p50": 33.20000001788139,
+          "frame_ms_p95": 4993.399999976158,
+          "render_ms_p50": 0.800000011920929,
+          "render_ms_p95": 11.5,
+          "gpu_renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M5 Pro, Unspecified Version)",
+          "capture_calls": 1,
+          "draw_calls": 102,
+          "drawn_points": 814826,
+          "grid_visible": true,
+          "canvas_width": 1800,
+          "canvas_height": 953,
+          "antialias": false,
+          "preserve_drawing_buffer": false,
+          "source_mode": "live",
+          "scope": "Direct desktop GPU canvas; no encode, headset, or physical latency measurement"
+        },
+        "mac": {
+          "ready": true,
+          "stereo": false,
+          "renderMs": 0.20000001788139343,
+          "captureMs": 23.200000017881393,
+          "draws": 8340,
+          "points": 814826,
+          "source": "WAITING \u00b7 SOURCE RGB-D SAMPLES",
+          "poseEcho": null,
+          "refreshBusy": true,
+          "poseValid": false,
+          "drawnPoints": 814826,
+          "drawnTriangles": 0,
+          "dense": {
+            "received_upserts": 814826,
+            "received_deletes": 0,
+            "retained_cells": 814826,
+            "local_evictions": 0,
+            "pending_gpu_chunks": 0,
+            "received_payload_bytes": 13064278,
+            "received_pages": 100,
+            "source_reported_cells": 814826,
+            "source_label": "SOURCE RGB-D SAMPLES",
+            "selected_source": "rgbd",
+            "bootstrap_incomplete": false,
+            "cursor": 2687490,
+            "resets": 1,
+            "request_active": true,
+            "error": null,
+            "gpu_uploaded_cells": 814826,
+            "gpu_uploaded_cell_writes": 814826,
+            "gpu_drawn_cells": 814826,
+            "gpu_chunks": 100
+          },
+          "rayVisible": false,
+          "viewPosition": [
+            10.097039647822582,
+            11.384650727263345,
+            18.60103947711488
+          ],
+          "triangles": 0,
+          "retained": true,
+          "mapError": "Error: Map HTTP 502",
+          "lod": {
+            "index": 1,
+            "pixelRatio": 1,
+            "fraction": 1,
+            "fx": 2,
+            "adaptive": false
+          },
+          "mapStatus": null,
+          "surfaceDisplay": {
+            "coarse_splat_m": 0.072,
+            "dense_splat_m": 0.035,
+            "raw": {
+              "raw_enabled": false,
+              "raw_mode": "latest",
+              "raw_surface_history": true,
+              "raw_surface_ttl_s": 30,
+              "raw_oldest_surface_age_ms": null,
+              "raw_poll_interval_ms": 500,
+              "raw_point_capacity": 0,
+              "raw_point_transfer_bytes": 0,
+              "raw_patches": 0,
+              "raw_splat_m": 0.012,
+              "raw_pixel_floor": 1.25,
+              "raw_surfaces": true,
+              "raw_point_overlay": false,
+              "raw_source": null,
+              "raw_points": 0,
+              "raw_triangles": 0,
+              "raw_frame": null,
+              "raw_identity": "",
+              "raw_age_ms": null,
+              "raw_bytes": 0,
+              "raw_worker_ms": null,
+              "raw_error": null,
+              "raw_ttl_s": 2
+            }
+          }
+        },
+        "pose": {
+          "position": [
+            10.09703964782258,
+            11.384650727263343,
+            18.601039477114877
+          ],
+          "target": [
+            -5.875499844551086,
+            1.002500057220459,
+            2.628499984741211
+          ]
+        },
+        "captureMeta": {
+          "ready": true,
+          "stereo": false,
+          "renderMs": 0.4000000059604645,
+          "captureMs": 23.200000017881393,
+          "draws": 8291,
+          "points": 814826,
+          "source": "WAITING \u00b7 SOURCE RGB-D SAMPLES",
+          "poseEcho": null,
+          "refreshBusy": true,
+          "poseValid": false,
+          "drawnPoints": 814826,
+          "drawnTriangles": 0,
+          "dense": {
+            "received_upserts": 814826,
+            "received_deletes": 0,
+            "retained_cells": 814826,
+            "local_evictions": 0,
+            "pending_gpu_chunks": 0,
+            "received_payload_bytes": 13064278,
+            "received_pages": 100,
+            "source_reported_cells": 814826,
+            "source_label": "SOURCE RGB-D SAMPLES",
+            "selected_source": "rgbd",
+            "bootstrap_incomplete": false,
+            "cursor": 2687490,
+            "resets": 1,
+            "request_active": true,
+            "error": null,
+            "gpu_uploaded_cells": 814826,
+            "gpu_uploaded_cell_writes": 814826,
+            "gpu_drawn_cells": 814826,
+            "gpu_chunks": 100
+          },
+          "rayVisible": false,
+          "viewPosition": [
+            10.097039647822582,
+            11.384650727263345,
+            18.60103947711488
+          ],
+          "triangles": 0,
+          "retained": true,
+          "mapError": "Error: Map HTTP 502",
+          "lod": {
+            "index": 1,
+            "pixelRatio": 1,
+            "fraction": 1,
+            "fx": 2,
+            "adaptive": false
+          },
+          "mapStatus": null,
+          "surfaceDisplay": {
+            "coarse_splat_m": 0.072,
+            "dense_splat_m": 0.035,
+            "raw": {
+              "raw_enabled": false,
+              "raw_mode": "latest",
+              "raw_surface_history": true,
+              "raw_surface_ttl_s": 30,
+              "raw_oldest_surface_age_ms": null,
+              "raw_poll_interval_ms": 500,
+              "raw_point_capacity": 0,
+              "raw_point_transfer_bytes": 0,
+              "raw_patches": 0,
+              "raw_splat_m": 0.012,
+              "raw_pixel_floor": 1.25,
+              "raw_surfaces": true,
+              "raw_point_overlay": false,
+              "raw_source": null,
+              "raw_points": 0,
+              "raw_triangles": 0,
+              "raw_frame": null,
+              "raw_identity": "",
+              "raw_age_ms": null,
+              "raw_bytes": 0,
+              "raw_worker_ms": null,
+              "raw_error": null,
+              "raw_ttl_s": 2
+            }
+          }
+        },
+        "view": "independent local live-canvas camera; no producer pose commands",
+        "bounds": {
+          "center": [
+            -5.875499844551086,
+            1.002500057220459,
+            2.628499984741211
+          ],
+          "size": [
+            16.280999898910522,
+            4.513000011444092,
+            10.493000030517578
+          ],
+          "radius": 9.944108512733315
+        }
+      }
+    },
+    {
+      "file": "live-canvas-pose-2.png",
+      "at": "2026-10-11T03:15:14.503389+00:00",
+      "state": {
+        "url": "http://127.0.0.1:8091/render/canvas-lab.html?source=live&upstream=http%3A%2F%2F127.0.0.1%3A8091&aa=0&qaShots=farsight-densemap&width=1800&height=953&lod=1&presentation=canvas",
+        "stats": {
+          "points": 814826,
+          "triangles": 0,
+          "source": "WAITING \u00b7 SOURCE RGB-D SAMPLES",
+          "max_points": 20000000,
+          "frame_count": 178,
+          "samples": 137,
+          "fps": 1.1270831499424812,
+          "frame_ms_p50": 35,
+          "frame_ms_p95": 4993.399999976158,
+          "render_ms_p50": 0.9000000059604645,
+          "render_ms_p95": 19.5,
+          "gpu_renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M5 Pro, Unspecified Version)",
+          "capture_calls": 1,
+          "draw_calls": 102,
+          "drawn_points": 814826,
+          "grid_visible": true,
+          "canvas_width": 1800,
+          "canvas_height": 953,
+          "antialias": false,
+          "preserve_drawing_buffer": false,
+          "source_mode": "live",
+          "scope": "Direct desktop GPU canvas; no encode, headset, or physical latency measurement"
+        },
+        "mac": {
+          "ready": true,
+          "stereo": false,
+          "renderMs": 9,
+          "captureMs": 23.200000017881393,
+          "draws": 8364,
+          "points": 814826,
+          "source": "WAITING \u00b7 SOURCE RGB-D SAMPLES",
+          "poseEcho": null,
+          "refreshBusy": true,
+          "poseValid": false,
+          "drawnPoints": 814826,
+          "drawnTriangles": 0,
+          "dense": {
+            "received_upserts": 814826,
+            "received_deletes": 0,
+            "retained_cells": 814826,
+            "local_evictions": 0,
+            "pending_gpu_chunks": 0,
+            "received_payload_bytes": 13064278,
+            "received_pages": 100,
+            "source_reported_cells": 814826,
+            "source_label": "SOURCE RGB-D SAMPLES",
+            "selected_source": "rgbd",
+            "bootstrap_incomplete": false,
+            "cursor": 2687490,
+            "resets": 1,
+            "request_active": true,
+            "error": null,
+            "gpu_uploaded_cells": 814826,
+            "gpu_uploaded_cell_writes": 814826,
+            "gpu_drawn_cells": 814826,
+            "gpu_chunks": 100
+          },
+          "rayVisible": false,
+          "viewPosition": [
+            -22.05815806889972,
+            10.712094991829632,
+            18.81115820908984
+          ],
+          "triangles": 0,
+          "retained": true,
+          "mapError": "Error: Map HTTP 502",
+          "lod": {
+            "index": 1,
+            "pixelRatio": 1,
+            "fraction": 1,
+            "fx": 2,
+            "adaptive": false
+          },
+          "mapStatus": null,
+          "surfaceDisplay": {
+            "coarse_splat_m": 0.072,
+            "dense_splat_m": 0.035,
+            "raw": {
+              "raw_enabled": false,
+              "raw_mode": "latest",
+              "raw_surface_history": true,
+              "raw_surface_ttl_s": 30,
+              "raw_oldest_surface_age_ms": null,
+              "raw_poll_interval_ms": 500,
+              "raw_point_capacity": 0,
+              "raw_point_transfer_bytes": 0,
+              "raw_patches": 0,
+              "raw_splat_m": 0.012,
+              "raw_pixel_floor": 1.25,
+              "raw_surfaces": true,
+              "raw_point_overlay": false,
+              "raw_source": null,
+              "raw_points": 0,
+              "raw_triangles": 0,
+              "raw_frame": null,
+              "raw_identity": "",
+              "raw_age_ms": null,
+              "raw_bytes": 0,
+              "raw_worker_ms": null,
+              "raw_error": null,
+              "raw_ttl_s": 2
+            }
+          }
+        },
+        "pose": {
+          "position": [
+            -22.058158068899715,
+            10.712094991829636,
+            18.81115820908984
+          ],
+          "target": [
+            -5.875499844551086,
+            1.002500057220459,
+            2.628499984741211
+          ]
+        },
+        "captureMeta": {
+          "ready": true,
+          "stereo": false,
+          "renderMs": 0.4000000059604645,
+          "captureMs": 23.200000017881393,
+          "draws": 8291,
+          "points": 814826,
+          "source": "WAITING \u00b7 SOURCE RGB-D SAMPLES",
+          "poseEcho": null,
+          "refreshBusy": true,
+          "poseValid": false,
+          "drawnPoints": 814826,
+          "drawnTriangles": 0,
+          "dense": {
+            "received_upserts": 814826,
+            "received_deletes": 0,
+            "retained_cells": 814826,
+            "local_evictions": 0,
+            "pending_gpu_chunks": 0,
+            "received_payload_bytes": 13064278,
+            "received_pages": 100,
+            "source_reported_cells": 814826,
+            "source_label": "SOURCE RGB-D SAMPLES",
+            "selected_source": "rgbd",
+            "bootstrap_incomplete": false,
+            "cursor": 2687490,
+            "resets": 1,
+            "request_active": true,
+            "error": null,
+            "gpu_uploaded_cells": 814826,
+            "gpu_uploaded_cell_writes": 814826,
+            "gpu_drawn_cells": 814826,
+            "gpu_chunks": 100
+          },
+          "rayVisible": false,
+          "viewPosition": [
+            -22.05815806889972,
+            10.712094991829632,
+            18.81115820908984
+          ],
+          "triangles": 0,
+          "retained": true,
+          "mapError": "Error: Map HTTP 502",
+          "lod": {
+            "index": 1,
+            "pixelRatio": 1,
+            "fraction": 1,
+            "fx": 2,
+            "adaptive": false
+          },
+          "mapStatus": null,
+          "surfaceDisplay": {
+            "coarse_splat_m": 0.072,
+            "dense_splat_m": 0.035,
+            "raw": {
+              "raw_enabled": false,
+              "raw_mode": "latest",
+              "raw_surface_history": true,
+              "raw_surface_ttl_s": 30,
+              "raw_oldest_surface_age_ms": null,
+              "raw_poll_interval_ms": 500,
+              "raw_point_capacity": 0,
+              "raw_point_transfer_bytes": 0,
+              "raw_patches": 0,
+              "raw_splat_m": 0.012,
+              "raw_pixel_floor": 1.25,
+              "raw_surfaces": true,
+              "raw_point_overlay": false,
+              "raw_source": null,
+              "raw_points": 0,
+              "raw_triangles": 0,
+              "raw_frame": null,
+              "raw_identity": "",
+              "raw_age_ms": null,
+              "raw_bytes": 0,
+              "raw_worker_ms": null,
+              "raw_error": null,
+              "raw_ttl_s": 2
+            }
+          }
+        },
+        "view": "independent local live-canvas camera; no producer pose commands",
+        "bounds": {
+          "center": [
+            -5.875499844551086,
+            1.002500057220459,
+            2.628499984741211
+          ],
+          "size": [
+            16.280999898910522,
+            4.513000011444092,
+            10.493000030517578
+          ],
+          "radius": 9.944108512733315
+        }
+      }
+    },
+    {
+      "file": "live-canvas-pose-3.png",
+      "at": "2026-10-11T03:15:15.201638+00:00",
+      "state": {
+        "url": "http://127.0.0.1:8091/render/canvas-lab.html?source=live&upstream=http%3A%2F%2F127.0.0.1%3A8091&aa=0&qaShots=farsight-densemap&width=1800&height=953&lod=1&presentation=canvas",
+        "stats": {
+          "points": 814826,
+          "triangles": 0,
+          "source": "WAITING \u00b7 SOURCE RGB-D SAMPLES",
+          "max_points": 20000000,
+          "frame_count": 180,
+          "samples": 139,
+          "fps": 1.137342725547856,
+          "frame_ms_p50": 35.19999998807907,
+          "frame_ms_p95": 4993.399999976158,
+          "render_ms_p50": 0.9000000059604645,
+          "render_ms_p95": 25,
+          "gpu_renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M5 Pro, Unspecified Version)",
+          "capture_calls": 1,
+          "draw_calls": 102,
+          "drawn_points": 814826,
+          "grid_visible": true,
+          "canvas_width": 1800,
+          "canvas_height": 953,
+          "antialias": false,
+          "preserve_drawing_buffer": false,
+          "source_mode": "live",
+          "scope": "Direct desktop GPU canvas; no encode, headset, or physical latency measurement"
+        },
+        "mac": {
+          "ready": true,
+          "stereo": false,
+          "renderMs": 0,
+          "captureMs": 23.200000017881393,
+          "draws": 8393,
+          "points": 814826,
+          "source": "WAITING \u00b7 SOURCE RGB-D SAMPLES",
+          "poseEcho": null,
+          "refreshBusy": true,
+          "poseValid": false,
+          "drawnPoints": 814826,
+          "drawnTriangles": 0,
+          "dense": {
+            "received_upserts": 814826,
+            "received_deletes": 0,
+            "retained_cells": 814826,
+            "local_evictions": 0,
+            "pending_gpu_chunks": 0,
+            "received_payload_bytes": 13064278,
+            "received_pages": 100,
+            "source_reported_cells": 814826,
+            "source_label": "SOURCE RGB-D SAMPLES",
+            "selected_source": "rgbd",
+            "bootstrap_incomplete": false,
+            "cursor": 2687490,
+            "resets": 1,
+            "request_active": true,
+            "error": null,
+            "gpu_uploaded_cells": 814826,
+            "gpu_uploaded_cell_writes": 814826,
+            "gpu_drawn_cells": 814826,
+            "gpu_chunks": 100
+          },
+          "rayVisible": false,
+          "viewPosition": [
+            -0.20522556819405893,
+            16.1232314608392,
+            -16.27241426978222
+          ],
+          "triangles": 0,
+          "retained": true,
+          "mapError": "Error: Map HTTP 502",
+          "lod": {
+            "index": 1,
+            "pixelRatio": 1,
+            "fraction": 1,
+            "fx": 2,
+            "adaptive": false
+          },
+          "mapStatus": null,
+          "surfaceDisplay": {
+            "coarse_splat_m": 0.072,
+            "dense_splat_m": 0.035,
+            "raw": {
+              "raw_enabled": false,
+              "raw_mode": "latest",
+              "raw_surface_history": true,
+              "raw_surface_ttl_s": 30,
+              "raw_oldest_surface_age_ms": null,
+              "raw_poll_interval_ms": 500,
+              "raw_point_capacity": 0,
+              "raw_point_transfer_bytes": 0,
+              "raw_patches": 0,
+              "raw_splat_m": 0.012,
+              "raw_pixel_floor": 1.25,
+              "raw_surfaces": true,
+              "raw_point_overlay": false,
+              "raw_source": null,
+              "raw_points": 0,
+              "raw_triangles": 0,
+              "raw_frame": null,
+              "raw_identity": "",
+              "raw_age_ms": null,
+              "raw_bytes": 0,
+              "raw_worker_ms": null,
+              "raw_error": null,
+              "raw_ttl_s": 2
+            }
+          }
+        },
+        "pose": {
+          "position": [
+            -0.20522556819405935,
+            16.1232314608392,
+            -16.272414269782217
+          ],
+          "target": [
+            -5.875499844551086,
+            1.002500057220459,
+            2.628499984741211
+          ]
+        },
+        "captureMeta": {
+          "ready": true,
+          "stereo": false,
+          "renderMs": 0.4000000059604645,
+          "captureMs": 23.200000017881393,
+          "draws": 8291,
+          "points": 814826,
+          "source": "WAITING \u00b7 SOURCE RGB-D SAMPLES",
+          "poseEcho": null,
+          "refreshBusy": true,
+          "poseValid": false,
+          "drawnPoints": 814826,
+          "drawnTriangles": 0,
+          "dense": {
+            "received_upserts": 814826,
+            "received_deletes": 0,
+            "retained_cells": 814826,
+            "local_evictions": 0,
+            "pending_gpu_chunks": 0,
+            "received_payload_bytes": 13064278,
+            "received_pages": 100,
+            "source_reported_cells": 814826,
+            "source_label": "SOURCE RGB-D SAMPLES",
+            "selected_source": "rgbd",
+            "bootstrap_incomplete": false,
+            "cursor": 2687490,
+            "resets": 1,
+            "request_active": true,
+            "error": null,
+            "gpu_uploaded_cells": 814826,
+            "gpu_uploaded_cell_writes": 814826,
+            "gpu_drawn_cells": 814826,
+            "gpu_chunks": 100
+          },
+          "rayVisible": false,
+          "viewPosition": [
+            -0.20522556819405893,
+            16.1232314608392,
+            -16.27241426978222
+          ],
+          "triangles": 0,
+          "retained": true,
+          "mapError": "Error: Map HTTP 502",
+          "lod": {
+            "index": 1,
+            "pixelRatio": 1,
+            "fraction": 1,
+            "fx": 2,
+            "adaptive": false
+          },
+          "mapStatus": null,
+          "surfaceDisplay": {
+            "coarse_splat_m": 0.072,
+            "dense_splat_m": 0.035,
+            "raw": {
+              "raw_enabled": false,
+              "raw_mode": "latest",
+              "raw_surface_history": true,
+              "raw_surface_ttl_s": 30,
+              "raw_oldest_surface_age_ms": null,
+              "raw_poll_interval_ms": 500,
+              "raw_point_capacity": 0,
+              "raw_point_transfer_bytes": 0,
+              "raw_patches": 0,
+              "raw_splat_m": 0.012,
+              "raw_pixel_floor": 1.25,
+              "raw_surfaces": true,
+              "raw_point_overlay": false,
+              "raw_source": null,
+              "raw_points": 0,
+              "raw_triangles": 0,
+              "raw_frame": null,
+              "raw_identity": "",
+              "raw_age_ms": null,
+              "raw_bytes": 0,
+              "raw_worker_ms": null,
+              "raw_error": null,
+              "raw_ttl_s": 2
+            }
+          }
+        },
+        "view": "independent local live-canvas camera; no producer pose commands",
+        "bounds": {
+          "center": [
+            -5.875499844551086,
+            1.002500057220459,
+            2.628499984741211
+          ],
+          "size": [
+            16.280999898910522,
+            4.513000011444092,
+            10.493000030517578
+          ],
+          "radius": 9.944108512733315
+        }
+      }
+    }
+  ],
+  "stamp": "20261011T031307Z",
+  "reason": "owner-requested deploy review",
+  "raw_pull": false,
+  "settings_note": "Current health is authoritative; no raw request or service changes in recurring capture."
+}
