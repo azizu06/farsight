@@ -44,12 +44,7 @@ fn resolve_frame(dir: &Path, file_path: &str) -> Option<PathBuf> {
         return Some(direct);
     }
     let base = Path::new(rel).file_name()?;
-    for cand in [dir.join("images").join(base), dir.join(base)] {
-        if cand.is_file() {
-            return Some(cand);
-        }
-    }
-    None
+    [dir.join("images").join(base), dir.join(base)].into_iter().find(|c| c.is_file())
 }
 
 /// Load a nerfstudio capture directory.

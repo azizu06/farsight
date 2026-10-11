@@ -51,7 +51,7 @@ pub fn unpack(body: &[u8]) -> Result<(Value, &[u8])> {
     }
     let meta: Value = serde_json::from_slice(&body[4..4 + size]).context("dense metadata JSON")?;
     let data = &body[4 + size..];
-    if meta.get("format").and_then(Value::as_str) != Some("xyz_mm_rgb8_op") || data.len() % RECORD_SIZE != 0 {
+    if meta.get("format").and_then(Value::as_str) != Some("xyz_mm_rgb8_op") || !data.len().is_multiple_of(RECORD_SIZE) {
         bail!("invalid dense records");
     }
     Ok((meta, data))
@@ -92,6 +92,9 @@ impl Accumulator {
     }
     pub fn len(&self) -> usize {
         self.cells.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.cells.is_empty()
     }
     /// Apply one raw record block (a packet's record section).
     pub fn apply(&mut self, data: &[u8]) {

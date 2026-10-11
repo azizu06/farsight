@@ -6,6 +6,7 @@
 pub mod core;
 pub mod spatial;
 pub mod io;
+pub mod learned;
 pub mod clean;
 pub mod normals;
 pub mod densify;

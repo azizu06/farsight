@@ -22,7 +22,7 @@ pub fn looks_like(bytes: &[u8]) -> bool {
     }
     let v = u32::from_le_bytes(bytes[0..4].try_into().unwrap()) as usize;
     let i = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
-    if i % 3 != 0 || bytes.len() != 8 + v * RECORD_SIZE + i * 4 {
+    if !i.is_multiple_of(3) || bytes.len() != 8 + v * RECORD_SIZE + i * 4 {
         return false;
     }
     let idx = &bytes[8 + v * RECORD_SIZE..];
@@ -36,7 +36,7 @@ pub fn read(bytes: &[u8]) -> Result<Bin> {
     }
     let v = u32::from_le_bytes(bytes[0..4].try_into().unwrap()) as usize;
     let i = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
-    if i % 3 != 0 || bytes.len() != 8 + v * RECORD_SIZE + i * 4 {
+    if !i.is_multiple_of(3) || bytes.len() != 8 + v * RECORD_SIZE + i * 4 {
         bail!("mesh.bin size mismatch ({v} vertices, {i} indices)");
     }
     let mut mesh = Bin {

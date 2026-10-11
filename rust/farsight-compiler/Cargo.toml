@@ -25,3 +25,11 @@ meshopt = "0.4"
 bytemuck = { version = "1", features = ["derive"] }
 rustc-hash = "2"
 tiny_http = "0.12"
+ort = { version = "2.0.0-rc.13", optional = true, default-features = false, features = ["load-dynamic"] }
+
+[features]
+default = []
+# CPU ONNX Runtime everywhere (no ANE/GPU requirement).
+onnx = ["dep:ort"]
+# Apple Neural Engine + GPU via CoreML execution provider (macOS only).
+coreml = ["onnx", "ort/coreml"]

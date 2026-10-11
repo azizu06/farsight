@@ -380,7 +380,7 @@ fn parse_ascii(bytes: &[u8], hdr: &Header) -> Result<Parsed> {
             }
             let has_col = chans.iter().any(|c| matches!(c, Chan::Col(_)));
             let has_nrm = chans.iter().any(|c| matches!(c, Chan::Nrm(_)));
-            let has_w = chans.iter().any(|c| *c == Chan::Weight);
+            let has_w = chans.contains(&Chan::Weight);
             if elem.props.iter().any(|p| matches!(p, Prop::Scalar { ty, name } if ty.is_float() && matches!(chan_of(name), Chan::Col(_)))) {
                 out.col_float = true;
             }

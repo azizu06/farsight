@@ -45,3 +45,44 @@ precision / recall / F-score at τ = 2 cm (Tanks&Temples style), **hole recall**
 (true surface inside the holes that the output covers — the interpolation
 score) and mesh vertex-colour error, for the input, densified cloud and mesh.
 These are synthetic numbers; they do not prove behaviour on rover data.
+
+## Neural Engine (learned depth prior)
+
+`learned/` completes metric dense depth per capture image with a monocular
+depth model, aligned to the measured cloud. Default builds need nothing: the
+stage is a no-op unless a model is configured.
+
+Build with ONNX Runtime (CPU EP everywhere; CoreML EP = ANE + GPU on macOS):
+
+```sh
+cargo build --release -p farsight-compiler --features coreml   # Mac (ANE+GPU)
+cargo build --release -p farsight-compiler --features onnx     # CPU EP only
+```
+
+`ort` links ONNX Runtime dynamically: set `ORT_LIB_LOCATION` to the dylib dir
+(e.g. `pip install onnxruntime` → `.../site-packages/onnxruntime/capi/` or the
+official release tarball). CoreML EP requires macOS ORT build (the pip wheel
+and official releases ship it).
+
+Model: Depth Anything V2 Small (Apache-2.0). Download + convert to ONNX:
+
+```sh
+pip install "onnx>=1.16" onnxruntime transformers torch
+huggingface-cli download depth-anything/Depth-Anything-V2-Small-hf --include "*.safetensors" "*.json" --local-dir dav2-small
+python -m transformers.onnx --model dav2-small --feature depth-estimation --atol 1e-4 models/depth-anything-v2-small/
+# or the community-exported ONNX: huggingface.co/onnx-community/depth-anything-v2-small
+```
+
+Configure via env (merges as a JSON patch over defaults):
+
+```sh
+export FARSIGHT_DEPTH_MODEL=models/depth-anything-v2-small/model.onnx
+export FARSIGHT_LEARNED='{"model_input_w":518,"model_input_h":518,"min_pairs":200,"max_frames":0}'
+```
+
+`learned::complete_depth(capture, cloud) -> Vec<DepthMap>` runs the model per
+frame, projects the measured cloud into the view (atomic z-buffer), fits
+`1/z = a·rel + b` by Huber IRLS, and emits `depth` (metres) + `confidence`
+(fit quality × local measured density). Views with fewer than `min_pairs`
+measured samples are skipped. Missing model or missing `onnx` feature →
+returns `[]`, so the pipeline just runs without the prior.

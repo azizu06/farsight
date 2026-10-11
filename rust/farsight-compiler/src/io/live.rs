@@ -6,6 +6,7 @@
 //!   4. `/map/points.bin` — legacy coarse map.
 //!   5. `/map/mesh.bin` + `/geometry/mesh.bin` — assembled ARKit mesh.
 //!   6. `/map/export.ply` — coarse PLY.
+//!
 //! Responses may be brotli/gzip encoded; we advertise both.
 use crate::core::PointCloud;
 use anyhow::{bail, Context, Result};

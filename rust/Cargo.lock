@@ -617,6 +617,7 @@ dependencies = [
  "flate2",
  "image",
  "meshopt",
+ "ort",
  "rayon",
  "rustc-hash",
  "serde",
