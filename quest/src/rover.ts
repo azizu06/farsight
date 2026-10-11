@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { SourceTruth } from "./source-banner.js";
 import { explainStop } from "./stop-reason.js";
 import { ControlSafety, stick } from "./control-safety.js";
-import { ForwardRamp, manualDrive, steerCurve } from "./manual-drive.js";
+import { ForwardRamp, joystickDrive, manualDrive, steerCurve } from "./manual-drive.js";
 import { H264Viewer } from "./h264";
 import { cameraCrop, croppedBox } from "./camera-view.js";
 import { VRActionMenu, type VRAction } from "./vr-actions";
@@ -748,10 +748,11 @@ export class RoverExperience {
       }
       this.lastRoamAt = this.auto ? now : -Infinity;
       // Forward eases in from rest (~90% after 0.3 s, full after ~2 s held); easing off or releasing is
-      // immediate. Steering gets a deadzone, expo curve and straight-ahead lock.
+      // immediate. Steering gets a deadzone, expo curve and straight-ahead lock. The shaped result is then
+      // capped to Dechante's manual pace (JOYSTICK_PACE: full stick forward = PWM 181, ~0.20 m/s).
       if (this.auto) this.forwardRamp.reset();
       const forward = this.auto ? 0 : this.forwardRamp.step(-stick(stickY, XR_STICK_DEADZONE), now);
-      const drive = manualDrive(forward, steerCurve(stickX, stickY));
+      const drive = joystickDrive(forward, steerCurve(stickX, stickY));
       this.input = { held,
         v: this.auto ? 0 : drive.v,
         w: this.auto ? 0 : drive.w,
