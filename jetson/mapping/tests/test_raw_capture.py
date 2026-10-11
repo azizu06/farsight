@@ -58,3 +58,16 @@ class RawMountTests(unittest.TestCase):
         with patch.dict('os.environ',{'FARSIGHT_RAW_CAPTURE':'1'}):
             app=create_app(simulate_rover=True,detector='none')
         self.assertTrue(any(getattr(r,'path',None)=='/phone/frame.bin' for r in app.routes))
+
+    def test_compressed_export_preserves_native_bytes_and_refused_coding(self):
+        app=create_app(simulate_rover=True,detector='none');capture=mount(app)
+        body=b'native RGB-D' * 1000
+        with patch.object(capture,'snapshot',return_value=(body,{'X-Capture-Key':'scope:1'})):
+            with TestClient(app) as client:
+                compressed=client.get('/phone/frame.bin',headers={'Accept-Encoding':'gzip'})
+                self.assertEqual(compressed.headers['Content-Encoding'],'gzip')
+                self.assertEqual(compressed.content,body)
+                self.assertLess(int(compressed.headers['Content-Length']),len(body))
+                refused=client.get('/phone/frame.bin',headers={'Accept-Encoding':'gzip;q=0,br;q=0'})
+                self.assertNotIn('Content-Encoding',refused.headers)
+                self.assertEqual(refused.content,body)

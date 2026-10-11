@@ -1054,3 +1054,5 @@ GET takes no drive lease and opens no control socket. The existing Mac relay
 `/phone/` prefix forwards it without a relay restart; desktop lab proxy exposes
 it as `/capture/frame.bin` on :8086. See `docs/dense-viewer.md` for bounded
 worker reconstruction, lifecycle and measurement limits.
+
+The optional raw RGB-D export also negotiates HTTP `br`/`gzip` (identity stays supported); decoded native frame bytes are unchanged. `Vary: Accept-Encoding` accompanies encoded export responses. Relay compression pass-through must explicitly include `/phone/frame.bin`; otherwise its existing identity request preserves compatibility without bandwidth savings. This does not change the shared bulk pacing or capture freshness limits.

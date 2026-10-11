@@ -80,7 +80,7 @@ function setSize(value) {
   document.querySelector('#size-value').textContent=`${Math.round(size*1000)} mm`;
 }
 async function setFrozen(value) {
-  if(value&&mode==='local'){const deadline=performance.now()+6000;while(dense.busy&&performance.now()<deadline)await new Promise(r=>setTimeout(r,25));if(dense.busy)throw Error('Dense pull did not finish before freeze');}
+  if(value){const lane=mode==='raw'?raw:dense;const deadline=performance.now()+6000;while(lane.busy&&performance.now()<deadline)await new Promise(r=>setTimeout(r,25));if(lane.busy)throw Error('Capture pull did not finish before freeze');}
   frozen=Boolean(value); capturedAt=frozen ? Date.now() : null;
   capturedDataAge=frozen?(mode==='raw'?raw.stats().raw_age_ms:(status.age_s??0)*1000+Date.now()-statusTime):null;
   document.querySelector('#freeze').textContent=frozen?'Resume live data':'Freeze measured sample';
@@ -93,6 +93,9 @@ function setMode(value) {
 const keys=new Set();
 addEventListener('keydown',e=>{if(!['INPUT','SELECT'].includes(e.target.tagName))keys.add(e.code);});
 addEventListener('keyup',e=>keys.delete(e.code)); addEventListener('blur',()=>keys.clear());
+function setLayers(value){raw.setLayers(value);document.querySelector('#surfaces').checked=raw.showSurfaces;document.querySelector('#points').checked=raw.showPoints;}
+document.querySelector('#surfaces').onchange=e=>setLayers({surfaces:e.target.checked});
+document.querySelector('#points').onchange=e=>setLayers({points:e.target.checked});
 document.querySelector('#size').oninput=e=>setSize(e.target.value);
 document.querySelector('#freeze').onclick=()=>setFrozen(!frozen);
 document.querySelector('#frame').onclick=()=>pose(0);
@@ -121,7 +124,8 @@ renderer.setAnimationLoop(now=>{
   }
   totalFrames++;frameCount++;if(now-sampledAt>=1000){fps=frameCount*1000/(now-sampledAt);frameCount=0;sampledAt=now;document.querySelector('#stats').textContent=JSON.stringify(stats(),null,2);document.querySelector('#source-overlay').textContent=`${mode==='raw'?(raw.source??'WAITING FOR RAW RGB-D'):'MEASURED RGB-D / QUEST DENSE PATH'} · ${frozen?'CAPTURED SAMPLE':'LIVE'} · ${mode==='raw'?raw.count:dense.points} measured points · ${Math.round(size*1000)}mm splats`; }
 });
-window.denseLab={stats,pose,setSize,setFrozen,setMode,setFollow,canvas:renderer.domElement,render:()=>renderer.render(scene,camera),
+setMode(new URLSearchParams(location.search).get('mode'));
+window.denseLab={stats,pose,setSize,setFrozen,setMode,setFollow,setLayers,canvas:renderer.domElement,render:()=>renderer.render(scene,camera),
   coverage:()=>{renderer.render(scene,camera);const gl=renderer.getContext(),p=new Uint8Array(gl.drawingBufferWidth*gl.drawingBufferHeight*4);gl.readPixels(0,0,gl.drawingBufferWidth,gl.drawingBufferHeight,gl.RGBA,gl.UNSIGNED_BYTE,p);return coverageMetrics({width:gl.drawingBufferWidth,height:gl.drawingBufferHeight,pixels:p});}};
 addEventListener('resize',()=>{const w=host.clientWidth,h=host.clientHeight;renderer.setSize(w,h,false);camera.aspect=w/h;camera.updateProjectionMatrix();});
 dispatchEvent(new Event('resize'));

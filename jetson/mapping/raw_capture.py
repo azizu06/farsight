@@ -13,6 +13,7 @@ from fastapi import HTTPException, Request
 from starlette.responses import Response
 from jetson.camera import adjusted_receipt
 from jetson.bulk_response import bulk_response
+from .compress import EncodedCache
 
 
 class RawCapture:
@@ -22,6 +23,7 @@ class RawCapture:
         self.lock = threading.Lock()
         self.cached_key = None
         self.cached_body = None
+        self.encoded = EncodedCache()
 
     def observe(self, frame):
         # Called after accepted-frame validation. Retain ONE immutable decoded
@@ -82,6 +84,13 @@ def mount(app):
         body, headers = await asyncio.to_thread(capture.snapshot, request.query_params.get('after'))
         if body is None:
             return Response(status_code=204, headers=headers)
+        headers = dict(headers)
+        key, native_body = headers['X-Capture-Key'], body
+        body, coding = await asyncio.to_thread(capture.encoded.get, 'raw',
+            lambda: key, lambda: (key, native_body), request.headers.get('Accept-Encoding'))
+        headers['Vary'] = 'Accept-Encoding'
+        if coding:
+            headers['Content-Encoding'] = coding
         return bulk_response(body, app.state.bulk,
                              media_type='application/octet-stream', headers=headers)
 
