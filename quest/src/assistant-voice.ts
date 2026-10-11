@@ -41,6 +41,9 @@ export class AssistantVoice {
   vrEnabled = false;
   /** Called once the microphone permission for in-VR voice is granted. */
   onVREnabled: () => void = () => {};
+  /** Microphone opened in 2D when in-VR voice was enabled. The Quest Browser re-prompts each
+   * getUserMedia and cannot show that prompt in immersive VR, so push-to-talk records from this. */
+  private vrStream: MediaStream | null = null;
   phase: VoicePhase = "idle";
 
   constructor(
@@ -125,8 +128,8 @@ export class AssistantVoice {
     try {
       // One deliberate permission request; the probe tracks stop immediately.
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-      stream.getTracks().forEach(track => track.stop());
-      if (this.disposed) return;
+      if (this.disposed) { stream.getTracks().forEach(track => track.stop()); return; }
+      this.vrStream = stream;
       this.vrEnabled = true; this.enableButton.textContent = "In-VR voice enabled (hold left trigger)";
       this.say("In-VR voice enabled: in the headset, hold the left trigger to ask and release to send.", "idle");
       this.onVREnabled();
@@ -152,7 +155,8 @@ export class AssistantVoice {
   /** Tracking loss, session exit or headset blur: stop the microphone, keep any in-flight answer. */
   stopListening(reason: string) { if (this.capturing) this.cancelCapture(reason); }
   private visibility = () => { if (document.hidden) { this.cancelCapture(); this.stopPlayback(); } };
-  private releaseTracks() { this.stream?.getTracks().forEach(track => track.stop()); this.stream = null; }
+  private releaseTracks() { if (this.stream !== this.vrStream) this.stream?.getTracks().forEach(track => track.stop()); this.stream = null; }
+  private liveVRStream() { return this.vrStream?.getTracks().some(track => track.readyState === "live") ? this.vrStream : null; }
   private finish() {
     window.clearTimeout(this.timer);
     if (this.recorder?.state === "recording") {
@@ -169,9 +173,10 @@ export class AssistantVoice {
     this.ownsTextBusy = true; this.textButton.disabled = true;
     this.say(ptt ? "Opening microphone…" : "Allow the microphone to ask by voice, or cancel and use text.", "permission");
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      const stream = (ptt ? this.liveVRStream() : null) ?? await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
       if (this.disposed || generation !== this.generation || !this.contextOpen()) {
-        stream.getTracks().forEach(track => track.stop()); return;
+        if (stream !== this.vrStream) stream.getTracks().forEach(track => track.stop());
+        return;
       }
       this.stream = stream; this.chunks = [];
       const mime = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus", "audio/mp4"].find(type => MediaRecorder.isTypeSupported(type));
@@ -180,7 +185,7 @@ export class AssistantVoice {
       recorder.ondataavailable = event => { if (event.data.size && generation === this.generation) this.chunks.push(event.data); };
       recorder.onerror = () => this.cancelCapture("Recording failed; use the text question.");
       recorder.onstop = () => {
-        stream.getTracks().forEach(track => track.stop());
+        if (stream !== this.vrStream) stream.getTracks().forEach(track => track.stop());
         if (this.stream === stream) this.stream = null;
         if (this.recorder === recorder) this.recorder = null;
         if (generation !== this.generation || this.disposed || !this.contextOpen()) return;
@@ -279,5 +284,7 @@ export class AssistantVoice {
     this.recordButton.disabled = !navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined";
     if (message) this.say(message, "error");
   }
-  dispose() { this.disposed = true; this.cancelCapture(); this.stopPlayback(); this.removeCloseListener(); document.removeEventListener("visibilitychange", this.visibility); }
+  dispose() {
+    this.disposed = true; this.cancelCapture(); this.stopPlayback();
+    this.vrStream?.getTracks().forEach(track => track.stop()); this.vrStream = null; this.removeCloseListener(); document.removeEventListener("visibilitychange", this.visibility); }
 }
