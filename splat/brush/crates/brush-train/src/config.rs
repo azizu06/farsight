@@ -210,6 +210,14 @@ pub struct TrainConfig {
     #[arg(long, help_heading = "Training options")]
     pub budget_s: Option<f64>,
 
+    /// Run one full step (render+loss+backward+optimizer) plus one refine
+    /// pass before the training loop starts, so every cubecl kernel is
+    /// compiled and every wgpu pipeline created at the real image size and
+    /// splat count before the budget clock's first step. The warmup step's
+    /// result is discarded beyond keeping its compiled-kernel side effects.
+    #[arg(long, help_heading = "Training options", default_value = "false")]
+    pub warmup: bool,
+
     /// Progressive resolution (DashGaussian-style coarse-to-fine): start
     /// training at 1/`res_start_div` of full resolution and halve the
     /// divisor at even intervals, reaching full resolution at

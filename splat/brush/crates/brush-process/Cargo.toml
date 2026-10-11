@@ -8,6 +8,7 @@ license.workspace = true
 
 [features]
 debug-validation = ["brush-train/debug-validation"]
+metal-msl = ["brush-render/metal-msl", "brush-train/metal-msl"]
 
 [dependencies]
 brush-render.path = "../brush-render"

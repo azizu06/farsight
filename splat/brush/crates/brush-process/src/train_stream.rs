@@ -231,6 +231,23 @@ pub(crate) async fn train_stream(
 
     let process_config = &train_stream_config.process_config;
 
+    // --warmup: compile every kernel/pipeline the loop will touch at the
+    // real sizes, before the first timed step. One real step covers
+    // render+loss+backward+optimizer; one refine pass covers the
+    // grow/prune kernels that otherwise pay their compile cost inside the
+    // budget window on the first `refine_every` boundary.
+    if train_stream_config.train_config.warmup {
+        let warm = Instant::now();
+        log::info!("Warmup: compiling kernels at real sizes");
+        let batch = dataloader.next_batch().await;
+        let diff_splats = splats.train();
+        let (new_diff_splats, _stats) = trainer.step(batch, diff_splats).await;
+        splats = new_diff_splats.valid();
+        let (new_splats, _rs) = trainer.refine(0, splats).await;
+        splats = new_splats;
+        log::info!("Warmup done in {:?}", warm.elapsed());
+    }
+
     log::info!("Start training loop.");
     for iter in process_config.start_iter..train_stream_config.train_config.total_iters() {
         let target_lod = if lod_levels == 0 || iter < training_steps {

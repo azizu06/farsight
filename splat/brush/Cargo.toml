@@ -113,6 +113,9 @@ burn = { git = "https://github.com/tracel-ai/burn", branch = "main", default-fea
     'fusion',
 ] }
 burn-cubecl = { git = "https://github.com/tracel-ai/burn", branch = "main" }
+# Same rev burn pins transitively, so the git source spec unifies to one
+# crate: environment::set_root here affects the autotune cache brush uses.
+cubecl-environment = { git = "https://github.com/tracel-ai/cubecl", rev = "467522442c7b68f02c7ff0c84b2e249e36d8da91" }
 burn-wgpu = { git = "https://github.com/tracel-ai/burn", branch = "main", features = [
     "exclusive-memory-only",
 ] }

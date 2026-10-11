@@ -31,6 +31,11 @@ tokio = { workspace = true, features = ["macros", "rt", "sync"] }
 
 [features]
 debug-validation = []
+# MSL-direct cubecl kernels (Apple7+, Metal >= 3.2). Default off: GPU that
+# can't run it (e.g. CI paravirtual) must fall back to WGSL — u8/bool
+# kernels fail to compile there otherwise. bench_mac.sh turns this on for
+# aarch64-apple-darwin.
+metal-msl = ["brush-cube/metal"]
 
 [dev-dependencies]
 assert_approx_eq.workspace = true
