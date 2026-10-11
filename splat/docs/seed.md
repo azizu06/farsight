@@ -85,3 +85,54 @@ no depth channel — only alpha in rgba; flagged to orchestrator).
 - Numbers on lavapipe are correctness/relative evidence only; Mac PSNR-vs-s
   runs go through `splat/bench_mac.sh` (capture dir arg = the seeded out dir
   for the seeded arm, raw capture for the baseline arm).
+
+## Mono depth (Depth Anything V2 → ANE/GPU/CPU EP)
+
+`--mono-depth <model.onnx>` runs a monocular depth pass per view and
+back-projects confident pixels that the LiDAR dots never covered into extra
+seed splats. Ported from `farsight-compiler` `learned/`.
+
+- Build: `cargo build -p farsight-seed --features onnx` (CPU EP — the Linux
+  correctness path) or `--features coreml` on macOS (CoreML EP,
+  `ComputeUnits::All`, `MLProgram`, static input shapes — the Neural Engine
+  path. On the M5 run this on a thread while the GPU trains; ANE and Metal
+  are independent queues.)
+- Per view: 518×518 model input, ImageNet-normed NCHW → relative depth at
+  model res → bilinear to camera res → robust IRLS fit `1/z = a·rel + b` on
+  the projected LiDAR dots (Huber, MAD scale). View is REJECTED when pairs <
+  `min_pairs` (200) or normalised fit RMSE > `max_fit_rmse` (0.5) — keeps
+  auto-exposure/motion-blur views from poisoning the seed.
+- Confidence = fit quality × local LiDAR support (integral-image density,
+  radius 12 px, saturates at 4% coverage).
+- Fill emission: stride 8 px, only pixels whose `hole_px` (2) window has no
+  measured dot, conf ≥ 0.25, voxel-deduped against the existing cloud;
+  opacity `0.15 + 0.35·conf` (below dot splats — they are weaker evidence).
+- Verified: `cargo check -p farsight-seed --target aarch64-apple-darwin
+  --features coreml` passes (ort errors are mapped to anyhow explicitly —
+  ort::Error is not Send/Sync on macOS).
+
+### What the Mac run must check (no ANE/Metal speed claims without this)
+
+1. Build on the M5: `cargo build --release -p farsight-seed --features coreml`.
+2. Point `--mono-depth` at a Depth Anything V2 Small ONNX export (MLProgram
+   or mlpackage-converted .onnx). Confirm in `mono: view N: Xms` logs that
+   per-view inference lands on the ANE order (expect low tens of ms; CPU EP
+   on M5 is ~50-100 ms — if logs show ≫100 ms, the CoreML EP didn't take and
+   CoreML fell back to CPU).
+3. Overlap: run `farsight-seed --mono-depth` on a worker thread concurrent
+   with `brush-cli` training; confirm Activity Monitor shows Neural Engine
+   utilisation while GPU is also busy.
+4. Emit `seed_stats.json` `mono_added` and compare PSNR vs the same seed
+   without mono at 30/60/120 s budgets.
+
+## Equal-wall-time fight (Mac steps/s model, lavapipe measured)
+
+Mac receipt (fb5edc6): 290k splats ≈ 77 st/s (SH1), 2.18M ≈ 15 st/s →
+steps/s ≈ 22,300/count. 60 s budgets: raw 1.45M ≈ 920 steps, 600k ≈ 2.2k,
+258k ≈ 5.2k. Synth: 48 views, 602k dots → seed 257,926 splats (target 300k,
+decimate undershoot fixed to track target — 160k→258k).
+
+| arm | splats | 60s-equiv steps | PSNR (lavapipe) |
+|---|---|---|---|
+| raw dots (600k-cap — 1.45M OOMs lavapipe) | 602,000 | 2,240 | pending |
+| farsight-seed | 257,926 | 5,200 | pending |
