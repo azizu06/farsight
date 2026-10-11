@@ -25,11 +25,31 @@ pub struct ExportOptions {
     pub splat_thin: f32,
     /// Splat radius when the cloud has none (metres).
     pub splat_default_radius: f32,
+    /// Hard cap on emitted surfels (0 = no cap; densified crust is voxel-merged).
+    pub splat_max: usize,
+    /// Base voxel for splat merging (0 = auto: median surfel radius).
+    pub splat_voxel: f32,
+    /// Also write compact splat.splat (32 B/splat, antimatter15 layout).
+    pub splat_compact: bool,
+    /// SH degree: 0 = DC only (no f_rest_* props), 3 = full INRIA layout.
+    pub splat_sh_degree: u8,
 }
 
 impl Default for ExportOptions {
     fn default() -> Self {
-        ExportOptions { glb: true, splat: true, ply: true, splat_opacity: 0.95, splat_scale: 1.0, splat_thin: 0.15, splat_default_radius: 0.012 }
+        ExportOptions {
+            glb: true,
+            splat: true,
+            ply: true,
+            splat_opacity: 0.95,
+            splat_scale: 1.0,
+            splat_thin: 0.15,
+            splat_default_radius: 0.012,
+            splat_max: 1_500_000,
+            splat_voxel: 0.0,
+            splat_compact: true,
+            splat_sh_degree: 0,
+        }
     }
 }
 
@@ -60,9 +80,16 @@ pub fn write_all(dir: &Path, cloud: &PointCloud, mesh: &Mesh, opts: &ExportOptio
         out.push(p);
     }
     if opts.splat && !cloud.is_empty() {
+        let voxel = if opts.splat_voxel > 0.0 { opts.splat_voxel } else { splat::median_radius(cloud, opts.splat_default_radius) };
+        let sc = splat::decimate(cloud, opts.splat_max, voxel);
         let p = dir.join("splat.ply");
-        std::fs::write(&p, splat::splats(cloud, opts.splat_opacity, opts.splat_scale, opts.splat_thin, opts.splat_default_radius))?;
+        std::fs::write(&p, splat::splats(&sc, opts.splat_opacity, opts.splat_scale, opts.splat_thin, opts.splat_default_radius, opts.splat_sh_degree))?;
         out.push(p);
+        if opts.splat_compact {
+            let p = dir.join("splat.splat");
+            std::fs::write(&p, splat::compact(&sc, opts.splat_opacity, opts.splat_scale, opts.splat_thin, opts.splat_default_radius))?;
+            out.push(p);
+        }
     }
     Ok(out)
 }

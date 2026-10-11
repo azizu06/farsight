@@ -17,8 +17,12 @@ pub struct Chart {
     pub verts: Vec<u32>,
     /// Param-space coordinates aligned with `verts`, in metres.
     pub uv: Vec<[f32; 2]>,
-    /// Area-weighted mean normal (unit).
+    /// Area-weighted mean normal (unit). For `planar` charts this is the exact
+    /// plane normal: write it to the chart's vertices so walls render flat.
     pub normal: V3,
+    /// Chart is one merged coplanar region (walls/floor/tabletops): safe to
+    /// flatten vertex normals and orthographically project with no distortion.
+    pub planar: bool,
     /// Param basis (unit, tangent to `normal`).
     pub eu: V3,
     pub ev: V3,
@@ -54,11 +58,26 @@ pub fn face_normals(mesh: &Mesh) -> (Vec<V3>, Vec<f32>) {
         .unzip()
 }
 
-/// Grow charts over shared edges, gating on the angle to the running chart
-/// normal so a chart stays within `cos_angle` of its mean plane normal.
-fn segment(mesh: &Mesh, nrm: &[V3], area: &[f32], cos_angle: f32) -> Vec<Vec<u32>> {
-    let f = nrm.len();
-    // edge -> faces adjacency
+/// Per-face normals used for chart growth: averaged vertex normals when the
+/// mesh carries them — far smoother than raw facet normals on TSDF output,
+/// which is what keeps planar walls in one piece instead of shattering.
+pub fn cluster_normals(mesh: &Mesh, geo: &[V3]) -> Vec<V3> {
+    if mesh.nrm.len() != mesh.pos.len() {
+        return geo.to_vec();
+    }
+    mesh.idx
+        .par_chunks_exact(3)
+        .enumerate()
+        .map(|(i, t)| {
+            let n = add(add(mesh.nrm[t[0] as usize], mesh.nrm[t[1] as usize]), mesh.nrm[t[2] as usize]);
+            let l = length(n);
+            if l > 1e-9 { scale(n, 1.0 / l) } else { geo[i] }
+        })
+        .collect()
+}
+
+/// Undirected edge -> incident faces.
+fn edge_faces(mesh: &Mesh) -> FxHashMap<u64, Vec<u32>> {
     let mut edges: FxHashMap<u64, Vec<u32>> = FxHashMap::default();
     for (t, tri) in mesh.idx.chunks_exact(3).enumerate() {
         for e in 0..3 {
@@ -67,6 +86,13 @@ fn segment(mesh: &Mesh, nrm: &[V3], area: &[f32], cos_angle: f32) -> Vec<Vec<u32
             edges.entry(key).or_default().push(t as u32);
         }
     }
+    edges
+}
+
+/// Grow charts over shared edges, gating on the angle to the running chart
+/// normal so a chart stays within `cos_angle` of its mean plane normal.
+fn segment(mesh: &Mesh, nrm: &[V3], area: &[f32], cos_angle: f32, edges: &FxHashMap<u64, Vec<u32>>) -> Vec<Vec<u32>> {
+    let f = nrm.len();
     let mut visited = vec![false; f];
     let mut charts = Vec::new();
     let mut stack = Vec::new();
@@ -102,6 +128,107 @@ fn segment(mesh: &Mesh, nrm: &[V3], area: &[f32], cos_angle: f32) -> Vec<Vec<u32
     charts
 }
 
+/// Union-find over the segmented groups: re-join edge-adjacent fragments whose
+/// running mean normals stay within `cos_merge`, then absorb residual slivers
+/// (< `min_faces` triangles) into their best-connected neighbour. Turns noisy
+/// segmentation into one chart per planar surface.
+fn merge(mesh: &Mesh, nrm: &[V3], area: &[f32], groups: Vec<Vec<u32>>, edges: &FxHashMap<u64, Vec<u32>>, cos_merge: f32, min_faces: usize) -> Vec<Vec<u32>> {
+    let g = groups.len();
+    // face -> group
+    let mut fg = vec![u32::MAX; nrm.len()];
+    for (gi, faces) in groups.iter().enumerate() {
+        for &f in faces {
+            fg[f as usize] = gi as u32;
+        }
+    }
+    let mut parent: Vec<u32> = (0..g as u32).collect();
+    fn find(p: &mut [u32], mut i: u32) -> u32 {
+        while p[i as usize] != i {
+            p[i as usize] = p[p[i as usize] as usize];
+            i = p[i as usize];
+        }
+        i
+    }
+    // running area-weighted normal sums and areas per root
+    let mut acc: Vec<V3> = groups.iter().map(|fs| fs.iter().fold([0.0; 3], |a, &f| add(a, scale(nrm[f as usize], area[f as usize])))).collect();
+    let mut cnt: Vec<u32> = groups.iter().map(|fs| fs.len() as u32).collect();
+    let union = |parent: &mut Vec<u32>, acc: &mut Vec<V3>, cnt: &mut Vec<u32>, a: u32, b: u32| {
+        let (ra, rb) = (find(parent, a), find(parent, b));
+        if ra != rb {
+            parent[rb as usize] = ra;
+            acc[ra as usize] = add(acc[ra as usize], acc[rb as usize]);
+            cnt[ra as usize] += cnt[rb as usize];
+        }
+    };
+    // pass 1: adjacent groups with compatible running normals
+    for faces in edges.values() {
+        for i in 0..faces.len() {
+            for j in i + 1..faces.len() {
+                let (ra, rb) = (find(&mut parent, fg[faces[i] as usize]), find(&mut parent, fg[faces[j] as usize]));
+                if ra == rb || ra == u32::MAX || rb == u32::MAX {
+                    continue;
+                }
+                let (la, lb) = (length(acc[ra as usize]), length(acc[rb as usize]));
+                if la > 0.0 && lb > 0.0 && dot(acc[ra as usize], acc[rb as usize]) >= cos_merge * la * lb {
+                    union(&mut parent, &mut acc, &mut cnt, ra, rb);
+                }
+            }
+        }
+    }
+    // pass 2: slivers merge into their best-connected neighbour
+    for _ in 0..3 {
+        let mut moved = false;
+        // shared-edge count per (small root, neighbour root)
+        let mut share: FxHashMap<(u32, u32), u32> = FxHashMap::default();
+        for faces in edges.values() {
+            for i in 0..faces.len() {
+                for j in i + 1..faces.len() {
+                    let (ra, rb) = (find(&mut parent, fg[faces[i] as usize]), find(&mut parent, fg[faces[j] as usize]));
+                    if ra != rb && ra != u32::MAX && rb != u32::MAX {
+                        *share.entry((ra.min(rb), ra.max(rb))).or_default() += 1;
+                    }
+                }
+            }
+        }
+        let mut best: FxHashMap<u32, u32> = FxHashMap::default();
+        for (&(a, b), &s) in &share {
+            let e = best.entry(a).or_insert(b);
+            if share.get(&(a.min(*e), a.max(*e))).copied().unwrap_or(0) < s {
+                *e = b;
+            }
+            let e = best.entry(b).or_insert(a);
+            if share.get(&(b.min(*e), b.max(*e))).copied().unwrap_or(0) < s {
+                *e = a;
+            }
+        }
+        for (&r, &t) in &best {
+            if cnt[find(&mut parent, r) as usize] < min_faces as u32 {
+                let (rr, tt) = (find(&mut parent, r), find(&mut parent, t));
+                if rr != tt && dot(acc[rr as usize], acc[tt as usize]) > 0.0 {
+                    union(&mut parent, &mut acc, &mut cnt, rr, tt);
+                    moved = true;
+                }
+            }
+        }
+        if !moved {
+            break;
+        }
+    }
+    let _ = mesh;
+    // emit merged groups, deterministically ordered by smallest face id
+    let mut roots: FxHashMap<u32, Vec<u32>> = FxHashMap::default();
+    for (gi, faces) in groups.iter().enumerate() {
+        let r = find(&mut parent, gi as u32);
+        roots.entry(r).or_default().extend_from_slice(faces);
+    }
+    let mut out: Vec<Vec<u32>> = roots.into_values().collect();
+    for fs in out.iter_mut() {
+        fs.sort_unstable();
+    }
+    out.sort_by_key(|fs| fs[0]);
+    out
+}
+
 /// Tangent basis for a unit normal: returns (eu, ev) perpendicular to `n`.
 fn tangent(n: V3) -> (V3, V3) {
     let a = if n[0].abs() <= n[1].abs() && n[0].abs() <= n[2].abs() {
@@ -122,8 +249,12 @@ fn next_pow2(x: u32) -> u32 {
 /// Segment the mesh into charts, parametrize and pack them into an atlas of at
 /// most `max_atlas` px per side at `texel_m` metres/texel (rescaled coarser if
 /// the charts would not fit). `gutter` is the padding ring in texels.
-pub fn build(mesh: &Mesh, nrm: &[V3], area: &[f32], texel_m: f32, max_atlas: u32, gutter: u32, cos_angle: f32) -> Atlas {
-    let faces = segment(mesh, nrm, area, cos_angle);
+/// `cos_merge`/`min_faces` control the coplanar merge pass that collapses the
+/// noisy segmentation into one chart per planar surface.
+pub fn build(mesh: &Mesh, nrm: &[V3], area: &[f32], texel_m: f32, max_atlas: u32, gutter: u32, cos_angle: f32, cos_merge: f32, min_faces: usize) -> Atlas {
+    let edges = edge_faces(mesh);
+    let groups = segment(mesh, nrm, area, cos_angle, &edges);
+    let faces = merge(mesh, nrm, area, groups, &edges, cos_merge, min_faces);
     let mut texel = texel_m;
     // Charts are parametrized once (param coords in metres); only the pixel
     // dimensions change if texel has to be rescaled coarser to fit.
@@ -156,7 +287,12 @@ pub fn build(mesh: &Mesh, nrm: &[V3], area: &[f32], texel_m: f32, max_atlas: u32
                 omax[0] = omax[0].max(p[0]);
                 omax[1] = omax[1].max(p[1]);
             }
-            Chart { faces, verts, uv, normal, eu, ev, omin, w: 0, h: 0, x: 0, y: 0 }
+            // A merged region counts as planar when its face normals cluster
+            // within ~10 deg of the chart normal (walls, floors, table tops).
+            let dev = faces.iter().map(|&f| area[f as usize] * dot(nrm[f as usize], normal).max(-1.0).min(1.0).acos()).sum::<f32>();
+            let aw_ = faces.iter().map(|&f| area[f as usize]).sum::<f32>().max(1e-12);
+            let planar = dev / aw_ <= (10.0f32).to_radians();
+            Chart { faces, verts, uv, normal, planar, eu, ev, omin, w: 0, h: 0, x: 0, y: 0 }
         })
         .collect();
 
@@ -302,7 +438,7 @@ mod tests {
             ..Default::default()
         };
         let (nrm, area) = face_normals(&mesh);
-        let atlas = build(&mesh, &nrm, &area, 0.05, 512, 2, (35f32).to_radians().cos());
+        let atlas = build(&mesh, &nrm, &area, 0.05, 512, 2, (35f32).to_radians().cos(), (65f32).to_radians().cos(), 8);
         assert_eq!(atlas.charts.len(), 2);
         let cov = rasterize(&mesh, &atlas);
         for (c, cv) in atlas.charts.iter().zip(&cov) {

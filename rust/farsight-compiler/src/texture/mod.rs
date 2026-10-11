@@ -28,6 +28,11 @@ pub struct TextureOptions {
     pub max_atlas: u32,
     /// Max dihedral angle (deg) for faces to share a chart.
     pub chart_angle_deg: f32,
+    /// Merge pass: adjacent charts within this angle (deg) union into one
+    /// coplanar chart — collapses noisy TSDF output to one chart per plane.
+    pub merge_angle_deg: f32,
+    /// Charts smaller than this many triangles merge into their best neighbour.
+    pub min_chart_faces: usize,
     /// Padding ring around each chart in texels.
     pub gutter: u32,
     /// Per-chart view shortlist size (<=16).
@@ -59,6 +64,8 @@ impl Default for TextureOptions {
             texel_m: 0.005,
             max_atlas: 8192,
             chart_angle_deg: 40.0,
+            merge_angle_deg: 68.0,
+            min_chart_faces: 24,
             gutter: 2,
             candidate_views: 8,
             blend_views: 4,
@@ -100,11 +107,26 @@ pub fn bake(mesh: &mut Mesh, cloud: &PointCloud, capture: Option<&Capture>, opts
         return serde_json::json!({ "mode": "none" });
     }
 
-    // 1. charts + coverage raster
+    let t0 = std::time::Instant::now();
+    // 1. charts + coverage raster (smooth cluster normals drive growth)
     let (face_nrm, face_area) = atlas::face_normals(mesh);
-    let atlas = atlas::build(mesh, &face_nrm, &face_area, opts.texel_m, opts.max_atlas, opts.gutter, opts.chart_angle_deg.to_radians().cos());
+    let cnrm = atlas::cluster_normals(mesh, &face_nrm);
+    let atlas = atlas::build(
+        mesh,
+        &cnrm,
+        &face_area,
+        opts.texel_m,
+        opts.max_atlas,
+        opts.gutter,
+        opts.chart_angle_deg.to_radians().cos(),
+        opts.merge_angle_deg.to_radians().cos(),
+        opts.min_chart_faces,
+    );
     let cov = atlas::rasterize(mesh, &atlas);
     let texels: u64 = atlas.charts.iter().map(|c| c.w as u64 * c.h as u64).sum();
+    let raster: u64 = cov.iter().flatten().filter(|&&v| v != u64::MAX).count() as u64;
+    let t_atlas = t0.elapsed().as_secs_f64() * 1e3;
+    let t1 = std::time::Instant::now();
 
     // 2. shared eval context
     let splat_r = if opts.splat_radius > 0.0 { opts.splat_radius } else { 6.0 * atlas.texel_m };
@@ -115,7 +137,11 @@ pub fn bake(mesh: &mut Mesh, cloud: &PointCloud, capture: Option<&Capture>, opts
         None
     };
     let capture = capture.as_ref();
-    let depths = capture.map(|c| bake::depth_buffers(c, mesh, cloud, opts.depth_scale, opts.depth_dilate)).unwrap_or_default();
+    // ~600k cloud splats is plenty for occlusion once a real mesh exists
+    let cloud_stride = (cloud.len() / 600_000).max(1);
+    let depths = capture.map(|c| bake::depth_buffers(c, mesh, cloud, opts.depth_scale, opts.depth_dilate, cloud_stride)).unwrap_or_default();
+    let t_depth = t1.elapsed().as_secs_f64() * 1e3;
+    let t1 = std::time::Instant::now();
     let cands: Vec<Vec<(u32, f32)>> = match capture {
         Some(cap) => atlas.charts.par_iter().map(|c| bake::candidates(c, mesh, &cap.cameras, opts.candidate_views, atlas.texel_m, 4.0)).collect(),
         None => Vec::new(),
@@ -145,15 +171,22 @@ pub fn bake(mesh: &mut Mesh, cloud: &PointCloud, capture: Option<&Capture>, opts
         tint_support_m: opts.tint_support_m,
     };
 
+    let t_cands = t1.elapsed().as_secs_f64() * 1e3;
+    let t1 = std::time::Instant::now();
     // 3. optional per-image gain estimation (subsampled pass), then full bake
+    let mut t_gain = 0.0;
     if let Some(cap) = capture {
         ctx.stride = 4;
         ctx.gains = vec![[1.0; 3]; cap.cameras.len()];
         let outs: Vec<bake::ChartOut> = atlas.charts.par_iter().enumerate().map(|(ci, _)| bake::bake_chart(&ctx, &atlas, ci, &cov[ci])).collect();
         ctx.gains = bake::solve_gains(&outs, cap.cameras.len());
+        t_gain = t1.elapsed().as_secs_f64() * 1e3;
     }
+    let t1 = std::time::Instant::now();
     ctx.stride = 1;
     let outs: Vec<bake::ChartOut> = atlas.charts.par_iter().enumerate().map(|(ci, _)| bake::bake_chart(&ctx, &atlas, ci, &cov[ci])).collect();
+    let t_bake = t1.elapsed().as_secs_f64() * 1e3;
+    let t1 = std::time::Instant::now();
 
     // 4. blit chart buffers into the atlas + set mask
     let mut img = Image::new(atlas.w, atlas.h);
@@ -174,11 +207,22 @@ pub fn bake(mesh: &mut Mesh, cloud: &PointCloud, capture: Option<&Capture>, opts
         }
     }
 
-    // 5. inpaint uncovered texels
-    let unset = set.iter().filter(|&&s| s == 0).count();
-    if unset > 0 {
-        bake::inpaint(&mut img, &set, opts.fill_coarse);
+    // 5. fill texels nothing covered — bounded to chart gutter-boxes, then
+    // level seams across adjacent charts so view blends can't leave bands.
+    let rects: Vec<(u32, u32, u32, u32)> = atlas
+        .charts
+        .iter()
+        .map(|c| (c.x.saturating_sub(opts.gutter), c.y.saturating_sub(opts.gutter), c.w + 2 * opts.gutter, c.h + 2 * opts.gutter))
+        .collect();
+    bake::fill_rects(&mut img, &mut set, &rects);
+    let seam_edits = bake::seam_level(&img, &set, &atlas, mesh, &cov);
+    for (i, c) in &seam_edits {
+        img.rgb[3 * i] = c[0];
+        img.rgb[3 * i + 1] = c[1];
+        img.rgb[3 * i + 2] = c[2];
     }
+    let t_fill = t1.elapsed().as_secs_f64() * 1e3;
+    let t1 = std::time::Instant::now();
 
     // 6. rebuild the mesh, splitting vertices on chart seams, writing uv
     let mut npos = Vec::with_capacity(mesh.pos.len());
@@ -195,7 +239,9 @@ pub fn bake(mesh: &mut Mesh, cloud: &PointCloud, capture: Option<&Capture>, opts
             let p = mesh.pos[v as usize];
             npos.push(p);
             if !nnrm.is_empty() {
-                nnrm.push(mesh.nrm[v as usize]);
+                // planar charts write the exact plane normal so walls render
+                // dead flat; other charts keep the (smoothed) vertex normal
+                nnrm.push(if c.planar { c.normal } else { mesh.nrm[v as usize] });
             }
             if !nsup.is_empty() {
                 nsup.push(mesh.support[v as usize]);
@@ -216,6 +262,7 @@ pub fn bake(mesh: &mut Mesh, cloud: &PointCloud, capture: Option<&Capture>, opts
         let s = img.sample(u, v);
         [s[0] as u8, s[1] as u8, s[2] as u8]
     }).collect();
+    let t_split = t1.elapsed().as_secs_f64() * 1e3;
 
     *mesh = Mesh {
         pos: npos,
@@ -231,12 +278,22 @@ pub fn bake(mesh: &mut Mesh, cloud: &PointCloud, capture: Option<&Capture>, opts
     serde_json::json!({
         "mode": if capture.is_some() { "capture" } else { "cloud" },
         "charts": atlas.charts.len(),
+        "planar_charts": atlas.charts.iter().filter(|c| c.planar).count(),
         "atlas": [atlas.w, atlas.h],
         "texel_m": atlas.texel_m,
         "texels": texels,
         "coverage_pct": 100.0 * covered as f64 / texels.max(1) as f64,
+        "raster_pct": 100.0 * raster as f64 / texels.max(1) as f64,
         "views_used": dom.len(),
         "vertices_out": mesh.pos.len(),
+        "t_atlas_ms": t_atlas,
+        "t_depth_ms": t_depth,
+        "t_cands_ms": t_cands,
+        "t_gain_ms": t_gain,
+        "t_bake_ms": t_bake,
+        "t_fill_ms": t_fill,
+        "t_split_ms": t_split,
+        "seam_edits": seam_edits.len(),
     })
 }
 

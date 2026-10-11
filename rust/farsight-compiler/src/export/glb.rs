@@ -1,6 +1,9 @@
 //! glTF 2.0 binary (.glb) export: POSITION/NORMAL/COLOR_0/TEXCOORD_0/_SUPPORT
-//! vertex data, u32 indices, PBR metallic-roughness material with embedded
-//! baseColor texture, and compile metadata in asset.extras.
+//! vertex data, u16/u32 indices, PBR metallic-roughness material with embedded
+//! JPEG baseColor texture, and compile metadata in asset.extras.
+//! Normals and UVs are normalized-integer quantized (KHR_mesh_quantization),
+//! which roughly halves vertex payload vs f32 and is fully supported by
+//! three.js GLTFLoader.
 
 use crate::core::{Image, Mesh};
 use anyhow::{Context, Result};
@@ -11,12 +14,12 @@ fn pad4(v: &mut Vec<u8>, byte: u8) {
     }
 }
 
-fn png_bytes(img: &Image) -> Result<Vec<u8>> {
-    let mut buf = std::io::Cursor::new(Vec::new());
-    image::RgbImage::from_raw(img.width, img.height, img.rgb.clone())
-        .context("bad texture image")?
-        .write_to(&mut buf, image::ImageFormat::Png)?;
-    Ok(buf.into_inner())
+fn jpeg_bytes(img: &Image, quality: u8) -> Result<Vec<u8>> {
+    let mut buf = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, quality)
+        .encode(&img.rgb, img.width, img.height, image::ExtendedColorType::Rgb8)
+        .context("jpeg encode")?;
+    Ok(buf)
 }
 
 /// Serialize the mesh (+ optional texture) to a .glb binary.
@@ -60,14 +63,17 @@ pub fn scene(mesh: &Mesh, extras: serde_json::Value) -> Result<Vec<u8>> {
 
     let mut attrs = serde_json::json!({ "POSITION": a_pos });
 
+    let mut quantized = false;
     if mesh.nrm.len() == mesh.pos.len() {
-        let mut b = Vec::with_capacity(mesh.nrm.len() * 12);
+        // KHR_mesh_quantization: NORMAL as normalized signed byte (-127..127)
+        let mut b = Vec::with_capacity(mesh.nrm.len() * 3);
         for n in &mesh.nrm {
             for v in n {
-                b.extend_from_slice(&v.to_le_bytes());
+                b.push((v.clamp(-1.0, 1.0) * 127.0).round() as i8 as u8);
             }
         }
-        attrs["NORMAL"] = serde_json::json!(push(&b, Some(34962), 5126, "VEC3", mesh.nrm.len(), None, false));
+        attrs["NORMAL"] = serde_json::json!(push(&b, Some(34962), 5120, "VEC3", mesh.nrm.len(), None, true));
+        quantized = true;
     }
     if mesh.col.len() == mesh.pos.len() {
         let mut b = Vec::with_capacity(mesh.col.len() * 4);
@@ -83,12 +89,15 @@ pub fn scene(mesh: &Mesh, extras: serde_json::Value) -> Result<Vec<u8>> {
         attrs["COLOR_0"] = serde_json::json!(push(&b, Some(34962), 5121, "VEC4", mesh.col.len(), None, true));
     }
     if mesh.uv.len() == mesh.pos.len() {
-        let mut b = Vec::with_capacity(mesh.uv.len() * 8);
+        // KHR_mesh_quantization: TEXCOORD_0 as normalized u16 in [0,1]
+        let mut b = Vec::with_capacity(mesh.uv.len() * 4);
         for uv in &mesh.uv {
-            b.extend_from_slice(&uv[0].to_le_bytes());
-            b.extend_from_slice(&uv[1].to_le_bytes());
+            for v in uv {
+                b.extend_from_slice(&((v.clamp(0.0, 1.0) * 65535.0).round() as u16).to_le_bytes());
+            }
         }
-        attrs["TEXCOORD_0"] = serde_json::json!(push(&b, Some(34962), 5126, "VEC2", mesh.uv.len(), None, false));
+        attrs["TEXCOORD_0"] = serde_json::json!(push(&b, Some(34962), 5123, "VEC2", mesh.uv.len(), None, true));
+        quantized = true;
     }
     if mesh.support.len() == mesh.pos.len() {
         let mut b = Vec::with_capacity(mesh.support.len() * 4);
@@ -97,7 +106,14 @@ pub fn scene(mesh: &Mesh, extras: serde_json::Value) -> Result<Vec<u8>> {
         }
         attrs["_SUPPORT"] = serde_json::json!(push(&b, Some(34962), 5126, "SCALAR", mesh.support.len(), None, false));
     }
-    let a_idx = {
+    // u16 indices when the vertex count allows (halves index payload)
+    let a_idx = if mesh.pos.len() <= 65_536 {
+        let mut b = Vec::with_capacity(mesh.idx.len() * 2);
+        for i in &mesh.idx {
+            b.extend_from_slice(&(*i as u16).to_le_bytes());
+        }
+        push(&b, Some(34963), 5123, "SCALAR", mesh.idx.len(), None, false)
+    } else {
         let mut b = Vec::with_capacity(mesh.idx.len() * 4);
         for i in &mesh.idx {
             b.extend_from_slice(&i.to_le_bytes());
@@ -115,12 +131,12 @@ pub fn scene(mesh: &Mesh, extras: serde_json::Value) -> Result<Vec<u8>> {
     let mut textures_j = serde_json::json!([]);
     let mut samplers_j = serde_json::json!([]);
     if let Some(tex) = &mesh.texture {
-        let png = png_bytes(tex)?;
+        let jpg = jpeg_bytes(tex, 90)?;
         pad4(&mut bin, 0);
         let off = bin.len();
-        bin.extend_from_slice(&png);
-        views.push(serde_json::json!({ "buffer": 0, "byteOffset": off, "byteLength": png.len() }));
-        images_j = serde_json::json!([{ "mimeType": "image/png", "bufferView": views.len() - 1 }]);
+        bin.extend_from_slice(&jpg);
+        views.push(serde_json::json!({ "buffer": 0, "byteOffset": off, "byteLength": jpg.len() }));
+        images_j = serde_json::json!([{ "mimeType": "image/jpeg", "bufferView": views.len() - 1 }]);
         samplers_j = serde_json::json!([{ "magFilter": 9729, "minFilter": 9987, "wrapS": 33071, "wrapT": 33071 }]);
         textures_j = serde_json::json!([{ "source": 0, "sampler": 0 }]);
         material["pbrMetallicRoughness"]["baseColorTexture"] = serde_json::json!({ "index": 0 });
@@ -145,6 +161,9 @@ pub fn scene(mesh: &Mesh, extras: serde_json::Value) -> Result<Vec<u8>> {
         doc["images"] = images_j;
         doc["textures"] = textures_j;
         doc["samplers"] = samplers_j;
+    }
+    if quantized {
+        doc["extensionsUsed"] = serde_json::json!(["KHR_mesh_quantization"]);
     }
 
     let mut json = serde_json::to_vec(&doc)?;
@@ -187,8 +206,11 @@ mod tests {
         let jlen = u32::from_le_bytes(glb[12..16].try_into().unwrap()) as usize;
         let doc: serde_json::Value = serde_json::from_slice(&glb[20..20 + jlen]).unwrap();
         assert_eq!(doc["accessors"].as_array().unwrap().len(), 6); // pos nrm col uv support idx
-        assert_eq!(doc["images"][0]["mimeType"], "image/png");
+        assert_eq!(doc["images"][0]["mimeType"], "image/jpeg");
         assert_eq!(doc["meshes"][0]["primitives"][0]["attributes"]["_SUPPORT"], 4);
+        assert_eq!(doc["extensionsUsed"][0], "KHR_mesh_quantization");
+        assert_eq!(doc["meshes"][0]["primitives"][0]["indices"], 5);
+        assert_eq!(doc["accessors"][5]["componentType"], 5123); // u16 indices
         let blen = u32::from_le_bytes(glb[20 + jlen..24 + jlen].try_into().unwrap()) as usize;
         assert_eq!(20 + jlen + 8 + blen, glb.len());
     }

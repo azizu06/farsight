@@ -33,10 +33,13 @@ impl DepthBuf {
     }
 }
 
-/// One min-depth buffer per camera: splat mesh verts *and* cloud points (the
-/// dense cloud plugs the gaps a decimated mesh would leave), then `dilate`
-/// 3x3-min passes to close residual pinholes between sparse splats.
-pub fn depth_buffers(capture: &Capture, mesh: &Mesh, cloud: &PointCloud, scale: f32, dilate: u32) -> Vec<DepthBuf> {
+/// One min-depth buffer per camera: splat mesh verts plus every `cloud_stride`-th
+/// cloud point (the dense cloud plugs the gaps a decimated mesh would leave;
+/// striding keeps this linear in views). `dilate` 3x3-min passes close
+/// residual pinholes between sparse splats.
+/// GPU-shaped kernel: pure SoA — positions in, per-view atomic-min buffer out.
+pub fn depth_buffers(capture: &Capture, mesh: &Mesh, cloud: &PointCloud, scale: f32, dilate: u32, cloud_stride: usize) -> Vec<DepthBuf> {
+    let stride = cloud_stride.max(1);
     capture
         .cameras
         .par_iter()
@@ -44,8 +47,9 @@ pub fn depth_buffers(capture: &Capture, mesh: &Mesh, cloud: &PointCloud, scale: 
             let w = ((cam.width as f32 / scale).ceil() as u32).max(8);
             let h = ((cam.height as f32 / scale).ceil() as u32).max(8);
             let z: Vec<AtomicU32> = (0..w * h).map(|_| AtomicU32::new(u32::MAX)).collect();
-            let splat = |pts: &[V3]| {
-                pts.par_iter().for_each(|&p| {
+            let splat = |pts: &[V3], step: usize| {
+                pts.par_chunks(step).for_each(|chunk| {
+                    let p = chunk[0];
                     if let Some((u, v, d)) = cam.project(p) {
                         let (x, y) = ((u / scale) as i32, (v / scale) as i32);
                         if x >= 0 && y >= 0 && x < w as i32 && y < h as i32 {
@@ -55,8 +59,8 @@ pub fn depth_buffers(capture: &Capture, mesh: &Mesh, cloud: &PointCloud, scale: 
                     }
                 });
             };
-            splat(&mesh.pos);
-            splat(&cloud.pos);
+            splat(&mesh.pos, 1);
+            splat(&cloud.pos, stride);
             let mut zb: Vec<f32> = z.iter().map(|a| f32::from_bits(a.load(Ordering::Relaxed))).collect();
             // 3x3 min-filter dilation closes single-pixel splat holes
             for _ in 0..dilate {
@@ -265,6 +269,27 @@ pub struct BakeCtx<'a> {
     pub tint_support_m: f32,
 }
 
+/// Barycentric mix of the mesh's own vertex colours at texel `v` — the
+/// last-resort fill so no covered texel stays black even when neither a
+/// capture view nor a nearby cloud point covers it.
+#[inline]
+pub fn vert_col(mesh: &Mesh, v: u64) -> Option<[f32; 3]> {
+    if mesh.col.len() != mesh.pos.len() {
+        return None;
+    }
+    let (f, w0, w1, w2) = decode(v);
+    let (a, b, c) = (
+        mesh.idx[3 * f as usize] as usize,
+        mesh.idx[3 * f as usize + 1] as usize,
+        mesh.idx[3 * f as usize + 2] as usize,
+    );
+    let mut o = [0f32; 3];
+    for k in 0..3 {
+        o[k] = mesh.col[a][k] as f32 * w0 + mesh.col[b][k] as f32 * w1 + mesh.col[c][k] as f32 * w2;
+    }
+    Some(o)
+}
+
 /// World position / interpolated normal / interpolated support of a texel.
 #[inline]
 fn texel_point(mesh: &Mesh, face_nrm: &[V3], v: u64) -> (V3, V3, f32) {
@@ -331,6 +356,9 @@ pub fn bake_chart(ctx: &BakeCtx, atlas: &Atlas, ci: usize, cov: &[u64]) -> Chart
                     rgb = idw(g, ctx.cloud, p, ctx.splat_r, ctx.splat_k, &mut knn_scratch);
                 }
             }
+            if rgb.is_none() {
+                rgb = vert_col(ctx.mesh, v);
+            }
             if let Some(mut rgb) = rgb {
                 if let (true, Some((strength, tc))) = (sup > ctx.tint_support_m, ctx.tint) {
                     for k in 0..3 {
@@ -371,6 +399,71 @@ pub fn solve_gains(outs: &[ChartOut], n_cams: usize) -> Vec<[f32; 3]> {
             g
         })
         .collect()
+}
+
+/// Fill unset texels inside `rects` (chart gutter-boxes, non-overlapping) by
+/// multi-source 4-neighbour colour propagation: every round fills texels
+/// adjacent to set ones with their mean, until nothing is left unset.
+/// Band-limited work: cost ~ chart rects, not the whole atlas.
+struct RawMut(*mut u8);
+unsafe impl Send for RawMut {}
+unsafe impl Sync for RawMut {}
+impl RawMut {
+    // SAFETY: callers guarantee disjoint access (see fill_rects).
+    #[inline]
+    fn rd(&self, i: usize) -> u8 {
+        unsafe { *self.0.add(i) }
+    }
+    #[inline]
+    fn wr(&self, i: usize, v: u8) {
+        unsafe { *self.0.add(i) = v }
+    }
+}
+
+pub fn fill_rects(img: &mut Image, set: &mut [u8], rects: &[(u32, u32, u32, u32)]) {
+    // SAFETY: shelf-packed gutter boxes are disjoint, so each rect's pixel
+    // range is exclusively owned by one parallel task.
+    let rgb = RawMut(img.rgb.as_mut_ptr());
+    let setp = RawMut(set.as_mut_ptr());
+    rects.par_iter().for_each(|&(rx, ry, rw, rh)| {
+        let (aw, ah) = (img.width as i64, img.height as i64);
+        let (x0, y0) = (rx as i64, ry as i64);
+        let (x1, y1) = (((rx + rw) as i64).min(aw), ((ry + rh) as i64).min(ah));
+        for _ in 0..(rw + rh).max(2) {
+            let mut filled_any = false;
+            for y in y0.max(0)..y1 {
+                for x in x0.max(0)..x1 {
+                    let i = (y * aw + x) as usize;
+                    if setp.rd(i) != 0 {
+                        continue;
+                    }
+                    let (mut s, mut n) = ([0f32; 3], 0f32);
+                    for (dx, dy) in [(-1i64, 0), (1, 0), (0, -1), (0, 1)] {
+                        let (xx, yy) = (x + dx, y + dy);
+                        if xx >= x0 && yy >= y0 && xx < x1 && yy < y1 {
+                            let j = (yy * aw + xx) as usize;
+                            if setp.rd(j) != 0 {
+                                s[0] += rgb.rd(3 * j) as f32;
+                                s[1] += rgb.rd(3 * j + 1) as f32;
+                                s[2] += rgb.rd(3 * j + 2) as f32;
+                                n += 1.0;
+                            }
+                        }
+                    }
+                    if n > 0.0 {
+                        rgb.wr(3 * i, (s[0] / n) as u8);
+                        rgb.wr(3 * i + 1, (s[1] / n) as u8);
+                        rgb.wr(3 * i + 2, (s[2] / n) as u8);
+                        setp.wr(i, 1);
+                        filled_any = true;
+                    }
+                }
+            }
+            if !filled_any {
+                break;
+            }
+        }
+    });
 }
 
 /// Fill unset texels (set[] == 0) by coarse-to-fine diffusion: average covered
@@ -476,4 +569,91 @@ pub fn inpaint(img: &mut Image, set: &[u8], ds: u32) {
         img.rgb[3 * i + 1] = c[1].clamp(0.0, 255.0) as u8;
         img.rgb[3 * i + 2] = c[2].clamp(0.0, 255.0) as u8;
     }
+}
+
+/// DC seam-leveling across chart boundaries (multiband-lite): texels on a
+/// mesh-space seam are re-averaged with the same world point sampled through
+/// every neighbouring chart, so two charts meeting at a wall corner can't
+/// show a hard colour discontinuity from different view blends.
+/// Runs on the immutable baked image; corrections are applied afterwards.
+pub fn seam_level(img: &Image, set: &[u8], atlas: &Atlas, mesh: &Mesh, cov: &[Vec<u64>]) -> Vec<(usize, [u8; 3])> {
+    // vertex -> charts (CSR)
+    let mut deg = vec![0u32; mesh.pos.len()];
+    for c in &atlas.charts {
+        for &v in &c.verts {
+            deg[v as usize] += 1;
+        }
+    }
+    let mut off = vec![0u64; mesh.pos.len() + 1];
+    for i in 0..mesh.pos.len() {
+        off[i + 1] = off[i] + deg[i] as u64;
+    }
+    let mut vchart = vec![0u32; off[mesh.pos.len()] as usize];
+    let mut cur = off[..mesh.pos.len()].to_vec();
+    for (ci, c) in atlas.charts.iter().enumerate() {
+        for &v in &c.verts {
+            let s = cur[v as usize] as usize;
+            vchart[s] = ci as u32;
+            cur[v as usize] += 1;
+        }
+    }
+    let sample = |c: &Chart, p: V3| -> Option<[f32; 3]> {
+        let u = dot(p, c.eu);
+        let v = dot(p, c.ev);
+        let tx = (u - c.omin[0]) / atlas.texel_m;
+        let ty = (v - c.omin[1]) / atlas.texel_m;
+        if tx < 0.0 || ty < 0.0 || tx > c.w as f32 - 1.0 || ty > c.h as f32 - 1.0 {
+            return None;
+        }
+        let ax = c.x as f32 + tx;
+        let ay = c.y as f32 + ty;
+        let (ix, iy) = (ax as i64, ay as i64);
+        if ix < 0 || iy < 0 || ix >= img.width as i64 || iy >= img.height as i64 {
+            return None;
+        }
+        if set[(iy * img.width as i64 + ix) as usize] == 0 {
+            return None;
+        }
+        Some(img.sample(ax, ay))
+    };
+    let mut out = Vec::new();
+    for (ci, c) in atlas.charts.iter().enumerate() {
+        for ty in 0..c.h {
+            for tx in 0..c.w {
+                let ti = (ty * c.w + tx) as usize;
+                let v = cov[ci][ti];
+                if v == u64::MAX {
+                    continue;
+                }
+                let f = v as u32;
+                // boundary = any of the tri's verts lives in >1 chart
+                let (a, b, d) = (mesh.idx[3 * f as usize], mesh.idx[3 * f as usize + 1], mesh.idx[3 * f as usize + 2]);
+                if deg[a as usize] < 2 && deg[b as usize] < 2 && deg[d as usize] < 2 {
+                    continue;
+                }
+                let (_, w0, w1, w2) = decode(v);
+                let p = add(add(scale(mesh.pos[a as usize], w0), scale(mesh.pos[b as usize], w1)), scale(mesh.pos[d as usize], w2));
+                let mut acc = [0f32; 3];
+                let mut n = 0f32;
+                for k in [a, b, d] {
+                    let (s, e) = (off[k as usize] as usize, off[k as usize + 1] as usize);
+                    for &oj in &vchart[s..e] {
+                        if oj as usize != ci {
+                            if let Some(smp) = sample(&atlas.charts[oj as usize], p) {
+                                acc = add(acc, smp);
+                                n += 1.0;
+                            }
+                        }
+                    }
+                }
+                if n > 0.0 {
+                    let own_i = ((c.y + ty) * atlas.w + c.x + tx) as usize;
+                    let own = [img.rgb[3 * own_i] as f32, img.rgb[3 * own_i + 1] as f32, img.rgb[3 * own_i + 2] as f32];
+                    let mean = scale(add(acc, own), 1.0 / (n + 1.0));
+                    out.push((own_i, [mean[0] as u8, mean[1] as u8, mean[2] as u8]));
+                }
+            }
+        }
+    }
+    out
 }

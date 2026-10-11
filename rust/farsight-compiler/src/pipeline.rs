@@ -30,6 +30,7 @@ impl CompileOptions {
                 o.mesh.smooth_iters = 2;
                 o.texture.texel_m = 0.01;
                 o.texture.max_atlas = 4096;
+                o.export.splat_max = 750_000;
             }
             "balanced" => {
                 o.mesh.max_triangles = 400_000;
@@ -40,6 +41,7 @@ impl CompileOptions {
                 o.mesh.max_triangles = 4_000_000;
                 o.texture.texel_m = 0.0025;
                 o.texture.max_atlas = 16384;
+                o.export.splat_max = 4_000_000;
             }
             other => anyhow::bail!("unknown preset {other} (fast|balanced|ultra)"),
         }
