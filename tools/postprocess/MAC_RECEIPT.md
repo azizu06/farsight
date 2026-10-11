@@ -120,6 +120,13 @@ Local operational receipts: `.cache/autosplat/watcher-armed.json`,
 Firstmate should move/rearm it from the integrated stable checkout before
 recycling the worktree. Stop only this task's PID using the README command.
 
-Dechante's 094259 2k/5k release assets were not available in the release list
-at 12:43 UTC; they have not been substituted or claimed as local comparison
-artifacts. Existing 072139 assets are a different run.
+Dechante's [094259 fast release](https://github.com/azizu06/farsight/releases/tag/splat-094259-fast)
+appeared during final verification. Its 2k/5k PLYs are downloaded through
+`gh-axi`, pruned locally with `tools.splat.prune` to 300k/SH1, and published
+atomically as `scenes/dechante-094259-2k.ply` and
+`scenes/dechante-094259-5k.ply` for side-by-side comparison.
+The Mac's reproduced 5k result remains `scenes/run-20261011T094259.ply`.
+
+Release asset download completed successfully. The 2k source has 1,739,510
+splats (410,525,912 bytes); the 5k source has 2,159,401 (509,620,188 bytes).
+Both published Quest copies have 300,000 splats / SH1.
