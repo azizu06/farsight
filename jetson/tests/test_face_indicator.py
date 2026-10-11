@@ -22,21 +22,27 @@ class FaceIndicatorTests(unittest.TestCase):
         with TestClient(app) as client:
             return app, client.get("/health").json(), client.get("/mission/drill").json()
 
+    def test_keypoint_faces_without_the_pose_detector_report_false(self):
+        _, health, drill = self.fetch(face_model="stub.onnx")  # default pose faces never load UltraFace
+        for body in (health, drill):
+            self.assertIs(body["face_detector"], False)
+            self.assertIn("--detector pose", body["face_error"])
+
     def test_without_face_model_reports_false(self):
-        _, health, drill = self.fetch()
+        _, health, drill = self.fetch(face_detector="ultraface")
         for body in (health, drill):
             self.assertIs(body["face_detector"], False)
             self.assertIsNone(body["face_error"])
 
     def test_stub_face_detector_reports_true(self):
         with mock.patch("jetson.face.FaceDetector", StubFace):
-            _, health, drill = self.fetch(face_model="stub.onnx")
+            _, health, drill = self.fetch(face_model="stub.onnx", face_detector="ultraface")
         for body in (health, drill):
             self.assertIs(body["face_detector"], True)
             self.assertIsNone(body["face_error"])
 
     def test_bad_face_model_keeps_primary_detector_running(self):
-        app, health, drill = self.fetch(face_model="/nonexistent/face.onnx")
+        app, health, drill = self.fetch(face_model="/nonexistent/face.onnx", face_detector="ultraface")
         for body in (health, drill):
             self.assertIs(body["face_detector"], False)
             self.assertIn("Face model unavailable", body["face_error"])
