@@ -455,6 +455,103 @@ fn split_crease_normals(mesh: &mut Mesh, planes_nd: &[(V3, f32)], flabel: &[u32]
     (creases, appended)
 }
 
+/// Exact plane normal on every vertex whose fan has a single plane label
+/// (non-crease verts; crease verts are split by `split_crease_normals`).
+/// Oriented by the vertex's current normal. Returns count set.
+fn apply_plane_normals(mesh: &mut Mesh, planes_nd: &[(V3, f32)], vf: &(Vec<u32>, Vec<u32>), flabel: &[u32]) -> usize {
+    let (off, items) = vf;
+    mesh.nrm
+        .par_iter_mut()
+        .enumerate()
+        .map(|(v, n)| {
+            let fs = &items[off[v] as usize..off[v + 1] as usize];
+            let mut lab = u32::MAX;
+            let mut ok = false;
+            for &f in fs {
+                let l = flabel[f as usize];
+                if l == u32::MAX {
+                    continue;
+                }
+                if lab == u32::MAX {
+                    lab = l;
+                    ok = true;
+                } else if lab != l {
+                    ok = false;
+                    break;
+                }
+            }
+            if ok && lab != u32::MAX {
+                let (pn, _) = planes_nd[lab as usize];
+                *n = if dot(*n, pn) < 0.0 { scale(pn, -1.0) } else { pn };
+                1usize
+            } else {
+                0
+            }
+        })
+        .sum()
+}
+
+/// Exact plane normal on every vertex lying within `eps` of a detected plane
+/// whose current normal already agrees with it (<~35 deg). Covers verts on
+/// unlabelled faces near planes. Returns count set.
+fn apply_vertex_plane_normals(mesh: &mut Mesh, planes_nd: &[(V3, f32)], eps: f32) -> usize {
+    const MIN_COS: f32 = 0.82; // ~35 deg
+    mesh.pos
+        .par_iter()
+        .zip(mesh.nrm.par_iter_mut())
+        .map(|(p, n)| {
+            let mut best: i64 = -1;
+            let mut bd = eps;
+            for (l, &(pn, pd)) in planes_nd.iter().enumerate() {
+                let d = (dot(pn, *p) + pd).abs();
+                let c = dot(pn, *n).abs();
+                if d < bd && c >= MIN_COS {
+                    bd = d;
+                    best = l as i64;
+                }
+            }
+            if best >= 0 {
+                let (pn, _) = planes_nd[best as usize];
+                *n = if dot(*n, pn) < 0.0 { scale(pn, -1.0) } else { pn };
+                1usize
+            } else {
+                0
+            }
+        })
+        .sum()
+}
+
+/// Project vertices that lie within `eps` of exactly one detected plane
+/// (unlabelled verts on plane surfaces — fills, decimate remnants). Verts
+/// near >=2 planes are crease-adjacent and stay put. Returns count moved.
+fn project_unambiguous_verts(mesh: &mut Mesh, planes_nd: &[(V3, f32)], eps: f32) -> usize {
+    mesh.pos
+        .par_iter_mut()
+        .map(|p| {
+            let mut best: i64 = -1;
+            let mut bd = eps;
+            let mut hits = 0u32;
+            for (l, &(pn, pd)) in planes_nd.iter().enumerate() {
+                let d = (dot(pn, *p) + pd).abs();
+                if d < eps {
+                    hits += 1;
+                }
+                if d < bd {
+                    bd = d;
+                    best = l as i64;
+                }
+            }
+            if best >= 0 && hits == 1 {
+                let (pn, pd) = planes_nd[best as usize];
+                *p = sub(*p, scale(pn, dot(pn, *p) + pd));
+                1usize
+            } else {
+                0
+            }
+        })
+        .sum()
+}
+
 /// Keep faces where `keep[f]`; drop unreferenced vertices; fix all arrays.
 fn compact(mesh: &mut Mesh, keep: &[bool]) {
     let mut idx = Vec::with_capacity(mesh.idx.len());
@@ -1438,12 +1535,24 @@ pub fn run(mesh: &mut Mesh, cloud: &PointCloud, opts: &MeshOptions) -> Stats {
 
 fn run_inner(mesh: &mut Mesh, cloud: &PointCloud, opts: &MeshOptions, planes_nd: &[(V3, f32)], labels: &[u32]) -> Stats {
     let t0 = Instant::now();
-    let (fb_nd, fb_lab) = if planes_nd.is_empty() && opts.plane_fallback && cloud.len() >= 10_000 {
-        detect_planes_fallback(cloud, opts)
+    // Merge provided planes with the local fallback detector: provided labels
+    // win where confident, fallback labels fill the gaps. Fallback runs when
+    // the shared result is absent or labels <20% of the cloud.
+    let cover = if labels.is_empty() || cloud.pos.is_empty() {
+        0.0
     } else {
-        (Vec::new(), Vec::new())
+        labels.iter().filter(|&&l| l != u32::MAX).count() as f32 / labels.len().max(1) as f32
     };
-    let (planes_nd, labels) = if planes_nd.is_empty() { (&fb_nd[..], &fb_lab[..]) } else { (planes_nd, labels) };
+    // Provided planes are used when they cover enough of the cloud; otherwise
+    // the local fallback detector takes over entirely (label sets don't mix).
+    let want_fb = opts.plane_fallback && cloud.len() >= 10_000 && (planes_nd.is_empty() || cover < 0.2);
+    let (fb_nd, fb_lab) = if want_fb { detect_planes_fallback(cloud, opts) } else { (Vec::new(), Vec::new()) };
+    let (mg_nd, mg_lab) = if want_fb && !fb_nd.is_empty() {
+        (fb_nd, fb_lab)
+    } else {
+        (planes_nd.to_vec(), labels.to_vec())
+    };
+    let (planes_nd, labels) = (&mg_nd[..], &mg_lab[..]);
     let mut s = serde_json::json!({});
     macro_rules! ms {
         ($name:expr, $t:expr) => {
@@ -1576,9 +1685,22 @@ fn run_inner(mesh: &mut Mesh, cloud: &PointCloud, opts: &MeshOptions, planes_nd:
         let cents = face_centroids(&mesh.pos, &mesh.idx);
         let near = nearest_ids(&cloud.pos, &cents, opts.plane_assign_dist);
         let fl2 = face_plane_labels(&near, labels);
+        // decimate drifts plane verts off-plane; project them back so the
+        // geometry itself is flat (face normals land on the GT plane normal)
+        let vf_pre = vertex_faces(mesh.pos.len(), &mesh.idx);
+        let vl2 = vertex_plane_ids(&vf_pre, &fl2);
+        reproject_planes(mesh, planes_nd, &vl2);
+        let unambig = project_unambiguous_verts(mesh, planes_nd, opts.plane_assign_dist);
         let (creases, appended) = split_crease_normals(mesh, planes_nd, &fl2);
+        // exact plane normal on every non-crease labelled vertex, then on
+        // every vert near a detected plane with a consistent normal
+        let vf2 = vertex_faces(mesh.pos.len(), &mesh.idx);
+        let exact = apply_plane_normals(mesh, planes_nd, &vf2, &fl2)
+            + apply_vertex_plane_normals(mesh, planes_nd, opts.plane_assign_dist);
         s["crease_verts"] = creases.into();
         s["split_verts"] = appended.into();
+        s["plane_exact_normals"] = exact.into();
+        s["plane_projected"] = unambig.into();
         s["planesplit_ms"] = serde_json::json!((t.elapsed().as_secs_f64() * 1e3).round() as u64);
     }
 
