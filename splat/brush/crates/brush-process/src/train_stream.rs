@@ -241,13 +241,45 @@ pub(crate) async fn train_stream(
     // budget window on the first `refine_every` boundary.
     if train_stream_config.train_config.warmup {
         let warm = Instant::now();
-        log::info!("Warmup: compiling kernels at real sizes");
-        let batch = dataloader.next_batch().await;
-        let diff_splats = splats.train();
-        let (new_diff_splats, _stats) = trainer.step(batch, diff_splats).await;
-        splats = new_diff_splats.valid();
-        let (new_splats, _rs) = trainer.refine(0, splats).await;
-        splats = new_splats;
+        log::info!("Warmup: compiling kernels on a throwaway trainer");
+        // State-neutral warmup (splat-turbo T7): the warmup step+refine
+        // must not perturb the run, so it runs on
+        //   - a second SceneLoader (own actors/channel — the training
+        //     stream's batch order stays untouched), same residency config;
+        //   - field-cloned splats (Param clones share the tensor handles;
+        //     Adam assigns new params rather than mutating buffers, so the
+        //     real splats are never written through the clone);
+        //   - a fresh SplatTrainer (own lazily-built Adam state + refine
+        //     record, then dropped).
+        // The clone keeps SH count + splat count identical so every kernel
+        // compiles at the real shape.
+        let mut warm_loader = SceneLoader::with_device(
+            &dataset.train,
+            process_config.seed.wrapping_add(0xA11CE),
+            &train_stream_config.load_config,
+            Some(device.clone().inner()),
+        );
+        let mut warm_trainer = SplatTrainer::new_seeded(
+            &train_stream_config.train_config,
+            device,
+            trainer.bounds(),
+            process_config.seed.wrapping_add(0xA11CE),
+        );
+        warm_trainer.set_view_cams(view_cams.clone());
+        warm_trainer.set_seeded(ply_seeded);
+        let warm_splats = Splats {
+            transforms: splats.transforms.clone(),
+            sh_coeffs: splats.sh_coeffs.clone(),
+            raw_opacities: splats.raw_opacities.clone(),
+            render_mip: splats.render_mip,
+            min_scale: splats.min_scale.clone(),
+        };
+        let batch = warm_loader.next_batch().await;
+        let diff_splats = warm_splats.train();
+        let (warm_diff, _stats) = warm_trainer.step(batch, diff_splats).await;
+        let (_warm_splats_out, _rs) = warm_trainer.refine(0, warm_diff.valid()).await;
+        drop(warm_loader);
+        drop(warm_trainer);
         log::info!("Warmup done in {:?}", warm.elapsed());
     }
 
