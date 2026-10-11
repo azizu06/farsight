@@ -70,9 +70,10 @@ ros2 launch farsight_nav nav.launch.py                 # or the farsight-nav sys
     near-field cells; measured costs remain intact. Something measured inside
     the body disc makes it back straight off (at most 0.35 m, only over floor
     the costmap has seen or the rover has driven), then turn away from it.
-    The fallback selects the widest supported gentle arc at 0.25 m/s, or turns
-    in place at 1.8 rad/s (about PWM 95 per side; at 0.82 rad/s the skid-steer
-    sat at L75/R60, just above the floors, and stalled under payload); it never
+    The fallback selects the widest supported gentle arc at 0.45 m/s, or turns
+    in place at 2.5 rad/s (about PWM 120 per side; 1.8 rad/s, about PWM 90, sits
+    near the loaded rover's breakaway, and at 0.82 rad/s the skid-steer sat at
+    L75/R60, just above the floors, and stalled under payload); it never
     stands still waiting for Nav2 (captain,
     2026-10-10). Only a stale pose, depth or costmap stops it. Server deadman, B/STOP, the lease
     (link-loss stop) and the Nav2 sensor gate still apply; the
@@ -189,12 +190,16 @@ the goal.
   with a 0.13 m radius RPP clipped a wall end.
 - **Planner:** `SmacPlanner2D`, `allow_unknown` (goals are often in unseen space),
   0.25 m tolerance.
-- **Controller:** Regulated Pure Pursuit by default (20 Hz, 0.70 m/s, 0.2-0.5 m
-  speed-scaled lookahead, rotate in place only beyond 1.0 rad, otherwise arc), or MPPI
-  with `controller:=mppi` (1000 samples, 2 s horizon, `vx_max` 0.70 m/s, `wz_max`
-  2.5 rad/s). These suit `FARSIGHT_AUTONOMY_MAX_PWM=200` on the 2026-10-10 drive
-  profile (0.74 m/s, 3.8 rad/s); no cost-regulated slow zone near obstacles and
-  only 0.2 m of goal approach slowing. The earlier simulated results used 0.28-0.30 m/s. Both are loaded; the bridge picks one through the latched
+- **Controller:** Regulated Pure Pursuit by default (20 Hz, 0.95 m/s, 0.2-0.5 m
+  speed-scaled lookahead, rotate in place at 3.0 rad/s only beyond 1.0 rad, otherwise
+  arc at no less than 0.45 m/s), or MPPI with `controller:=mppi` (1000 samples, 2 s
+  horizon, `vx_max` 0.95 m/s, `wz_max` 3.0 rad/s). These are full power for
+  `FARSIGHT_AUTONOMY_MAX_PWM=255` on the 2026-10-10 drive profile (0.95 m/s,
+  3.8 rad/s); at 200 the server clamps them to 0.74 m/s. RPP limits the in-place
+  turn to `max_angular_accel` per 20 Hz step above the *measured* yaw rate, so it is
+  60 rad/s^2: at 8 the first step was 0.4 rad/s (PWM 80), the loaded rover never
+  broke free and sat for 27 s (floor test, 2026-10-11). No cost-regulated slow zone
+  near obstacles and only 0.2 m of goal approach slowing. The earlier simulated results used 0.28-0.30 m/s. Both are loaded; the bridge picks one through the latched
   `controller_selector` topic. RPP is the default because it was faster in every
   simulated world and lighter (see the results below); MPPI hesitated in 0.65 m
   gaps. RPP does not dodge obstacles by itself: the 0.25 s replanning does, which is
@@ -206,8 +211,8 @@ the goal.
   replans at least every 0.25 s, within 50 ms when the path becomes invalid (the
   global costmap updates at 15 Hz), or when the goal moves. It recovers in turn by
   clearing the local costmap and the global costmap within 1.5 m of the rover (the
-  explored map stays), backing up 0.25 m at 0.3 m/s and spinning 90 degrees at up
-  to 2.2 rad/s; it never waits. Goal checks are position only (0.20 m); final
+  explored map stays), backing up 0.25 m at 0.4 m/s and spinning 90 degrees at
+  2.5-3.0 rad/s (1.5 rad/s, PWM 80, did not break the loaded rover free); it never waits. Goal checks are position only (0.20 m); final
   heading does not matter.
 
 ## Real-chassis tuning

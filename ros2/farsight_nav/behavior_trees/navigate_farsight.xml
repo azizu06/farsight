@@ -41,7 +41,7 @@
             <ClearEntireCostmap name="ClearLocalCostmap-Subtree" service_name="local_costmap/clear_entirely_local_costmap"/>
             <ClearCostmapAroundRobot name="ClearGlobalCostmap-Subtree" reset_distance="1.5" service_name="global_costmap/clear_around_global_costmap"/>
           </Sequence>
-          <BackUp backup_dist="0.25" backup_speed="0.3"/>
+          <BackUp backup_dist="0.25" backup_speed="0.4"/>
           <Spin spin_dist="1.57"/>
         </RoundRobin>
       </ReactiveFallback>
