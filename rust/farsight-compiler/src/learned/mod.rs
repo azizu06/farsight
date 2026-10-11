@@ -296,6 +296,211 @@ pub fn finish_view(rel: &[f32], cam: &Camera, camera_idx: usize, vz: &ViewZ, opt
     })
 }
 
+// ---------------- per-view normals + plane hypotheses ----------------
+
+/// World position of pixel (u,v) at axial depth `depth` (along -Z of the
+/// camera, the convention used by `Camera::project` and this module's maps).
+pub fn backproject(cam: &Camera, u: f32, v: f32, depth: f32) -> crate::core::V3 {
+    let r = cam.ray(u, v);
+    let m = &cam.c2w;
+    let fwd = [-m[0][2], -m[1][2], -m[2][2]]; // unit forward (-Z axis in world)
+    let t = depth / crate::core::dot(r, fwd).max(1e-6);
+    crate::core::add(cam.position(), crate::core::scale(r, t))
+}
+
+/// World-space surface normals for every pixel of a `DepthMap`, from the
+/// depth map's own gradient (back-projected finite differences). Zero vector
+/// where depth is invalid or the neighbourhood is inconsistent.
+/// Flat regions yield coherent normals — feed `plane_hypotheses` or W2's
+/// `planes::detect` label refinement with these.
+pub fn view_normals(map: &DepthMap, cam: &Camera) -> Vec<crate::core::V3> {
+    use crate::core::{cross, normalize, scale};
+    let (w, h) = (map.width as usize, map.height as usize);
+    // Back-project pixel (u,v): p = pos + ray * (depth / (ray·fwd)); depth is
+    // measured along the -Z view axis, not the ray, so divide by cos(theta).
+    let backproj = |x: usize, y: usize| -> Option<crate::core::V3> {
+        let d = map.depth[y * w + x];
+        if d <= 0.0 {
+            return None;
+        }
+        Some(backproject(cam, x as f32 + 0.5, y as f32 + 0.5, d))
+    };
+    let mut out = vec![[0f32; 3]; w * h];
+    out.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
+        for x in 1..w.saturating_sub(1) {
+            if y == 0 || y + 1 >= h {
+                continue;
+            }
+            let (Some(c), Some(r0), Some(d0)) = (backproj(x, y), backproj(x + 1, y), backproj(x, y + 1)) else {
+                continue;
+            };
+            // gate on depth continuity so edges don't smear normals
+            let dc = map.depth[y * w + x];
+            let dr = map.depth[y * w + x + 1];
+            let dd = map.depth[(y + 1) * w + x];
+            if (dr - dc).abs() > 0.5 * dc || (dd - dc).abs() > 0.5 * dc {
+                continue;
+            }
+            let n = cross(crate::core::sub(r0, c), crate::core::sub(d0, c));
+            let mut n = normalize(n);
+            // orient toward the camera
+            if crate::core::dot(n, crate::core::sub(cam.position(), c)) < 0.0 {
+                n = scale(n, -1.0);
+            }
+            row[x] = n;
+        }
+    });
+    out
+}
+
+/// A single dominant-plane hypothesis for a view, in world space.
+/// Same field shape as W2's `planes::Plane` (plus `camera` provenance) so it
+/// can be adopted/merged directly once `src/planes.rs` lands.
+#[derive(Clone, Copy, Debug)]
+pub struct PlaneHypothesis {
+    /// Outward unit normal (world space).
+    pub n: crate::core::V3,
+    /// Plane offset: n·p + d = 0.
+    pub d: f32,
+    /// Back-projected pixels supporting the plane.
+    pub inliers: u32,
+    /// Approximate covered area (inlier pixels × per-pixel footprint).
+    pub area_m2: f32,
+    /// Inlier RMS residual (m).
+    pub rms_m: f32,
+    /// Index of the source view.
+    pub camera: usize,
+}
+
+/// RANSAC a dominant plane per view from the completed depth map: sample
+/// back-projected pixels, score by |n·p+d| < tau, refine with the smallest
+/// eigenvector of the inlier covariance. Returns up to `max_per_view`
+/// hypotheses, largest first.
+pub fn plane_hypotheses(map: &DepthMap, cam: &Camera, _opts: &LearnedOptions) -> Vec<PlaneHypothesis> {
+    use crate::core::{add, dot, normalize, scale, sub, Rng};
+    let (w, h) = (map.width as usize, map.height as usize);
+    // Back-project every 4th pixel; keeps hypotheses cheap on 518² views.
+    let step = 4usize;
+    let mut pts: Vec<crate::core::V3> = Vec::with_capacity((w / step + 1) * (h / step + 1));
+    for y in (0..h).step_by(step) {
+        for x in (0..w).step_by(step) {
+            let d = map.depth[y * w + x];
+            if d <= 0.0 || map.confidence[y * w + x] < 0.15 {
+                continue;
+            }
+            pts.push(backproject(cam, x as f32 + 0.5, y as f32 + 0.5, d));
+        }
+    }
+    if pts.len() < 64 {
+        return Vec::new();
+    }
+    let mut rng = Rng::new(0x5DEECE66D ^ (map.camera as u64).wrapping_mul(0x9E3779B97F4A7C15));
+    let tau = 0.02f32; // 2 cm inlier gate, matches bench τ
+    let mut out = Vec::new();
+    let max_per_view = 2usize;
+    let mut remaining = pts.clone();
+    for _ in 0..max_per_view {
+        if remaining.len() < 64 {
+            break;
+        }
+        let mut best: Option<(crate::core::V3, f32, u32)> = None;
+        for _ in 0..192 {
+            let pick = |rng: &mut Rng| remaining[rng.range(0.0, remaining.len() as f32) as usize % remaining.len()];
+            let (a, b, c) = (pick(&mut rng), pick(&mut rng), pick(&mut rng));
+            let n = normalize(crate::core::cross(sub(b, a), sub(c, a)));
+            if dot(n, n) < 0.5 {
+                continue; // degenerate triple
+            }
+            let d = -dot(n, a);
+            let inliers = remaining.iter().filter(|p| (dot(n, **p) + d).abs() < tau).count() as u32;
+            if best.map(|(_, _, i)| inliers > i).unwrap_or(true) {
+                best = Some((n, d, inliers));
+            }
+        }
+        let Some((n0, d0, ni)) = best else { break };
+        if ni < 48 {
+            break;
+        }
+        // refine: centroid + covariance smallest-eigenvector over inliers
+        let inl: Vec<crate::core::V3> = remaining.iter().cloned().filter(|p| (dot(n0, *p) + d0).abs() < tau).collect();
+        let m = scale(inl.iter().cloned().fold([0.0; 3], add), 1.0 / inl.len() as f32);
+        let mut cov = [[0f64; 3]; 3];
+        for p in &inl {
+            let e = sub(*p, m);
+            for i in 0..3 {
+                for j in 0..3 {
+                    cov[i][j] += (e[i] * e[j]) as f64;
+                }
+            }
+        }
+        let n = smallest_eigenvec(&cov);
+        let n = if dot(n, n0) < 0.0 { scale(n, -1.0) } else { n }; // keep orientation
+        let d = -dot(n, m);
+        let rms = (inl.iter().map(|p| {
+            let r = dot(n, *p) + d;
+            r * r
+        }).sum::<f32>() / inl.len() as f32).sqrt();
+        // footprint ~ (depth * pixel solid angle): approximate with median depth
+        let mut ds: Vec<f32> = inl.iter().map(|p| crate::core::length(sub(*p, cam.position()))).collect();
+        ds.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
+        let z = ds.get(ds.len() / 2).copied().unwrap_or(1.0);
+        let px_area = (z / cam.fx.max(1.0)) * (z / cam.fy.max(1.0)) * (step * step) as f32;
+        let filtered: Vec<crate::core::V3> = remaining.iter().cloned().filter(|p| (dot(n, *p) + d).abs() >= tau).collect();
+        out.push(PlaneHypothesis {
+            n, d, inliers: inl.len() as u32,
+            area_m2: px_area * inl.len() as f32,
+            rms_m: rms,
+            camera: map.camera,
+        });
+        remaining = filtered;
+    }
+    out
+}
+
+/// Smallest eigenvector of a symmetric 3x3 matrix: cyclic Jacobi sweeps —
+/// exact (up to f64), no failure mode for anisotropic patches.
+fn smallest_eigenvec(a: &[[f64; 3]; 3]) -> crate::core::V3 {
+    let mut d = *a;
+    let mut v = [[1f64, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    for _ in 0..24 {
+        // largest off-diagonal pair (p,q)
+        let (mut p, mut q, mut mx) = (0usize, 1usize, d[0][1].abs());
+        if d[0][2].abs() > mx { (p, q, mx) = (0, 2, d[0][2].abs()); }
+        if d[1][2].abs() > mx { (p, q, mx) = (1, 2, d[1][2].abs()); }
+        let tr = d[0][0] + d[1][1] + d[2][2];
+        if mx < 1e-12 * (tr.abs() + 1.0) {
+            break;
+        }
+        let theta = (d[q][q] - d[p][p]) / (2.0 * d[p][q]);
+        let t = theta.signum() / (theta.abs() + (theta * theta + 1.0).sqrt());
+        let c = 1.0 / (t * t + 1.0).sqrt();
+        let s = t * c;
+        // rotate covariance
+        for k in 0..3 {
+            let (dkp, dkq) = (d[k][p], d[k][q]);
+            d[k][p] = c * dkp - s * dkq;
+            d[k][q] = s * dkp + c * dkq;
+        }
+        for k in 0..3 {
+            let (dpk, dqk) = (d[p][k], d[q][k]);
+            d[p][k] = c * dpk - s * dqk;
+            d[q][k] = s * dpk + c * dqk;
+        }
+        for k in 0..3 {
+            let (vkp, vkq) = (v[k][p], v[k][q]);
+            v[k][p] = c * vkp - s * vkq;
+            v[k][q] = s * vkp + c * vkq;
+        }
+    }
+    let mut idx = 0usize;
+    for i in 1..3 {
+        if d[i][i] < d[idx][idx] {
+            idx = i;
+        }
+    }
+    crate::core::normalize([v[0][idx] as f32, v[1][idx] as f32, v[2][idx] as f32])
+}
+
 // ---------------- ONNX inference (feature-gated) ----------------
 
 #[cfg(feature = "onnx")]
@@ -313,10 +518,18 @@ mod onnx {
         #[allow(unused_mut)]
         let mut builder = Session::builder()?;
         #[cfg(feature = "coreml")]
-        {
-            use ort::execution_providers::coreml::CoreMLExecutionProvider;
-            builder.with_execution_providers([CoreMLExecutionProvider::default().build()])?;
-        }
+        let builder = {
+            use ort::ep::coreml::{ComputeUnits, ModelFormat};
+            // ANE wants the whole graph resident: MLProgram + ALL compute units
+            // + static input shapes (see docs/compiler.md "Neural Engine").
+            builder.with_execution_providers([
+                ort::ep::CoreML::default()
+                    .with_model_format(ModelFormat::MLProgram)
+                    .with_compute_units(ComputeUnits::All)
+                    .with_static_input_shapes(true)
+                    .build()
+            ])?
+        };
         let mut session = builder.commit_from_file(PathBuf::from(&opts.depth_model))?;
 
         let n = if opts.max_frames > 0 { opts.max_frames.min(capture.cameras.len()) } else { capture.cameras.len() };
@@ -396,6 +609,32 @@ mod onnx {
         });
         out
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// End-to-end ONNX Runtime inference. Skipped unless
+        /// `FARSIGHT_ORT_TEST_MODEL` (toy depth onnx) and `ORT_LIB_LOCATION`
+        /// (dir containing libonnxruntime) are set — see docs/compiler.md.
+        #[test]
+        fn onnx_runs_model() {
+            let Ok(model) = std::env::var("FARSIGHT_ORT_TEST_MODEL") else { return };
+            let opts = LearnedOptions {
+                depth_model: model,
+                model_input_w: 32,
+                model_input_h: 32,
+                ..Default::default()
+            };
+            let mut b = Session::builder().unwrap();
+            let mut s = b.commit_from_file(&opts.depth_model).unwrap();
+            let img = Image { width: 8, height: 8, rgb: vec![255u8; 8 * 8 * 3] };
+            let (rel, w, h) = infer(&mut s, &img, &opts).unwrap();
+            assert_eq!((w, h), (32, 32));
+            // toy model: rel = 0.5 + mean(normalised rgb) = 0.5 + 1.0
+            assert!((rel[0] - 1.5).abs() < 1e-3, "rel0={}", rel[0]);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -459,5 +698,43 @@ mod tests {
         let cap = Capture::default();
         let cloud = PointCloud::default();
         assert!(complete_depth_opts(&cap, &cloud, &LearnedOptions::default()).is_empty());
+    }
+
+    #[test]
+    fn normals_flat_wall() {
+        let w = 64usize;
+        let cam = Camera::look_at([0.0, 0.0, 0.0], [0.0, 0.0, -2.0], w as u32, w as u32, 90.0);
+        // every pixel at z=2: perfectly flat fronto-parallel wall
+        let map = DepthMap {
+            camera: 0, width: w as u32, height: w as u32,
+            depth: vec![2.0; w * w], confidence: vec![1.0; w * w],
+            scale: 1.0, shift: 0.0, pairs: 100, fit_rmse: 0.0,
+        };
+        let nrms = view_normals(&map, &cam);
+        let centre = nrms[33 * w + 32];
+        assert!((centre[2] - 1.0).abs() < 0.02, "n={centre:?}"); // +Z toward camera
+    }
+
+    #[test]
+    fn plane_prior_finds_wall() {
+        let w = 64usize;
+        let cam = Camera::look_at([0.0, 0.0, 0.0], [0.0, 0.0, -2.0], w as u32, w as u32, 90.0);
+        let mut depth = vec![2.0f32; w * w];
+        // recess a quarter of the image so the wall still dominates
+        for y in 0..w / 2 {
+            for x in 0..w / 2 {
+                depth[y * w + x] = 5.0;
+            }
+        }
+        let map = DepthMap {
+            camera: 0, width: w as u32, height: w as u32,
+            depth, confidence: vec![1.0; w * w],
+            scale: 1.0, shift: 0.0, pairs: 100, fit_rmse: 0.0,
+        };
+        let hyps = plane_hypotheses(&map, &cam, &LearnedOptions::default());
+        assert!(!hyps.is_empty(), "no hypotheses (check pts/min thresholds)");
+        let h0 = &hyps[0];
+        assert!((h0.n[2]).abs() > 0.9, "dominant plane normal {h0:?}");
+        assert!(h0.rms_m < 0.01);
     }
 }

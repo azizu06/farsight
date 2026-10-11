@@ -59,10 +59,12 @@ cargo build --release -p farsight-compiler --features coreml   # Mac (ANE+GPU)
 cargo build --release -p farsight-compiler --features onnx     # CPU EP only
 ```
 
-`ort` links ONNX Runtime dynamically: set `ORT_LIB_LOCATION` to the dylib dir
+`ort` links ONNX Runtime dynamically: put its dylib dir on `LD_LIBRARY_PATH`
 (e.g. `pip install onnxruntime` → `.../site-packages/onnxruntime/capi/` or the
-official release tarball). CoreML EP requires macOS ORT build (the pip wheel
-and official releases ship it).
+official release tarball; verified against onnxruntime 1.23.x). CoreML EP
+requires a macOS ORT build (the pip wheel and official releases ship it). The
+EP is configured `ModelFormat::MLProgram`, `ComputeUnits::All`, static input
+shapes — the graph stays on the ANE/GPU instead of falling back per-op.
 
 Model: Depth Anything V2 Small (Apache-2.0). Download + convert to ONNX:
 
