@@ -184,3 +184,35 @@ test('a late failed POST cannot replace an explicit cancellation reason', async 
   assert.equal(view.scanMessage, 'Stopped by B'); assert.equal(view.scanning, false);
   assert.equal(view.scanPending, false);
 });
+
+// A recovered display tick must use its current evidence, not the timestamp of
+// a previous send. The server still owns the original 250 ms permit deadline.
+test('fresh input/display/permit renews held manual drive after a 220 ms scheduling gap', () => {
+  const { view, sent } = fixture();
+  view.lastSendAt = clock - 220;
+  view.input.v = 0.675;
+  view.pump();
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].deadman, true);
+  assert.equal(sent[0].v, 0.675);
+});
+
+test('a scheduling recovery does not override stale evidence or a server release requirement', () => {
+  for (const cause of ['input', 'display', 'camera', 'permit', 'server-release', 'disconnect']) {
+    const { view, gate, socket, sent } = fixture();
+    view.lastSendAt = clock - 220;
+    view.input.v = 0.675;
+    if (cause === 'input') {
+      view.renderer.xr = { isPresenting: true, getSession: () => ({ visibilityState: 'visible' }) };
+      view.actionMenu = { visible: false };
+      view.lastXRAt = clock - 150;
+    } else if (cause === 'display') view.lastCanvasDraw = clock - 250;
+    else if (cause === 'camera') gate.frameAge = 500;
+    else if (cause === 'permit') gate.receivedAt = clock - 200;
+    else if (cause === 'server-release') gate.acceptStatus({ ...view.status, requires_release: true, reason: 'lease_expired' }, clock);
+    else socket.readyState = 3;
+    view.pump();
+    assert.equal(sent.some(packet => packet.deadman || packet.v || packet.w), false, cause);
+    assert.equal(gate.needsRelease, true, cause);
+  }
+});

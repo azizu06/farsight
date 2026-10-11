@@ -737,8 +737,8 @@ export class RoverExperience {
       if (this.auto) this.roamStep(now, stickX, stickY);
       this.lastRoamAt = this.auto ? now : -Infinity;
       this.input = { held,
-        v: this.auto ? 0 : -stick(stickY, XR_STICK_DEADZONE) * 0.45,
-        w: this.auto ? 0 : stick(stickX, XR_STICK_DEADZONE) * 0.55,
+        v: this.auto ? 0 : -stick(stickY, XR_STICK_DEADZONE) * 0.675,
+        w: this.auto ? 0 : stick(stickX, XR_STICK_DEADZONE) * 0.825,
         pan: this.digitalPan ? 0 : this.panSmoother.step(-THREE.MathUtils.radToDeg(yaw), this.panDt()) };
       if (aHold) {
         this.stop("Actions open: release trigger");
@@ -1026,7 +1026,9 @@ export class RoverExperience {
       if (now - this.lastSendAt < 50 && (!this.lastDeadman || moving)) return;
       this.gate.invalidate("Control queue stalled: release deadman"); this.socket!.close(); return;
     }
-    if (now - this.lastSendAt > 200) this.gate.invalidate("Browser paused: release deadman");
+    // Current input, display and permit evidence above decide renewal after a
+    // scheduling gap. A historical send gap alone must not invent a release;
+    // the rover independently enforces its original permit/command deadline.
     if ((this.scanning || this.scanPending) && this.scanCompleting) {
       this.send(false);
       if (now - this.scanPollAt > 250) { this.scanPollAt = now; void this.pollScan(); }
