@@ -492,7 +492,10 @@ async function loadMesh(next: Status) {
       throw new Error(`Surface request failed (${response.status})`);
     const actualRevision = mapResponseRevision(response.headers, { ...next, revision: wantedRevision });
     if (actualRevision === null) return;
-    const data = decodeMesh(await response.arrayBuffer());
+    const body = await response.arrayBuffer();
+    if (generation !== wantedGeneration || connectionVersion !== wantedConnection ||
+        !mapNeeded() || abort.signal.aborted) return;
+    const data = decodeMesh(body);
     if (
       generation === wantedGeneration &&
       connectionVersion === wantedConnection && mapNeeded() && !abort.signal.aborted
@@ -520,7 +523,10 @@ async function loadPoints(next: Status) {
     if (!response.ok) throw new Error(`Point request failed (${response.status})`);
     const actualRevision = mapResponseRevision(response.headers, { ...next, revision: wantedRevision });
     if (actualRevision === null) return;
-    const data = decodePoints(await response.arrayBuffer());
+    const body = await response.arrayBuffer();
+    if (generation !== wantedGeneration || connectionVersion !== wantedConnection ||
+        !mapNeeded() || abort.signal.aborted) return;
+    const data = decodePoints(body);
     if (generation === wantedGeneration && connectionVersion === wantedConnection && mapNeeded() && !abort.signal.aborted) {
       const first = !cloud.geometry.getAttribute("position")?.count;
       replaceGeometry(cloud, data); appliedPoints = actualRevision;

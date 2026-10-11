@@ -922,6 +922,36 @@ published counts `{anchors, vertices, triangles, points, bytes}` and
 triangles}` since session start — retained unique points reported
 separately from historical observation count, per the density audit.
 
+### Geometry dispatch on the operator relay (`--geometry-upstream`)
+
+When a relay is given `--geometry-upstream`, the geometry lane owns this
+exact surface — everything else still routes to the Jetson:
+
+- `GET /map/status` and `GET /geometry/status` — the merged puller status
+  packet (generation, revision, mesh_revision, points, triangles,
+  `points_transport: "http"`, `geometry_source`, nested `geometry` block
+  with `matched`/`retained`/`connected`/`snapshot_complete`/`partial`/
+  `anchors`/`revision`/`receiver_revision`/`last_seq`/`reason`).
+- `GET /map/mesh.bin`, `GET /geometry/mesh.bin`, `GET /map/points.bin`,
+  `GET /map/export.ply` — served only after `snapshot_complete`; before
+  that they are 503 "Matching geometry not available". `points.bin` is a
+  u32 LE vertex count plus the same 16-byte vertex records as mesh.bin
+  (no index block). `export.ply` is binary_little_endian PLY (15-byte
+  vertices, `\x03` + 12-byte faces). Binary routes carry
+  `ETag "geometry-{generation}-{revision}-{path}"` (If-None-Match → 304),
+  `Cache-Control: no-store`, `X-Geometry-Source`, `X-Geometry-Retained`,
+  `X-Map-Generation`, `X-Map-Revision`, `X-Map-Session`, `X-Map-Epoch`,
+  and negotiated br/gzip/zstd variants.
+- `GET /ws/map` — JSON status every ~500 ms plus a binary points packet
+  on each revision change; `?points=http` opts into status-only.
+- `POST /map/reset`, `POST /map/pause` → 409 "Phone reconstruction cannot
+  be reset or paused here." (restart phone capture to reset its AR
+  world).
+- `GET /geometry/chunks` — the dense delta feed documented above.
+
+`tools/geometry_relay.py` remains the reference implementation of this
+surface; `rust/farsight-geometry` serves it byte-for-byte.
+
 ## Local Mac render transport (opt-in)
 
 `tools.demo` and `tools.operator_relay` accept `--render-upstream` with a

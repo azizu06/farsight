@@ -282,6 +282,10 @@ pub struct AnchorGeometry {
     count: usize,
     verts: usize,
     revision: u64,
+    /// Published-map lineage marker — the puller's `generation`: bumped on
+    /// session/epoch change and whenever retained published content clears,
+    /// never on ordinary republish (that is `revision`).
+    generation: u64,
     /// True only after an accepted SnapshotEnd publishes a staged snapshot;
     /// false on reset/reconnect staging so consumers never mistake a partial
     /// or cleared map for a complete one (tools/qualify_geometry.py gate).
@@ -329,6 +333,7 @@ impl AnchorGeometry {
             count: 0,
             verts: 0,
             revision: 0,
+            generation: 0,
             snapshot_complete: false,
             session: [0; 16],
             epoch: 0,
@@ -346,6 +351,10 @@ impl AnchorGeometry {
 
     pub fn revision(&self) -> u64 {
         self.revision
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     pub fn snapshot_complete(&self) -> bool {
@@ -427,6 +436,7 @@ impl AnchorGeometry {
                 *point = world;
             }
         }
+        let had_published = self.count > 0;
         if u.session != self.session || u.epoch != self.epoch {
             self.session = u.session;
             self.epoch = u.epoch;
@@ -443,6 +453,7 @@ impl AnchorGeometry {
             self.observed_tris = 0;
             self.snapshot_complete = false;
             self.pub_lane.reconnects += 1;
+            self.generation += 1;
             self.revision += 1;
         }
         if u.seq <= self.last_seq {
@@ -529,6 +540,11 @@ impl AnchorGeometry {
             }
         }
         self.pub_lane.applied += 1;
+        // Puller parity: a published mesh replaced by an empty one bumps the
+        // map generation (clear_mesh + `triangles and not triangles`).
+        if had_published && self.count == 0 {
+            self.generation += 1;
+        }
         true
     }
 
@@ -1063,10 +1079,23 @@ fn op_code(op: Op) -> u8 {
     }
 }
 
+/// Revision-keyed serve cache: mesh.bin, its derived points.bin, and a
+/// lazily-encoded export.ply — the puller's mesh/points/ply memoization.
+/// Encodes run under the packet mutex so one encode feeds every concurrent
+/// request (no thundering herd, matching the puller's single export_task).
+struct PacketCache {
+    mesh: VariantCache,
+    points: VariantCache,
+    ply: Option<VariantCache>,
+}
+
 pub struct Shared {
     pub geo: Mutex<AnchorGeometry>,
-    packet: Mutex<Option<(u64, VariantCache)>>,
+    packet: Mutex<Option<(u64, PacketCache)>>,
     connected: Mutex<Option<String>>,
+    /// Wall-clock of the last upstream record received — the age/fresh half
+    /// of the puller's merged status contract.
+    last_seen: Mutex<Option<std::time::Instant>>,
     delta_cache: Mutex<DeltaCache>,
 }
 
@@ -1080,6 +1109,7 @@ impl Shared {
             geo: Mutex::new(AnchorGeometry::with_limits(triangle_budget, max_verts)),
             packet: Mutex::new(None),
             connected: Mutex::new(None),
+            last_seen: Mutex::new(None),
             delta_cache: Mutex::new(DeltaCache::default()),
         })
     }
@@ -1087,71 +1117,138 @@ impl Shared {
 
 
 use axum::body::Body;
-use axum::extract::State;
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::{Request, State};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{any, get};
 use axum::{Json, Router};
-use futures_util::StreamExt;
+use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 
-fn mesh_response(s: &Shared, accept: &str, if_none_match: &str) -> Response {
-    let coding = negotiate_encoding(accept);
-    let (revision, body, enc) = {
-        let geo = s.geo.lock().unwrap();
-        let revision = geo.revision();
-        let mut cache = s.packet.lock().unwrap();
-        if cache.as_ref().map(|(r, _)| *r != revision).unwrap_or(true) {
-            *cache = Some((revision, VariantCache::new(geo.encode())));
-        }
-        let entry = &mut cache.as_mut().unwrap().1;
-        let (body, enc) = entry.variant(coding);
-        (revision, body, enc)
-    };
-    let tag = format!("\"{revision}-{}\"", if enc.is_empty() { "i" } else { enc });
-    for candidate in if_none_match.split(',') {
-        if candidate.trim() == tag || candidate.trim() == "*" {
-            return (StatusCode::NOT_MODIFIED, [(header::ETAG, tag)]).into_response();
-        }
-    }
-    let mut resp = Response::new(Body::from(body));
-    let h = resp.headers_mut();
-    h.insert(
-        header::CONTENT_TYPE,
-        axum::http::HeaderValue::from_static("application/octet-stream"),
+/// Byte-exact port of tools/geometry_relay.py export_ply(): binary little
+/// endian PLY of the mesh.bin body — 15-byte vertex records (pad byte
+/// dropped) and `\x03`-prefixed 12-byte triangle faces.
+fn export_ply(body: &[u8]) -> Vec<u8> {
+    let vertices = u32::from_le_bytes(body[0..4].try_into().unwrap()) as usize;
+    let indices = u32::from_le_bytes(body[4..8].try_into().unwrap()) as usize;
+    let header = format!(
+        "ply\nformat binary_little_endian 1.0\ncomment ARKit reconstructed mesh; neutral display colors\nelement vertex {vertices}\nproperty float x\nproperty float y\nproperty float z\nproperty uchar red\nproperty uchar green\nproperty uchar blue\nelement face {}\nproperty list uchar uint vertex_indices\nend_header\n",
+        indices / 3
     );
-    h.insert(header::ETAG, tag.parse().unwrap());
-    h.insert(header::CACHE_CONTROL, "no-cache".parse().unwrap());
-    h.insert(header::VARY, "Accept-Encoding".parse().unwrap());
-    if !enc.is_empty() {
-        h.insert(header::CONTENT_ENCODING, enc.parse().unwrap());
+    let records = &body[8..8 + vertices * 16];
+    let faces = &body[8 + vertices * 16..];
+    let mut out = Vec::with_capacity(header.len() + vertices * 15 + faces.len() + faces.len() / 12);
+    out.extend_from_slice(header.as_bytes());
+    for rec in records.chunks_exact(16) {
+        out.extend_from_slice(&rec[..15]);
     }
-    resp
+    for face in faces.chunks_exact(12) {
+        out.push(3);
+        out.extend_from_slice(face);
+    }
+    out
 }
 
-async fn mesh_bin(State(s): State<Arc<Shared>>, headers: HeaderMap) -> Response {
-    let accept = headers
-        .get(header::ACCEPT_ENCODING)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    let inm = headers
-        .get(header::IF_NONE_MATCH)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    mesh_response(&s, accept, inm)
+/// Build/refresh the revision-keyed serve cache. `geo` is the already-locked
+/// assembler so mesh, derived points, and the encoded snapshot can never
+/// disagree on revision.
+fn ensure_packet<'a>(
+    s: &'a Shared,
+    geo: &AnchorGeometry,
+) -> std::sync::MutexGuard<'a, Option<(u64, PacketCache)>> {
+    let mut cache = s.packet.lock().unwrap();
+    if cache.as_ref().map(|(r, _)| *r != geo.revision()).unwrap_or(true) {
+        let mesh = geo.encode();
+        // points.bin = u32 vertex count + the mesh.bin vertex records
+        // verbatim (puller: pack('<I', v) + body[8:8+v*16]).
+        let vcount = u32::from_le_bytes(mesh[0..4].try_into().unwrap()) as usize;
+        let mut points = Vec::with_capacity(4 + vcount * 16);
+        points.extend_from_slice(&mesh[0..4]);
+        points.extend_from_slice(&mesh[8..8 + vcount * 16]);
+        *cache = Some((geo.revision(), PacketCache {
+            mesh: VariantCache::new(mesh),
+            points: VariantCache::new(points),
+            ply: None,
+        }));
+    }
+    cache
 }
 
-async fn status(State(s): State<Arc<Shared>>) -> Json<Value> {
+/// tools/geometry_relay.py status() parity over the assembler's own upstream
+/// status. The puller merges Jetson pose/camera fields the assembler does
+/// not own, so those carry the puller's documented defaults; geometry/* and
+/// fresh/connected come from the retained snapshot and the live lane.
+fn status_packet(s: &Shared) -> Value {
+    let upstream = s.connected.lock().unwrap().clone();
+    let connected = upstream.is_some();
+    let age_ms = s
+        .last_seen
+        .lock()
+        .unwrap()
+        .map(|t| t.elapsed().as_millis() as i64);
+    let fresh = connected && age_ms.map(|a| a < 2000).unwrap_or(false);
     let geo = s.geo.lock().unwrap();
     let lane = geo.lane();
-    let connected = s.connected.lock().unwrap().clone();
-    Json(json!({
+    let complete = geo.snapshot_complete();
+    let retained = complete && !connected;
+    let session = geo.session();
+    let has_identity = session.iter().any(|&b| b != 0);
+    let reason = if complete && !connected {
+        Some("Geometry lane disconnected; reconstructed mesh retained")
+    } else if !connected {
+        Some("Waiting for phone geometry upstream")
+    } else if !complete {
+        Some("Waiting for matching phone geometry")
+    } else {
+        None
+    };
+    json!({
+        "type": "status",
+        "source": "IPHONE LIDAR",
+        "device": "farsight-geometry",
+        "session_id": has_identity.then(|| hex_uuid(&session)),
+        "map_epoch": has_identity.then(|| geo.epoch()),
+        "transform": [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+        "position": [0, 0, 0],
+        "tracking": "not_available",
+        "frames": lane.applied + lane.dropped_stale + lane.dropped_malformed,
+        "rejected": lane.dropped_malformed,
+        "dropped": lane.dropped_stale,
+        "processing_ms": 0,
+        "paused": false,
+        "depth_range": null,
+        "age_ms": age_ms,
+        "fresh": fresh,
+        "connected": connected,
+        "generation": geo.generation(),
         "revision": geo.revision(),
-        "snapshot_complete": geo.snapshot_complete(),
-        "session": hex_uuid(&geo.session()),
+        "mesh_revision": geo.revision(),
+        "points": geo.vertices(),
+        "triangles": geo.triangles(),
+        "points_transport": "http",
+        "geometry_source": "IPHONE ARKIT MESH",
+        "scan": null,
+        "reason": reason,
+        "geometry": {
+            "source": "IPHONE ARKIT MESH",
+            "matched": complete,
+            "retained": retained,
+            "connected": connected,
+            "snapshot_complete": complete,
+            "partial": !complete,
+            "anchors": geo.anchors(),
+            "revision": geo.revision(),
+            "receiver_revision": geo.revision(),
+            "last_seq": geo.last_seq(),
+            "reason": reason,
+        },
+        // Upstream contract keys — the puller + qualify_geometry.py read
+        // these exact names off /geometry/status.
+        "snapshot_complete": complete,
+        "session": hex_uuid(&session),
         "epoch": geo.epoch(),
         "anchors": geo.anchors(),
-        "triangles": geo.triangles(),
         // Dense-reconstruction audit (6102570158): actual retained counts,
         // not configured caps.
         "retained": {
@@ -1170,13 +1267,222 @@ async fn status(State(s): State<Arc<Shared>>) -> Json<Value> {
         },
         "last_seq": geo.last_seq(),
         "lane": {
-            "upstream": connected,
+            "upstream": upstream,
             "applied": lane.applied,
             "dropped_stale": lane.dropped_stale,
             "dropped_malformed": lane.dropped_malformed,
             "reconnects": lane.reconnects,
         },
-    }))
+    })
+}
+
+async fn status(State(s): State<Arc<Shared>>) -> Json<Value> {
+    Json(status_packet(&s))
+}
+
+/// /map/reset + /map/pause: the puller answers 409 for every method — phone
+/// reconstruction resets only by restarting phone capture.
+async fn map_conflict() -> Response {
+    (
+        StatusCode::CONFLICT,
+        "Phone reconstruction cannot be reset or paused here. Stop and restart phone capture to reset its AR world; native geometry commands are not available yet.",
+    )
+        .into_response()
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PacketKind {
+    Mesh,
+    Points,
+    Ply,
+}
+
+fn accept_encoding(headers: &HeaderMap) -> &str {
+    headers
+        .get(header::ACCEPT_ENCODING)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+}
+
+fn if_none_match(headers: &HeaderMap) -> &str {
+    headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+}
+
+/// Puller handle() parity for every binary route: 503 without a complete
+/// published snapshot, the `geometry-{generation}-{revision}-{path}` ETag
+/// with If-None-Match -> 304, no-store + the X-* provenance headers, and the
+/// revision-keyed variant cache (br/gzip/zstd) on the body.
+fn packet_response(s: &Shared, kind: PacketKind, path: &str, headers_in: &HeaderMap) -> Response {
+    let coding = negotiate_encoding(accept_encoding(headers_in));
+    // Lock order everywhere: connected/last_seen before geo before packet.
+    let retained = s.connected.lock().unwrap().is_none();
+    let (generation, revision, session, epoch, retained, body, enc) = {
+        let geo = s.geo.lock().unwrap();
+        if !geo.snapshot_complete() {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Matching geometry not available",
+            )
+                .into_response();
+        }
+        let mut cache = ensure_packet(s, &geo);
+        let c = &mut cache.as_mut().unwrap().1;
+        let v = match kind {
+            PacketKind::Mesh => &mut c.mesh,
+            PacketKind::Points => &mut c.points,
+            PacketKind::Ply => c
+                .ply
+                .get_or_insert_with(|| VariantCache::new(export_ply(&c.mesh.raw))),
+        };
+        let (body, enc) = v.variant(coding);
+        (
+            geo.generation(),
+            geo.revision(),
+            hex_uuid(&geo.session()),
+            geo.epoch(),
+            retained,
+            body,
+            enc,
+        )
+    };
+    let tag = format!("\"geometry-{generation}-{revision}-{path}\"");
+    let headers: [(header::HeaderName, String); 9] = [
+        (header::CACHE_CONTROL, "no-store".to_string()),
+        (header::ETAG, tag.clone()),
+        (header::VARY, "Accept-Encoding".to_string()),
+        (header::HeaderName::from_static("x-geometry-source"), "IPHONE ARKIT MESH".to_string()),
+        (header::HeaderName::from_static("x-geometry-retained"), retained.to_string()),
+        (header::HeaderName::from_static("x-map-generation"), generation.to_string()),
+        (header::HeaderName::from_static("x-map-revision"), revision.to_string()),
+        (header::HeaderName::from_static("x-map-session"), session),
+        (header::HeaderName::from_static("x-map-epoch"), epoch.to_string()),
+    ];
+    let fresh = if_none_match(headers_in)
+        .split(',')
+        .map(str::trim)
+        .any(|t| t == "*" || t == tag);
+    if fresh {
+        return (StatusCode::NOT_MODIFIED, headers).into_response();
+    }
+    let mut response = Response::new(Body::from(body));
+    let h = response.headers_mut();
+    for (name, value) in headers {
+        h.insert(name, value.parse().unwrap());
+    }
+    h.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/octet-stream"),
+    );
+    if !enc.is_empty() {
+        h.insert(header::CONTENT_ENCODING, enc.parse().unwrap());
+    }
+    if kind == PacketKind::Ply {
+        h.insert(
+            header::CONTENT_DISPOSITION,
+            HeaderValue::from_static("attachment; filename=\"farsight-phone-mesh.ply\""),
+        );
+    }
+    response
+}
+
+async fn mesh_bin(State(s): State<Arc<Shared>>, req: Request) -> Response {
+    packet_response(&s, PacketKind::Mesh, req.uri().path(), req.headers())
+}
+
+async fn map_points(State(s): State<Arc<Shared>>, req: Request) -> Response {
+    packet_response(&s, PacketKind::Points, req.uri().path(), req.headers())
+}
+
+async fn map_export(State(s): State<Arc<Shared>>, req: Request) -> Response {
+    packet_response(&s, PacketKind::Ply, req.uri().path(), req.headers())
+}
+
+/// Current points push body: the raw (uncompressed) points.bin packet when a
+/// complete snapshot is published, else the puller's zero-vertex stand-in.
+fn current_points(s: &Shared) -> (u64, bytes::Bytes) {
+    let geo = s.geo.lock().unwrap();
+    if !geo.snapshot_complete() {
+        return (geo.revision(), bytes::Bytes::from_static(&[0, 0, 0, 0]));
+    }
+    let cache = ensure_packet(s, &geo);
+    let body = cache.as_ref().unwrap().1.points.raw.clone();
+    drop(cache);
+    (geo.revision(), body)
+}
+
+async fn ws_map(
+    ws: WebSocketUpgrade,
+    State(s): State<Arc<Shared>>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    // Puller websocket() parity: `?points=http` subscribers get status only
+    // and pull points over HTTP; everyone else also gets a binary points
+    // push on every published revision change.
+    let http_points = q.get("points").is_some_and(|v| v == "http");
+    ws.max_message_size(16384)
+        .on_upgrade(move |socket| handle_ws_map(socket, s, http_points))
+}
+
+async fn handle_ws_map(socket: WebSocket, s: Arc<Shared>, http_points: bool) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Duration;
+    use tokio::time::timeout;
+
+    const TICK: Duration = Duration::from_millis(500);
+    const HEARTBEAT: Duration = Duration::from_secs(10);
+
+    let (mut tx, mut rx) = socket.split();
+    // Puller WebSocketResponse(heartbeat=10): one outstanding server ping at
+    // a time; a missed Pong closes the socket.
+    let ponged = Arc::new(AtomicU64::new(0));
+    let pong_seen = ponged.clone();
+    let sender = tokio::spawn(async move {
+        let mut published = u64::MAX;
+        let mut ping_seq = 0u64;
+        let mut tick = tokio::time::interval(TICK);
+        let mut beat = tokio::time::interval(HEARTBEAT);
+        beat.tick().await; // first ping after one interval, not immediately
+        loop {
+            tokio::select! {
+                _ = tick.tick() => {
+                    let status = status_packet(&s).to_string();
+                    if !matches!(timeout(TICK, tx.send(Message::Text(status.into()))).await, Ok(Ok(_))) {
+                        return;
+                    }
+                    let (revision, body) = current_points(&s);
+                    if !http_points && revision != published {
+                        if !matches!(timeout(TICK, tx.send(Message::Binary(body))).await, Ok(Ok(_))) {
+                            return;
+                        }
+                        published = revision;
+                    }
+                }
+                _ = beat.tick() => {
+                    if ping_seq > pong_seen.load(Ordering::SeqCst) {
+                        return; // heartbeat Pong missed
+                    }
+                    ping_seq += 1;
+                    let payload: bytes::Bytes = ping_seq.to_le_bytes().to_vec().into();
+                    if !matches!(timeout(TICK, tx.send(Message::Ping(payload))).await, Ok(Ok(_))) {
+                        return;
+                    }
+                }
+            }
+        }
+    });
+    while let Some(msg) = rx.next().await {
+        match msg {
+            Ok(Message::Pong(data)) if data.len() == 8 => {
+                ponged.store(u64::from_le_bytes(data[..8].try_into().unwrap()), Ordering::SeqCst);
+            }
+            Ok(Message::Close(_)) | Err(_) => break,
+            _ => {}
+        }
+    }
+    sender.abort();
 }
 
 fn hex_uuid(b: &[u8; 16]) -> String {
@@ -1390,7 +1696,9 @@ async fn chunks_delta(
 
 /// Quest keeps the existing same-origin shape: the assembled mesh answers
 /// under both /geometry/* and the /map/* aliases so a relay or the headset
-/// can consume this service drop-in next to the Python stack.
+/// can consume this service drop-in next to the Python stack. The /map/*
+/// aliases mirror the puller's full nine-path geometry surface so
+/// --geometry-upstream sees identical bytes, headers and socket traffic.
 pub fn router(shared: Arc<Shared>) -> Router {
     Router::new()
         .route("/geometry/mesh.bin", get(mesh_bin))
@@ -1398,6 +1706,11 @@ pub fn router(shared: Arc<Shared>) -> Router {
         .route("/geometry/chunks", get(chunks_delta))
         .route("/map/mesh.bin", get(mesh_bin))
         .route("/map/status", get(status))
+        .route("/map/points.bin", get(map_points))
+        .route("/map/export.ply", get(map_export))
+        .route("/map/reset", any(map_conflict))
+        .route("/map/pause", any(map_conflict))
+        .route("/ws/map", get(ws_map))
         .with_state(shared)
 }
 
@@ -1510,7 +1823,10 @@ async fn pump_upstream<S>(
             }
             msg = ws.next() => match msg {
                 Some(Ok(Message::Binary(data))) => match decode(&data) {
-                    Ok(u) => { s.geo.lock().unwrap().apply_owned(u); }
+                    Ok(u) => {
+                        *s.last_seen.lock().unwrap() = Some(std::time::Instant::now());
+                        s.geo.lock().unwrap().apply_owned(u);
+                    }
                     Err(e) => {
                         s.geo.lock().unwrap().lane_mut().dropped_malformed += 1;
                         tracing::warn!("geometry record rejected: {e}");
