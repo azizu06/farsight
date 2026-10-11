@@ -43,9 +43,9 @@ test("encounter line carries time first seen, dwell and range at first sight", (
   assert.match(encounterLine({ ...entry, first_range_cm: null }, 1000), /range no range at first sight$/);
 });
 
-test("encounter line flags a person who is down", () => {
+test("encounter line omits the down-specific suffix", () => {
   const entry = { cls: "person", id: 3, conf: 0.9, source: "USB CAMERA", down: true };
-  assert.equal(encounterLine(entry, 1000), "person · track 3 · 90% · USB CAMERA · down");
+  assert.equal(encounterLine(entry, 1000), "person · track 3 · 90% · USB CAMERA");
   assert.doesNotMatch(encounterLine({ ...entry, down: false }, 1000), /down/);
 });
 

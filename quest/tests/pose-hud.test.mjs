@@ -6,7 +6,7 @@ import ts from "typescript";
 import * as cameraView from "../src/camera-view.js";
 import * as poseHud from "../src/pose-hud.js";
 import * as detectionMatch from "../src/detection-match.js";
-import { POSE_EDGES, drawDownMarker, linkHealth, parseKpts, poseSegments, strokeSegments } from "../src/pose-hud.js";
+import { POSE_EDGES, linkHealth, parseKpts, poseSegments, strokeSegments } from "../src/pose-hud.js";
 
 const full = { x: 0, y: 0, width: 640, height: 480 };
 const standing = Array.from({ length: 17 }, (_, i) => [0.1 + i * 0.04, 0.2 + i * 0.03, 0.9]);
@@ -44,15 +44,6 @@ test("all limbs stroke in a single path", () => {
   assert.equal(calls.length, 0);
 });
 
-test("down marker draws a red labelled tag", () => {
-  const texts = [], fills = [];
-  const ctx = { measureText: t => ({ width: t.length * 10 }), strokeRect() {}, fillRect: (...a) => fills.push([ctx.fillStyle, ...a]), fillText: t => texts.push(t) };
-  drawDownMarker(ctx, { x: 10, y: 5, w: 100, h: 80 }, 320, 16);
-  assert.deepEqual(texts, ["PERSON DOWN"]);
-  assert.equal(fills[0][0], "#ff4d4d");
-  assert.ok(fills[0][2] >= 0, "tag stays on canvas when the box touches the top");
-});
-
 test("link health goes red at 500 ms without a reply and shows ms and fps", () => {
   const ok = linkHealth({ now: 1000, receivedAt: 700, connected: true, linkMs: 12.4, detFps: 24.84 });
   assert.equal(ok.ok, true);
@@ -62,7 +53,7 @@ test("link health goes red at 500 ms without a reply and shows ms and fps", () =
   assert.equal(linkHealth({ now: 1000, receivedAt: undefined, connected: true }).ok, false);
 });
 
-test("production drawDetections draws pose and down only for matching cached frame", () => {
+test("production drawDetections keeps normal box and pose visuals without a down-specific tag", () => {
   const source = readFileSync(new URL("../src/rover.ts", import.meta.url), "utf8");
   const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } });
   const mod = { exports: {} };
@@ -78,7 +69,8 @@ test("production drawDetections draws pose and down only for matching cached fra
   view.detectionFrames.add({ frame: 8, source: "S", boxes: [box] }, 90);
   view.drawDetections(full, 640, 480, 100);
   assert.equal(view.drawnBoxes.length, 1);
-  assert.ok(ops.some(o => o[0] === "fillText" && o[1] === "PERSON DOWN"));
+  assert.ok(ops.some(o => o[0] === "fillText" && o[1] === "person #1 90%"));
+  assert.ok(!ops.some(o => o[0] === "fillText" && /person down/i.test(o[1])));
   assert.equal(ops.filter(o => o[0] === "lineTo").length, POSE_EDGES.length);
   ops.length = 0;
   view.drawDetections(full, 640, 480, 700); // cached packet older than 500 ms
