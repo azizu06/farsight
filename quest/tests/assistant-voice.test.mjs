@@ -165,7 +165,7 @@ test("dismissed, malformed, superseded, and stale proposals never confirm", () =
   } finally { Date.now = realNow; f.cleanup(); }
 });
 
-test("push-to-talk needs the settings opt-in; the opt-in probe releases the microphone at once", async () => {
+test("push-to-talk needs the settings opt-in; the opt-in microphone is kept for VR and released on dispose", async () => {
   const f = fixture();
   try {
     f.settings.open = false;
@@ -173,9 +173,33 @@ test("push-to-talk needs the settings opt-in; the opt-in probe releases the micr
     assert.equal(f.permissionCalls(), 0);
     assert.equal(f.voice.phase, "error");
     const probe = await f.enable();
-    assert.equal(probe.track.stops, 1);
+    assert.equal(probe.track.stops, 0, "the Quest cannot show a permission prompt inside VR");
     assert.equal(f.voice.vrEnabled, true);
     assert.equal(f.recorders.length, 0);
+    f.voice.dispose();
+    assert.equal(probe.track.stops, 1);
+  } finally { f.cleanup(); }
+});
+
+test("held left trigger records from the kept opt-in microphone without a new permission request", async () => {
+  const f = fixture({ ok: true, json: async () => ({ answer: "A doorway ahead" }) });
+  try {
+    f.buttons.get("#voice-vr-enable").onclick();
+    const track = { stops: 0, readyState: "live", stop() { this.stops++; this.readyState = "ended"; } };
+    f.pendingPermissions.shift()({ track, getTracks: () => [track] }); f.pendingDenials.shift(); await flush();
+    f.settings.open = false;
+    assert.equal(f.voice.pushStart(), true);
+    await flush();
+    assert.equal(f.permissionCalls(), 1, "only the 2D opt-in asked for the microphone");
+    assert.equal(f.voice.phase, "listening");
+    f.recorders[0].ondataavailable({ data: new Blob(["audio"], { type: "audio/webm" }) });
+    f.voice.pushEnd();
+    f.stopEvents.shift()(); await flush(); await flush();
+    assert.equal(f.requests(), 1);
+    assert.equal(track.stops, 0, "the kept microphone stays open for the next question");
+    assert.equal(f.voice.pushStart(), true);
+    await flush();
+    assert.equal(f.permissionCalls(), 1);
   } finally { f.cleanup(); }
 });
 
