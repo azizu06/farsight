@@ -138,7 +138,7 @@ try {
       assert.equal(hidden.drawnPoints, denseCount); assert.equal(hidden.drawnTriangles, 0);
       assert.ok(composed.foreground_rgb[0] > 240 && composed.foreground_rgb[1] < 20 && composed.foreground_rgb[2] < 20);
       if (version === 'after') {
-        assert.equal(composed.surface_display.dense_depth_bias_m, .0175);
+        assert.equal(composed.surface_display.dense_depth_bias_m, .008);
         assert.equal(hidden.surfaceDisplay.dense_depth_bias_m, 0);
       }
     } finally { await page.close(); }

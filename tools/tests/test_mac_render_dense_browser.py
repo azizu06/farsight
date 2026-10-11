@@ -37,18 +37,20 @@ class MacRenderDenseBrowserTests(unittest.TestCase):
         cloud.clear([FIRST, 1]); cloud.apply(records(1024))
         current = dict(source='SIMULATED', session_id=FIRST, map_epoch=1, generation=0,
                        revision=1, mesh_revision=1, points=3, triangles=1, fresh=True, connected=True, age_ms=0)
-        flags = dict(paused=False)
+        flags = dict(paused=False, legacy=False, coarse_reads=0)
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
                 path = urlsplit(self.path); query = parse_qs(path.query)
                 get = lambda key, default: query.get(key, [default])[0]
                 if path.path == '/dense/delta.bin':
+                    if flags['legacy']: self.reply(b'{}', status=404); return
                     if flags['paused']: self.reply(b'{}', status=503); return
                     body = cloud.delta(get('epoch', None), int(get('after', 0)), get('snapshot', 'false') == 'true',
                         min(8192, int(get('limit', 8192))), int(query['anchor'][0]) if 'anchor' in query else None)
                     self.reply(body, 'application/octet-stream'); return
                 if path.path == '/map/status': self.reply(json.dumps(current).encode()); return
                 if path.path == '/map/mesh.bin':
+                    flags['coarse_reads'] += 1
                     self.reply(mesh(), 'application/octet-stream', headers={
                         'X-Map-Session': current['session_id'], 'X-Map-Epoch': str(current['map_epoch']),
                         'X-Map-Generation': str(current['generation']), 'X-Map-Revision': str(current['mesh_revision'])})
@@ -60,7 +62,22 @@ class MacRenderDenseBrowserTests(unittest.TestCase):
                     elif operation == 'refill': cloud.apply(records(320))
                     elif operation == 'mismatch': current.update(session_id=SECOND, map_epoch=2)
                     elif operation == 'source-switch': cloud.clear([SECOND, 2]); cloud.apply(records(500))
-                    elif operation == 'pause': flags['paused'] = True
+                    elif operation == 'bump-coarse':
+                        current['revision'] += 1
+                        current['mesh_revision'] += 1
+                    elif operation in ('estimated-scan', 'resume-dense'):
+                        cloud.clear([SECOND, 2])
+                        scan = operation == 'estimated-scan'
+                        if not scan: cloud.apply(records(500))
+                        current.update(scan={'simulated': True} if scan else None,
+                                       source='SIMULATED CAMERA SCAN' if scan else 'SIMULATED',
+                                       generation=current['generation'] + 1,
+                                       revision=current['revision'] + 1,
+                                       mesh_revision=current['mesh_revision'] + 1)
+                    elif operation == 'metrics':
+                        self.reply(json.dumps(dict(coarse_reads=flags['coarse_reads'])).encode()); return
+                    elif operation == 'legacy': flags['legacy'] = True
+                    elif operation == 'pause': flags.update(paused=True, legacy=False)
                     else: self.send_error(404); return
                     self.reply(b'{"ok":true}'); return
                 if path.path.startswith(('/quest/', '/tools/mac_render/')):

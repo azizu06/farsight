@@ -170,14 +170,23 @@ faces. Stats expose `raw_point_mode: 'uncovered'`, `raw_fallback_points` and
 The mask reuses existing triangle support decisions and adds no admission rule.
 Its coarse splats follow the map's advertised voxel spacing (1.8×voxel size,
 72mm at4cm cells, corrected for the camera projection/FOV); the1cm dense lane
-uses a separate35mm material, matching the Pip Scout point footprint. Both
-retain native linear RGB without tone mapping, use a2px floor and64px ceiling,
+uses a separate16mm material to overlap 1cm cells while preserving fine colour
+markings. Its pixel floor is1.25px; the coarse fallback uses2px. Both retain
+native linear RGB without tone mapping and use a64px ceiling,
 and upload no geometry when only the camera moves. This
 display footprint does not add measured points or fill missing depth triangles.
+The default live view draws every retained dense sample with its measured RGB.
+It hides coarse interpolated faces once the dense source is identified. Older
+relays without that endpoint retain coarse dots and meshes. Separately labelled
+camera-only scans retain their estimated coarse view. The averaged4cm
+density mesh is an explicit `?msurf=1` comparison; it can suppress individual
+samples and fine colour patterns and is not the default live-dot view.
+Pose/status polling continues, while unused coarse geometry downloads stop
+once the dense source is identified, leaving bulk bandwidth for its samples.
 
 While native textures are visible, the coarse and dense splats use the back of
 their display footprint for depth testing (half the splat diameter: 36mm and
-17.5mm at the default sizes). This prevents nearby, quantized point samples
+8mm at the default sizes). This prevents nearby, quantized point samples
 from painting discs over the finer RGB texture. Measured positions, uploaded
 buffers and point counts stay intact; foreground points beyond that footprint
 still occlude the texture. Hiding or expiring all native patches restores the
