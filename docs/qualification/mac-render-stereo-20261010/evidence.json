@@ -1,0 +1,511 @@
+{
+  "passed": true,
+  "class": "Software-only actual-renderer stereo pixel fixture; SIMULATED markers, no hardware",
+  "contract": {
+    "layout": "sbs-left-right",
+    "width": 1280,
+    "height": 720,
+    "eyeWidth": 640,
+    "eyeHeight": 720
+  },
+  "hardwareQualified": false,
+  "realSensorGeometry": false,
+  "errors": [],
+  "checkoutHead": "97d9063f80f17e43736280e7b3fc193b432592fa",
+  "expectedCentroids": {
+    "left": {
+      "near": {
+        "x": 323.52000000000004,
+        "y": 282.59999999999997
+      },
+      "far": {
+        "x": 314.88,
+        "y": 426.6
+      }
+    },
+    "right": {
+      "near": {
+        "x": 295.67999999999995,
+        "y": 297
+      },
+      "far": {
+        "x": 304.32,
+        "y": 441.00000000000006
+      }
+    }
+  },
+  "measuredCentroids": {
+    "left": {
+      "near": {
+        "x": 323.51666666666665,
+        "y": 282.48333333333335,
+        "pixels": 840
+      },
+      "far": {
+        "x": 314.4832935560859,
+        "y": 426.4832935560859,
+        "pixels": 838
+      }
+    },
+    "right": {
+      "near": {
+        "x": 295.5345679012346,
+        "y": 297,
+        "pixels": 810
+      },
+      "far": {
+        "x": 304.5,
+        "y": 441,
+        "pixels": 808
+      }
+    }
+  },
+  "nearDisparityPixels": 27.982098765432056,
+  "farDisparityPixels": 9.983293556085926,
+  "encodedPair": {
+    "source": "Actual RenderEncoder.ffmpeg_command, explicit hardware=True; one actual captured pair",
+    "actualEncoder": "h264_videotoolbox",
+    "codedWidth": 1280,
+    "codedHeight": 720,
+    "decodedFrames": 1,
+    "encodedBytes": 2385,
+    "command": [
+      "ffmpeg",
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-flags",
+      "low_delay",
+      "-probesize",
+      "32",
+      "-analyzeduration",
+      "0",
+      "-threads",
+      "1",
+      "-filter_threads",
+      "1",
+      "-f",
+      "image2pipe",
+      "-vcodec",
+      "mjpeg",
+      "-framerate",
+      "30",
+      "-i",
+      "pipe:0",
+      "-flags",
+      "+low_delay",
+      "-s:v",
+      "1280x720",
+      "-c:v",
+      "h264_videotoolbox",
+      "-realtime",
+      "1",
+      "-allow_sw",
+      "1",
+      "-an",
+      "-r",
+      "30",
+      "-g",
+      "10",
+      "-bf",
+      "0",
+      "-profile:v",
+      "high",
+      "-pix_fmt",
+      "yuv420p",
+      "-b:v",
+      "8000000",
+      "-maxrate",
+      "8000000",
+      "-bufsize",
+      "4000000",
+      "-movflags",
+      "frag_keyframe+empty_moov+default_base_moof+frag_every_frame",
+      "-video_track_timescale",
+      "1000000",
+      "-frag_duration",
+      "33333",
+      "-flush_packets",
+      "1",
+      "-frames:v",
+      "1",
+      "-f",
+      "mp4",
+      "pipe:1"
+    ],
+    "expectedCentroids": {
+      "left": {
+        "near": {
+          "x": 323.52000000000004,
+          "y": 282.59999999999997
+        },
+        "far": {
+          "x": 314.88,
+          "y": 426.6
+        }
+      },
+      "right": {
+        "near": {
+          "x": 295.67999999999995,
+          "y": 297
+        },
+        "far": {
+          "x": 304.32,
+          "y": 441.00000000000006
+        }
+      }
+    },
+    "measuredCentroids": {
+      "left": {
+        "near": {
+          "x": 323.51666666666665,
+          "y": 282.48333333333335,
+          "pixels": 840
+        },
+        "far": {
+          "x": 315.0183908045977,
+          "y": 426.6563218390805,
+          "pixels": 870
+        }
+      },
+      "right": {
+        "near": {
+          "x": 295.5345679012346,
+          "y": 297,
+          "pixels": 810
+        },
+        "far": {
+          "x": 304.9626334519573,
+          "y": 441.3113879003559,
+          "pixels": 843
+        }
+      }
+    },
+    "nearDisparityPixels": 27.982098765432056,
+    "farDisparityPixels": 10.055757352640398
+  },
+  "positiveMetadata": {
+    "ready": true,
+    "stereo": true,
+    "renderMs": 14.900000035762787,
+    "captureMs": 132.5999999642372,
+    "draws": 3,
+    "points": 0,
+    "source": "SIMULATED",
+    "poseEcho": {
+      "sent_mono_ms": 123,
+      "sent_wall_ms": 1791670000000,
+      "received_mono_ms": 987654321,
+      "session_id": "123e4567-e89b-12d3-a456-426614174000",
+      "frame_id": 7,
+      "pose_id": 7,
+      "client_nonce": "SIM-fixture-7",
+      "space": "ar_map",
+      "map_revision": 1,
+      "eyes": [
+        {
+          "eye": "left",
+          "position": [
+            -0.032,
+            1.6,
+            0
+          ],
+          "quaternion": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "projection": [
+            1.1250000000000002,
+            0,
+            0,
+            0,
+            0,
+            1.0000000000000002,
+            0,
+            0,
+            0.025,
+            -0.015,
+            -1.005012531328321,
+            -1,
+            0,
+            0,
+            -0.10025062656641605,
+            0
+          ]
+        },
+        {
+          "eye": "right",
+          "position": [
+            0.032,
+            1.6,
+            0
+          ],
+          "quaternion": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "projection": [
+            1.1250000000000002,
+            0,
+            0,
+            0,
+            0,
+            1.0000000000000002,
+            0,
+            0,
+            0.04,
+            0.025,
+            -1.005012531328321,
+            -1,
+            0,
+            0,
+            -0.10025062656641605,
+            0
+          ]
+        }
+      ]
+    },
+    "refreshBusy": false,
+    "poseValid": true,
+    "stereo_eye_draws": {
+      "left": {
+        "calls": 2,
+        "points": 0,
+        "triangles": 4,
+        "lines": 0
+      },
+      "right": {
+        "calls": 2,
+        "points": 0,
+        "triangles": 4,
+        "lines": 0
+      }
+    },
+    "layout": "sbs-left-right",
+    "eye_width": 640,
+    "eye_height": 720,
+    "stereo_error": null,
+    "drawnTriangles": 8,
+    "drawnPoints": 0,
+    "dense": {
+      "received_upserts": 0,
+      "received_deletes": 0,
+      "retained_cells": 0,
+      "local_evictions": 0,
+      "pending_gpu_chunks": 0,
+      "received_payload_bytes": 0,
+      "received_pages": 0,
+      "source_reported_cells": 0,
+      "source_label": "WAITING",
+      "selected_source": "rgbd",
+      "bootstrap_incomplete": false,
+      "cursor": 0,
+      "resets": 0,
+      "request_active": false,
+      "error": "Error: Dense HTTP 404",
+      "gpu_uploaded_cells": 0,
+      "gpu_uploaded_cell_writes": 0,
+      "gpu_drawn_cells": 0,
+      "gpu_chunks": 0
+    },
+    "rayVisible": false,
+    "viewPosition": [
+      0,
+      1.6,
+      0
+    ],
+    "triangles": 0,
+    "retained": false,
+    "mapError": null,
+    "lod": {
+      "index": 1,
+      "pixelRatio": 1,
+      "fraction": 1,
+      "fx": 2,
+      "adaptive": false
+    },
+    "mapStatus": {
+      "source": "SIMULATED",
+      "geometry_source": null,
+      "points": 0,
+      "triangles": 0,
+      "generation": 0,
+      "revision": 1,
+      "mesh_revision": 0,
+      "applied_points_revision": 1,
+      "applied_mesh_revision": 0,
+      "fresh": true,
+      "age_ms": 186.5,
+      "connected": true,
+      "retained": false,
+      "partial": false
+    },
+    "fovY": 90,
+    "aspect": 1.7777777777777777,
+    "width": 1280,
+    "height": 720
+  },
+  "viewportState": {
+    "before": {
+      "viewport": [
+        0,
+        0,
+        1280,
+        720
+      ],
+      "actualViewport": [
+        0,
+        0,
+        1280,
+        720
+      ],
+      "scissor": [
+        0,
+        0,
+        1280,
+        720
+      ],
+      "scissorTest": false,
+      "renderTarget": true
+    },
+    "after": {
+      "viewport": [
+        0,
+        0,
+        1280,
+        720
+      ],
+      "actualViewport": [
+        0,
+        0,
+        1280,
+        720
+      ],
+      "scissor": [
+        0,
+        0,
+        1280,
+        720
+      ],
+      "scissorTest": false,
+      "renderTarget": true
+    },
+    "draws": [
+      {
+        "viewport": [
+          0,
+          0,
+          640,
+          720
+        ],
+        "scissor": [
+          0,
+          0,
+          640,
+          720
+        ],
+        "scissorTest": true,
+        "projection": [
+          1.1250000000000002,
+          0,
+          0,
+          0,
+          0,
+          1.0000000000000002,
+          0,
+          0,
+          0.025,
+          -0.015,
+          -1.005012531328321,
+          -1,
+          0,
+          0,
+          -0.10025062656641605,
+          0
+        ],
+        "position": [
+          -0.032,
+          1.6,
+          0
+        ]
+      },
+      {
+        "viewport": [
+          640,
+          0,
+          640,
+          720
+        ],
+        "scissor": [
+          640,
+          0,
+          640,
+          720
+        ],
+        "scissorTest": true,
+        "projection": [
+          1.1250000000000002,
+          0,
+          0,
+          0,
+          0,
+          1.0000000000000002,
+          0,
+          0,
+          0.04,
+          0.025,
+          -1.005012531328321,
+          -1,
+          0,
+          0,
+          -0.10025062656641605,
+          0
+        ],
+        "position": [
+          0.032,
+          1.6,
+          0
+        ]
+      }
+    ],
+    "viewportCalls": [
+      [
+        0,
+        0,
+        640,
+        720
+      ],
+      [
+        640,
+        0,
+        640,
+        720
+      ],
+      [
+        0,
+        0,
+        1280,
+        720
+      ]
+    ]
+  },
+  "reversedPairPolicy": "rejected/unavailable",
+  "rejectedPairs": [
+    "missing",
+    "one-eye",
+    "duplicate-label",
+    "unlabeled",
+    "singular-projection",
+    "invalid-position",
+    "disconnect"
+  ],
+  "recoveredPair": {
+    "passed": true,
+    "sessionId": "123e4567-e89b-12d3-a456-426614174000",
+    "frameId": 15
+  }
+}
