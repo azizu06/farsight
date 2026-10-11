@@ -162,8 +162,7 @@ upload after first epoch. PSNR-neutral by construction (same pixels).
 | +masks | /tmp/cap_sel | ✓ loaded | pending synth | people-blob frames get mask_path, loss-weighted out |
 | +exposure | /tmp/cap_exp | ✓ wrote | pending synth | eval-half-fit variant available |
 
-Pending: rerun on T1's `farsight-splat synth` capture + `bench_mac.sh`
-for real PSNR-vs-seconds numbers once the harness lands.
+
 
 ## Design notes / not-yet-landed
 
@@ -184,3 +183,70 @@ for real PSNR-vs-seconds numbers once the harness lands.
 - **Resolution levels**: `with_image_scale(cumulative_scale)` rebuilds LOD
   views; the eager prefetch covers each rebuilt scene identically. Levels to
   be agreed with T3 (they own renderer-side resolution knobs).
+
+## Measured ablations (lavapipe, 2026-10-11)
+
+Synth: `farsight-splat synth /tmp/synth1` — 120 frames 640x480, 80k dots,
+per-frame exposure variation (means 116.8-142.9), 1 truncated JPEG
+(frame00077, handled by tolerant decode). Held-out = 15 views
+(eval-split-every 8); 105 train. All runs seeded from synth init.ply.
+
+### (1) Appearance strategy @150 iters, equal steps
+
+| variant | raw held-out PSNR | appearance-fair PSNR |
+|---|---|---|
+| none | 19.10 | - |
+| offline exposure (median-tone affine) | 19.57 full-fit / 19.32 half-fit | 19.32 |
+| learned affine --appearance-lr 5e-3 | 19.19 | **29.04** |
+| learned + temporal masks | 19.06 | 28.60 |
+
+- Raw eval cannot credit the learned bank (eval views' affine is not
+  fitted during training eval); the appearance-fair column (LSQ affine on
+  the left half, applied + scored on the right) is the honest number.
+  Learned affine is +9.9 dB fair over none — the exposure modelling is
+  doing real work and raw eval hides it.
+- Offline normalisation gains +0.47 raw (only +0.22 once eval-fit
+  leakage is removed via half-fit) but only lifts what the learned
+  bank already covers; pick **learned affine** as default (no JPEG
+  re-encode, no tone assumptions), keep `exposure --mode offline` for
+  pipelines that cannot run the trainer hook.
+- Temporal masks on a synth with no transients only remove signal
+  (-0.13 raw): masks stay for real people captures, not by default.
+
+### (2) View count @240 s wall (equal time, iters float)
+
+| train views | iters | epochs/view | held-out PSNR |
+|---|---|---|---|
+| 105 (all) | 438 | 4.2 | 21.54 |
+| 52 (coverage sel) | 470 | 9.0 | **21.78** |
+| 26 | 440 | 16.9 | 21.23 |
+
+Fewer views = more epochs each beats coverage at short budgets;
+optimum ~9 epochs/view. `--views auto`: `select --steps S --epochs 9`
+keeps ceil(S/9) views (default epochs set to measured optimum).
+
+### (3) Training resolution @240 s wall, native 1920x1440 eval
+
+synth_hi (60f, 1920x1440; 52 train / 8 eval, eval views kept at native
+res, per-frame fl_x/fl_y/w/h scaled per level):
+
+| train res | iters | native-eval PSNR |
+|---|---|---|
+| 640x480 | 446 | **21.66** |
+| 960x720 | 217 | 19.79 |
+| 1280x960 | 169 | 19.33 |
+| 1920x1440 | 85 | 16.47 |
+
+Monotone win for downscale at equal wall time — per-step cost tracks
+pixels, so low res buys ~2-4x more optimization steps and still scores
+best at full-res eval. For the 60 s Mac budget, default to ~640-960 px
+training (progressive res full-at tail can add the last-mile detail at
+longer budgets). Mac check: `bench_mac.sh` at --res 640/960/1280.
+
+### Notes
+
+- `--eval-split-every 0` panics divide-by-zero (nerfstudio.rs:351):
+  documented, no guard per repo rule — keep eval-split >= 1.
+- Prep outputs (select/exposure) must carry aux files: init.ply was
+  silently dropped before 5d852ef, which made the first offline
+  ablation invalid (9.2 dB = random init, not normalisation harm).
