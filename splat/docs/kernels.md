@@ -95,3 +95,51 @@ pool, outside the profiled thread; the wall delta contains them + gathers.)
   Same tests pass (sort 3/4; render 32/34 — two big-buffer tests fail pre-change
   too: lavapipe host-memory reservation limit). On the M5 the same pass halving
   applies; element traffic is the dominant sort cost there too.
+- **rasterize_backwards: tile-level early exit** (`bb2989f` → relanded
+  `511f55d`). Shared `num_done` atomic counts saturated pixels
+  (`next_t <= 1e-4`, or outside the image); the batch loop votes
+  `workgroup_uniform_load_atomic(num_done) >= TILE_SIZE` at loop top and
+  breaks — remaining splat batches contribute provably-zero gradient.
+  First landing failed lavapipe/Mesa-23.2 SPIR-V validation
+  (`Use of v265 not dominated by definition`) because the uniform-load
+  (a barrier op) sat inside the `||` short-circuit of the while
+  condition — barrier in non-uniform control flow → undominated SSA.
+  Reverted in `98a7205`, relanded with the vote hoisted unconditionally
+  to loop top (same pattern as the fwd kernel's `num_done_atomic`
+  check), plus a `sync_cube` ordering the `num_done` store before the
+  outside-pixel adds. This WAS the cause of the fuzz_bwd failures and
+  the `train.rs:913 counts dtype` panic on llvmpipe — NOT vendored
+  code (T7 bisect). Regression test:
+  `bwd_early_exit_vote_runs_under_real_variant` drives both vote
+  outcomes through `bwd::render_splats` (real `HfAtomicAdd`/
+  `CasAtomicAdd` variant selection). Note for cubecl work: never put a
+  barrier-containing op (`workgroup_uniform_load*`, `sync_cube`,
+  plane ops) inside a short-circuit operand or a non-uniform `if`.
+- **adaptive isect capacity — no more silent isect drops** (`a7b4951`).
+  `counts` is now `[num_visible, isect_used, isect_total]`; `seal_isects`
+  writes the unclamped total to `counts[2]` for free (it reads the last
+  cumsum element anyway). Capacity each step =
+  `ceil(prev_total * 1.25)` grow-only, fed by the train loop's already
+  deferred counts readback — zero new mid-step syncs. Step 0 does one
+  sync read of `counts[2]` for exact sizing. At 400k-splat/640×480
+  synthetic density the true count is 5.87M vs the old `8×splats` = 3.2M
+  cap → 2.7M isects/step were silently dropped (missing tiles). Test
+  `high_density_scene_drops_no_intersections` asserts
+  `counts[1] == counts[2]` on exact + hinted renders.
+- **SUBGROUP fallback in scan/sort** (`5fa41c1`). llvmpipe-via-GL has no
+  `SUBGROUP` capability; `cube_exclusive_sum`'s `plane_inclusive_sum`
+  emitted `subgroupInclusiveAdd` and killed kernel validation
+  (train.rs:913 again — same panic, different root cause). All scan
+  primitives take `#[comptime] use_planes`; launch sites query
+  `client.properties().features.plane.contains(Plane::Ops)` once and
+  pass it through. Fallback = Hillis-Steele shared-mem scan
+  (log2(CUBE_DIM) rounds, 2 syncs/round — slower but correct on any
+  adapter). `test_scan_blocks_no_planes` forces `use_planes=false` and
+  validates against CPU scan.
+- **Known lavapipe limit**: `brush-sort::test_sorting_above_scan_block_size`
+  fails reserving a 280 MB buffer — llvmpipe device-memory cap, fires
+  before any kernel launch; environmental, not a regression. Re-check on
+  the M5.
+- **Mac check item**: rerun `fuzz_bwd_*` + `test_scan_blocks_no_planes`
+  on Metal (MSL path, not SPIR-V) to confirm both the early-exit vote
+  and the use_planes gate behave there.
