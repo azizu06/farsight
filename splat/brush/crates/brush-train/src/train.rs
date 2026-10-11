@@ -434,6 +434,12 @@ impl SplatTrainer {
         out
     }
 
+    /// The effective (post-`--quality`) training config — stream-side
+    /// gates must read this, not the raw CLI config.
+    pub fn config(&self) -> &TrainConfig {
+        &self.config
+    }
+
     /// Fraction of the schedule completed: wall-clock `elapsed/budget`
     /// when `--budget-s` is set, else `iter/total_train_iters`. Every
     /// schedule (LR decay, progressive res, SH unlock, growth window,

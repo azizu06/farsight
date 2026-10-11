@@ -72,7 +72,29 @@ Findings:
 pose noise, per-frame auto-exposure, holey LiDAR), 300 iters, refine-every
 60, eval-every 300, 12 held-out views.
 
-<!-- GRID2 -->
+| config                                        | held-out PSNR | SSIM  | wall   | final count |
+|-----------------------------------------------|--------------:|------:|-------:|------------:|
+| brush (stock)                                 | 20.19         | 0.847 | 380.2s | 365,995     |
+| brush `--max-splats 300000` (hard cap)        | 19.98         | 0.847 | 393.7s | **300,000** |
+| budget -> 250k                                | 19.98         | 0.847 | 349.9s | 253,756     |
+| budget -> 400k                                | 20.10         | 0.846 | 492.7s | 392,487     |
+| mcmc (`--growth-target-splats 300000`)        | 20.03         | 0.847 | 370.8s | 300,000     |
+| decim 100k + budget -> 300k                   | **20.33**     | 0.851 | 330.1s | 284,974     |
+
+Findings:
+- **The hard cap holds.** `--max-splats 300000` ends at exactly 300,000;
+  mcmc honors `--growth-target-splats 300000` at exactly 300,000. Stock
+  brush would have drifted past like it did on the Mac (300k -> 2.18M).
+- **At equal iters, count barely moves PSNR** on this capture: 250k-400k
+  are all within 0.35 dB. The count's real lever is *step rate* — on the
+  M5 Pro ~77 it/s at 290k vs ~15 it/s at 2.18M — which under `--budget-s`
+  is what buys PSNR back inside a wall budget.
+- **The decimate-seed + score-regrow recipe wins again**: decim 100k +
+  budget->300k takes best PSNR (20.33) AND the lowest wall (330s). The
+  seed's least-important 2/3 replaced by score-selected regrowth beats
+  spending the whole seed — same as round 1.
+- mcmc is a clean constant-count mode (exactly 300k in/out) and
+  competitive, but budget+regrow still edges it on PSNR.
 
 ## Quest export prune (300k budget)
 
@@ -81,11 +103,44 @@ blend weight, then freeze refinement and fine-tune survivors for the tail.
 `lod::export_prune` gives T1's offline path the same top-K score as a
 function.
 
-<!-- QUEST -->
+Verified: `--quest-prune-target 100000 --quest-prune-finetune-frac 0.25`
+on the same synth2 run (train ~285k to iter 224, prune to 100k by lifetime
+blend weight, 75-step frozen-refine fine-tune):
+
+| config                          | held-out PSNR | SSIM  | wall   | final count |
+|---------------------------------|--------------:|------:|-------:|------------:|
+| budget->300k + quest->100k@0.75 | 20.01         | 0.846 | 291.7s | 100,000     |
+
+The blend-weight ranking keeps 100k within ~0.3 dB of the ~285k model
+(20.33) and above every naive-capped run — for the real 300k Quest budget
+the prune gap should be smaller still. Export counts land exactly on
+target (`.splat` = count x 32 B).
 
 ## Recommended recipe (for the shared `quality` preset)
 
-<!-- PRESET -->
+Wired into `TrainConfig::apply_quality` (`--quality`), alongside T3's
+schedule bundle:
+
+- `refine_mode = Budget` — score-ranked growth under a real cap.
+- `growth_target_splats = 300000` (only when unset) — holds M5 Pro step
+  rate near 77 it/s; the extra steps inside `--budget-s` beat the last
+  ~0.2 dB a larger cloud would give. For a >=120 s budget a larger cap
+  (400-500k) is the cheap upgrade — pass the flag explicitly.
+- `quest_prune_target = 300000` (only when 0) — the Quest export budget
+  lands exactly on 300k with the fine-tune tail.
+
+Per-budget picks (M5 Pro, seed ~290k):
+
+| budget   | refine_mode | cap    | expected count | rationale |
+|----------|-------------|--------|----------------|-----------|
+| 60 s     | budget      | 300k   | ~300k          | max steps at ~77 it/s |
+| 120 s    | budget      | 400k   | ~400k          | PSNR still ~flat, +count free |
+| 300 s    | budget      | 500k   | ~500k          | step-rate trade favours steps |
+
+`init_decimate` stays out of the preset — T5's farsight seed (~290k) is
+already the decimation product; decimating further costs PSNR. For a raw
+1.45M seed, `--init-decimate ~1/3` + regrow is the winning move (both
+rounds).
 
 Reproduce: `bash` the grid script under `VK_ICD_FILENAMES=...lvp_icd` (CPU
 Vulkan) or `splat/bench_mac.sh` on the M5 Pro.

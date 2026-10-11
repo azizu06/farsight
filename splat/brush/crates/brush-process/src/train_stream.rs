@@ -399,15 +399,17 @@ pub(crate) async fn train_stream(
 
         // Quest export prune (T4): at `progress >= 1 - finetune_frac`, drop
         // to `quest_prune_target` by run-lifetime blend weight and freeze
-        // refinement so the tail fine-tunes the survivors.
-        let tc = &train_stream_config.train_config;
-        if tc.quest_prune_target > 0
+        // refinement so the tail fine-tunes the survivors. Reads the
+        // trainer's effective config so `--quality` supplies it too.
+        let (quest_target, quest_frac) = {
+            let c = trainer.config();
+            (c.quest_prune_target, c.quest_prune_finetune_frac)
+        };
+        if quest_target > 0
             && !quest_pruned
-            && trainer.progress(iter) >= 1.0 - tc.quest_prune_finetune_frac
+            && trainer.progress(iter) >= 1.0 - quest_frac
         {
-            splats = trainer
-                .quest_prune(splats, tc.quest_prune_target)
-                .await;
+            splats = trainer.quest_prune(splats, quest_target).await;
             quest_pruned = true;
         }
 

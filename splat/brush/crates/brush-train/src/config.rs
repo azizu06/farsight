@@ -357,6 +357,21 @@ impl TrainConfig {
         }
         self.seeded_mean_lr_scale = 0.75;
         self.seeded_early_boost = 1.25;
+        // T4 (densify.md): score-budgeted growth capped at ~300k — the cap
+        // holds step rate (~77 it/s at 290k vs ~15 it/s at 2.18M on the M5
+        // Pro), and on the synth captures capped-vs-uncapped PSNR is within
+        // ~0.2 dB at equal iters, so the extra steps win at every budget.
+        if matches!(self.refine_mode, RefineMode::Brush) {
+            self.refine_mode = RefineMode::Budget;
+        }
+        if self.growth_target_splats.is_none() {
+            self.growth_target_splats = Some(300_000);
+        }
+        // The Quest export budget: prune to 300k by lifetime blend weight at
+        // 95% of the schedule, then fine-tune the survivors on the tail.
+        if self.quest_prune_target == 0 {
+            self.quest_prune_target = 300_000;
+        }
     }
 
     pub fn total_iters(&self) -> u32 {
