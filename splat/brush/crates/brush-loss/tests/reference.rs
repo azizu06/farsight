@@ -301,3 +301,66 @@ async fn partials_gradient_matches_finite_difference() {
         failed.join("\n  ")
     );
 }
+
+/// splat-turbo T7: SSIM tile-shape bench. Run per feature build:
+/// `cargo test --release -p brush-loss ssim_bench -- --ignored --nocapture`
+/// (`--features ssim-fwd-32x8` / `ssim-fwd-8x8` / `ssim-bwd-8x4`).
+/// Prints per-call ms for the fused forward and the backward chain at
+/// phone (480x640) and full-res (1200x1600) sizes, so the M5 Pro run can
+/// pick the fastest tile config for `brush-loss`.
+#[wasm_bindgen_test(unsupported = tokio::test)]
+#[ignore = "bench: run explicitly per tile-variant build"]
+async fn ssim_bench() {
+    use std::time::Instant;
+
+    let device =
+        burn::tensor::Device::from(brush_cube::test_helpers::test_device().await).autodiff();
+    println!(
+        "ssim_bench tiles: fwd {}x{} bwd {}x{}",
+        brush_loss::BLOCK_X,
+        brush_loss::BLOCK_Y,
+        brush_loss::BLOCK_X_BWD,
+        brush_loss::BLOCK_Y_BWD
+    );
+    for (h, w) in [(480usize, 640usize), (1200usize, 1600usize)] {
+        let bytes = make_pattern(h, w, 7, 11);
+        let rgb: Vec<f32> = bytes
+            .chunks_exact(4)
+            .flat_map(|p| [p[0], p[1], p[2]].map(|b| b as f32 / 255.0))
+            .collect();
+        let alpha: Vec<f32> = vec![1.0; h * w];
+        let mut rgba = Vec::with_capacity(h * w * 4);
+        for c in 0..3 {
+            for i in 0..h * w {
+                rgba.push(rgb[i * 3 + c]);
+            }
+        }
+        rgba.extend(alpha);
+        let pred_host = Tensor::<1>::from_floats(rgba.as_slice(), &device).reshape([h, w, 4]);
+        let gt = gt_packed_from_bytes(&bytes, h, w, &device);
+        let cfg = ssim_only_cfg();
+
+        // warmup + compile
+        let p = pred_host.clone().require_grad();
+        let l = image_loss_partials(p.clone(), gt.clone(), cfg).sum();
+        let _ = l.backward();
+        let _ = to_vec(l).await;
+
+        const ITERS: usize = 20;
+        let t0 = Instant::now();
+        for _ in 0..ITERS {
+            let l = image_loss_partials(pred_host.clone(), gt.clone(), cfg).sum();
+            let _ = to_vec(l).await;
+        }
+        let fwd = t0.elapsed().as_secs_f64() * 1e3 / ITERS as f64;
+
+        let t0 = Instant::now();
+        for _ in 0..ITERS {
+            let p = pred_host.clone().require_grad();
+            let l = image_loss_partials(p.clone(), gt.clone(), cfg).sum();
+            let _g = l.backward();
+        }
+        let fwdbwd = t0.elapsed().as_secs_f64() * 1e3 / ITERS as f64;
+        println!("{h}x{w}: fwd {fwd:.3} ms, fwd+bwd {fwdbwd:.3} ms per call");
+    }
+}

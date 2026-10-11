@@ -62,8 +62,25 @@ mod kernels {
         w
     }
 
-    pub const BLOCK_X: u32 = 16;
-    pub const BLOCK_Y: u32 = 16;
+    // splat-turbo T7: tile shapes are feature-selectable for the Apple
+    // bench matrix (see brush-loss/Cargo.toml). 32x8 puts a full simdgroup
+    // on every shared-mem row on M5 Pro; 8x8 halves it for a different
+    // halo/occupancy trade. Shared-mem footprints recompute from the
+    // consts below, so a variant only has to compile to be benched.
+    pub const BLOCK_X: u32 = if cfg!(feature = "ssim-fwd-32x8") {
+        32
+    } else if cfg!(feature = "ssim-fwd-8x8") {
+        8
+    } else {
+        16
+    };
+    pub const BLOCK_Y: u32 = if cfg!(feature = "ssim-fwd-32x8") {
+        8
+    } else if cfg!(feature = "ssim-fwd-8x8") {
+        8
+    } else {
+        16
+    };
     const HALO: u32 = 5;
     const SHARED_X: u32 = BLOCK_X + 2 * HALO; // 26
     const SHARED_Y: u32 = BLOCK_Y + 2 * HALO; // 26
@@ -75,7 +92,11 @@ mod kernels {
     // threadgroup budget. Shrinking the tile to 8x8 fits inside the doubled
     // bound. Forward is unaffected and stays at 16x16.
     pub const BLOCK_X_BWD: u32 = 8;
-    pub const BLOCK_Y_BWD: u32 = 8;
+    pub const BLOCK_Y_BWD: u32 = if cfg!(feature = "ssim-bwd-8x4") {
+        4
+    } else {
+        8
+    };
     const SHARED_X_BWD: u32 = BLOCK_X_BWD + 2 * HALO; // 18
     const SHARED_Y_BWD: u32 = BLOCK_Y_BWD + 2 * HALO; // 18
     const EXT_X_BWD: u32 = BLOCK_X_BWD + 4 * HALO; // 28
@@ -827,10 +848,13 @@ pub struct ImageLossConfig {
 /// Side of the square tiles the loss kernel reduces; partial sums come back
 /// one per tile.
 pub const TILE_SIZE: usize = kernels::BLOCK_X as usize;
+// splat-turbo T7: tile dims as pub consts so `ssim_bench` (and the Mac
+// tuning runs) can report which build it timed.
+pub use kernels::{BLOCK_X, BLOCK_X_BWD, BLOCK_Y, BLOCK_Y_BWD};
 
 /// Number of tiles the loss kernel splits an `h × w` image into.
 fn loss_tiles(h: usize, w: usize) -> usize {
-    w.div_ceil(TILE_SIZE) * h.div_ceil(TILE_SIZE)
+    w.div_ceil(kernels::BLOCK_X as usize) * h.div_ceil(kernels::BLOCK_Y as usize)
 }
 
 /// Whether the alpha-match term runs: it needs a weight and a 4-channel pred.
