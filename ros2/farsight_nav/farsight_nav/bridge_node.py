@@ -561,7 +561,10 @@ class FarsightBridge(Node):
                     self.no_frontier_since = now
                     self.cancel_goal("No reachable frontier")
                 self.explore_target = None
-                self.goal_state, self.goal_message = "planning", "No reachable frontier: wandering toward open space"
+                # Name what blocks the nose (field diagnosis: the logger records this message).
+                blocked = sorted(self.local_motion.blocked.items(), key=lambda item: -item[1])[:2]
+                why = f" (nose blocked: {', '.join(f'{name} {n}' for name, n in blocked)})" if blocked else ""
+                self.goal_state, self.goal_message = "planning", f"No reachable frontier: wandering toward open space{why}"
                 return
             self.no_frontier_since = None
             running = self.goal_handle is not None or (

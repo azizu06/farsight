@@ -36,6 +36,9 @@ class LocalMotion:
         self.scan_exhausted = False
         self.arc_since = None  # when the current passing arc side started holding steady
         self.arc_side = 0.0
+        self.target = None  # (odom heading, set at) a depth frame confirmed open, off the current nose
+        self.settle_since = None  # reached the target: wait for one depth frame captured there
+        self.blocked = {}  # why the straight arc failed on the last look-around tick (diagnostics only)
 
     @staticmethod
     def depth_clear(points, depth, header):
@@ -57,6 +60,39 @@ class LocalMotion:
             return False
         measured = depth[v, u]
         return bool((np.isfinite(measured) & (measured >= z + 0.1) & (measured <= 4.0)).all())
+
+    @staticmethod
+    def depth_block_reasons(points, depth, header):
+        """Counts of why depth_clear rejects these samples (diagnostics; never used to decide)."""
+        transform = frames.transform_from_column_major(header["transform"])
+        world = np.asarray(points) @ frames.M
+        world[:, 1] += header.get("floor_y", -0.15)
+        camera = (world - transform[:3, 3]) @ transform[:3, :3]
+        z = -camera[:, 2]
+        behind = z <= 0.1
+        zs = np.where(behind, 1.0, z)
+        u = np.rint(header["fx"] * camera[:, 0] / zs + header["cx"]).astype(int)
+        v = np.rint(header["cy"] - header["fy"] * camera[:, 1] / zs).astype(int)
+        inside = ~behind & (u >= 0) & (u < depth.shape[1]) & (v >= 0) & (v < depth.shape[0])
+        measured = np.full(len(z), np.nan)
+        measured[inside] = depth[v[inside], u[inside]]
+        returned = inside & np.isfinite(measured) & (measured > 0)
+        return {"behind": int(behind.sum()), "off view": int((~behind & ~inside).sum()),
+                "no return": int((inside & ~returned).sum()),
+                "past 4 m": int((returned & (measured > 4.0)).sum()),
+                "short": int((returned & (measured <= 4.0) & (measured < z + 0.1)).sum())}
+
+    @staticmethod
+    def capture_yaw(header):
+        """Odom heading of the depth frame's camera at capture (ARKit -Z forward)."""
+        transform = frames.transform_from_column_major(header["transform"])
+        forward = frames.M @ (transform[:3, :3] @ np.array((0.0, 0.0, -1.0)))
+        return math.atan2(forward[1], forward[0])
+
+    TARGET_OFFSETS = (-0.6, -0.3, 0.0, 0.3, 0.6)  # headings around the capture camera's nose, inside its view
+    TARGET_S = 2.0       # a confirmed open heading is turned toward for at most this long
+    TARGET_REACHED = 0.1  # rad: close enough that the normal arcs check it from the new nose
+    SETTLE_S = 0.5       # at the target, hold for a depth frame captured there (at most this long)
 
     def command(self, *, now, active, nav_command, nav_at, robot,
                 pose_at, depth, header, depth_at, support, resolution, origin, map_at, to_map=None, body_clear=None):
@@ -140,10 +176,8 @@ class LocalMotion:
             self.scan_exhausted = self.scan_angle >= 2 * math.pi or now - self.scan_since >= self.scan_budget_s
         if self.scan_exhausted:  # a full look around found no open arc: start another, never stop
             self.scan_since, self.scan_yaw, self.scan_angle, self.scan_exhausted = None, None, 0.0, False
-        choices = []
-        # Wander: with or without a frontier, creep along the most open measured arc.
-        angles = (-0.4, -0.2, 0.0, 0.2, 0.4)
-        for angle in angles:
+        def clear_arc(start, angle, reasons=None):
+            """Map clearance of a fully checked 0.9 m creep arc from heading `start`, else None."""
             angular = 0.5 * angle
 
             def arc(distance):
@@ -152,16 +186,20 @@ class LocalMotion:
                     body = np.array((distance, 0.0))
                 else:
                     body = self.creep_mps / angular * np.array((math.sin(turn), 1 - math.cos(turn)))
-                rotation = np.array(((math.cos(yaw), -math.sin(yaw)), (math.sin(yaw), math.cos(yaw))))
-                return np.array((x, y)) + rotation @ body, yaw + turn
+                rotation = np.array(((math.cos(start), -math.sin(start)), (math.sin(start), math.cos(start))))
+                return np.array((x, y)) + rotation @ body, start + turn
 
             line = np.array([arc(d)[0] for d in np.arange(0.1, 0.91, 0.1)])
             if not supported(line):
-                continue
+                if reasons is not None:
+                    reasons["map"] = 1
+                return None
             # Every measured body-height point participates in collision checks,
             # including thin poles between the separate coverage probes.
             if len(obstacles) and (np.linalg.norm(obstacles[:, None, :] - line[None, :, :], axis=2) < radius).any():
-                continue
+                if reasons is not None:
+                    reasons["obstacle"] = 1
+                return None
             # Full width at body height. Close samples cannot span the camera FOV;
             # the already observed footprint/costmap supports that near segment.
             points = []
@@ -172,14 +210,24 @@ class LocalMotion:
                     point = centre + side * lateral
                     for height in (0.08, 0.15, 0.25):
                         points.append((*point, height))
-            if self.depth_clear(points, depth, header):
-                # Prefer the broadest known local corridor, then smooth heading.
-                map_line = np.array([to_map(*point)[:2] for point in line]) if to_map else line
-                rc = np.floor((map_line - origin) / resolution).astype(int)[:, ::-1]
-                width = float(support[rc[:, 0], rc[:, 1]].min())
-                score = width - 0.3 * abs(angle) - 0.5 * abs(angle - self.heading)
-                choices.append((score, angle))
+            if not self.depth_clear(points, depth, header):
+                if reasons is not None:
+                    reasons.update({k: n for k, n in self.depth_block_reasons(points, depth, header).items() if n})
+                return None
+            # Prefer the broadest known local corridor.
+            map_line = np.array([to_map(*point)[:2] for point in line]) if to_map else line
+            rc = np.floor((map_line - origin) / resolution).astype(int)[:, ::-1]
+            return float(support[rc[:, 0], rc[:, 1]].min())
+
+        choices = []
+        # Wander: with or without a frontier, creep along the most open measured arc.
+        for angle in (-0.4, -0.2, 0.0, 0.2, 0.4):
+            width = clear_arc(yaw, angle)
+            if width is not None:
+                # ... then smooth heading.
+                choices.append((width - 0.3 * abs(angle) - 0.5 * abs(angle - self.heading), angle))
         if choices:
+            self.target, self.settle_since, self.blocked = None, None, {}
             _, angle = max(choices)
             self.heading = angle
             # A passing arc does not flip the look-around. Only ~1 s of one side
@@ -196,9 +244,37 @@ class LocalMotion:
             # Gentle arcs retain both wheels above their calibrated floors.
             # The entire sampled arc, including its width, was checked above.
             return self.creep_mps, 0.5 * angle
+        # Nothing passes from the current nose. Look for a heading the latest depth frame confirms
+        # open (the same checks, from its capture heading: a fast turn outruns the depth stream),
+        # then turn straight to it instead of starting another blind look-around. Translation
+        # still only ever comes from the arcs above, checked from the nose the rover then has.
+        self.arc_since, self.arc_side = None, 0.0
+        captured = self.capture_yaw(header)
+        found = []
+        for offset in self.TARGET_OFFSETS:
+            heading = captured + offset
+            error = math.atan2(math.sin(heading - yaw), math.cos(heading - yaw))
+            if abs(error) < self.TARGET_REACHED:
+                continue  # that is the current nose, already checked above
+            width = clear_arc(heading, 0.0)
+            if width is not None:
+                found.append((width - 0.3 * abs(offset), heading))
+        if found:
+            self.target, self.settle_since = (max(found)[1], now), None
+        if self.target is not None and now - self.target[1] < self.TARGET_S:
+            error = math.atan2(math.sin(self.target[0] - yaw), math.cos(self.target[0] - yaw))
+            if abs(error) >= self.TARGET_REACHED:
+                self.settle_since = None
+                return 0.0, math.copysign(min(self.turn_radps, max(0.8, 3 * abs(error))), error)
+            if self.settle_since is None:
+                self.settle_since = now
+            if now - self.settle_since < self.SETTLE_S and depth_at < self.settle_since:
+                return 0.0, 0.0  # facing it: one depth frame from here decides (the arcs above)
+        self.target, self.settle_since = None, None
+        self.blocked = {}
+        clear_arc(yaw, 0.0, self.blocked)
         if self.scan_since is None:
             self.scan_since, self.scan_yaw = now, yaw
-        self.arc_since, self.arc_side = None, 0.0
         return 0.0, self.scan_turn()
 
     def scan_turn(self):

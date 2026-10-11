@@ -400,3 +400,48 @@ def test_too_close_backs_off_over_observed_floor_then_turns_away():
     args.update(robot=(0, 0, 0), support=frontiers.clearance_map(unseen != 0, 0.1))
     command = fresh.command(now=2, pose_at=2, depth_at=2, map_at=2, **args)
     assert command[0] == 0 and command[1] != 0  # never reverse blind; turn away
+
+
+def lagged(args, behind):
+    """The rover turned `behind` rad past the heading its newest depth frame was captured at."""
+    args["robot"] = (0, 0, behind)
+
+
+def test_turning_past_a_confirmed_open_heading_turns_back_and_creeps_without_a_new_scan():
+    motion = local_motion.LocalMotion()
+    args = scene_depth(wall=3.0)  # floor and a wall at 3 m: open straight ahead of the capture camera
+    lagged(args, 0.6)  # a fast turn outran the depth stream: arcs from this nose leave the frame
+    command = motion.command(now=0, pose_at=0, depth_at=0, map_at=0, **args)
+    assert command[0] == 0 and command[1] < 0  # straight back toward the confirmed heading, not onward
+    assert motion.target is not None and motion.scan_since is None  # a directed turn, not a look-around
+    lagged(args, 0.05)  # turned back onto it
+    linear, angular = motion.command(now=0.3, pose_at=0.3, depth_at=0.3, map_at=0.3, **args)
+    assert linear >= local_motion.LocalMotion.MIN_TRANSLATION_MPS  # the normal arcs pass from the new nose
+    assert motion.target is None
+
+
+def test_reaching_the_heading_waits_for_one_depth_frame_from_there_then_rescans():
+    motion = local_motion.LocalMotion()
+    args = scene_depth(wall=3.0)
+    lagged(args, 0.6)
+    assert motion.command(now=0, pose_at=0, depth_at=0, map_at=0, **args)[1] < 0
+    args.update(depth=np.full((80, 120), 0.4))  # the frame from the new heading shows a wall
+    lagged(args, 0.02)
+    assert motion.command(now=0.2, pose_at=0.2, depth_at=0.1, map_at=0.2, **args) == (0, 0)  # older frame
+    linear, angular = motion.command(now=0.4, pose_at=0.4, depth_at=0.35, map_at=0.4, **args)
+    assert linear == 0 and angular != 0 and motion.target is None  # blocked from here: look around again
+
+
+def test_no_confirmed_heading_is_invented_in_open_space_or_witness_scenes():
+    for args in (render(pitch_deg=0, wall=8.0), witness_scene(height=.08, drop=.6, wall=8)):
+        motion = local_motion.LocalMotion()
+        lagged(args, 0.6)
+        linear, angular = motion.command(now=10, pose_at=10, depth_at=10, map_at=9.9, **args)
+        assert linear == 0 and angular != 0 and motion.target is None
+
+
+def test_look_around_records_why_the_nose_is_blocked():
+    motion = local_motion.LocalMotion()
+    args = render(pitch_deg=0, wall=8.0)  # far wall past LiDAR range
+    motion.command(now=0, pose_at=0, depth_at=0, map_at=0, **args)
+    assert motion.blocked.get("no return", 0) > 0
