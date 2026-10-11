@@ -197,10 +197,11 @@ the goal.
   with a 0.13 m radius RPP clipped a wall end.
 - **Planner:** `SmacPlanner2D`, `allow_unknown` (goals are often in unseen space),
   0.25 m tolerance.
-- **Translation floor:** the server raises any moving Nav2 or Explore translation
-  slower than 0.15 m/s (`NavService.MIN_LINEAR_MPS`) to 0.15 m/s on the same arc
-  (the turn rate scales with it, then the server clamps it). Exact zero (an in-place
-  turn or a stop) stays zero. The floor holds at the real speed only with a drive
+- **Translation floor:** the server raises any moving Nav2 (Explore, Seek, Goto)
+  translation slower than 0.15 m/s (`NavService.MIN_LINEAR_MPS`) to 0.15 m/s on the
+  same arc (the turn rate scales with it, then the server clamps it). The bridge's
+  local Explore motion applies the same floor, and so does the reactive policy without
+  Nav2 (`ControlState._reactive_floor`). Exact zero (an in-place turn or a stop) stays zero. The floor holds at the real speed only with a drive
   profile that matches the loaded rover (see [drive calibration](drive-calibration.md#loaded-rover)).
 - **Controller:** Regulated Pure Pursuit by default (20 Hz, 0.95 m/s, never under
   0.45 m/s on approach; tight arcs still slow to 0.25 m/s, because a 0.45 m/s arc floor
