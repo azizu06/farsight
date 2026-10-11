@@ -3954,6 +3954,7 @@ dependencies = [
  "brush-train",
  "brush-vfs",
  "burn",
+ "burn-wgpu",
  "bytemuck",
  "clap",
  "env_logger",
@@ -3971,6 +3972,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tracing",
+ "wgpu",
 ]
 
 [[package]]

@@ -4,6 +4,7 @@
 //! plug-in points (T3 schedule, T4 densify, T5 seed, T6 views/appearance).
 
 pub mod capture;
+pub mod device;
 pub mod cull;
 pub mod eval;
 pub mod export;

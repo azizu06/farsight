@@ -61,6 +61,8 @@ pub struct RunOptions {
     pub log_every: u32,
     /// Full Brush config override (all CLI flags flattened into it).
     pub config: TrainStreamConfig,
+    /// Resolved GPU backend+adapter receipt string (set by the CLI).
+    pub backend: Option<String>,
 }
 
 impl Default for RunOptions {
@@ -81,6 +83,7 @@ impl Default for RunOptions {
             eval_split_every: 8,
             log_every: 50,
             config: TrainStreamConfig::default(),
+            backend: None,
         }
     }
 }
@@ -116,6 +119,8 @@ pub struct RunReport {
     pub scene_ply: Option<String>,
     pub scene_splat: Option<String>,
     pub run_json: Option<String>,
+    /// GPU backend+adapter that ran (e.g. "vulkan llvmpipe").
+    pub backend: Option<String>,
 }
 
 /// Full pipeline. `pipeline` carries the lane hooks; `opts` carries the config.
@@ -126,6 +131,7 @@ pub async fn run(opts: &RunOptions, pipeline: &Pipeline) -> Result<RunReport> {
         capture: opts.capture_dir.display().to_string(),
         out: opts.out_dir.display().to_string(),
         budget_s: opts.budget_s,
+        backend: opts.backend.clone(),
         ..Default::default()
     };
     let mut phases = PhaseMs::default();

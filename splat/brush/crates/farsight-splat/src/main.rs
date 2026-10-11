@@ -158,6 +158,7 @@ fn opts_of(capture_dir: &PathBuf, out: &PathBuf, args: &PipelineArgs) -> RunOpti
         eval_split_every: args.config.load_config.eval_split_every.unwrap_or(8),
         log_every: args.log_every,
         config: args.config.clone(),
+        backend: None,
     }
 }
 
@@ -251,9 +252,11 @@ async fn main() -> Result<()> {
             out,
             args,
         } => {
-            brush_process::burn_init_setup().await;
+            let (_dev, backend) = farsight_splat::device::init_device().await;
+            log::info!("backend: {backend}");
             let pipeline = pipeline_of(&args);
-            let opts = opts_of(&capture_dir, &out, &args);
+            let mut opts = opts_of(&capture_dir, &out, &args);
+            opts.backend = Some(backend);
             let rep = farsight_splat::run(&opts, &pipeline).await?;
             print_run(&rep);
         }
@@ -263,9 +266,11 @@ async fn main() -> Result<()> {
             budgets,
             args,
         } => {
-            brush_process::burn_init_setup().await;
+            let (_dev, backend) = farsight_splat::device::init_device().await;
+            log::info!("backend: {backend}");
             let pipeline = pipeline_of(&args);
-            let opts = opts_of(&capture_dir, &out, &args);
+            let mut opts = opts_of(&capture_dir, &out, &args);
+            opts.backend = Some(backend.clone());
             let rows = bench(&opts, &budgets, &pipeline).await?;
             std::fs::create_dir_all(&out)?;
             std::fs::write(

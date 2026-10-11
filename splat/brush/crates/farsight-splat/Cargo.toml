@@ -28,6 +28,8 @@ brush-train.path = "../brush-train"
 brush-vfs.path = "../brush-vfs"
 
 burn.workspace = true
+burn-wgpu.workspace = true
+wgpu.workspace = true
 glam.workspace = true
 image.workspace = true
 serde.workspace = true

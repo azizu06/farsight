@@ -140,6 +140,21 @@ impl Capture {
         t.frames = keep.to_vec();
         let text = serde_json::to_string_pretty(&t)?;
         std::fs::write(out.join("transforms.json"), text)?;
+        // Aux dot-cloud files ride along (T5's farsight-seed and `--seed raw`
+        // both read them from the prepared dataset dir).
+        for aux in [
+            "init.ply",
+            "points.bin",
+            "dense.xyzrgb",
+            "sparse.ply",
+            "depth.bin",
+        ] {
+            let src = self.dir.join(aux);
+            let dst = out.join(aux);
+            if src.exists() && !dst.exists() {
+                let _ = std::fs::hard_link(&src, &dst).or_else(|_| std::fs::copy(&src, &dst).map(|_| ()));
+            }
+        }
         Ok(copied)
     }
 }
