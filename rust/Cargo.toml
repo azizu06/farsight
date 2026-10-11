@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["farsight-server", "farsight-relay", "farsight-forward", "farsight-geometry"]
+members = ["farsight-server", "farsight-relay", "farsight-forward", "farsight-geometry", "farsight-compiler"]
 
 [workspace.package]
 edition = "2021"
