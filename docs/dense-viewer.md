@@ -23,6 +23,13 @@ ledger are written under the selected `.cache` directory. Source/count labels
 remain visible in the PNGs. All automation uses an isolated headless Chrome
 with SwiftShader; its FPS is desktop software-renderer evidence, not Quest FPS.
 
+The lab raw proxy is **off by default**: selecting raw mode returns 503 without
+contacting the rover. `python -m tools.dense_viewer --raw` is reserved for an
+approved, measured link-budget window or an offline fixture upstream. Raw pulls
+were disabled during the live AUTO run after uncompressed frame traffic was
+identified as competing with camera delivery; compression alone does not prove
+enough bandwidth. Keep the running cellular lane off until its owner approves.
+
 Coverage is the fraction of canvas pixels differing from background RGB(8,12,18)
 by a summed channel difference >24. Dark surfaces may be undercounted. Object
 coverage uses the foreground bounding box. Hole count is enclosed background
@@ -41,7 +48,7 @@ ready; never synthesize a pair to make the indicator green.
 
 ## Optional same-frame RGB-D lane
 
-The deployed Python rig initially has no raw RGB-D GET endpoint. Its depth JPEG
+The Python rig requires an optional raw RGB-D GET mount. Its depth JPEG
 is a visualization, not metric depth, and cannot substitute for raw depth.
 The optional `jetson.mapping.raw_capture.mount(app)` adds `GET /phone/frame.bin`
 after the service owner creates the mapping app. Set `FARSIGHT_RAW_CAPTURE=1` in the service environment to opt in; it is
@@ -72,8 +79,19 @@ and [persistent scan](https://github.com/azizu06/pip-scout/blob/main/dashboard/P
 It does **not** port their planar compression or two-view moving-silhouette
 retirement, and does not claim a permanent million-triangle reconstructed room.
 Raw GPU uploads reuse preallocated buffers but send a full retained point range
-per accepted frame; qualify this cost on a real large cloud before increasing
+per accepted frame in the lab's history mode; qualify this cost on a large cloud before increasing
 capture rate. This is an optional desktop prototype, separate from navigation.
+
+The Mac adapter uses **latest** mode instead: every valid native depth pixel in
+the current grid is projected, with one same-frame texture patch. It does not
+associate, rebuild or transfer the retained history. Point buffer capacity is
+the largest accepted native grid (at most 640×640), not 2M points. A 256×192
+frame transfers 1,179,648 bytes of point position/color storage, independent of
+scan length; mesh arrays and the texture are additional. Confidence-zero pixels
+are omitted, depth discontinuities cannot be bridged, and session/generation
+resets and the 2s freshness deadline still apply. Latest geometry expires at
+2s capture age. `pollInterval` is clamped to125–4000ms with one pull/worker job in
+flight;125ms is an8Hz ceiling, not a measured live rate or permission to enable.
 
 Checks:
 
@@ -115,7 +133,7 @@ accepted frame, identity and geometry. Freezing stops new pulls before draining
 the in-flight frame. The raw view starts at the displayed 12 mm world size and
 uses a 1.25 pixel floor for distant measured samples.
 
-The owner-mounted Mac adapter is `tools/dense_viewer/mac-layer.js`. Build it with `node quest/node_modules/vite/bin/vite.js build --config tools/dense_viewer/vite.layer.config.mjs`. The resulting `.cache/dense-layer-dist/raw-texture-layer.mjs` exports `rawTextureLayer({endpoint:'/phone/frame.bin'})`; mount its adjacent `assets/` worker directory at the same origin, import it and pass the result to `window.__macRegisterLayer`. It shares the renderer's existing Three.js, uses `ctx.root` and `ctx.requestFrame()`, and exposes `layer.stats()`. Registration, native route proxying and dense/coarse visibility remain the renderer owner's integration work.
+The owner-mounted Mac adapter is `tools/dense_viewer/mac-layer.js`. Build it with `node quest/node_modules/vite/bin/vite.js build --config tools/dense_viewer/vite.layer.config.mjs`. The resulting `.cache/dense-layer-dist/raw-texture-layer.mjs` exports `rawTextureLayer({endpoint:'/phone/frame.bin',enabled:false,pollInterval:125})`; mount its adjacent `assets/` worker directory at the same origin, import it and pass the result to `window.__macRegisterLayer`. It shares the renderer's existing Three.js, uses `ctx.root` and `ctx.requestFrame()`, and exposes `layer.stats()`. Networking is default-off; only the runtime owner enables it in a qualified window with `layer.setEnabled(true)`. Disabling hides it and aborts an active HTTP pull. Stats expose mode, native point capacity, transferred point bytes, patch count and cadence. Registration, native route proxying and dense/coarse visibility remain the renderer owner's integration work.
 
 Raw exports negotiate br/gzip and retain only the newest encoded packet variants. The relay owner must include `/phone/frame.bin` in its compression pass-through paths before this helps the tailnet hop. A recorded 270,259-byte physical packet compressed to 70,557 bytes with Brotli q4 in 3.1 ms on this Mac; that is a local compression measurement, not Jetson CPU or live link proof. Initial live uncompressed reads sometimes took 2.8 s and were rejected by the unchanged 2 s capture freshness limit. No service is restarted by the lab or adapter.
 
