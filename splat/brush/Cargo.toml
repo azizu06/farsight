@@ -21,6 +21,7 @@ members = [
     "crates/brush-vfs",
     "crates/colmap-reader",
     "crates/farsight-seed",
+    "crates/farsight-splat",
     "crates/lpips",
     "crates/lpips-convert",
     "crates/rrfd",

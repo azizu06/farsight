@@ -1,0 +1,56 @@
+[package]
+name = "farsight-splat"
+edition.workspace = true
+version.workspace = true
+readme.workspace = true
+license.workspace = true
+
+# One Rust CLI replacing Dechante's python postprocess scripts:
+#   farsight-splat synth <out_dir>                          synthetic test capture
+#   farsight-splat run   <capture_dir> --out <d> --budget-s 60
+#   farsight-splat bench <capture_dir> --budgets 30,60,120,300
+#   farsight-splat drives|cull|seed|score|ply2splat ...     individual stages
+[[bin]]
+name = "farsight-splat"
+path = "src/main.rs"
+
+[lib]
+name = "farsight_splat"
+path = "src/lib.rs"
+
+[dependencies]
+brush-async.path = "../brush-async"
+brush-dataset.path = "../brush-dataset"
+brush-process.path = "../brush-process"
+brush-render.path = "../brush-render"
+brush-serde.path = "../brush-serde"
+brush-train.path = "../brush-train"
+brush-vfs.path = "../brush-vfs"
+
+burn.workspace = true
+glam.workspace = true
+image.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+log.workspace = true
+env_logger.workspace = true
+humantime.workspace = true
+indicatif.workspace = true
+rand.workspace = true
+rayon.workspace = true
+ball-tree.workspace = true
+
+memory-stats = "1.2"
+bytemuck.workspace = true
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "fs"] }
+
+[lints]
+workspace = true
