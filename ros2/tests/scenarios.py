@@ -273,6 +273,10 @@ def wander_check(controller):
         messages = [s["remote"].get("message") or "" for s in late]
         goals = {s["remote"].get("goal_id") for s in late}  # Nav2 goals sent with no frontier: open-space routes
         collided = next((round(s["t"] - samples[0]["t"], 1) for s in samples if (s["sim"].get("collisions") or 0) > 0), None)
+        settled = [s for s in samples if s["t"] - samples[0]["t"] >= 10]  # whole run after Nav2 is up
+        m = max(1, len(settled))
+        result.update(run_turning_in_place=f"{100 * sum(abs(s['sim'].get('v', 0)) <= STILL < abs(s['sim'].get('w', 0)) for s in settled) / m:.0f}%",
+                      run_driving=f"{100 * sum(abs(s['sim'].get('v', 0)) > STILL for s in settled) / m:.0f}%")
         result.update(controller=controller, no_frontier_at_s=round(late[0]["t"] - samples[0]["t"], 1) if late else None,
                       no_frontier_samples=len(late),
                       turning_in_place=f"{100 * len(spin) / n:.0f}%", driving=f"{100 * len(drive) / n:.0f}%",
@@ -292,7 +296,8 @@ def wander_check(controller):
                 f"turning in place {result['turning_in_place']}, driving {result['driving']} at "
                 f"{result['driving_mps_median']} m/s, standing {result['standing']}, "
                 f"{result['no_frontier_travelled_m']} m travelled ({result['no_frontier_displacement_m']} m net), "
-                f"{result['open_space_goals']} open-space goals, local wander {result['local_wander']}, 0 collisions")
+                f"{result['open_space_goals']} open-space goals, local wander {result['local_wander']}; whole run turning "
+                f"{result['run_turning_in_place']}, driving {result['run_driving']}, {result['travelled_m']} m; 0 collisions")
     return check
 
 
