@@ -6,6 +6,9 @@ function inputFresh(now, sampledAt, limit = 150) {
 /** Demo mode tolerates XR input gaps this long (a tracking blip) before treating input as stale. */
 const DEMO_INPUT_MS = 1000;
 
+/** Server-side stalls that demo hands-free AUTO rides out instead of releasing (see `handsFree`). */
+const HOLDABLE = new Set(["Control status stale", "Waiting for fresh control permit"]);
+
 /** Latch causes that only restate "release first"; a specific cause may replace them. */
 const GENERIC_CAUSES = new Set(["Waiting for live camera and rover", "Release deadman to continue",
   "Connected: release deadman", "New control session: release deadman", "release_required", "deadman_released"]);
@@ -22,6 +25,14 @@ export class ControlSafety {
   /** @param {{ demo?: boolean }} [options] demo: see demo-config.js; the owner may toggle `demo` per frame. */
   constructor({ demo = false } = {}) {
     this.demo = demo;
+    /**
+     * Demo hands-free AUTO (set by the owner per frame). A late status or permit then
+     * holds Explore armed and sends no release: only B or leaving AUTO stops it. The
+     * rover still expires its own permits and lease.
+     */
+    this.handsFree = false;
+    /** This tick is riding out a late status/permit; nothing was invalidated. */
+    this.holding = false;
     /** A deliberate stop (B, mode change, viewer closed) always needs a real release, even in demo mode. */
     this.hardLatch = false;
     this.needsRelease = true;
@@ -90,7 +101,9 @@ export class ControlSafety {
       this.invalidate("Input or display inactive: release deadman");
       return false;
     }
-    const unsafe = this.readiness(now, connected, sampledAt);
+    let unsafe = this.readiness(now, connected, sampledAt);
+    this.holding = !!unsafe && this.demo && this.handsFree && HOLDABLE.has(unsafe);
+    if (this.holding) { this.reason = "Holding: waiting for rover status"; unsafe = null; }
     if (unsafe) this.invalidate(unsafe);
     // Missing tracking cannot prove a physical trigger release.
     if (!held && inputFresh(now, sampledAt)) { this.needsRelease = false; this.cause = null; this.hardLatch = false; }
@@ -100,9 +113,11 @@ export class ControlSafety {
       return false;
     }
     const moving = held && !unsafe && !this.needsRelease;
-    if (!unsafe) this.reason = this.needsRelease ? "Release deadman to continue" : moving ? "Driving" : "Ready: hold deadman to drive";
+    if (!unsafe && !this.holding) this.reason = this.needsRelease ? "Release deadman to continue" : moving ? "Driving" : "Ready: hold deadman to drive";
     return moving;
   }
+  /** Whether the last permit can still be valid on the rover; an expired one would only make it stop. */
+  permitLive(now) { return Number.isFinite(this.status?.permit_ms) && now - this.receivedAt < this.status.permit_ms; }
 }
 
 /** Deadman trigger with hysteresis: engage above 0.6, release below 0.25. An analog trigger resting
