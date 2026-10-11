@@ -23,9 +23,10 @@ DIST = Path(__file__).resolve().parents[1] / "quest" / "dist"
 HOP_HEADERS = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
                "te", "trailer", "transfer-encoding", "upgrade", "host", "content-length"}
 PROXY_PREFIXES = ("/ws/", "/map/", "/tts/", "/video/", "/mission/", "/phone/", "/nav/")
-# Binary map downloads keep the client's Accept-Encoding so br/gzip crosses the cellular leg.
+# Binary map and accepted RGB-D downloads keep Accept-Encoding across the cellular leg.
 # Everything else asks upstream for identity because the relay decodes and rewrites JSON.
-ENCODED_PATHS = {"/map/points.bin", "/map/mesh.bin", "/map/export.ply"}
+ENCODED_PATHS = {"/map/points.bin", "/map/points.delta", "/map/mesh.bin",
+                 "/map/export.ply", "/phone/frame.bin"}
 PROXY_PATHS = {"/health", "/control/status", "/camera.jpg", "/depth.jpg", "/stream.mjpg", "/ask", "/phone", "/scan", "/speak"}
 RENDER_PATHS = ("/ws/macview", "/ws/macview-pose")
 

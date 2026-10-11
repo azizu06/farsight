@@ -9,7 +9,7 @@ from .phone import measured_points
 
 DENSE_HZ = 8
 DENSE_FRAME_POINTS = 12_288
-DENSE_CPU_BUDGET = .25
+DENSE_CPU_BUDGET = .15
 
 
 def setting(name, default, low, high, integer=False):
