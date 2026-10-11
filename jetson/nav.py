@@ -179,9 +179,11 @@ class GoalRequest(BaseModel):
 class NavService:
     CMD_TTL = 0.25     # a velocity command older than one control lease stops the rover
     BRIDGE_TTL = 1.5   # no bridge status for this long: Nav2 is unavailable, use the fallback
-    POSE_TTL = 1.0     # Nav2 motion needs a normal-tracking ARKit pose at least this fresh (0.5 tripped on
-                       # the rig's 500-750 ms camera stalls every ~5 s and cut AUTO into 0.75 s runs) ...
+    POSE_TTL = 0.5     # Nav2 motion needs a normal-tracking ARKit pose at least this fresh ...
+    DEMO_POSE_TTL = 1.0  # ... or this in demo control: 0.5 tripped on the rig's 500-750 ms camera
+                         # stalls every ~5 s and cut AUTO into 0.75 s runs (floor test 2026-10-11) ...
     DEPTH_TTL = 1.0    # ... and measured depth of the same sensor session at least this fresh
+    MIN_LINEAR_MPS = 0.15  # every moving Nav2/Explore translation is at least this; exact zero stays zero
 
     def __init__(self, mapping, *, speed_mps=0.45, turn_radps=3.0, max_v=0.7, max_w=0.8,
                  camera_height=0.15, backed_modes=NAV_MODES, standoff=0.8, clock=time.monotonic,
@@ -447,7 +449,8 @@ class NavService:
         received, connected = mapping.last_received, mapping.connected
         scan, demo, identity = mapping.scan, mapping.demo, mapping.identity
         age = time.monotonic() - received if received else None
-        if not connected or age is None or age >= self.POSE_TTL or scan or identity is None:
+        ttl = self.DEMO_POSE_TTL if getattr(self.control, "demo_mode", False) else self.POSE_TTL
+        if not connected or age is None or age >= ttl or scan or identity is None:
             return None, tracking, "lost", age
         if tracking != "normal":
             return None, tracking, "limited", age
@@ -655,6 +658,11 @@ class NavService:
                 if self.mode in ("goto", "seek") and message.get("goal_id") != goal_id:
                     self.bridge_seen = now
                     return  # computed for an earlier goal
+                if 0 < abs(linear) < self.MIN_LINEAR_MPS:
+                    # Raise a slow translation to the floor at the same curvature, so the rover
+                    # still follows the planned arc (the server clamps the turn rate).
+                    angular *= self.MIN_LINEAR_MPS / abs(linear)
+                    linear = math.copysign(self.MIN_LINEAR_MPS, linear)
                 # ROS angular.z is counter-clockwise (left); ControlState positive w turns right.
                 v = max(-self.max_v, min(self.max_v, linear / self.speed_mps))
                 w = max(-self.max_w, min(self.max_w, -angular / self.turn_radps))

@@ -51,8 +51,9 @@ ros2 launch farsight_nav nav.launch.py                 # or the farsight-nav sys
     In demo mode a pose, depth or camera stall shorter than 2 s only holds the
     motors at zero: the goal, frontier and Nav2 intent stay, and the rover drives
     on when the sensors are fresh. The Quest's viewer-video age never stops demo
-    AUTO, and `POSE_TTL` is 1.0 s (0.5 s tripped on the rig's 500-750 ms camera
-    stalls every ~5 s; 2026-10-11 01:53Z, 22 drops in 150 s, median AUTO run 0.75 s).
+    AUTO, and the pose may be 1.0 s old (`DEMO_POSE_TTL`; strict mode keeps 0.5 s, which
+    tripped on the rig's 500-750 ms camera stalls every ~5 s; 2026-10-11 01:53Z, 22 drops
+    in 150 s, median AUTO run 0.75 s).
     A server stop that re-arms Explore within 2 s resumes the same frontier,
     blacklist and progress window. Before, each
     blip restarted Explore and the rover turned in place to face a new goal: on
@@ -96,7 +97,7 @@ ros2 launch farsight_nav nav.launch.py                 # or the farsight-nav sys
   reactive policy, which cannot see obstacles without the ultrasonic. Holding the deadman
   resumes once the bridge is back. Without `--nav2` the reactive policy still runs.
 - **Sensor gate:** Nav2 drives only with a normal-tracking ARKit pose (at most 0.5 s
-  old) and LiDAR depth (at most 1 s old) from the current phone session. There is no
+  old, 1.0 s in demo mode) and LiDAR depth (at most 1 s old) from the current phone session. There is no
   dead reckoning. Losing either stops the rover and needs a new deadman press after
   recovery; a new phone session or map epoch disarms the goal and resets Nav2.
 - **Gating:** the bridge is not a controller. Nav2's `cmd_vel` only moves the rover
@@ -196,6 +197,11 @@ the goal.
   with a 0.13 m radius RPP clipped a wall end.
 - **Planner:** `SmacPlanner2D`, `allow_unknown` (goals are often in unseen space),
   0.25 m tolerance.
+- **Translation floor:** the server raises any moving Nav2 or Explore translation
+  slower than 0.15 m/s (`NavService.MIN_LINEAR_MPS`) to 0.15 m/s on the same arc
+  (the turn rate scales with it, then the server clamps it). Exact zero (an in-place
+  turn or a stop) stays zero. The floor holds at the real speed only with a drive
+  profile that matches the loaded rover (see [drive calibration](drive-calibration.md#loaded-rover)).
 - **Controller:** Regulated Pure Pursuit by default (20 Hz, 0.95 m/s, never under
   0.45 m/s on approach; tight arcs still slow to 0.25 m/s, because a 0.45 m/s arc floor
   cut the simulated dead-end divider), 0.2-0.5 m
@@ -203,7 +209,8 @@ the goal.
   arc). RPP raises an in-place turn by at most `max_angular_accel` per step above the
   *measured* yaw rate, so it is 60 rad/s^2: at 8 the first step was 0.4 rad/s (PWM 80),
   the loaded rover never broke free and sat for 27 s (floor test, 2026-10-11); now the
-  first step is the full 2.2 rad/s (PWM 109/104). A 3.0 rad/s turn banged between
+  first step is the full 2.2 rad/s (PWM 109/104 on the unloaded profile, 255/243 on the
+  loaded one). A 3.0 rad/s turn banged between
   directions every 0.2 s in the simulated dead end and hit its walls. Or MPPI
   with `controller:=mppi` (1000 samples, 2 s horizon, `vx_max` 0.95 m/s, `wz_max`
   2.5 rad/s). These are full power for `FARSIGHT_AUTONOMY_MAX_PWM=255` on the 2026-10-10 drive

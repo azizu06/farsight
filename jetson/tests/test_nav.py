@@ -1072,6 +1072,57 @@ class DemoSensorPauseTests(unittest.TestCase):
         status = self.state.status()
         self.assertEqual((status["reason"], status["requires_release"]), ("nav_pose_lost", True))
 
+    def test_a_750_ms_old_pose_drives_in_demo_but_stops_strict_mode(self):
+        self.assertGreater(self.drive()[0], 0)
+        self.nav.mapping.last_received = time.monotonic() - 0.75
+        self.assertGreater(self.state.output()[0], 0)
+        self.assertEqual(self.state.status()["reason"], "active")
+        self.state.demo_mode = False
+        self.assertEqual(self.state.output()[:2], (0, 0))
+        self.assertEqual(self.state.status()["reason"], "nav_pose_lost")
+
+
+class TranslationFloorTests(unittest.TestCase):
+    """A moving Nav2/Explore translation is never slower than MIN_LINEAR_MPS; exact zero stays zero."""
+
+    def setUp(self):
+        self.nav = NavService(MapState(), clock=Clock())
+        self.nav.mode, self.nav.active, self.nav.bridge = "explore", True, object()
+        feed(self.nav)
+
+    def command(self, linear, angular):
+        self.nav.receive(dict(type="cmd_vel", linear=linear, angular=angular, generation=self.nav.generation))
+        return self.nav.command(si=True), self.nav.command()
+
+    def test_slow_translations_rise_to_the_floor_on_the_same_arc(self):
+        for (linear, angular), (v, w) in (((0.05, 0.1), (0.15, 0.3)), ((-0.03, 0.0), (-0.15, 0.0)),
+                                          ((0.0, 1.2), (0.0, 1.2)), ((0.0, 0.0), (0.0, 0.0)),
+                                          ((0.15, -0.4), (0.15, -0.4)), ((0.3, 0.5), (0.3, 0.5))):
+            with self.subTest(linear=linear, angular=angular):
+                si, normalized = self.command(linear, angular)
+                self.assertAlmostEqual(si[0], v)
+                self.assertAlmostEqual(si[1], w)
+                self.assertAlmostEqual(normalized[0], v / self.nav.speed_mps)
+
+    def test_the_floor_reaches_the_wheels_through_the_server(self):
+        clock = Clock()
+        nav = NavService(MapState(), clock=clock)
+        nav.bridge = object()
+        feed(nav)
+        state = ControlState(clock=clock, navigator=nav, proximity_stop=False)
+        nav.attach(state)
+        state.set_connected(True)
+        session = state.begin()
+        for seq, deadman in ((1, False), (2, True)):
+            permit = state.status(issue_permit=True)["permit"]
+            state.accept(dict(session_id=session, permit=permit, seq=seq, deadman=deadman, v=0, w=0, pan=0,
+                              mode="explore", video_fresh=True, video_age_ms=0), session)
+        state.output()
+        nav.receive(dict(type="status", state="driving", goal_id=None, generation=nav.generation))
+        nav.receive(dict(type="cmd_vel", linear=0.02, angular=0.0, generation=nav.generation))
+        left, right, _ = state.output()
+        self.assertEqual((left, right), (round(0.15 / nav.speed_mps * state.max_pwm),) * 2)
+
 
 class NavLaneTests(unittest.TestCase):
     def test_arrays_only_on_change_at_most_twice_a_second_with_a_refresh(self):

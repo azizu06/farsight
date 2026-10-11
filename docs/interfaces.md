@@ -359,7 +359,7 @@ every `/ws/control` status. Coordinates are voxel-map world metres: map `x, z`
   silent bridge whose commands are ignored, or missing navigation sensors; the
   rover stops).
 - Navigation sensors: Nav2 only drives with a normal-tracking ARKit pose at most
-  0.5 s old and LiDAR depth at most 1 s old, both from the current phone session
+  0.5 s old (1.0 s in demo mode) and LiDAR depth at most 1 s old, both from the current phone session
   and map epoch. A fresh RGB camera alone never qualifies. Losing either while
   driving stops the rover even with a live lease and fresh Nav2 command, with
   control `reason` `nav_pose_lost`, `nav_tracking_limited`, `nav_depth_lost` or

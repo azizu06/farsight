@@ -120,6 +120,27 @@ stdlib-only and can be imported directly.
 are rejected at server start, not mid-drive. A profile from `--simulate`
 carries `meta.source: "simulated"` and the server logs a warning if it is loaded.
 
+## Loaded rover
+
+The 2026-10-10 profile was measured up to PWM 160 and extrapolated to 0.95 m/s at
+255. Loaded with the Jetson, battery and phone, AUTO on 2026-10-11 02:32Z
+(`navwatch2-0232`) covered 0.32 of the profiled speed at the same PWM, as a median
+over 26 one-second forward windows of ARKit travel (p75 0.35). The top straight
+speed is about 0.30 m/s at 255. So Nav2's requests landed far below full power. A
+2.2 rad/s turn became PWM 109/104, and 74% of AUTO time went to in-place turns at
+that power. A 0.45 m/s cruise became PWM 131/125.
+
+```sh
+python -m tools.rescale_drive_profile drive-profile.json drive-profile-loaded.json 0.32 \
+  --evidence "navwatch2-0232 AUTO, 26 forward windows, median 0.32"
+```
+
+This scales `linear.mps` only. PWM points, floors, trim, the spin floor and the
+angular curve stay, and `meta.linear_scale` keeps the factor, the evidence and the
+unscaled speeds. Loaded, cruise (0.45 m/s), creep (0.3 m/s) and the 2.2 rad/s
+turn all saturate at 255/243, a 0.25 m/s approach maps to 216/206, and the 0.15 m/s
+AUTO floor maps to 135/130. A full calibration run under the same payload replaces it.
+
 ## Known limits
 
 - One speed curve is used for both wheels plus a gain; stiction-limited low

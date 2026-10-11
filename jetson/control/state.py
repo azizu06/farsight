@@ -411,7 +411,7 @@ class ControlState:
             autonomous = self.autonomy is not None and self.autonomy.mode != "teleop"
             gated = (autonomous or self.drive is not None or self.scan_token is not None
                      or ((self.v or self.w) and not self.demo_mode))  # demo: teleop drives without the camera gate
-            camera_ok = self.camera_is_ready()
+            camera_ok = self.camera_is_ready() if gated else True
             demo_autonomy = self.demo_mode and autonomous and bool(self.deadline) and self.drive is None
             if gated and not camera_ok and not demo_autonomy:
                 self.stop("camera_stale")
