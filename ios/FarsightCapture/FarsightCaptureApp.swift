@@ -107,6 +107,7 @@ struct CaptureView: View {
                 .tint(capture.running ? .red : .green)
                 Text(capture.source).font(.caption.bold())
                 Text(capture.status).font(.callout)
+                Text("Intercom: \(capture.intercomStatus)").font(.caption.monospaced())
                 Text(capture.geometryStatus).font(.caption.monospaced())
                 Text(capture.clockDiagnostic).font(.caption.monospaced()).foregroundStyle(.secondary)
                 if !capture.resolvedEndpoint.isEmpty {

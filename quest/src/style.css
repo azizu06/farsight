@@ -367,6 +367,9 @@ canvas:focus-visible {
   border-radius: 9px; font-size: 12px; box-shadow: 0 8px 30px #0005;
 }
 .rover-controls button { border: 1px solid #506177; background: #243345; border-radius: 5px; padding: 9px 12px; font-size: 12px; }
+#rover-intercom { width: 100%; margin-top: 8px; color: #eafaff; font-weight: 700; }
+#rover-intercom[aria-pressed="true"] { color: #c9ffe4; background: #145b43; border-color: #53d9a0; }
+#rover-intercom-status { margin: 4px 0 8px; font-size: 10px; color: #a9c5d1; }
 .rover-tabs { display: flex; gap: 8px; }
 .rover-tabs button { flex: 1; }
 .rover-tabs #rover-stop { color: #ffd2ca; border-color: #be7569; background: #512b2b; }
