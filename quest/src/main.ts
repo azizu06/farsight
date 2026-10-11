@@ -53,6 +53,7 @@ app.innerHTML = `
     <div class="view-label" id="view-label">User Perspective</div>
     <div class="cloud-status" id="cloud-status" role="status" aria-live="off">Connecting to mapper…</div>
     <button class="settings-toggle" id="settings-toggle" title="Settings (Escape)" aria-label="Open viewer settings">Settings</button>
+    <button class="desktop-controls-toggle" id="desktop-controls-toggle" aria-expanded="false" aria-controls="desktop-rover-controls">Controls</button>
     <div id="xr-slot" class="xr-launch"></div>
     <p class="navigation-hint" id="navigation-help">
       <span><b>Right drag</b> Orbit</span><span><b>Left drag</b> Pan</span><span><b>Scroll</b> Zoom</span>
@@ -164,18 +165,22 @@ const gridMaterial = new THREE.ShaderMaterial({
   uniforms: {
     minor: { value: new THREE.Color("#4d4d4d") },
     major: { value: new THREE.Color("#616161") },
+    cellSize: { value: 0.5 },
+    sectionSize: { value: 2 },
+    fadeDistance: { value: 25 },
   },
   vertexShader: `varying vec3 world;
     void main() { vec4 p = modelMatrix * vec4(position, 1.0); world = p.xyz; gl_Position = projectionMatrix * viewMatrix * p; }`,
   fragmentShader: `varying vec3 world; uniform vec3 minor; uniform vec3 major;
+    uniform float cellSize; uniform float sectionSize; uniform float fadeDistance;
     float line(vec2 p, float width) {
       vec2 d = max(fwidth(p), vec2(0.00001));
       vec2 a = abs(fract(p - 0.5) - 0.5) / d;
       return 1.0 - min(min(a.x, a.y) / width, 1.0);
     }
     void main() {
-      float fine = line(world.xz, 0.65); float coarse = line(world.xz / 10.0, 0.9);
-      float fade = pow(1.0 - smoothstep(15.0, 160.0, distance(cameraPosition, world)), 1.5);
+      float fine = line(world.xz / cellSize, 0.5); float coarse = line(world.xz / sectionSize, 0.8);
+      float fade = pow(1.0 - smoothstep(0.0, fadeDistance, distance(cameraPosition, world)), 1.6);
       float alpha = max(fine * 0.65, coarse * 0.8) * fade;
       if (alpha < 0.01) discard;
       gl_FragColor = vec4(mix(minor, major, coarse), alpha);
@@ -233,7 +238,7 @@ root.add(cloud);
 // Matte, physically shaded reconstruction: Lambert BRDF (albedo / pi) under one key
 // light fixed to the map and a soft sky/ground fill, keeping measured vertex colours.
 // Per-pixel diffuse only, no shadows or AO: cheap enough for Quest 2.
-const surfaces = new THREE.Mesh(
+const surfaces = new THREE.Mesh<THREE.BufferGeometry, THREE.Material>(
   new THREE.BufferGeometry(),
   new THREE.MeshLambertMaterial({
     vertexColors: true,
@@ -245,6 +250,13 @@ const surfaces = new THREE.Mesh(
   }),
 );
 root.add(surfaces);
+// The reference desktop viewer presents the measured RGB colours directly.
+// Keep the headset's existing lit material for immersive rendering.
+const immersiveSurfaceMaterial = surfaces.material;
+const desktopSurfaceMaterial = new THREE.MeshBasicMaterial({
+  vertexColors: true, side: THREE.DoubleSide, toneMapped: false,
+  polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1,
+});
 // Key + fill sum to ~pi on lit upward faces so albedo reads near its measured colour.
 const keyLight = new THREE.DirectionalLight(0xffffff, 2.2);
 keyLight.position.set(3, 6, 2);
@@ -266,9 +278,16 @@ root.add(personMarkers.group);
 const xrButton = VRButton.createButton(renderer);
 xrButton.removeAttribute("style");
 $("xr-slot").append(xrButton);
+// A browser without a headset needs no unsupported-VR label over the map.
+if (navigator.xr) {
+  void navigator.xr.isSessionSupported("immersive-vr").then((supported) => {
+    $("xr-slot").hidden = !supported;
+  }).catch(() => { $("xr-slot").hidden = true; });
+} else $("xr-slot").hidden = true;
 const desktopPosition = new THREE.Vector3(),
   desktopQuaternion = new THREE.Quaternion();
 renderer.xr.addEventListener("sessionstart", () => {
+  $("app").classList.add("immersive");
   desktopPosition.copy(camera.position);
   desktopQuaternion.copy(camera.quaternion);
   controls.enabled = false;
@@ -277,6 +296,7 @@ renderer.xr.addEventListener("sessionstart", () => {
   camera.quaternion.identity();
 });
 renderer.xr.addEventListener("sessionend", () => {
+  $("app").classList.remove("immersive");
   camera.position.copy(desktopPosition);
   camera.quaternion.copy(desktopQuaternion);
   controls.enabled = true;
@@ -325,15 +345,26 @@ renderer.setAnimationLoop((_time, frame) => {
   // floor there); the layer only moves in y, so /nav/goal keeps AR-world x/z.
   if (rover) rover.navLayer.position.y = walking ? mapWalk.floorY : 0;
   if (rover) { const { packet, at } = rover.latestDetections; personMarkers.update(packet, at, start); }
-  mapAxes.visible = !renderer.xr.isPresenting;
+  mapAxes.visible = false;
   grid.visible = !walking;
+  surfaces.material = renderer.xr.isPresenting ? immersiveSurfaceMaterial : desktopSurfaceMaterial;
   if (renderer.xr.isPresenting) {
+    gridMaterial.uniforms.minor.value.set("#4d4d4d");
+    gridMaterial.uniforms.major.value.set("#616161");
+    gridMaterial.uniforms.cellSize.value = 1;
+    gridMaterial.uniforms.sectionSize.value = 10;
+    gridMaterial.uniforms.fadeDistance.value = 160;
     grid.scale.setScalar(Math.max(vrMapSpan, 4) / 2000);
     grid.position.x = vrMapCenter.x; grid.position.z = vrMapCenter.z;
     renderer.setClearColor(0x080f16);
   } else {
+    gridMaterial.uniforms.minor.value.set("#34373c");
+    gridMaterial.uniforms.major.value.set("#51565e");
+    gridMaterial.uniforms.cellSize.value = 0.5;
+    gridMaterial.uniforms.sectionSize.value = 2;
+    gridMaterial.uniforms.fadeDistance.value = 25;
     grid.scale.setScalar(1); grid.position.x = grid.position.z = 0;
-    renderer.setClearColor(0x393939);
+    renderer.setClearColor(0x202226);
   }
   if (!renderer.xr.isPresenting) controls.update();
   denseView.update(start, renderer.xr.isPresenting ? renderer.xr.getCamera() : camera,
@@ -347,6 +378,13 @@ renderer.setAnimationLoop((_time, frame) => {
 });
 
 rover = new RoverExperience(renderer, scene, camera, () => view, setView);
+document.querySelector<HTMLElement>(".rover-controls")!.id = "desktop-rover-controls";
+$("desktop-controls-toggle").onclick = () => {
+  rover?.stop("Controls opened: release deadman");
+  const open = !document.querySelector(".viewport")!.classList.contains("controls-open");
+  document.querySelector(".viewport")!.classList.toggle("controls-open", open);
+  $("desktop-controls-toggle").setAttribute("aria-expanded", String(open));
+};
 if (macViewEnabled(location.search)) macView = new MacAutoView(renderer, scene, () => appliedPoints >= 0 ? appliedPoints : null, macStereoEnabled(location.search));
 root.add(rover.navLayer);
 diagnostics = new DiagnosticsOverlay(() => rover!.diagnostics());
@@ -432,6 +470,18 @@ function resetView() {
 function setView(next: string) {
   if (view !== next) rover?.stop("View changed: release deadman");
   view = next;
+  const viewport = document.querySelector<HTMLElement>(".viewport")!;
+  viewport.dataset.sceneView = view;
+  viewport.classList.remove("controls-open");
+  $("desktop-controls-toggle").setAttribute("aria-expanded", "false");
+  // Source and connection details belong to the controls drawer in map mode.
+  // Keep their original elements so the existing live updates remain authoritative.
+  const panel = document.querySelector<HTMLElement>(".rover-controls");
+  const source = document.querySelector<HTMLElement>(".source-banner");
+  if (panel && source) {
+    if (view === "camera") { viewport.append(source); viewport.append($("cloud-status")); }
+    else { panel.prepend($("cloud-status")); panel.prepend(source); }
+  }
   document.querySelectorAll<HTMLElement>("[data-view]").forEach((button) => {
     const selected = button.dataset.view === view;
     button.classList.toggle("selected", selected);
@@ -815,4 +865,5 @@ window.addEventListener("beforeunload", () => {
   diagnostics?.dispose();
   denseView.dispose();
   renderer.dispose();
+  desktopSurfaceMaterial.dispose();
 });

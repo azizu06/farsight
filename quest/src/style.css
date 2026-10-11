@@ -444,3 +444,69 @@ canvas:focus-visible {
 
 .xr-launch { position: absolute; top: 14px; right: 100px; z-index: 8; }
 .xr-launch button { min-width: 140px; padding: 12px 20px !important; background: #0d6774 !important; color: #f4ffff !important; border: 1px solid #71d8e7 !important; border-radius: 10px !important; font-size: 15px !important; font-weight: 700; }
+
+/* Full-canvas browser workspace, matching pip-scout's minimal dashboard. */
+:root { background: #202226; color: #e4e7eb; }
+.desktop-controls-toggle {
+  position: absolute; top: 12px; right: 86px; z-index: 8;
+  border: 0; padding: 4px 0; background: transparent; color: #a2a9b3;
+  font-size: 11px;
+}
+.desktop-controls-toggle:hover, .desktop-controls-toggle[aria-expanded="true"] { color: #e4e7eb; }
+.viewport[data-scene-view="camera"] .desktop-controls-toggle { display: none; }
+.viewport:not([data-scene-view="camera"]):not(.controls-open) .rover-controls { display: none; }
+.viewport:not([data-scene-view="camera"]) .rover-controls {
+  top: 48px; right: 16px; bottom: auto; left: auto;
+  max-height: calc(100dvh - 130px); overflow-y: auto;
+  border: 1px solid #3b4048; border-radius: 3px; background: #191c21f5;
+  box-shadow: 0 4px 18px #0003;
+}
+.viewport:not([data-scene-view="camera"]) .rover-help { display: none; }
+.viewport:not([data-scene-view="camera"]) .view-label,
+.viewport:not([data-scene-view="camera"]) .navigation-hint { display: none; }
+.viewport:not([data-scene-view="camera"]) .cloud-status {
+  position: static; margin: 6px 0 14px; font-size: 10px; text-shadow: none;
+}
+.viewport:not([data-scene-view="camera"]) .source-banner {
+  position: static; transform: none; margin-bottom: 8px;
+  width: auto; max-width: 100%; padding: 0;
+  border: 0; border-radius: 0; background: transparent; box-shadow: none;
+  text-align: left; color: #dfb87b; font-size: 10px;
+}
+.viewport:not([data-scene-view="camera"]) .source-banner[data-kind="LIVE"] { color: #acd1a6; }
+.viewport:not([data-scene-view="camera"]) .source-banner[data-kind="REPLAY"] { color: #c7b5e3; }
+.viewport:not([data-scene-view="camera"]) .source-banner strong {
+  display: inline; font-size: 10px; font-weight: 600; letter-spacing: .04em;
+}
+.viewport:not([data-scene-view="camera"]) .source-banner > span {
+  display: inline; margin-left: 8px; font-size: 10px; color: #a2a9b3;
+}
+.viewport:not([data-scene-view="camera"]) .source-banner .stop-reason {
+  margin: 4px 0 0; padding: 0; background: transparent; color: #bd9292;
+}
+.viewport:not([data-scene-view="camera"]) .source-banner .stop-reason b,
+.viewport:not([data-scene-view="camera"]) .source-banner .stop-reason em {
+  display: inline; font-size: 10px; font-weight: 400;
+}
+.viewport:not([data-scene-view="camera"]) .source-banner .stop-reason em { margin-left: 8px; color: #a2a9b3; }
+.viewport:not([data-scene-view="camera"]) .xr-launch { top: 11px; right: 155px; }
+.viewport:not([data-scene-view="camera"]) #xr-slot button,
+.viewport:not([data-scene-view="camera"]) #xr-slot a {
+  min-width: 0; width: auto !important; padding: 4px 8px !important;
+  border: 0 !important; background: transparent !important;
+  color: #a2a9b3 !important; font-size: 10px !important; font-weight: 400;
+}
+.viewport:not([data-scene-view="camera"]) #xr-slot button:disabled { display: none !important; }
+.settings, .confirm { background: #191c21f5; border-color: #3b4048; }
+.settings button, .confirm button { border-color: #3b4048; background: #23272e; }
+.view-options .selected { background: #223044; border-color: #668abb; color: #e0ebfc; }
+.settings > p, .settings dt, .settings .panel-note { color: #a2a9b3; }
+.settings input[type="checkbox"] { accent-color: #8ab4f8; }
+.immersive .desktop-controls-toggle { display: none; }
+@media (max-width: 600px) {
+  .viewport:not([data-scene-view="camera"]) .cloud-status { right: 18px; top: 38px; }
+  .viewport:not([data-scene-view="camera"]) .rover-controls { right: 10px; left: 10px; width: auto; }
+  .viewport:not([data-scene-view="camera"]) .source-banner { bottom: 45px; }
+  .viewport:not([data-scene-view="camera"]) .source-banner > span { display: block; margin: 4px 0 0; }
+  .viewport:not([data-scene-view="camera"]) .source-banner .stop-reason em { display: block; margin: 3px 0 0; }
+}
