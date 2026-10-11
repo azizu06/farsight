@@ -8,9 +8,10 @@ pub use brush_scan::{BLOCK_SIZE, ELEMENTS_PER_THREAD, WG};
 use brush_scan::{block_scan, cube_exclusive_sum, cube_sum, lds_index};
 
 pub const WG_USIZE: usize = WG as usize;
-pub const BITS_PER_PASS: u32 = 4;
+pub const BITS_PER_PASS: u32 = 8;
 pub const BIN_COUNT: u32 = 1 << BITS_PER_PASS;
 pub const BIN_COUNT_USIZE: usize = BIN_COUNT as usize;
+const BIN_MASK: u32 = BIN_COUNT - 1;
 
 #[cube]
 #[allow(clippy::manual_div_ceil)]
@@ -45,7 +46,7 @@ pub fn sort_count_kernel(
 
     for _ in 0u32..ELEMENTS_PER_THREAD {
         if data_index < num_keys {
-            let local_key = (src[data_index as usize] >> shift) & 0xfu32;
+            let local_key = (src[data_index as usize] >> shift) & BIN_MASK;
             Atomic::fetch_add(&histogram[local_key as usize], 1u32);
         }
         data_index += WG;
@@ -197,8 +198,6 @@ pub fn sort_scatter_kernel(
         terminate!();
     }
 
-    let subgroup_id = UNIT_POS / PLANE_DIM;
-
     let mut lds_keys = Shared::new_slice(WG_USIZE);
     let mut lds_values = Shared::new_slice(WG_USIZE);
     let mut lds_scratch = Shared::new_slice(WG_USIZE);
@@ -227,7 +226,7 @@ pub fn sort_scatter_kernel(
 
         let mut bit_shift = 0u32;
         while bit_shift < BITS_PER_PASS {
-            let key_index = (local_key >> shift) & 0xfu32;
+            let key_index = (local_key >> shift) & BIN_MASK;
             let bit_key = (key_index >> bit_shift) & 3u32;
             let packed_input = 1u32 << (bit_key * 8u32);
 
@@ -246,26 +245,20 @@ pub fn sort_scatter_kernel(
             bit_shift += 2u32;
         }
 
-        let key_index = (local_key >> shift) & 0xfu32;
+        let key_index = (local_key >> shift) & BIN_MASK;
         Atomic::fetch_add(&local_histogram[key_index as usize], 1u32);
         sync_cube();
 
-        if PLANE_DIM >= BIN_COUNT {
-            let v = select(
-                UNIT_POS_PLANE < BIN_COUNT,
-                Atomic::load(&local_histogram[UNIT_POS_PLANE as usize]),
-                0u32,
-            );
-            let inclusive = plane_inclusive_sum(v);
-            if subgroup_id == 0u32 && UNIT_POS_PLANE < BIN_COUNT {
-                lds_scratch[UNIT_POS_PLANE as usize] = inclusive;
-            }
-        } else if UNIT_POS == 0u32 {
-            let mut acc = 0u32;
-            for b in 0u32..BIN_COUNT {
-                acc += Atomic::load(&local_histogram[b as usize]);
-                lds_scratch[b as usize] = acc;
-            }
+        // Inclusive scan over the bin histogram (workgroup-wide; lanes past
+        // BIN_COUNT contribute zeros).
+        let bin_v = if UNIT_POS < BIN_COUNT {
+            Atomic::load(&local_histogram[UNIT_POS as usize])
+        } else {
+            0u32
+        };
+        let (bin_exclusive, _bin_total) = cube_exclusive_sum(bin_v);
+        if UNIT_POS < BIN_COUNT {
+            lds_scratch[UNIT_POS as usize] = bin_exclusive + bin_v;
         }
         sync_cube();
         let global_offset = bin_offset_cache[key_index as usize];

@@ -25,6 +25,20 @@ use glam::{Vec3, uvec2};
 use kernels::types::RasterizeUniformsLaunch;
 use std::f32::consts::PI;
 
+/// Record a phase boundary when `BRUSH_PROFILE` profiling is on: flush the
+/// queue and wait so the next phase's wall time is isolated. Identity when
+/// profiling is off.
+macro_rules! profile_mark {
+    ($name:literal, $client:expr) => {
+        crate::profile::mark($name, || {
+            let client = $client.clone();
+            burn::cubecl::future::block_on(async move {
+                let _ = client.sync().await;
+            });
+        });
+    };
+}
+
 #[doc(hidden)]
 pub fn calc_tile_bounds(img_size: glam::UVec2) -> glam::UVec2 {
     uvec2(
@@ -100,6 +114,7 @@ impl SplatOps for CubeBackend {
 
         let device = transforms.device.clone();
         let client = transforms.client.clone();
+        crate::profile::begin();
 
         let (
             global_from_presort_gid,
@@ -163,6 +178,7 @@ impl SplatOps for CubeBackend {
                 num_intersections_buf,
             )
         };
+        profile_mark!("project_forward", client);
 
         // splat-turbo T7: no GPU->CPU readback inside render(). A single-cube
         // kernel collapses the two PF atomics into `counts` on-GPU
@@ -194,6 +210,8 @@ impl SplatOps for CubeBackend {
 
         // Kept capacity-sized: kernels take their bounds from `counts`.
         project_uniforms.num_visible = total_splats;
+        crate::profile::count("isect_cap", isect_cap as u64);
+        profile_mark!("write_counts", client);
 
         let mip_splat = matches!(render_mode, SplatRenderMode::Mip);
         let img_size: glam::UVec2 = project_uniforms.img_size.into();
@@ -211,9 +229,11 @@ impl SplatOps for CubeBackend {
                 ));
             global_from_compact_gid
         };
+        profile_mark!("depth_sort", client);
         let compact_counts = Self::int_gather(0, intersect_counts, global_from_compact_gid.clone());
         let cum_tiles_hit =
             tracing::trace_span!("PrefixSumGaussHits").in_scope(|| prefix_sum(compact_counts));
+        profile_mark!("gather+scan", client);
         let projected_splats = create_tensor(
             [total_splats as usize, kernels::helpers::PROJECTED_LANES_USIZE],
             &device,
@@ -242,6 +262,7 @@ impl SplatOps for CubeBackend {
                 camera.camera_model,
             );
         });
+        profile_mark!("project_visible", client);
         let tile_id_from_isect = create_tensor([isect_cap as usize], &device, DType::U32);
         let compact_gid_from_isect = create_tensor([isect_cap as usize], &device, DType::U32);
         tracing::trace_span!("MapGaussiansToIntersect").in_scope(|| {
@@ -260,6 +281,7 @@ impl SplatOps for CubeBackend {
                 isect_cap,
             );
         });
+        profile_mark!("map_gaussians", client);
         let bits = u32::BITS - num_tiles.leading_zeros();
         let (tile_id_from_isect, compact_gid_from_isect) = {
             let isect_used_slice = Self::int_slice(counts.clone(), &[(1..2).into()]);
@@ -272,6 +294,7 @@ impl SplatOps for CubeBackend {
                 )
             })
         };
+        profile_mark!("tile_sort", client);
         let cube_dim = CubeDim::new_1d(256);
         let tile_offsets = Self::int_zeros(
             [tile_bounds.y as usize, tile_bounds.x as usize, 2].into(),
@@ -293,6 +316,7 @@ impl SplatOps for CubeBackend {
                 tile_offsets.clone().into_tensor_arg(),
             );
         });
+        profile_mark!("tile_offsets", client);
         let out_dim = if bwd_info { 4 } else { 1 };
         let out_img = create_tensor(
             [img_size.y as usize, img_size.x as usize, out_dim],
@@ -347,6 +371,7 @@ impl SplatOps for CubeBackend {
                 smooth_cutoff,
             );
         });
+        profile_mark!("rasterize", client);
         RenderOutput {
             out_img,
             aux: RenderAuxInner {

@@ -59,8 +59,39 @@ Backward:
 
 ## Timings (lavapipe, relative)
 
-TBD — pending bench harness.
+Harness: `crates/brush-render/examples/pipeline_prof.rs` —
+`BRUSH_PROFILE=1 cargo run --release -p brush-render --example pipeline_prof`
+(sync-bracketed per-phase ms via `profile.rs`; phase sums include sync bubbles,
+compare like-for-like only). Scene: 400k synthetic room splats, 640×480
+(1200 tiles → 11-bit tile sort), 234k visible, 5.87M intersections (~25/splat).
+Numbers = avg of 3 iters after warmup.
+
+| Phase | before ms | after 8-bit digits |
+|-------|----------:|-------------------:|
+| project_forward | 38.2 | 27.9 |
+| readback | 0.6 | 0.5 |
+| depth_sort | 108.5 | 48.9 |
+| gather+scan | 3.7 | 2.4 |
+| project_visible | 7.9 | 4.6 |
+| map_gaussians | 52.6 | 56.1 |
+| tile_sort | 857.2 | 445.2 |
+| tile_offsets | 6.0 | 4.0 |
+| rasterize (fwd) | 145.0 | 95.1 |
+| phase_sum | 1220 | 685 (-44%) |
+| wall fwd+bwd | 1478 | 840 (-43%) |
+
+(bwd phases — `rasterize_bwd`, `project_bwd` — run on burn's autodiff
+pool, outside the profiled thread; the wall delta contains them + gathers.)
 
 ## Change log
 
 (Each entry: change, lavapipe before→after, expected Mac effect, commit SHA.)
+
+- **brush-sort: 4-bit → 8-bit digits** (commit below). Tile sort 3→2 passes,
+  depth sort 8→4 passes; histogram table 16→256 bins (count_buf = wgs×256,
+  still ≤ ~1/4 of sorted data at 5.9M keys). Scatter bin-scan rewritten as one
+  wg-wide `cube_exclusive_sum` (replaces plane-scan/serial paths, works for any
+  BIN_COUNT ≤ WG). Measured: sort time ≈ −50% both sorts; fwd total −44%.
+  Same tests pass (sort 3/4; render 32/34 — two big-buffer tests fail pre-change
+  too: lavapipe host-memory reservation limit). On the M5 the same pass halving
+  applies; element traffic is the dominant sort cost there too.

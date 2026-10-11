@@ -61,6 +61,7 @@ impl SplatBwdOps for CubeBackend {
             background.z,
         );
 
+        let client_for_prof = client.clone();
         tracing::trace_span!("RasterizeBackwards").in_scope(|| {
             use kernels::rasterize_backwards::{
                 CasAtomicAdd, HfAtomicAdd, rasterize_backwards_kernel,
@@ -94,6 +95,12 @@ impl SplatBwdOps for CubeBackend {
                     smooth_cutoff,
                 );
             }
+        });
+        crate::profile::mark("rasterize_bwd", || {
+            let client = client_for_prof;
+            burn::cubecl::future::block_on(async move {
+                let _ = client.sync().await;
+            });
         });
 
         v_combined
@@ -158,6 +165,11 @@ impl SplatBwdOps for CubeBackend {
                 project_uniforms.sh_degree,
                 project_uniforms.camera_model,
             );
+        });
+        crate::profile::mark("project_bwd", || {
+            burn::cubecl::future::block_on(async move {
+                let _ = client.sync().await;
+            });
         });
 
         SplatGrads {

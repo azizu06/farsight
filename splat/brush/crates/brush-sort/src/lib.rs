@@ -88,8 +88,12 @@ pub fn radix_argsort_len(
     let mut cur_keys = input_keys;
     let mut cur_vals = input_values;
 
-    for pass in 0..sorting_bits.div_ceil(4) {
-        let count_buf = create_tensor([(max_needed_wgs as usize) * 16], &device, DType::I32);
+    for pass in 0..sorting_bits.div_ceil(kernels::BITS_PER_PASS) {
+        let count_buf = create_tensor(
+            [(max_needed_wgs as usize) * BIN_COUNT as usize],
+            &device,
+            DType::I32,
+        );
 
         kernels::sort_count_kernel::launch(
             &client,
@@ -98,7 +102,7 @@ pub fn radix_argsort_len(
             num_keys_buf.clone().into_tensor_arg(),
             cur_keys.clone().into_tensor_arg(),
             count_buf.clone().into_tensor_arg(),
-            pass * 4,
+            pass * kernels::BITS_PER_PASS,
         );
 
         {
@@ -149,7 +153,7 @@ pub fn radix_argsort_len(
             count_buf.clone().into_tensor_arg(),
             output_keys.clone().into_tensor_arg(),
             output_values.clone().into_tensor_arg(),
-            pass * 4,
+            pass * kernels::BITS_PER_PASS,
         );
 
         cur_keys = output_keys;

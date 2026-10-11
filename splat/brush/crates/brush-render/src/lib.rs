@@ -17,6 +17,7 @@ pub mod dim_check;
 mod fusion;
 #[doc(hidden)]
 pub mod kernels;
+pub mod profile;
 pub mod render_aux;
 pub mod shaders;
 
