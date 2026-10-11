@@ -20,10 +20,19 @@ try {
   for (let i = 0; i < 100; i++) { if (server.exitCode !== null) throw Error(log); try { ready = (await fetch(origin)).ok; } catch {} if (ready) break; await new Promise(r => setTimeout(r, 100)); }
   assert.ok(ready, log);
   browser = await chromium.launch({ args: ['--no-sandbox', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
-  for (const path of ['/', '/?demo=0', '/splat.html']) {
+  for (const path of ['/', '/?demo=0&voice=1', '/splat.html']) {
     const page = await browser.newPage({ viewport: { width: 960, height: 640 } });
     const errors = [];
     page.on('pageerror', error => errors.push(String(error)));
+    await page.addInitScript(() => {
+      localStorage.setItem('farsight.viewer', JSON.stringify({ voice: true }));
+      window.voicePermissionRequests = 0;
+      const capture = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+      navigator.mediaDevices.getUserMedia = constraints => {
+        window.voicePermissionRequests++;
+        return capture(constraints);
+      };
+    });
     await page.routeWebSocket('**/ws/**', socket => socket.close());
     await page.route('**/camera.jpg', r => r.fulfill({ status: 503, body: '' }));
     await page.route('**/health', r => r.fulfill({ contentType: 'application/json', body: JSON.stringify(health) }));
@@ -39,6 +48,14 @@ try {
     // Health is polled every 2 s; cover a repeat poll after the first answer.
     await page.waitForTimeout(2500);
     assert.deepEqual(errors, [], `${path}: no page errors with a healthy /health`);
+    if (path !== '/splat.html') {
+      assert.equal(await page.locator('#voice-vr-enable').evaluate(button => button.hidden), true,
+        `${path}: the removed left-trigger assistant control must not be advertised`);
+      assert.equal(await page.locator('#voice-record').evaluate(button => button.hidden), false,
+        `${path}: desktop voice questions remain available`);
+      assert.equal(await page.evaluate(() => window.voicePermissionRequests), 0,
+        `${path}: neither saved voice nor voice=1 should request a microphone for the removed VR control`);
+    }
     await page.close();
   }
   console.log('health-page browser test passed');
