@@ -1,0 +1,440 @@
+{
+  "class": "Actual canonical MacAutoView/H264Viewer + IWER software-only continuous SBS",
+  "clientRevision": "97d9063",
+  "producerRevision": "1af4771",
+  "origin": "http://127.0.0.1:18873",
+  "scope": "SIMULATED source and emulated Quest2 XR; no physical headset or motion acceptance.",
+  "errors": [],
+  "conditions": {
+    "simulatedControllerConnectedOverride": true,
+    "diagnosticSeekIntervention": false,
+    "seconds": 8
+  },
+  "measurement": {
+    "seconds": 8.0165,
+    "callbacks": 210,
+    "uniqueMediaTimes": 210,
+    "uniquePresentedFrames": 210,
+    "uniqueMediaHz": 26.195970810203953,
+    "gapMs": {
+      "count": 209,
+      "p50": 33.30000000000109,
+      "p95": 66.69999999999982,
+      "maximum": 116.70000000000073
+    },
+    "seeks": 0,
+    "seeked": 0,
+    "width": 1280,
+    "height": 720,
+    "rawQualityDelta": {
+      "total": 206,
+      "dropped": 58
+    },
+    "qualityScope": "Raw browser counters, not missed XR frames"
+  },
+  "sidecarTimingMs": {
+    "age_ms": {
+      "count": 205,
+      "p50": 257.23787504434586,
+      "p95": 416.5749169588089,
+      "maximum": 497.8082919716835
+    },
+    "encode_pipeline_ms": {
+      "count": 205,
+      "p50": 256.8143749833107,
+      "p95": 415.7170419692993,
+      "maximum": 497.6944169998169
+    },
+    "capture_eval_ms": {
+      "count": 205,
+      "p50": 27.036459010560066,
+      "p95": 48.59604098601267,
+      "maximum": 98.01708301529288
+    },
+    "server_wait_ms": {
+      "count": 205,
+      "p50": 33.77162496326491,
+      "p95": 63.668625021819025,
+      "maximum": 111.72441596863791
+    },
+    "pose_to_frame_ms": {
+      "count": 205,
+      "p50": 7.160624980926514,
+      "p95": 17.091000020503998,
+      "maximum": 23.857542037963867
+    }
+  },
+  "stream": {
+    "init": {
+      "type": "video_init",
+      "macview": "macview_init",
+      "version": 1,
+      "mime": "video/mp4; codecs=\"avc1.64001F\"",
+      "source": "MAC RENDER",
+      "width": 1280,
+      "height": 720,
+      "fps": 30,
+      "stereo": true,
+      "layout": "sbs-left-right",
+      "eye_width": 640,
+      "eye_height": 720
+    },
+    "segments": 205,
+    "matchingPairEchoes": 205,
+    "poseSent": 480,
+    "lastPose": {
+      "type": "pose",
+      "version": 1,
+      "sent_mono_ms": 13499.099999964237,
+      "sent_wall_ms": 1791678942728,
+      "head": {
+        "position": [
+          0,
+          1.600000023841858,
+          0
+        ],
+        "quaternion": [
+          0,
+          0,
+          0,
+          1
+        ]
+      },
+      "ray": null,
+      "pose_id": 568,
+      "frame_id": 568,
+      "space": "ar_map",
+      "session_id": "afe9895c-d991-423c-a3b9-d569587aad04",
+      "map_revision": null,
+      "viewer": {
+        "x": 0,
+        "y": 0,
+        "z": 0,
+        "yaw": 0
+      },
+      "fov_y_deg": 90,
+      "aspect": 1.7777777777777777,
+      "eyes": [
+        {
+          "eye": "left",
+          "position": [
+            -0.03150000050663948,
+            1.600000023841858,
+            0
+          ],
+          "quaternion": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "projection": [
+            0.5625,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            -1.0000100135803223,
+            -1,
+            0,
+            0,
+            -0.020000100135803223,
+            0
+          ]
+        },
+        {
+          "eye": "right",
+          "position": [
+            0.03150000050663948,
+            1.600000023841858,
+            0
+          ],
+          "quaternion": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "projection": [
+            0.5625,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            -1.0000100135803223,
+            -1,
+            0,
+            0,
+            -0.020000100135803223,
+            0
+          ]
+        }
+      ],
+      "stereo": false
+    },
+    "lastSegment": {
+      "received": 13486.799999952316,
+      "type": "video_segment",
+      "macview": "macview_segment",
+      "version": 1,
+      "request_id": 211,
+      "age_ms": 277.7042090892792,
+      "frame_id": 7951,
+      "source": "SIMULATED",
+      "stereo": true,
+      "media_start_s": 265,
+      "media_end_s": 265.03333333333336,
+      "capture_mono_ms": 363998109.77041596,
+      "capture_wall_ms": 1791678942437.105,
+      "pose": {
+        "session_id": "afe9895c-d991-423c-a3b9-d569587aad04",
+        "frame_id": 550,
+        "pose_id": 550,
+        "client_nonce": null,
+        "sent_mono_ms": 13199,
+        "sent_wall_ms": 1791678942428,
+        "received_mono_ms": 363998104.87450004,
+        "space": "ar_map",
+        "map_revision": null,
+        "eyes": [
+          {
+            "position": [
+              -0.03150000050663948,
+              1.600000023841858,
+              0
+            ],
+            "quaternion": [
+              0,
+              0,
+              0,
+              1
+            ],
+            "projection": [
+              0.5625,
+              0,
+              0,
+              0,
+              0,
+              1,
+              0,
+              0,
+              0,
+              0,
+              -1.0000100135803223,
+              -1,
+              0,
+              0,
+              -0.020000100135803223,
+              0
+            ],
+            "eye": "left"
+          },
+          {
+            "position": [
+              0.03150000050663948,
+              1.600000023841858,
+              0
+            ],
+            "quaternion": [
+              0,
+              0,
+              0,
+              1
+            ],
+            "projection": [
+              0.5625,
+              0,
+              0,
+              0,
+              0,
+              1,
+              0,
+              0,
+              0,
+              0,
+              -1.0000100135803223,
+              -1,
+              0,
+              0,
+              -0.020000100135803223,
+              0
+            ],
+            "eye": "right"
+          }
+        ]
+      },
+      "encode_ms": 0.015042023733258247,
+      "render_ms": 0.30000001192092896,
+      "capture_ms": 25.441,
+      "encoder": "h264_videotoolbox",
+      "layout": "sbs-left-right",
+      "eye_width": 640,
+      "eye_height": 720,
+      "map": {
+        "source": "SIMULATED",
+        "geometry_source": null,
+        "points": 113436,
+        "triangles": 158200,
+        "generation": 0,
+        "revision": 1322,
+        "mesh_revision": 274,
+        "applied_points_revision": 1322,
+        "applied_mesh_revision": 272,
+        "fresh": true,
+        "age_ms": 1520.199999988079,
+        "connected": true,
+        "retained": false,
+        "partial": false
+      },
+      "fov_y_deg": 90,
+      "aspect": 1.7777777777777777,
+      "timing_scope": "Mac atomic render request through encoded fragment; not camera or headset age",
+      "bytes": 106966,
+      "encode_pipeline_ms": 277.37570905685425,
+      "pose_to_frame_ms": 4.895915925502777,
+      "capture_eval_ms": 24.11320898681879,
+      "jpeg_bytes": 177217,
+      "feed_wait_ms": 1.269333006348461,
+      "server_wait_ms": 46.45808303030208
+    },
+    "sockets": [
+      "ws://127.0.0.1:18873/ws/control",
+      "ws://127.0.0.1:18873/ws/detections",
+      "ws://127.0.0.1:18873/ws/control",
+      "ws://127.0.0.1:18873/ws/map?points=http",
+      "ws://127.0.0.1:18873/ws/macview-pose",
+      "ws://127.0.0.1:18873/ws/macview?layout=sbs-left-right",
+      "ws://127.0.0.1:18873/ws/macview?layout=sbs-left-right"
+    ]
+  },
+  "app": {
+    "labels": [
+      "A = AUTO",
+      "MAC VIEW LOST · LOCAL MAP",
+      "AUTO",
+      "AUTO",
+      "AUTO",
+      "AUTO",
+      "MAC RENDER · STEREO",
+      "AUTO",
+      "AUTO",
+      "AUTO",
+      "AUTO",
+      "AUTO",
+      "AUTO",
+      "AUTO",
+      "AUTO"
+    ],
+    "message": "SIMULATED · Driving",
+    "details": "Explore armed → Exploring · LINK OK · 2 ms · det 2.2 fps · SIMULATED · Fixed camera · full frame · JPEG video 216 ms · control ack 25 ms · 120 cm · 0 detections (3 frames old) · Hold A for actions; pick Scan, then hold the trigger",
+    "xrButton": "EXIT VR",
+    "controlSockets": 2
+  },
+  "frameTail": [
+    {
+      "now": 13164.4,
+      "received": 13165.199999988079,
+      "mediaTime": 264.7,
+      "presentedFrames": 202,
+      "expectedDisplayTime": 13164.4
+    },
+    {
+      "now": 13197.7,
+      "received": 13198.399999976158,
+      "mediaTime": 264.733333,
+      "presentedFrames": 203,
+      "expectedDisplayTime": 13197.7
+    },
+    {
+      "now": 13214.3,
+      "received": 13215.199999988079,
+      "mediaTime": 264.766667,
+      "presentedFrames": 204,
+      "expectedDisplayTime": 13214
+    },
+    {
+      "now": 13264.3,
+      "received": 13265.299999952316,
+      "mediaTime": 264.8,
+      "presentedFrames": 205,
+      "expectedDisplayTime": 13281
+    },
+    {
+      "now": 13314.3,
+      "received": 13315.099999964237,
+      "mediaTime": 264.833333,
+      "presentedFrames": 206,
+      "expectedDisplayTime": 13314.3
+    },
+    {
+      "now": 13330.9,
+      "received": 13331.899999976158,
+      "mediaTime": 264.866667,
+      "presentedFrames": 207,
+      "expectedDisplayTime": 13324.1
+    },
+    {
+      "now": 13397.6,
+      "received": 13398.699999988079,
+      "mediaTime": 264.9,
+      "presentedFrames": 208,
+      "expectedDisplayTime": 13397.6
+    },
+    {
+      "now": 13431,
+      "received": 13432,
+      "mediaTime": 264.933333,
+      "presentedFrames": 209,
+      "expectedDisplayTime": 13430.9
+    },
+    {
+      "now": 13447.7,
+      "received": 13448.399999976158,
+      "mediaTime": 264.966667,
+      "presentedFrames": 210,
+      "expectedDisplayTime": 13441.9
+    },
+    {
+      "now": 13497.7,
+      "received": 13498.5,
+      "mediaTime": 265,
+      "presentedFrames": 211,
+      "expectedDisplayTime": 13490.9
+    }
+  ],
+  "blocked": [],
+  "videoPixels": {
+    "state": "readable",
+    "width": 128,
+    "height": 72,
+    "nonblackPixels": 9216,
+    "totalPixels": 9216,
+    "meanHalfAbsoluteRgbDifference": 6.207103587962963,
+    "readElapsedMs": 43.60000002384186,
+    "scope": "One post-sample decoded-video read; may stall final snapshot; scene is SIMULATED"
+  },
+  "checks": {
+    "xrEmulationPresenting": true,
+    "coded1280x720": true,
+    "declaredPackedLayout": true,
+    "advancingAtLeast20UniqueHz": true,
+    "matchingPosePairs": true,
+    "sourceSimulated": true,
+    "stereoLabelPainted": true,
+    "videoNonblack": true,
+    "halvesDistinct": true,
+    "singleSimControlSocket": false,
+    "noForeignSocket": true
+  },
+  "passed": false
+}
