@@ -20,6 +20,7 @@ members = [
     "crates/brush-train",
     "crates/brush-vfs",
     "crates/colmap-reader",
+    "crates/farsight-seed",
     "crates/lpips",
     "crates/lpips-convert",
     "crates/rrfd",
