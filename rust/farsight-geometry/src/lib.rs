@@ -1293,7 +1293,9 @@ async fn chunks_delta(
             None => geo.anchors() > 0,
         };
     let truncated = bootstrap && after > 0;
-    let mut entries: Vec<(u64, Op, [u8; 16], Option<ChunkMesh>)> = Vec::new();
+    // Borrowed meshes: the delta cache covers unchanged entries, so chunk
+    // payload only clones when an entry actually has to be encoded.
+    let mut entries: Vec<(u64, Op, [u8; 16], Option<&ChunkMesh>)> = Vec::new();
     let next_seq;
     if bootstrap {
         // Synthetic Reset first — never sorted into the middle: a consumer
@@ -1311,7 +1313,7 @@ async fn chunks_delta(
                 .map(|e| e.0)
                 .max()
                 .unwrap_or_else(|| geo.last_seq());
-            entries.push((seq, Op::Replace, *id, Some(mesh.clone())));
+            entries.push((seq, Op::Replace, *id, Some(mesh)));
         }
         // Journaled tail: real Removes, Evicts, Resets — merge-sorted WITH
         // the chunks by seq so lifecycle ops land in true position (a tail
@@ -1338,7 +1340,7 @@ async fn chunks_delta(
             }
             let entry = match op {
                 Op::Replace => match geo.chunks().get(&id) {
-                    Some(mesh) => (seq, op, id, Some(mesh.clone())),
+                    Some(mesh) => (seq, op, id, Some(mesh)),
                     None => (seq, Op::Evict, id, None),
                 },
                 _ => (seq, op, id, None),
@@ -1361,7 +1363,7 @@ async fn chunks_delta(
                 op: *op,
                 anchor: *id,
                 transform: IDENTITY,
-                mesh: mesh.clone(),
+                mesh: mesh.map(|m| m.clone()),
             };
             let mut b = Vec::new();
             for rec in emit_delta_records(&update) {
