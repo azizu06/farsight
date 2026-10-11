@@ -188,6 +188,22 @@ than leaving it far from the origin camera. It follows new bounds while the
 overview owns the camera. An explicit camera change keeps manual framing;
 tracked poses, including their last position after expiry, remain exact.
 
+The [2026-10-11 M5 Pro receipt](https://github.com/azizu06/farsight/releases/tag/framecheck-8f3ebc1-20261011T1138Z)
+qualifies main `8f3ebc1` against the retained rover room at 1280×960, `lod=1`,
+`raw=0`. All 299,042 source cells were retained, uploaded and drawn, with zero
+local evictions and no averaged mesh. Its cursor, 1,488,691, matches the
+[earlier same-room capture](https://github.com/azizu06/farsight/releases/tag/dotcheck-20261011T1110Z).
+The overview target is `[-1.372, 1.800, -3.819]`, rather than the origin;
+the image exposes larger, readable wall/furniture dots and a pink strip.
+The retained scene still has two separated clusters and a large empty gap.
+This is display evidence, not proof of a complete room or fresh capture:
+the rover was powered off, map status returned HTTP 502, and `retained` was true.
+The worker's request log was truncated, so it does not independently qualify
+request methods. It also does not qualify 20 million live points, headset FPS,
+or hardware behavior. Performance remains Aziz's separate M5 Pro work.
+The PNG SHA-256 is `79dc95522961593da08a443002ec9fe3b26411d18c1f4f4f43097cfe26aa9f99`;
+the metadata SHA-256 is `c64688407192a611ae4a5273818876edbc97823342241debca66c33b205a7934`.
+
 While native textures are visible, the coarse and dense splats use the back of
 their display footprint for depth testing (half the splat diameter: 36mm and
 8mm at the default sizes). This prevents nearby, quantized point samples
