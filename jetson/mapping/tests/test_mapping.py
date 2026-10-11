@@ -168,6 +168,24 @@ class GeometryTests(unittest.TestCase):
         surfaces.lods[0] = {}
         self.assertEqual(state.mesh_packet(), decimate_mesh_bin(surfaces.encode(), state.triangles_cap))
 
+    def test_mesh_budget_query_overrides_the_wire_cap_only_for_that_request(self):
+        surfaces = SurfaceMap()
+        for i in range(3):
+            frame = simulated_frame(0, i, scan_yaw=i * 30)
+            _, _, mesh, lods = reconstruct(frame, lods=(4, 8))
+            surfaces.integrate(mesh, frame.transform, lods)
+        app = create_app(map_triangles_cap=surfaces.count // 10)
+        with TestClient(app) as client:
+            app.state.mapping.surfaces = surfaces
+            triangles = lambda url: struct.unpack_from('<II', client.get(url).content)[1] // 3
+            capped = triangles('/map/mesh.bin')
+            self.assertLessEqual(capped, surfaces.count // 10)
+            self.assertEqual(triangles('/map/mesh.bin?triangles=0'), surfaces.count)
+            self.assertLessEqual(triangles(f'/map/mesh.bin?triangles={surfaces.count // 2}'), surfaces.count // 2)
+            # The budgeted response does not replace the default cached one.
+            self.assertEqual(triangles('/map/mesh.bin'), capped)
+            self.assertEqual(client.get('/map/mesh.bin?triangles=-1').status_code, 400)
+
 
 class StateTests(unittest.TestCase):
     def setUp(self):

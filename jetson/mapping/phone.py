@@ -148,10 +148,44 @@ def world_grid(frame):
     return (local @ frame.transform[:3, :3].T + frame.transform[:3, 3]).astype(np.float32)
 
 
+# Visual dense-point filter. ARKit's smoothed scene depth ramps across object
+# edges over several pixels, so a 3x3 range test alone lets a "flying pixel"
+# sheet through between a foreground object and the background.
+DENSE_EDGE_WINDOW, DENSE_EDGE_RATIO = 5, 0.2
+# Grazing limits: angle between the local surface normal and the view ray.
+# A flying-pixel sheet runs along the view ray; near-horizontal surfaces get a
+# wider limit because a low rover camera sees the floor at a shallow angle.
+DENSE_MAX_GRAZING_DEG, DENSE_FLOOR_MAX_GRAZING_DEG = 80.0, 86.0
+FLOOR_NORMAL_Y = 0.9
+
+
+def facing_mask(frame, max_deg=DENSE_MAX_GRAZING_DEG, floor_max_deg=DENSE_FLOOR_MAX_GRAZING_DEG):
+    """True where the depth surface faces the camera within the grazing limits."""
+    height, width = frame.depth.shape
+    v, u = np.mgrid[:height, :width]
+    z, k = frame.depth.astype(np.float32), frame.calibration
+    local = np.stack(((u - k.cx) * z / k.fx, -(v - k.cy) * z / k.fy, -z), axis=-1)
+    # Four-pixel baselines keep LiDAR noise from dominating the normal; edge
+    # padding shortens the baseline at the image border instead of dropping it.
+    padded = np.pad(local, ((2, 2), (2, 2), (0, 0)), mode="edge")
+    du = padded[2:-2, 4:] - padded[2:-2, :-4]
+    dv = padded[4:, 2:-2] - padded[:-4, 2:-2]
+    normal = np.cross(du, dv)
+    length = np.linalg.norm(normal, axis=-1)
+    distance = np.linalg.norm(local, axis=-1)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        facing = np.abs(np.einsum("ijk,ijk->ij", normal, local)) / (length * distance)
+        world_y = np.abs(normal @ frame.transform[:3, :3].T[:, 1]) / length
+    limit = np.where(world_y >= FLOOR_NORMAL_Y, np.cos(np.radians(floor_max_deg)), np.cos(np.radians(max_deg)))
+    return np.isfinite(facing) & (length > 0) & (facing >= limit)
+
+
 def measured_points(frame, max_points=None, phase=0):
     """Observed native pixels with RGB; bounded samples rotate across captures."""
     usable = valid_depth(frame.depth, near=0.15, far=8, edge_ratio=0.12)
+    usable &= valid_depth(frame.depth, near=0.15, far=8, edge_ratio=DENSE_EDGE_RATIO, window=DENSE_EDGE_WINDOW)
     usable &= frame.confidence >= 1
+    usable &= facing_mask(frame)
     indices = np.flatnonzero(usable)
     if max_points is not None and len(indices) > max_points:
         step = (len(indices) + max_points - 1) // max_points

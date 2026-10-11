@@ -52,6 +52,31 @@ class CloudTests(unittest.TestCase):
                            [(40, 0, 0, 10, 11, 12, 1)])
         self.assertEqual(list(accumulator.cloud.cells), [(4, 0, 0)])
 
+    def test_person_footprint_fades_unobserved_cells_and_keeps_the_rest(self):
+        now = [0.]
+        cloud = MacCloud(retained_history=True, clock=lambda: now[0])
+        # Person torso at (1, 1, -2) m; body samples at 0.3-1.6 m height, floor at 0, wall 1 m away.
+        body = [(1000 + dx, y, -2000 + dz, 9, 9, 9, 1) for dx in (-100, 0, 100) for dz in (-100, 0, 100)
+                for y in (300, 1000, 1600)]
+        cloud.apply(body + [(1000, 0, -2000, 1, 1, 1, 1), (2000, 1000, -2000, 2, 2, 2, 1)])
+        cloud.observe_people([(1.0, 1.0, -2.0)])
+        now[0] = 10.
+        self.assertEqual(cloud.fade_footprints(), 0)  # observed recently: kept
+        now[0] = 20.
+        cloud.apply([body[0]])  # this body cell is still being observed
+        now[0] = 30.
+        before = cloud.revision
+        self.assertEqual(cloud.fade_footprints(), len(body) - 1)
+        self.assertEqual(set(cloud.cells), {tuple(v // 10 for v in body[0][:3]), (100, 0, -200), (200, 100, -200)})
+        # Deletes reach Mac clients through the journal.
+        _, rows = unpack(cloud.delta(cloud.epoch, before))
+        self.assertEqual(len(rows), len(body) - 1)
+        self.assertTrue(all(row[6] == 0 for row in rows))
+        # Sightings older than the memory window no longer fade anything.
+        cloud.apply(body)
+        now[0] = 30. + 61 + 16
+        self.assertEqual(cloud.fade_footprints(), 0)
+
     def test_history_capacity_evicts_and_bootstrap_snapshots_still_expire(self):
         now = [0.]
         cloud = MacCloud(retained_history=True, clock=lambda: now[0])

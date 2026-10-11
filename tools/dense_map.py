@@ -7,6 +7,7 @@ The normal operator relay file is deliberately not modified.
 
 import argparse
 import asyncio
+from collections import deque
 from contextlib import suppress
 import gzip
 import json
@@ -23,6 +24,13 @@ from jetson.mapping.dense import DenseMap, RECORD, MAX_RECORDS, packet, unpack
 
 CHUNK_MM = 2000
 VIEW_CHUNKS = 32
+# Ghost fade: retained history is permanent, so a walking person would leave a
+# trail. Cells inside a recent person footprint (horizontal radius, vertical band
+# around the torso point from /ws/detections) fade once unobserved this long.
+PERSON_MEMORY_S = 60
+PERSON_RADIUS_MM = 450
+PERSON_BELOW_MM, PERSON_ABOVE_MM = 900, 900
+FOOTPRINT_STALE_S = 15  # an observed 1 cm cell is re-sampled every few seconds
 DENSE_PATHS = frozenset(("/dense/status", "/dense/metrics", "/dense/manifest",
                          "/dense/chunk.bin", "/dense/delta.bin"))
 READ_ERRORS = (aiohttp.ClientError, OSError, ValueError, KeyError, TypeError,
@@ -38,6 +46,43 @@ class MacCloud(DenseMap):
         self.chunks = {}
         self.chunk_revisions = {}
         self.view_cache = {}
+        self.people = deque()  # (time, (x, y, z) mm) torso points
+        self.faded = 0
+
+    def observe_people(self, positions):
+        """Record person torso points (map frame, metres)."""
+        with self.lock:
+            now = self.clock()
+            for x, y, z in positions:
+                if all(math.isfinite(v) and abs(v) < 10000 for v in (x, y, z)):
+                    self.people.append((now, (round(x * 1000), round(y * 1000), round(z * 1000))))
+
+    def fade_footprints(self):
+        """Delete retained cells in recent person footprints that went unobserved; returns the count."""
+        with self.lock:
+            now = self.clock()
+            while self.people and now - self.people[0][0] > PERSON_MEMORY_S:
+                self.people.popleft()
+            # One footprint per 20 cm of torso travel bounds the scan.
+            centers = {tuple(v // 200 for v in p): p for _, p in self.people}
+            cutoff, radius2, removed = now - FOOTPRINT_STALE_S, PERSON_RADIUS_MM ** 2, 0
+            for x, y, z in centers.values():
+                low = (x - PERSON_RADIUS_MM, y - PERSON_BELOW_MM, z - PERSON_RADIUS_MM)
+                high = (x + PERSON_RADIUS_MM, y + PERSON_ABOVE_MM, z + PERSON_RADIUS_MM)
+                for cx in range(low[0] // CHUNK_MM, high[0] // CHUNK_MM + 1):
+                    for cy in range(low[1] // CHUNK_MM, high[1] // CHUNK_MM + 1):
+                        for cz in range(low[2] // CHUNK_MM, high[2] // CHUNK_MM + 1):
+                            for key in list(self.chunks.get((cx, cy, cz), ())):
+                                kx, ky, kz = key[0] * 10, key[1] * 10, key[2] * 10
+                                if ((kx - x) ** 2 + (kz - z) ** 2 > radius2
+                                        or not low[1] <= ky <= high[1]):
+                                    continue
+                                cell = self.cells.get(key)
+                                if cell is not None and cell[2] < cutoff:
+                                    self._delete(key)
+                                    removed += 1
+            self.faded += removed
+            return removed
 
     def expire(self):
         if not self.retained_history:
@@ -155,6 +200,38 @@ class DenseAccumulator:
         self.error = "Waiting for dense RGB-D"
         self.quest = {}
         self.poll = None
+        self.people_poll = None
+        self.people_error = None
+
+    async def run_people(self):
+        """Feed person torso points to the ghost fade; fade once a second."""
+        async def fade():
+            while True:
+                await asyncio.sleep(1)
+                await asyncio.to_thread(self.cloud.fade_footprints)
+        fader = asyncio.create_task(fade())
+        try:
+            async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=self.tls)) as session:
+                while True:
+                    try:
+                        async with session.ws_connect(self.upstream.with_path("/ws/detections"), heartbeat=10) as ws:
+                            self.people_error = None
+                            async for message in ws:
+                                if message.type != aiohttp.WSMsgType.TEXT:
+                                    continue
+                                boxes = json.loads(message.data).get("boxes") or ()
+                                points = [box["world"] for box in boxes if isinstance(box, dict)
+                                          and box.get("cls") == "person" and isinstance(box.get("world"), list)
+                                          and len(box["world"]) == 3]
+                                if points:
+                                    self.cloud.observe_people([tuple(map(float, p)) for p in points])
+                    except READ_ERRORS as exc:
+                        self.people_error = f"{type(exc).__name__}: {exc}"
+                    await asyncio.sleep(2)
+        finally:
+            fader.cancel()
+            with suppress(asyncio.CancelledError):
+                await fader
 
     async def run_geometry(self):
         from .dense_geometry import decode_geometry
@@ -260,7 +337,8 @@ class DenseAccumulator:
     def status(self):
         return dict(jetson_points=self.jetson_points, mac_points=len(self.cloud.cells),
                     retained_history=self.cloud.retained_history,
-                    tailnet_bytes=self.bytes,
+                    tailnet_bytes=self.bytes, faded_footprint_cells=self.cloud.faded,
+                    people_error=self.people_error,
                     tailnet_bytes_per_s=self.bytes / max(.001, time.monotonic() - self.started),
                     age_s=time.monotonic() - self.last_update if self.last_update else None,
                     error=self.error, quest=self.quest)
@@ -325,12 +403,14 @@ def mount(app, upstream, ca_file=None, geometry_upstream=None):
     app.middlewares.append(dense_routes)
     async def lifecycle(app):
         accumulator.poll = asyncio.create_task(accumulator.run())
+        accumulator.people_poll = asyncio.create_task(accumulator.run_people())
         if accumulator.geometry_origin:
             accumulator.geometry_poll = asyncio.create_task(accumulator.run_geometry())
         yield
-        accumulator.poll.cancel()
-        with suppress(asyncio.CancelledError):
-            await accumulator.poll
+        for task in (accumulator.poll, accumulator.people_poll):
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
         if accumulator.geometry_poll:
             accumulator.geometry_poll.cancel()
             with suppress(asyncio.CancelledError):
