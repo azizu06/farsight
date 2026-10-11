@@ -73,16 +73,8 @@ try {
       const stale=tick(400,false);
       right.gamepad.axes[3]=0;tick();right.gamepad.axes[3]=-1;tick();
       right.gamepad.buttons[5].pressed=true;const stopped=tick();
-      const panels={talk:subject.intercomPanel.visible,menu:subject.actionMenu.visible,hint:subject.hintPanel.visible,stop:subject.stopPanel.visible,voice:subject.voicePanel.visible,drill:subject.drillPanel.visible,identity:subject.identityPanel.visible,pointer:subject.pointer.visible};
+      const panels={children:subject.cockpit.children.length,menu:subject.actionMenu.visible,hint:subject.hintPanel.visible,stop:subject.stopPanel.visible,voice:subject.voicePanel.visible,drill:subject.drillPanel.visible,identity:subject.identityPanel.visible,pointer:subject.pointer.visible};
       right.gamepad.buttons[5].pressed=false;right.gamepad.axes[3]=0;tick();
-      let talkToggles=0;subject.intercom.toggle=async()=>{talkToggles++;};
-      rayPosition={x:.96,y:-.78,z:0};tick();
-      const talkTarget={aimed:subject.aimedIntercom,pointer:subject.pointer.visible};
-      subject.onXRSelectStart({inputSource:left});
-      subject.onXRSelectStart({inputSource:right});
-      rayPosition={x:0,y:0,z:0};tick();
-      subject.onXRSelectStart({inputSource:right});
-      const awayTarget={aimed:subject.aimedIntercom,pointer:subject.pointer.visible};
       subject.identityCards._receive({type:'identity',source:'SIMULATED',frame:7,received:1,
         gallery_generation:1,fresh:true,error:null,age_ms:0,
         faces:[{name:'Mehdi',person_id:'enrolled-mehdi',x:.1,y:.2,w:.2,h:.3,conf:.99}]});
@@ -97,7 +89,7 @@ try {
       const identityExpired={visible:subject.identityPanel.visible,cameraPaintUnchanged:subject.lastCanvasDraw===cameraPaintAt};
       subject.dispose();renderer.dispose();
       return {initial,manual,centered,auto,autoOnPress,heldA,roaming,transition,heldAfterSwitch,rearmed,lost,stale,stopped,panels,
-        talkTarget,awayTarget,talkToggles,identityFresh,identityExpired,pixels:[...pixels],picture};
+        identityFresh,identityExpired,pixels:[...pixels],picture};
     }finally{performance.now=realNow;}
   });
   assert.deepEqual(result.initial,{auto:false,mode:'teleop'});
@@ -117,10 +109,7 @@ try {
   assert.ok(result.roaming.commands.every(m=>m.mode==='explore'&&m.v===0&&m.w===0));
   assert.equal(result.transition.deadman,false);assert.equal(result.heldAfterSwitch.deadman,false);assert.equal(result.rearmed.deadman,true);
   assert.equal(result.lost.deadman,false);assert.equal(result.stale.deadman,false);assert.equal(result.stopped.deadman,false);
-  assert.deepEqual(result.panels,{talk:true,menu:false,hint:false,stop:false,voice:false,drill:false,identity:false,pointer:false});
-  assert.deepEqual(result.talkTarget,{aimed:true,pointer:true},'the actual right-controller ray visibly targets Talk');
-  assert.deepEqual(result.awayTarget,{aimed:false,pointer:false});
-  assert.equal(result.talkToggles,1,'only a right-trigger press aimed at Talk toggles it');
+  assert.deepEqual(result.panels,{children:2,menu:false,hint:false,stop:false,voice:false,drill:false,identity:false,pointer:false});
   assert.deepEqual(result.identityFresh,{visible:true,canvasHidden:true,cameraPaintUnchanged:true});
   assert.deepEqual(result.identityExpired,{visible:false,cameraPaintUnchanged:true});
   assert.ok(result.pixels.slice(0,3).some(v=>v>25),'actual camera pixels remain visible');

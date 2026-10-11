@@ -699,7 +699,7 @@ export class RoverExperience {
         this.stop("Stopped: center the joystick", true);
       }
       this.toggleDown = toggle; this.exploreDown = stop;
-      this.actionMenu.visible = false; this.pointer.visible = this.aimedIntercom;
+      this.actionMenu.visible = false; this.pointer.visible = false;
       this.navOverlay.setReticle(null);
       if (this.autoArming && !this.gate.needsRelease && this.status && !this.status.requires_release &&
           this.socket?.readyState === WebSocket.OPEN && now - this.gate.receivedAt < 200)
