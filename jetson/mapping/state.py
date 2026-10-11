@@ -7,7 +7,7 @@ import cv2
 import numpy as np
 
 from .geometry import encode_points, export_ply
-from .phone import VISUAL_LODS, reconstruct
+from .phone import VISUAL_LODS, VOXEL_POINT_STRIDE, reconstruct
 from .dense import DenseMap
 from .dense_worker import DenseWorker
 from .surfaces import SurfaceMap
@@ -190,7 +190,7 @@ class MapState:
             self.processing_ms = round(duration * 1000, 1)
             self.fps = round(1 / max(duration, 1e-4), 1)
             return
-        points, colors, mesh, lods = reconstruct(frame, lods=VISUAL_LODS)
+        points, colors, mesh, lods = reconstruct(frame, lods=VISUAL_LODS, point_stride=VOXEL_POINT_STRIDE)
         with self.lock:
             if (generation != self.processing_generation or not self.connected
                     or self.paused or self.tracking != "normal"):

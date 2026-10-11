@@ -180,7 +180,10 @@ export class H264Viewer {
     if (!ranges?.length) return;
     const last = { start: ranges.start(ranges.length - 1), end: ranges.end(ranges.length - 1) };
     const now = performance.now();
-    const { seekTo, rate, lead } = chaseLiveEdge(this.video.currentTime, last, { now, lastSeekAt: this.lastSeekAt, seeking: this.video.seeking });
+    const newest = this.segments.at(-1);
+    const frame = newest?.samples?.length ? (newest.media_end_s - newest.media_start_s) / newest.samples.length
+      : newest ? newest.media_end_s - newest.media_start_s : undefined;
+    const { seekTo, rate, lead } = chaseLiveEdge(this.video.currentTime, last, { now, lastSeekAt: this.lastSeekAt, seeking: this.video.seeking, frame });
     this.latency.leadMs = Math.round(lead * 1000);
     if (seekTo !== null) { this.video.currentTime = seekTo; this.lastSeekAt = now; this.latency.seeks++; }
     if (this.video.playbackRate !== rate) this.video.playbackRate = rate;

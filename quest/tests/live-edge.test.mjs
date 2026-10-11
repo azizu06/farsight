@@ -10,13 +10,15 @@ test("normal fragment buffering never seeks: lag is trimmed by playback rate", (
     assert.equal(at(12 - lead, { now: 5000 }).seekTo, null, `no seek at ${lead * 1000} ms ahead`);
   }
   assert.equal(at(11.95, { now: 0 }).rate, 1, "near the edge plays at 1x");
-  assert.equal(at(11.75, { now: 0 }).rate, LIVE_EDGE.gentleRate);
+  assert.equal(at(11.9, { now: 0 }).rate, 1, "showing the newest 100 ms frame is the edge itself");
+  assert.equal(at(11.85, { now: 0 }).rate, LIVE_EDGE.gentleRate, "half a frame late already trims");
+  assert.equal(at(11.75, { now: 0 }).rate, LIVE_EDGE.fastRate);
   assert.equal(at(11.5, { now: 0 }).rate, LIVE_EDGE.fastRate);
 });
 
 test("a real backlog seeks once, then waits out the cooldown and any in-flight seek", () => {
   const first = at(10.5, { now: 5000, lastSeekAt: -Infinity });
-  assert.ok(Math.abs(first.seekTo - (12 - LIVE_EDGE.target)) < 1e-9, "1.5 s behind jumps near the edge");
+  assert.ok(Math.abs(first.seekTo - (12 - LIVE_EDGE.frame)) < 1e-9, "1.5 s behind jumps to the newest frame");
   assert.equal(at(10.5, { now: 5000 + LIVE_EDGE.cooldownMs - 1, lastSeekAt: 5000 }).seekTo, null, "cooldown");
   assert.equal(at(10.5, { now: 9000, lastSeekAt: 5000, seeking: true }).seekTo, null, "never while seeking");
   assert.equal(at(10.5, { now: 9000, lastSeekAt: 5000, seeking: true }).rate, LIVE_EDGE.fastRate, "rate still trims");
@@ -51,4 +53,16 @@ test("h264.ts guards seeks with the policy, never writing currentTime on its own
   const writes = source.match(/currentTime\s*=(?!=)/g) ?? [];
   assert.equal(writes.length, 1, "the only currentTime write is the policy's seekTo");
   assert.match(source, /seeking: this\.video\.seeking/);
+});
+
+test("the edge is one frame of the stream's own rate, bounded against bad durations", () => {
+  // 10 fps rover camera: 120 ms lead is 20 ms late, inside the edge tolerance.
+  assert.equal(at(11.88, { now: 0, frame: 0.1 }).rate, 1);
+  // 30 fps Mac render: the same 120 ms lead is ~87 ms behind its newest frame.
+  assert.equal(at(11.88, { now: 0, frame: 1 / 30 }).rate, LIVE_EDGE.gentleRate);
+  assert.equal(at(11.8, { now: 0, frame: 1 / 30 }).rate, LIVE_EDGE.fastRate);
+  const seek = at(10.5, { now: 5000, frame: 1 / 30 });
+  assert.ok(Math.abs(seek.seekTo - (12 - 1 / 30)) < 1e-9);
+  assert.equal(at(11.5, { now: 0, frame: 5 }).rate, LIVE_EDGE.fastRate, "a huge duration cannot hide 500 ms of lag");
+  assert.equal(at(11.9, { now: 0, frame: NaN }).rate, 1, "unknown duration assumes 10 fps");
 });

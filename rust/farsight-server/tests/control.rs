@@ -575,6 +575,35 @@ fn demo_teleop_ignores_camera_freshness_but_gated_modes_do_not() {
 }
 
 #[test]
+fn auto_modes_are_exempt_from_viewer_video_freshness() {
+    // Board-agreed (issue #24): AUTO modes skip the 500 ms viewer-video gate —
+    // Quest H.264 runs ~450 ms so it cancelled goals every few seconds.
+    // Manual teleop keeps the gate.
+    let now = Arc::new(Mutex::new(10.0f64));
+    let n = now.clone();
+    let clock: Clock = Arc::new(move || *n.lock().unwrap());
+    let detections: farsight_server::control::Detections = Arc::new(|| json!([]));
+    let state = ControlState::new(
+        false, 0, 100, None, Some(detections), Some(clock), None, false, true,
+        "servo", None, None, false,
+    )
+    .unwrap();
+    state.set_connected(true, None);
+    let session = state.begin().unwrap();
+    state.update_range(100.0);
+    let f = Fixture { state, session, seq: std::cell::Cell::new(0), now };
+    f.send(json!({"deadman": false}));
+
+    for mode in ["explore", "seek"] {
+        let stale = json!({"mode": mode, "target_id": 7, "video_fresh": false, "video_age_ms": 2000});
+        assert!(f.send(stale), "{mode} must not video_stale");
+        f.send(json!({"deadman": false}));
+    }
+    assert!(!f.send(json!({"mode": "teleop", "video_fresh": false, "video_age_ms": 2000})));
+    assert_eq!(f.state.status(false)["reason"], "video_stale");
+}
+
+#[test]
 fn demo_protocol_faults_and_releases_still_latch() {
     let f = demo_fixture();
     assert!(f.send(json!({})));

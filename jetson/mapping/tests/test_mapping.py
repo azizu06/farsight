@@ -118,6 +118,20 @@ class GeometryTests(unittest.TestCase):
         vertex_count, index_count = struct.unpack_from('<II', encoded)
         self.assertEqual(len(encoded), 8 + 16 * vertex_count + 4 * index_count)
 
+    def test_point_stride_samples_points_without_changing_the_mesh(self):
+        frame = simulated_frame(0, 0)
+        fine_points, _, fine_mesh = reconstruct(frame)
+        points, colors, mesh = reconstruct(frame, point_stride=4)
+        h, w = frame.depth.shape
+        self.assertLessEqual(len(points), ((h + 3) // 4) * ((w + 3) // 4))
+        self.assertLess(len(points), len(fine_points) // 3)
+        self.assertEqual(len(points), len(colors))
+        for a, b in zip(mesh, fine_mesh):
+            np.testing.assert_array_equal(a, b)
+        # Every coarse point is one of the stride-2 samples (stride 4 is a subset).
+        fine = {tuple(p) for p in fine_points.round(5)}
+        self.assertTrue(all(tuple(p) in fine for p in points.round(5)))
+
     def test_capped_visual_mesh_keeps_connected_coarse_keyframes(self):
         surfaces = SurfaceMap()
         for i in range(4):

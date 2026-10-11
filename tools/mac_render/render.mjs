@@ -463,12 +463,20 @@ function registerLayer(layer) {
 }
 window.__macRegisterLayer = registerLayer;
 
-// Dense crew's raw-texture layer (#170 contract): the bundle is optional —
+// Dense crew's raw-texture layer (#170/#173 contract): the bundle is optional —
 // when .cache/dense-layer-dist is not built the import fails and no layer
-// registers. The layer fetches /phone/frame.bin through this server's
-// upstream passthrough.
+// registers. Raw networking is opt-in (default off): ?raw=1 enables pulls,
+// window.__macRawLayer.setEnabled(v) toggles at runtime. The layer fetches
+// /phone/frame.bin through this server's upstream passthrough.
 import("/dense-layer/raw-texture-layer.mjs")
-  .then((m) => registerLayer(m.rawTextureLayer({ endpoint: "/phone/frame.bin" })))
+  .then((m) => {
+    const layer = m.rawTextureLayer({
+      endpoint: "/phone/frame.bin",
+      enabled: params.get("raw") === "1",
+    });
+    window.__macRawLayer = layer;
+    registerLayer(layer);
+  })
   .catch(() => {});
 
 const mapStatusView = {};
@@ -610,7 +618,7 @@ function pickFullKind(next, meshStale, pointsStale, deltaServer) {
   if (next.triangles > 0) return "mesh";
   return null;
 }
-async function refresh() {
+async function refresh(force = false) {
   if (refreshBusy) return false;
   refreshBusy = true;
   window.__mac.refreshBusy = true;
@@ -630,8 +638,11 @@ async function refresh() {
       const meshStale = next.triangles > 0 && next.mesh_revision > appliedMesh;
       const pointsStale = next.points > 0 && next.revision > appliedPoints;
       // Delta servers keep the five-second bulk cadence; fallback keeps the
-      // old per-poll pulls. appliedPoints < 0 always means fill now.
-      const fullDue = appliedPoints < 0 || now - lastFullAt >= (deltaServer ? 5000 : 2000);
+      // two-second one. appliedPoints < 0 always means fill now, and a manual
+      // __macRefreshMap() must pull a stale revision on that call — the
+      // pre-delta contract was pull-when-stale on every refresh, with the
+      // interval only scheduling calls.
+      const fullDue = force || appliedPoints < 0 || now - lastFullAt >= (deltaServer ? 5000 : 2000);
       const kind = fullDue ? pickFullKind(next, meshStale, pointsStale, deltaServer) : null;
       if (kind === "mesh") {
         lastFullAt = now;
@@ -873,7 +884,7 @@ window.__macCapture = () => {
     poseEcho: window.__mac.poseEcho ? { ...window.__mac.poseEcho } : null } };
 };
 renderer.setAnimationLoop(() => { if (!window.__macCaptureDriven) drawScene("raf"); });
-window.__macRefreshMap = refresh;
+window.__macRefreshMap = () => refresh(true);
 applyLod();
 refresh();
 // 300 ms polls drive the delta fast lane; full pulls pace themselves.

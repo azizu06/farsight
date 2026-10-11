@@ -34,6 +34,7 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
 
         self.map_body = bytes(range(256)) * 400
         self.seen_encoding = {}
+        self.seen_query = {}
 
         async def health(request):
             self.seen_encoding["health"] = request.headers.get("Accept-Encoding")
@@ -42,8 +43,10 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
 
         async def points(request):
             self.seen_encoding["points"] = request.headers.get("Accept-Encoding")
+            self.seen_query[request.path] = dict(request.query)
             coding = negotiate(request.headers.get("Accept-Encoding"))
-            headers = {"Vary": "Accept-Encoding"}
+            headers = {"Vary": "Accept-Encoding", "X-Capture-Key": "fixture:1:42",
+                       "X-Capture-Age-Ms": "123"}
             body = self.map_body
             if coding:
                 body, headers["Content-Encoding"] = encode(coding, body), coding
@@ -104,6 +107,8 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         self.upstream.router.add_get("/control/status", health)
         self.upstream.router.add_post("/ask", ask)
         self.upstream.router.add_get("/map/points.bin", points)
+        self.upstream.router.add_get("/map/points.delta", points)
+        self.upstream.router.add_get("/phone/frame.bin", points)
         self.upstream.router.add_get("/camera.jpg", image)
         self.upstream.router.add_get("/stream.mjpg", stream)
         self.upstream.router.add_get("/ws/control", control)
@@ -184,6 +189,25 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((await response.json())["audio_url"], "/tts/42.wav")
             self.assertNotIn("Content-Encoding", response.headers)
         self.assertEqual(self.seen_encoding["health"], "identity")
+
+    async def test_raw_frame_and_delta_keep_compressed_bytes_query_and_capture_headers(self):
+        async with aiohttp.ClientSession(auto_decompress=False) as raw:
+            for path in ("/phone/frame.bin", "/map/points.delta"):
+                async with raw.get(self.base + path + "?after=42&epoch=test",
+                                   headers={"Accept-Encoding": "gzip"}) as response:
+                    self.assertEqual(response.status, 200)
+                    self.assertEqual(response.headers["Content-Encoding"], "gzip")
+                    self.assertEqual(response.headers["Vary"], "Accept-Encoding")
+                    self.assertEqual(response.headers["X-Capture-Key"], "fixture:1:42")
+                    self.assertEqual(response.headers["X-Capture-Age-Ms"], "123")
+                    self.assertEqual(await response.read(), encode("gzip", self.map_body))
+                self.assertEqual(self.seen_encoding["points"], "gzip")
+                self.assertEqual(self.seen_query[path], {"after": "42", "epoch": "test"})
+                async with raw.get(self.base + path, headers={"Accept-Encoding": "identity"}) as response:
+                    self.assertNotIn("Content-Encoding", response.headers)
+                    self.assertEqual(await response.read(), self.map_body)
+                async with self.client.get(self.base + path, headers={"Accept-Encoding": "gzip"}) as response:
+                    self.assertEqual(await response.read(), self.map_body)
 
     async def test_mjpeg_streams_without_waiting_for_end(self):
         async with self.client.get(self.base + "/stream.mjpg") as response:

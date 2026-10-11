@@ -656,7 +656,11 @@ with Quest A; trigger + left Y requests a scan. See [scan setup and evidence](sc
 preferred, then `gzip`; `q=0` refuses a coding. Bodies under 1 KiB and requests without a
 supported coding stay identity. Responses always carry `Vary: Accept-Encoding`. The Python server
 encodes once per map version (generation, revision, mesh revision) and reuses it across clients.
-Decoded bytes are identical to the uncompressed body; no other route is compressed.
+Decoded bytes are identical to the uncompressed body. The additive point-delta,
+dense and accepted raw-frame routes also support negotiated compression as
+specified in their sections below. Python operator relay preserves the client's
+`Accept-Encoding`, encoded bytes and response encoding/capture headers for
+`/map/points.delta` and `/phone/frame.bin`, as well as the three map routes above.
 
 ### Visual map wire cap (additive)
 
@@ -809,10 +813,15 @@ lease, deadman, release, camera-stale and disconnect stops are unchanged.
 navigation geometry. The Mac mounts `/dense/manifest`, `/dense/chunk.bin`,
 `/dense/delta.bin`, `/dense/status` and `POST /dense/metrics` on relay 8080.
 See `docs/dense-map.md` for launch, budgets and evidence limits.
-Jetson visual ingestion is latest-only background work (2 Hz, 4096 real pixels
-per job), disabled at startup by `FARSIGHT_DENSE=0`. Optional `/health.dense_worker`
+Jetson visual ingestion is latest-only background work (default 8 Hz, 12,288 real
+pixels per job), disabled at startup by `FARSIGHT_DENSE=0`. The rate, samples/job
+and thread-CPU budget are configurable (`docs/dense-map.md`); costly jobs reduce
+admission rather than building a stale-frame backlog. Optional `/health.dense_worker`
 reports enabled/budget/queued/processed/dropped/processing_ms/error independently
-of the camera/coarse frame timing; normal capture/control guards are unchanged.
+of the camera/coarse frame timing. Additional `cpu_ms`, `cpu_budget`,
+`admission_hz` and cumulative `sampled_points` distinguish CPU use, current
+admission ceiling and observations from unique retained cells. Normal
+capture/control guards are unchanged.
 
 Delta query: `epoch` (opaque server/capture-generation token), `after` (last
 cursor, initially zero), `limit` (1–8192), `snapshot` (boolean), and `anchor`
@@ -836,7 +845,15 @@ A mismatched epoch or journal gap returns
 returns to its start anchor so normal deltas replay updates/removals concurrent
 with bootstrap. A transport reconnect alone never changes capture identity.
 Jetson working-cache budget eviction emits no deletion; expiry, explicit
-removal and reset do. Mac enforces its own retention/expiry bound.
+removal and reset do. Mac's RGB-D history pool keeps observed upserts across
+producer-cache expiry tombstones and same-epoch snapshot bootstraps, clearing
+on a true producer epoch change or local capacity eviction. Its optional
+`retained_history:true` manifest/delta field identifies historical visual
+geometry; `ttl_s:86400` preserves compatibility for older consumers. A consumer
+that supports the history flag retains the historical cloud across source
+disconnects and reports source age separately. Native geometry retains its
+explicit anchor-removal semantics. These history rules do not apply to rover
+camera/depth freshness or navigation geometry.
 
 The endpoints negotiate Brotli/gzip over bounded records; no complete
 multi-million-point body is transferred. Chunk replies use the same framing
