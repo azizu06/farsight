@@ -211,7 +211,7 @@ the goal.
   replans at least every 0.25 s, within 50 ms when the path becomes invalid (the
   global costmap updates at 15 Hz), or when the goal moves. It recovers in turn by
   clearing the local costmap and the global costmap within 1.5 m of the rover (the
-  explored map stays), backing up 0.25 m at 0.4 m/s and spinning 90 degrees at
+  explored map stays), backing up 0.25 m at 0.3 m/s (no rear sensing) and spinning 90 degrees at
   2.5-3.0 rad/s (1.5 rad/s, PWM 80, did not break the loaded rover free); it never waits. Goal checks are position only (0.20 m); final
   heading does not matter.
 
