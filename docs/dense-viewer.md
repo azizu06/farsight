@@ -90,3 +90,5 @@ textured faces, positive canvas coverage and no control/pose connection. It is a
 synthetic decoder/render check, not live raw-capture acceptance.
 
 The live viewer follows measured scan bounds by default. Dragging or flying disables follow so you can inspect a fixed location; re-enable **Follow live scan** to return. Capture epoch changes reframe the new coordinate system. A healthy fresh feed can look frozen when a camera remains aimed at an earlier scan location.
+
+The **Open Mac-rendered preview** link opens `http://localhost:8080/?view=map`, the teammate-owned encoded Mac output viewer. The lab does not open an additional stream until that link is used.
