@@ -149,7 +149,8 @@ controller_server:
       use_rotate_to_heading: true
       allow_reversing: false
       rotate_to_heading_min_angle: 1.0     # arc into turns up to ~57 deg; in-place skid-steer spins scrub and stall under payload
-      max_angular_accel: 8.0          # ramps from measured odom w: at 4 the first 0.2 rad/s step fell below the wheel floors and rotate-to-heading stalled (sim popup)
+      max_angular_accel: 60.0         # ramps from MEASURED odom w at 20 Hz: 8 capped the first in-place step at 0.4 rad/s (PWM 80), the
+                                      # loaded rover never broke free, measured w stayed 0 and it sat for 27 s (floor test 2026-10-11)
       max_robot_pose_search_dist: 4.0
       interpolate_curvature_after_goal: false
       cost_scaling_dist: 0.22
