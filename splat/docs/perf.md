@@ -79,6 +79,37 @@ tiles, HALO=5, 11-tap Gaussian, partials per tile) — used on the train path.
 TODO on the Mac: verify Metal perf vs. burn tensor ops, tune block sizes for
 simdgroup width 32.
 
+## Measured (lavapipe, Mesa CPU Vulkan, 16-core x86 VM)
+
+Toy capture: 24× 160x120 PNG frames + 400-dot init.ply (`/tmp/t7_synth`,
+deterministic). Same binary command both runs:
+`brush-cli /tmp/t7_synth --total-train-iters 100 --eval-every 100
+--eval-split-every 8 --export-path <out>/`
+
+| build | end-to-end | train loop | eval ssim |
+|---|---|---|---|
+| before sync removal (binary built 11:53) | 15 s | 12 s | 0.00008758852 |
+| after (aadc4ec + aa29f42, fat-LTO build) | 9 s | 8 s | 0.00008758852 |
+
+-40% end-to-end on the toy; identical ssim bits = change is
+numerics-preserving. Caveat: the "after" run had a warm autotune cache
+(5 entries), and on a real 1.45M-splat scene the mid-forward bubble is
+larger relative to step time. Real PSNR-vs-seconds ablation still pending
+T1's `farsight-splat synth` capture (not pushed yet); on the Mac it runs
+via `splat/bench_mac.sh` end to end.
+
+## `.splat` export (task 5, commit aa29f42)
+
+`brush_serde::splat_to_ply_and_splat` — one `Transaction` readback ->
+`.ply` + packed antimatter15 `.splat` (32 B/splat:
+pos f32x3, exp scale f32x3, rgba u8, quat u8x4 normalized*128+128,
+sorted by exp(volume)*sigmoid(opacity) desc — byte-compatible with
+`tools/postprocess/ply2splat.py`). `export_checkpoint` writes
+`export_{iter}.splat` beside the .ply; `tools/postprocess/walk.html`
+renders it directly (`?scene=<url>`, `SceneFormat.Splat`). `cargo check`
+clean; the after run predates this commit so only `export_100.ply` was
+observed on disk — first .splat lands on the next export run.
+
 ## Verification
 
 - `cargo check -p brush-render -p brush-sort -p brush-train -p brush-bench-test --tests`: clean.
