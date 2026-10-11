@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {manualDrive} from '../src/manual-drive.js';
+import {STEER,manualDrive,steerCurve} from '../src/manual-drive.js';
 const root=fileURLToPath(new URL('../../',import.meta.url));
 const python=`${root}.venv/bin/python`;
 function motorOutputs(inputs) {
@@ -29,4 +29,30 @@ test('forward joystick diagonals keep translation instead of becoming pure spins
 });
 test('center and invalid inputs produce zero physical output',()=>{
   assert.deepEqual(motorOutputs([manualDrive(0,0),manualDrive(NaN,Infinity)]),[[0,0],[0,0]]);
+});
+
+test('right-stick steering: deadzone without a jump, expo curve, straight-ahead lock, full pivot',()=>{
+  const close=(a,b,m)=>assert.ok(Math.abs(a-b)<1e-9,`${m}: ${a} vs ${b}`);
+  // Deadzone: a small sideways wobble on its own never turns; just past it starts from ~0.
+  assert.equal(steerCurve(0.2,0),0);assert.equal(steerCurve(-0.25,0),0);
+  assert.ok(steerCurve(0.26,0)>0&&steerCurve(0.26,0)<1e-4,'continuous at the deadzone edge');
+  // Expo: half-way past the deadzone gives 0.5^2.5 of full turn, sign kept; full sideways is a full pivot.
+  close(steerCurve(0.625,0),0.5**STEER.expo,'expo');close(steerCurve(-0.625,0),-(0.5**STEER.expo),'sign');
+  assert.equal(steerCurve(1,0),1);assert.equal(steerCurve(-1,0),-1);
+  assert.equal(steerCurve(1,-0.3),1,'a hard sideways push with some forward still pivots fully');
+  // Axis lock: pushing forward (or back) with drift under 20 degrees drives straight.
+  for(const [x,y] of [[0.3,-1],[-0.34,-1],[0.3,1],[0.2,-0.6]])assert.equal(steerCurve(x,y),0,`locked at ${x},${y}`);
+  const just=Math.tan(21*Math.PI/180);assert.ok(Math.abs(steerCurve(just,-1))>0,'past 20 degrees steering returns');
+  assert.ok(steerCurve(just,-1)<0.02,'and starts gently');
+  assert.equal(steerCurve(NaN,0),0);assert.equal(steerCurve(0.9,Infinity),steerCurve(0.9,0),"invalid y counts as no forward push");
+});
+test('forward stick stays full power with the new steering: straight push is straight at 255/255',()=>{
+  const forward=y=>manualDrive(-Math.min(1,Math.max(0,(Math.abs(y)-.25)/.75))*Math.sign(y),steerCurve(0.3,y));
+  assert.deepEqual(motorOutputs([forward(-1),forward(1)]),[[255,255],[-255,-255]],'drifting straight push stays straight');
+  assert.deepEqual(motorOutputs([manualDrive(0,steerCurve(1,0)),manualDrive(0,steerCurve(-1,0))]),[[255,-255],[-255,255]],'hard sideways is a full pivot');
+});
+test('rover.ts feeds raw stick axes to the steering curve, forward unchanged',async()=>{
+  const {readFileSync}=await import('node:fs');
+  const source=readFileSync(new URL('../src/rover.ts',import.meta.url),'utf8');
+  assert.match(source,/manualDrive\(-stick\(stickY, XR_STICK_DEADZONE\), steerCurve\(stickX, stickY\)\)/);
 });
