@@ -251,7 +251,11 @@ export class QuestIntercom {
     for (let i = 0; i < INTERCOM_SAMPLES; i++) output[i] = view.getInt16(i * 2, true) / 32768;
     const now = context.currentTime;
     let startAt = Math.max(this.nextPlaybackAt, now + 0.04);
-    if (startAt > now + 0.12) startAt = now + 0.04;
+    if (startAt > now + 0.12) {
+      // Superseded buffers must be cancelled before restarting the live edge;
+      // otherwise a cellular batch plays new and old speech on top of each other.
+      this.flushPlayback(); startAt = now + 0.04;
+    }
     const node = context.createBufferSource(); node.buffer = audio; node.connect(context.destination);
     this.speakerNodes.add(node); node.onended = () => this.speakerNodes.delete(node);
     node.start(startAt); this.nextPlaybackAt = startAt + INTERCOM_SAMPLES / INTERCOM_RATE;

@@ -122,6 +122,18 @@ test("the explicit headset toggle gates both mics and both speakers", async () =
     assert.equal(contexts[0].speakers.length, 1, "iPhone mic audio is scheduled to Quest speakers while the same talk session is active");
     assert.equal(contexts[0].speakers[0].starts.length, 1);
 
+    // Cellular delivery can put several successive frames in one browser turn.
+    // Active buffers must still represent one speaker, not overlapping speech.
+    for(let i=0;i<10;i++) sockets[0].onmessage({data:new ArrayBuffer(640)});
+    const active=contexts[0].speakers.filter(node=>node.stops===0).map(node=>node.starts[0]).sort((a,b)=>a-b);
+    assert.ok(active.length>0);
+    for(let i=1;i<active.length;i++) assert.ok(active[i]-active[i-1]>=.02-1e-9,
+      'cellular packet batches must not schedule simultaneous speech frames');
+    assert.ok(contexts[0].speakers.some(node=>node.stops>0),'resynchronizing cancels superseded playback');
+    // Outgoing mic frames still flow while incoming playback catches up.
+    contexts[0].processor.onaudioprocess({inputBuffer:{getChannelData:()=>new Float32Array(960).fill(.1)}});
+    assert.equal(sockets[0].sent.at(-1).byteLength,640);
+
     await intercom.toggle();
     assert.equal(sockets[0].sent.at(-1), JSON.stringify({ type: "talk", active: false }));
     assert.equal(track.stopped, 1);
