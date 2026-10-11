@@ -61,7 +61,7 @@ fn measured_native_pixels_rgb_pose_and_tracking_bypass() {
     state.start_session(("test".to_string(), 1), "test".into());
     state.process(&mut frame).unwrap();
     assert!(wait_processed(&state.dense_worker, 1, 2.0));
-    assert_eq!(state.inner.lock().unwrap().cloud.cells.len(), 0);
+    assert_eq!(state.cloud_cells(), 0);
     assert_eq!(state.dense().len(), frame.depth.len());
     let previous = state.dense().revision();
     frame.header["t_capture"] = json!(2);

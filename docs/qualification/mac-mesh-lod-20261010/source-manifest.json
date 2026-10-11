@@ -1,0 +1,12 @@
+{
+  "source-before.mjs": {
+    "commit": "85c7253f6ea098eca8114130f33b58d08a10559e",
+    "sha256": "f38eaeb79e0354b1c853c30881389348a1cd26e1b72a435b6dc12e953b48f076",
+    "origin": "Original clean renderer source captured by the baseline CPU witness at HEAD2eab918"
+  },
+  "source-fixed.mjs": {
+    "commit": "7a98b132473c8ac3b967afb5423cbc22282bbfa1",
+    "sha256": "0f8fc8c349cd36878b9601df96741f78379ad92720c1b5502b2e597392b4d07c",
+    "origin": "Exact git show of pinned owner fix tools/mac_render/render.mjs"
+  }
+}

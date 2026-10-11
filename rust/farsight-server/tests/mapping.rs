@@ -177,10 +177,10 @@ fn map_state_process_and_clear() {
     frame.header["frame_id"] = json!(1);
     state.process(&mut frame).unwrap();
     assert_eq!(state.inner.lock().unwrap().frames, 2);
-    assert!(state.inner.lock().unwrap().cloud.cells.len() > 0);
+    assert!(state.cloud_cells() > 0);
     state.clear();
-    assert_eq!(state.inner.lock().unwrap().cloud.cells.len(), 0);
-    assert_eq!(state.inner.lock().unwrap().surfaces.count, 0);
+    assert_eq!(state.cloud_cells(), 0);
+    assert_eq!(state.surfaces_count(), 0);
     assert_eq!(state.inner.lock().unwrap().frames, 0);
 }
 

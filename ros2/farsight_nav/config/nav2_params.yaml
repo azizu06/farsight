@@ -336,6 +336,7 @@ farsight_bridge:
     explore_progress_window_s: 8.0     # stuck: the rover stayed within explore_progress_min_m for this long
     explore_progress_min_m: 0.4
     explore_escape_m: 1.5              # after low progress, pick a frontier at least this far from the stuck spot
+    explore_resume_s: 2.0              # a server stop re-armed within this resumes the same frontier (no re-goal spin)
     explore_tick_s: 0.5                # frontier re-score / goal decision period
     explore_switch_margin: 0.8
     explore_transition_distance: 0.6
