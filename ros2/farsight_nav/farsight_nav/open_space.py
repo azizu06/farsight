@@ -82,25 +82,33 @@ def choose(grid, resolution, origin, robot, *, current_goal=None, blacklist=(),
         route[-1] = goal
         return OpenSpaceGoal(goal, goal, 2 * float(clearance.flat[index]), tuple(route))
 
-    if current_goal is not None and math.dist(robot[:2], current_goal) > transition_m:
+    if current_goal is not None and math.dist(robot[:2], current_goal) > min(transition_m, 0.25):
         cc = math.floor((current_goal[0] - origin[0]) / resolution)
         rr = math.floor((current_goal[1] - origin[1]) / resolution)
         if (0 <= rr < rows and 0 <= cc < cols and free[rr, cc]
                 and np.isfinite(cost[rr * cols + cc]) and not blocked(current_goal)):
             return result(rr * cols + cc, current_goal)
 
-    best, best_score = None, -math.inf
+    candidates = []
     visits = visits or {}
     for index in np.flatnonzero(np.isfinite(cost) & free.ravel()):
         goal = xy(index)
         # A destination inside the existing Nav2 goal tolerance causes churn.
-        if math.dist(robot[:2], goal) < 0.25 or blocked(goal):
+        separation = math.dist(robot[:2], goal)
+        if separation < 0.25 or blocked(goal):
             continue
+        turn = frontiers.turn_to(robot, goal)
         cell = tuple(np.floor(np.asarray(goal) / 0.25).astype(int))
         revisit = math.exp(-(now - visits[cell]) / 60) if cell in visits else 0.0
         score = (2.5 * clearance.flat[index] + width[index] + 0.2 * min(distance[index], 4.0)
-                 - 0.08 * cost[index] - 0.12 * frontiers.turn_to(robot, goal)
+                 - 0.08 * cost[index] - 0.12 * turn
                  - 3.0 * revisit)
-        if score > best_score:
-            best, best_score = int(index), float(score)
-    return result(best) if best is not None else None
+        candidates.append((float(score), int(index), separation, turn))
+    # Prefer destinations that outlast the transition radius, but keep short
+    # reachable space available when the room has no farther destination.
+    distant = [candidate for candidate in candidates if candidate[2] > max(transition_m, 0.25)]
+    candidates = distant or candidates
+    forward = [candidate for candidate in candidates if candidate[3] <= math.pi / 2]
+    candidates = forward or candidates
+    best = max(candidates, key=lambda candidate: candidate[0]) if candidates else None
+    return result(best[1]) if best is not None else None
