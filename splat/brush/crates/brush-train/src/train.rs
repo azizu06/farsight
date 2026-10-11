@@ -336,6 +336,10 @@ impl SplatTrainer {
     /// (a short fine-tune settles the survivors). Ranked by
     /// `contrib_lifetime`; falls back to opacity·area early in a run.
     pub async fn quest_prune(&mut self, splats: Splats, target: u32) -> Splats {
+        // Bake any live 3D-filter floor into the params before touching row
+        // counts (refine() does the same): `min_scale` is a per-splat [N]
+        // tensor the map below would otherwise leave stale.
+        let splats = splats.bake_min_scale();
         let n = splats.num_splats();
         if n <= target {
             return splats;
@@ -359,12 +363,12 @@ impl SplatTrainer {
                     .squeeze_dim::<1>(1)
         });
         let drop = lowest_contrib_inds(&score, None, n - target).await;
-        let mask = inds_to_mask(&drop, n, &device.inner());
-        let (splats, refiner, _dropped) = prune_points(
+        let keep = keep_inds_tensor(n, &drop, &device);
+        let (splats, refiner, _dropped) = select_points(
             splats,
             &mut optim,
             refiner,
-            mask,
+            keep,
             self.contrib_lifetime.as_mut(),
         )
         .await;
@@ -1038,6 +1042,17 @@ impl SplatTrainer {
             0
         };
 
+        // HARD count cap: `growth_target_splats` when set, else `max_splats`.
+        // Upstream's `max_splats` only bounded the score-growth branch — the
+        // resample and oversized-split paths bypassed it (the Mac run grew
+        // 300k -> 2.18M). Here every growth path is budget-checked and any
+        // over-cap count is pruned at refine entry.
+        let hard_cap = self
+            .config
+            .growth_target_splats
+            .unwrap_or(self.config.max_splats)
+            .min(self.config.max_splats);
+
         let (mut splats, refiner, pruned_count) = if mode == RefineMode::Mcmc {
             // MCMC: dead ∪ low-contribution splats are relocated onto live
             // donors — the splat count never changes.
@@ -1062,7 +1077,34 @@ impl SplatTrainer {
             )
             .await;
             num_relocated = moved;
-            (s, r, 0)
+            let mut s = s;
+            let mut r = r;
+            // Over the hard cap even after relocation (e.g. a seed denser
+            // than the cap, or oversized splits below): permanently drop
+            // the lowest-contribution splats.
+            let over = s.num_splats().saturating_sub(hard_cap);
+            let pruned_count = if over > 0 {
+                let drop = lowest_contrib_inds(&r.contrib, None, over).await;
+                if drop.is_empty() {
+                    0
+                } else {
+                    let keep = keep_inds_tensor(s.num_splats(), &drop, &s.device());
+                    let (s2, r2, dropped) = select_points(
+                        s,
+                        &mut optim,
+                        r,
+                        keep,
+                        self.contrib_lifetime.as_mut(),
+                    )
+                    .await;
+                    s = s2;
+                    r = r2;
+                    dropped
+                }
+            } else {
+                0
+            };
+            (s, r, pruned_count)
         } else {
             let (mut splats, mut refiner, pruned_count) = prune_points(
                 splats,
@@ -1074,22 +1116,26 @@ impl SplatTrainer {
             .await;
 
             // Permanent contribution removals: the Speedy-Splat fraction
-            // inside the window plus, in `budget` mode, any count over the
-            // ramp target — one ranked removal, never resampled.
+            // inside the window plus any count over the mode's cap — the
+            // `budget` ramp target, else the hard cap — one ranked removal,
+            // never resampled.
             let mut drop_n = contrib_kill;
-            if mode == RefineMode::Budget {
-                let target = self.growth_target_at(iter, splats.num_splats());
-                drop_n = drop_n.max(splats.num_splats().saturating_sub(target));
-            }
+            let cap_now = if mode == RefineMode::Budget {
+                self.growth_target_at(iter, splats.num_splats())
+            } else {
+                hard_cap
+            };
+            drop_n = drop_n.max(splats.num_splats().saturating_sub(cap_now));
             if drop_n > 0 {
                 let drop = lowest_contrib_inds(&refiner.contrib, None, drop_n).await;
                 if !drop.is_empty() {
-                    let mask = inds_to_mask(&drop, splats.num_splats(), &splats.device().inner());
-                    let (s, r, dropped) = prune_points(
+                    let keep =
+                        keep_inds_tensor(splats.num_splats(), &drop, &splats.device());
+                    let (s, r, dropped) = select_points(
                         splats,
                         &mut optim,
                         refiner,
-                        mask,
+                        keep,
                         self.contrib_lifetime.as_mut(),
                     )
                     .await;
@@ -1105,18 +1151,22 @@ impl SplatTrainer {
         // mode only (`mcmc` relocates in place; `budget` regrows to target
         // by score below).
         if mode == RefineMode::Brush && pruned_count > 0 {
-            // Replacement weighting: opacity × visibility.
-            let vis_f = refiner.vis_mask().float();
-            let resampled_weights = splats.opacities() * vis_f.clone();
-            let resampled_weights = resampled_weights
-                .into_data_async()
-                .await
-                .expect("Failed to get weights")
-                .try_into_vec::<f32>()
-                .expect("Failed to read weights");
-            let resampled_inds =
-                multinomial_sample(&mut self.rng, &resampled_weights, pruned_count);
-            split_inds.extend(resampled_inds);
+            // Replacement weighting: opacity × visibility. Capped by the
+            // remaining hard-cap room (upstream ignored it here).
+            let room = hard_cap.saturating_sub(splats.num_splats() + split_inds.len() as u32);
+            let take = pruned_count.min(room);
+            if take > 0 {
+                let vis_f = refiner.vis_mask().float();
+                let resampled_weights = splats.opacities() * vis_f.clone();
+                let resampled_weights = resampled_weights
+                    .into_data_async()
+                    .await
+                    .expect("Failed to get weights")
+                    .try_into_vec::<f32>()
+                    .expect("Failed to read weights");
+                let resampled_inds = multinomial_sample(&mut self.rng, &resampled_weights, take);
+                split_inds.extend(resampled_inds);
+            }
         }
 
         // Force-split splats that are too big on screen (every refine). Rather
@@ -1126,7 +1176,7 @@ impl SplatTrainer {
         // or the `budget` mode ramp target).
         let count_cap = match mode {
             RefineMode::Budget => self.growth_target_at(iter, splats.num_splats()),
-            _ => self.config.max_splats,
+            _ => hard_cap,
         };
         let pre_oversized = split_inds.len();
         if self.config.split_at_screen_size > 0.0 {
@@ -1466,12 +1516,65 @@ async fn lowest_contrib_inds(
 }
 
 /// Build a bool `[n]` mask with `inds` set, for feeding `prune_points`.
+/// Only safe for small index sets — the scatter backend drops indices
+/// beyond `u16::MAX` on lavapipe (observed: a 101k-index assign landed
+/// 65,535). Large removals must use `keep_inds_tensor` + `select_points`.
+#[allow(dead_code)]
 fn inds_to_mask(inds: &[i32], n: u32, device: &Device) -> Tensor<1, Bool> {
     let k = inds.len();
     let idx = Tensor::from_data(TensorData::new(inds.to_vec(), [k]), device);
     Tensor::<1>::zeros([n as usize], device)
         .select_assign(0, idx, Tensor::<1>::ones([k], device), Assign)
         .greater_elem(0.5)
+}
+
+/// Keep-index tensor: every row in `0..n` not listed in `drop`, ascending
+/// (select preserves splat order). Built on the host — one O(n) pass — for
+/// removals where an index-scatter mask would be too large to survive.
+fn keep_inds_tensor(n: u32, drop: &[i32], device: &Device) -> Tensor<1, Int> {
+    let mut dead = vec![false; n as usize];
+    for &i in drop {
+        dead[i as usize] = true;
+    }
+    let keep: Vec<i32> = (0..n as i32).filter(|&i| !dead[i as usize]).collect();
+    let k = keep.len();
+    Tensor::from_data(TensorData::new(keep, [k]), device)
+}
+
+/// Keep splats by explicit indices — the large-removal path. Same selects
+/// as `prune_points` but skips the bool-mask scatter + `argwhere` round
+/// trip entirely: safe past the `u16::MAX` index-scatter limit.
+async fn select_points(
+    mut splats: Splats,
+    optim: &mut SplatOptim,
+    mut refiner: RefineRecord,
+    keep_inds: Tensor<1, Int>,
+    contrib_lifetime: Option<&mut Tensor<1>>,
+) -> (Splats, RefineRecord, u32) {
+    let start_splats = splats.num_splats();
+    let new_points = keep_inds.dims()[0] as u32;
+    if new_points == 0 || new_points >= start_splats {
+        return (splats, refiner, 0);
+    }
+    let inner_keep = keep_inds.clone().without_autodiff();
+    splats = map_splats_and_opt(
+        splats,
+        optim,
+        |x| x.select(0, keep_inds.clone()),
+        |x| x.select(0, keep_inds.clone()),
+        |x| x.select(0, keep_inds.clone()),
+        |x| x.select(0, keep_inds.clone()),
+        |x| x.select(0, keep_inds.clone()),
+        |x| x.select(0, keep_inds.clone()),
+    );
+    if let Some(f) = splats.min_scale.take() {
+        splats.min_scale = Some(f.select(0, inner_keep.clone()));
+    }
+    refiner = refiner.keep(inner_keep.clone());
+    if let Some(lt) = contrib_lifetime {
+        *lt = lt.clone().select(0, inner_keep);
+    }
+    (splats, refiner, start_splats - new_points)
 }
 
 /// MCMC-style relocation (3DGS-MCMC): every splat under `relocate_mask` is
