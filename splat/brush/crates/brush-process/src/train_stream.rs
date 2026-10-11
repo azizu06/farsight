@@ -91,6 +91,7 @@ pub(crate) async fn train_stream(
     let estimated_up = dataset.estimate_up();
 
     // Convert SplatData to Splats using KNN initialization
+    let ply_seeded = load_result.init_splat.is_some();
     let (up_axis, init_splats) = if let Some(msg) = load_result.init_splat {
         // Use loaded splats with KNN init
         let render_mode = train_stream_config
@@ -198,6 +199,7 @@ pub(crate) async fn train_stream(
         process_config.seed,
     );
     trainer.set_view_cams(view_cams.clone());
+    trainer.set_seeded(ply_seeded);
 
     // Get the dataset name from the base path (if available) for interpolation.
     let dataset_name = vfs
@@ -306,6 +308,7 @@ pub(crate) async fn train_stream(
                 process_config.seed,
             );
             trainer.set_view_cams(view_cams.clone());
+            trainer.set_seeded(ply_seeded);
 
             log::info!(
                 "LOD {current_lod}/{lod_levels}: Training for {lod_refine_steps} steps (image scale {:.0}%)",
@@ -334,17 +337,13 @@ pub(crate) async fn train_stream(
         } else {
             (iter - training_steps) % lod_refine_steps
         };
-        let phase_total = if current_lod == 0 {
-            training_steps
-        } else {
-            lod_refine_steps
-        };
-        let phase_progress = (phase_iter as f32 / phase_total as f32).clamp(0.0, 1.0);
-
         let refine_start = Instant::now();
+        // Schedule-fraction refine gating: under --budget-s this is elapsed/
+        // budget so the refine window always fills the real budget; in iter
+        // mode it equals iter/total (same as before for LOD 0).
         let refine = if phase_iter > 0
             && phase_iter.is_multiple_of(train_stream_config.train_config.refine_every)
-            && phase_progress <= 0.95
+            && trainer.progress(iter) <= 0.95
         {
             let (new_splats, refine_stats) = trainer.refine(iter, splats).await;
             splats = new_splats;
@@ -366,7 +365,8 @@ pub(crate) async fn train_stream(
 
         // We just finished iter 'iter', now starting iter + 1.
         let iter = iter + 1;
-        let is_last_step = iter == train_stream_config.train_config.total_iters();
+        let is_last_step = iter == train_stream_config.train_config.total_iters()
+            || trainer.budget_exhausted();
 
         let step_dur = step_time.elapsed();
         train_duration += step_dur;
@@ -374,7 +374,7 @@ pub(crate) async fn train_stream(
         // Do evals. We skip this for LODs as it'd be confusing for rerun, but, could
         // revisit this.
         if current_lod == 0
-            && (iter % process_config.eval_every == 0 || iter == training_steps)
+            && (iter % process_config.eval_every == 0 || iter == training_steps || is_last_step)
             && let Some(eval_scene) = eval_scene.as_mut()
         {
             let save_path = train_stream_config
@@ -517,6 +517,9 @@ pub(crate) async fn train_stream(
                 .await;
         }
 
+        if trainer.budget_exhausted() {
+            break;
+        }
         brush_async::yield_now().await;
     }
 

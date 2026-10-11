@@ -198,6 +198,78 @@ pub struct TrainConfig {
     /// estimated from the camera spacing (with a 1m minimum).
     #[arg(long, help_heading = "Training options")]
     pub random_init_scene_scale: Option<f32>,
+
+    /// Wall-clock training budget in seconds. When set, every schedule —
+    /// mean-LR decay, progressive resolution, SH-band unlocks, the growth
+    /// window and refine gating — becomes a function of elapsed/budget
+    /// instead of iter/total-steps, so a complete schedule runs inside the
+    /// budget at whatever step rate the machine sustains. Training stops
+    /// (after a final eval/export) once the budget elapses. Should exceed
+    /// --total-steps in practice: set total-steps high and let the budget
+    /// cut the run short.
+    #[arg(long, help_heading = "Training options")]
+    pub budget_s: Option<f64>,
+
+    /// Progressive resolution (DashGaussian-style coarse-to-fine): start
+    /// training at 1/`res_start_div` of full resolution and halve the
+    /// divisor at even intervals, reaching full resolution at
+    /// `res_full_at` of the schedule. Must be a power of two; 1 disables.
+    #[arg(
+        long,
+        help_heading = "Training options",
+        default_value = "1",
+        value_parser = clap::value_parser!(u32).range(1..=8)
+    )]
+    pub res_start_div: u32,
+
+    /// Fraction of the schedule at which progressive resolution reaches
+    /// full resolution.
+    #[arg(long, help_heading = "Training options", default_value = "0.6")]
+    pub res_full_at: f32,
+
+    /// Sparse (visible-only) Adam: update only the parameters of splats
+    /// that contributed pixels to the current view (Taming-3DGS style).
+    /// Invisible splats get neither a parameter update nor momentum decay,
+    /// and the step only touches visible-row tensors.
+    #[arg(long, help_heading = "Training options", default_value = "false")]
+    pub sparse_adam: bool,
+
+    /// SH band unlock points as schedule fractions: `sh_unlock_at[d]` is
+    /// the fraction at which SH degree d+1 unlocks (the DC band is always
+    /// live). E.g. for `--sh-degree 1`, `--sh-unlock-at 0.4` runs
+    /// degree 0 for the first 40% then enables degree 1. Lists shorter
+    /// than the max degree repeat the last value; empty unlocks
+    /// everything from step 0 (previous behaviour).
+    #[arg(long, help_heading = "Training options", value_delimiter = ',')]
+    pub sh_unlock_at: Vec<f32>,
+
+    /// Mean-LR multiplier applied when the run is seeded from a ply
+    /// (e.g. LiDAR dots): the seed already carries accurate geometry, so a
+    /// lower mean LR keeps positions stable while colour/opacity learn.
+    #[arg(long, help_heading = "Training options", default_value = "1.0")]
+    pub seeded_mean_lr_scale: f64,
+
+    /// Boost applied to the opacity and SH-colour LRs for the first
+    /// `seeded_boost_frac` of a seeded run — geometry comes free from the
+    /// seed, so the remaining budget should go to appearance.
+    #[arg(long, help_heading = "Training options", default_value = "1.0")]
+    pub seeded_early_boost: f64,
+
+    /// Fraction of the schedule `seeded_early_boost` applies to.
+    #[arg(long, help_heading = "Training options", default_value = "0.15")]
+    pub seeded_boost_frac: f32,
+
+    /// Number of views per training step (multi-view batching): >1
+    /// renders that many views each step and takes one optimizer step on
+    /// the mean loss. Gradient estimates improve; per-step cost scales
+    /// roughly linearly.
+    #[arg(
+        long,
+        help_heading = "Training options",
+        default_value = "1",
+        value_parser = clap::value_parser!(u32).range(1..=16)
+    )]
+    pub views_per_step: u32,
 }
 
 impl Default for TrainConfig {

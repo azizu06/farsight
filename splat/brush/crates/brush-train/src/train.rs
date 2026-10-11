@@ -13,7 +13,7 @@ use brush_dataset::scene::SceneBatch;
 use brush_loss::{ImageLossConfig, image_loss};
 use brush_render::bwd::render_splats;
 use brush_render::gaussian_splats::Splats;
-use brush_render::{AlphaMode, bounding_box::BoundingBox, sh::sh_coeffs_for_degree};
+use brush_render::{AlphaMode, bounding_box::BoundingBox};
 use burn::{
     module::Param,
     tensor::{
@@ -25,6 +25,7 @@ use burn::{
 use hashbrown::HashSet;
 use rand::SeedableRng;
 use tracing::{Instrument, trace_span};
+use web_time::Instant;
 
 pub const BOUND_PERCENTILE: f32 = 0.8;
 
@@ -47,7 +48,8 @@ struct SplatOptim {
 
 /// Step one parameter: pull its gradient, run Adam on the inner
 /// (autodiff-free) tensor, and re-wrap tracking. Parameters without a
-/// gradient this step are left untouched.
+/// gradient this step are left untouched. When `vis_inds` is given, only
+/// those rows are gathered and stepped (sparse/visible-only Adam).
 fn step_param<const D: usize>(
     adam: &AdamScaled,
     lr: f64,
@@ -55,21 +57,23 @@ fn step_param<const D: usize>(
     state: &mut AdamState<D>,
     grads: &mut Gradients,
     grad_sq_mean: Option<Tensor<D>>,
+    vis_inds: Option<&Tensor<1, Int>>,
 ) -> Param<Tensor<D>> {
     param.map(|t| {
         let Some(grad) = t.grad_remove(grads) else {
             return t;
         };
-        let stepped = adam.step(lr, t.inner(), &grad, grad_sq_mean, state);
+        let inner = t.inner();
+        let stepped = match vis_inds {
+            Some(inds) => adam.step_sparse(lr, &inner, &grad, inds, grad_sq_mean, state),
+            None => adam.step(lr, inner, &grad, grad_sq_mean, state),
+        };
         Tensor::from_inner(stepped).require_grad()
     })
 }
 
 pub struct SplatTrainer {
     config: TrainConfig,
-    /// Per-step multiplier of the exponential mean-LR schedule:
-    /// `lr(n) = lr_mean * decay^(n-1)`.
-    lr_mean_decay: f64,
     /// Per-column LR scales for `transforms` (`means(3) + rotations(4) +
     /// log_scales(3)`) with the mean columns zeroed, and a mask of those
     /// columns: the scheduled mean LR is mixed in on the device each step so
@@ -90,8 +94,62 @@ pub struct SplatTrainer {
     /// `budget` mode: the splat count when the growth window opened — the
     /// start of the target ramp. Lazily set on first use.
     growth_anchor: Option<u32>,
+    /// Wall-clock start of the training loop (set on the first `step` so
+    /// dataset loading doesn't count against the budget). Drives every
+    /// schedule when `--budget-s` is set.
+    train_start: Option<Instant>,
+    /// True when the run is ply-seeded (LiDAR init): enables the
+    /// `seeded_*` LR tweaks.
+    seeded: bool,
+    /// Base per-coeff SH LR scaling `[1, C, 1]` (DC = 1, higher bands
+    /// `1/lr_coeffs_sh_scale`), built once the SH width is known.
+    sh_scale_base: Option<Tensor<3>>,
+    /// Currently installed SH scaling: `(locked_band_mask, tensor)` —
+    /// rebuilt only when the set of locked bands changes.
+    sh_scale_cur: Option<(u64, Tensor<3>)>,
     #[cfg(not(target_family = "wasm"))]
     lpips: Option<lpips::LpipsModel>,
+}
+
+/// Which SH band (degree) a flattened coefficient index belongs to:
+/// 0 → DC, 1..4 → degree 1, 4..9 → degree 2, 9..16 → degree 3, ...
+fn sh_band_of_coeff(c: usize) -> u32 {
+    // Band boundaries are the squares: coeff c sits in degree floor(sqrt(c)).
+    (c as f64).sqrt() as u32
+}
+
+/// Box-downscale a packed `[h, w]` u32 image by an integer divisor on the
+/// host (each entry packs `[r g b a]` u8 little-endian). Averages each
+/// div×div block per channel; the right/bottom partial block is cropped.
+fn downscale_packed(data: &TensorData, div: usize) -> TensorData {
+    debug_assert!(div > 1);
+    let (h, w) = (data.shape[0], data.shape[1]);
+    let (nh, nw) = (h / div, w / div);
+    let src = data.as_slice::<i32>().expect("packed image must be i32");
+    let area = (div * div) as u32;
+    let round = area / 2;
+    let mut out = vec![0i32; nh * nw];
+    for y in 0..nh {
+        let row = y * div * w;
+        for x in 0..nw {
+            let mut acc = [0u32; 4];
+            let base = row + x * div;
+            for dy in 0..div {
+                for dx in 0..div {
+                    let p = src[base + dy * w + dx] as u32;
+                    acc[0] += p & 0xff;
+                    acc[1] += (p >> 8) & 0xff;
+                    acc[2] += (p >> 16) & 0xff;
+                    acc[3] += (p >> 24) & 0xff;
+                }
+            }
+            out[y * nw + x] = (((acc[0] + round) / area)
+                | (((acc[1] + round) / area) << 8)
+                | (((acc[2] + round) / area) << 16)
+                | (((acc[3] + round) / area) << 24)) as i32;
+        }
+    }
+    TensorData::new(out, [nh, nw])
 }
 
 fn inv_sigmoid(x: Tensor<1>) -> Tensor<1> {
@@ -149,15 +207,6 @@ impl SplatTrainer {
         bounds: BoundingBox,
         seed: u64,
     ) -> Self {
-        // The per-step decay reaching lr_mean_end at the last iteration. With
-        // one iteration or fewer there is nothing to decay over (and the
-        // exponent 1/iters would be undefined), so hold the LR.
-        let decay = if config.total_train_iters > 1 {
-            (config.lr_mean_end / config.lr_mean).powf(1.0 / config.total_train_iters as f64)
-        } else {
-            1.0
-        };
-
         let ssim_enabled = config.ssim_weight > 0.0;
 
         // Optimizer state lives on the inner device.
@@ -187,7 +236,6 @@ impl SplatTrainer {
 
         Self {
             config,
-            lr_mean_decay: decay,
             lr_scaling_fixed,
             lr_mean_columns,
             optim: None,
@@ -199,6 +247,10 @@ impl SplatTrainer {
             rng: rand::rngs::StdRng::seed_from_u64(seed),
             view_cams: Vec::new(),
             growth_anchor: None,
+            train_start: None,
+            seeded: false,
+            sh_scale_base: None,
+            sh_scale_cur: None,
             #[cfg(not(target_family = "wasm"))]
             lpips,
         }
@@ -238,34 +290,98 @@ impl SplatTrainer {
             .max(1.0) as u32
     }
 
+    /// Mark the run as ply-seeded (LiDAR init): enables the `seeded_*`
+    /// config tweaks (lower mean LR, early opacity/colour boost).
+    pub fn set_seeded(&mut self, seeded: bool) {
+        self.seeded = seeded;
+    }
+
+    /// Fraction of the schedule completed: wall-clock `elapsed/budget`
+    /// when `--budget-s` is set, else `iter/total_train_iters`. Every
+    /// schedule (LR decay, progressive res, SH unlock, growth window,
+    /// refine gating) keys off this so a complete schedule always runs
+    /// inside whatever budget the caller set.
+    pub fn progress(&self, iter: u32) -> f32 {
+        match (self.config.budget_s, self.train_start) {
+            (Some(budget), Some(start)) if budget > 0.0 => {
+                (start.elapsed().as_secs_f64() / budget).clamp(0.0, 1.0) as f32
+            }
+            _ => (iter as f32 / self.config.total_train_iters.max(1) as f32).clamp(0.0, 1.0),
+        }
+    }
+
+    /// True once `--budget-s` has elapsed. The caller should run a final
+    /// eval/export and stop. Always false without a budget.
+    pub fn budget_exhausted(&self) -> bool {
+        matches!(
+            (self.config.budget_s, self.train_start),
+            (Some(budget), Some(start))
+                if budget > 0.0 && start.elapsed().as_secs_f64() >= budget
+        )
+    }
+
+    /// Resolution divisor for the current schedule point: `res_start_div`
+    /// at progress 0, halving at even intervals until full resolution at
+    /// `res_full_at` (DashGaussian-style coarse-to-fine).
+    fn res_div(&self, progress: f32) -> usize {
+        let start = self.config.res_start_div;
+        if start <= 1 || !start.is_power_of_two() || progress >= self.config.res_full_at {
+            return 1;
+        }
+        let levels = start.trailing_zeros();
+        let done = (progress / self.config.res_full_at.max(1e-6) * levels as f32) as u32;
+        (start >> done.min(levels)) as usize
+    }
+
+    /// Mask of locked SH coefficients (bit c set = coeff c locked) for the
+    /// current progress under `--sh-unlock-at`. 0 = all bands live.
+    fn locked_sh_bits(&self, num_coeffs: usize, progress: f32) -> u64 {
+        let unlock = &self.config.sh_unlock_at;
+        if unlock.is_empty() {
+            return 0;
+        }
+        let mut bits = 0u64;
+        for c in 1..num_coeffs.min(64) {
+            let band = sh_band_of_coeff(c);
+            let at = unlock
+                .get(band as usize - 1)
+                .or_else(|| unlock.last())
+                .copied()
+                .unwrap_or(0.0);
+            if progress < at {
+                bits |= 1 << c;
+            }
+        }
+        bits
+    }
+
+    /// One optimizer step over a single view (see [`Self::step_multi`]).
     pub async fn step(&mut self, batch: SceneBatch, splats: Splats) -> (Splats, TrainStepStats) {
+        self.step_multi(std::slice::from_ref(&batch), splats).await
+    }
+
+    /// One optimizer step over `batches` views (multi-view batching):
+    /// renders each view, averages the losses, takes one optimizer step.
+    /// Refine stats accumulate per view, as if the views had arrived as
+    /// separate steps.
+    pub async fn step_multi(
+        &mut self,
+        batches: &[SceneBatch],
+        splats: Splats,
+    ) -> (Splats, TrainStepStats) {
         let mut splats = splats;
 
         // Track max SH degree from the first splats we see.
         if self.step_count == 0 {
             self.max_sh_degree = splats.sh_degree();
+            self.train_start = Some(Instant::now());
         }
         self.step_count += 1;
-
-        let [img_h, img_w] = batch.img_size();
-        let camera = batch.camera;
+        // Progress at the START of this step drives every schedule below.
+        let progress = self.progress(self.step_count - 1);
+        let res_div = self.res_div(progress);
 
         let device = splats.device();
-        let has_alpha = batch.has_alpha;
-        // GT lives on the GPU as packed `[H, W]` u32 (RGBA u8). All mixing
-        // (bg compositing, alpha matching, mask) is folded into the loss
-        // kernels; no f32 GT image is ever materialised here.
-        // GT is pure data — never differentiated. Build it on the inner
-        // backend so it doesn't inherit the autodiff device's residual
-        // checkpointing flag (the LPIPS `unpack_gt_rgb` path, via
-        // `unwrap_wgpu_int`, expects a clean Wgpu tensor). When the loader
-        // uploaded the image during prefetch, reuse the resident tensor and
-        // skip the host→device copy entirely.
-        let gt_packed: Tensor<2, Int> = match batch.img_gpu {
-            Some(img) => img,
-            None => Tensor::from_data(batch.img_packed, &device.clone().inner()),
-        };
-        let img_size = glam::uvec2(img_w as u32, img_h as u32);
         let base = &self.config.background_color;
         let base_bg = glam::Vec3::new(base[0], base[1], base[2]);
         let background = sample_background_color(
@@ -276,38 +392,83 @@ impl SplatTrainer {
 
         let median_scale = self.bounds.median_size();
 
+        // Mean LR: exponential decay over the schedule fraction, scaled by
+        // the (percentile) scene size. Under a ply seed, `seeded_mean_lr_scale`
+        // keeps the already-accurate positions stable.
         let lr_mean = self.config.lr_mean
-            * self.lr_mean_decay.powi(self.step_count as i32 - 1)
-            * median_scale as f64;
-        let masked_alpha = batch.alpha_mode == AlphaMode::Masked;
-        let do_alpha_match = has_alpha && !masked_alpha && self.config.match_alpha_weight > 0.0;
+            * (self.config.lr_mean_end / self.config.lr_mean).powf(progress as f64)
+            * median_scale as f64
+            * if self.seeded {
+                self.config.seeded_mean_lr_scale
+            } else {
+                1.0
+            };
+        // Seeded runs get geometry for free; spend the early schedule on
+        // appearance (opacity + SH colour).
+        let early_boost = if self.seeded && progress < self.config.seeded_boost_frac {
+            self.config.seeded_early_boost
+        } else {
+            1.0
+        };
 
-        // The optimizer runs with base LR 1 and these per-column scales.
-        let lr_scaling =
-            self.lr_scaling_fixed.clone() + self.lr_mean_columns.clone() * lr_mean as f32;
+        // Render + loss per view. GT stays on the GPU as packed `[H, W]`
+        // u32 (RGBA u8); all mixing (bg compositing, alpha matching, mask)
+        // is folded into the loss kernels. Under progressive res the packed
+        // GT is box-downscaled on the host and the camera renders fewer
+        // pixels (FOV intrinsics auto-scale to `img_size`).
+        let n_views = batches.len() as f32;
+        let mut loss: Option<Tensor<1>> = None;
+        let mut aux_visible: Option<Tensor<1>> = None;
+        let mut aux_opacities: Option<Tensor<1>> = None;
+        let mut aux_max_radius: Option<Tensor<1>> = None;
+        let mut coeffs_grad_sq_sum: Option<Tensor<3>> = None;
+        let mut refine_weights: Vec<Tensor<1>> = Vec::with_capacity(batches.len());
+        let mut num_visible_acc = 0u64;
 
-        let (
-            mut grads,
-            visible,
-            opacities,
-            num_visible,
-            loss_inner,
-            refine_weight,
-            max_radius,
-            coeffs_grad_sq,
-        ) = {
+        for batch in batches {
+            let [img_h, img_w] = batch.img_size();
+            // GT is pure data — never differentiated. Build it on the inner
+            // backend so it doesn't inherit the autodiff device's residual
+            // checkpointing flag (the LPIPS `unpack_gt_rgb` path, via
+            // `unwrap_wgpu_int`, expects a clean Wgpu tensor).
+            // At full res reuse the prefetcher's GPU-resident image when
+            // present (skips the host→device copy); for the coarse phase a
+            // host box-downscale of the packed GT is higher quality than a
+            // strided GPU subsample.
+            let (gt_packed, img_size) = if res_div > 1 {
+                (
+                    Tensor::<2, Int>::from_data(
+                        downscale_packed(&batch.img_packed, res_div),
+                        &device.clone().inner(),
+                    ),
+                    glam::uvec2((img_w / res_div) as u32, (img_h / res_div) as u32),
+                )
+            } else {
+                (
+                    match batch.img_gpu.clone() {
+                        Some(img) => img,
+                        None => Tensor::<2, Int>::from_data(
+                            batch.img_packed.clone(),
+                            &device.clone().inner(),
+                        ),
+                    },
+                    glam::uvec2(img_w as u32, img_h as u32),
+                )
+            };
+
+            let has_alpha = batch.has_alpha;
+            let masked_alpha = batch.alpha_mode == AlphaMode::Masked;
+            let do_alpha_match = has_alpha && !masked_alpha && self.config.match_alpha_weight > 0.0;
+
             // The splats already carry their 3D-filter floor (set at refine);
             // the render path folds it in. Optimizer/refine work on raw params.
-            let render_input = splats.clone();
-            let diff_out = render_splats(render_input, &camera, img_size, background)
+            let diff_out = render_splats(splats.clone(), &batch.camera, img_size, background)
                 .instrument(trace_span!("Forward"))
                 .await;
 
             let pred_image = diff_out.img;
             let refine_weight_holder = diff_out.refine_weight_holder;
-            let visible = diff_out.visible;
-            let max_radius = diff_out.max_radius;
-            let opacities = diff_out.opacities;
+            num_visible_acc += diff_out.num_visible as u64;
 
             // RGB loss is `(1 - w) * L1 + (-w) * SSIM` per pixel. Bg
             // compositing always runs in the kernel; for synthesised opaque
@@ -341,7 +502,7 @@ impl SplatTrainer {
             // `loss` is only reassigned by the LPIPS path below, which is
             // compiled out on wasm — so `mut` is unused there.
             #[cfg_attr(target_family = "wasm", allow(unused_mut))]
-            let mut loss = image_loss(pred_image.clone(), gt_packed.clone(), cfg);
+            let mut view_loss = image_loss(pred_image.clone(), gt_packed.clone(), cfg);
 
             // LPIPS still needs an f32 RGB tensor for VGG. Materialising it
             // here costs ~99 MB at 4K, only when LPIPS is enabled.
@@ -349,67 +510,138 @@ impl SplatTrainer {
             if let Some(lpips) = &self.lpips {
                 let gt_rgb = brush_loss::unpack_gt_rgb(gt_packed.clone(), composite_bg);
                 let gt_rgb_diff: Tensor<3> = Tensor::from_inner(gt_rgb);
-                loss = loss
+                view_loss = view_loss
                     + lpips.lpips(
                         pred_image.clone().slice(s![.., .., 0..3]).unsqueeze_dim(0),
                         gt_rgb_diff.unsqueeze_dim(0),
                     ) * self.config.lpips_loss_weight;
             }
 
-            // Strip the autodiff graph off the loss so consumers can read the
-            // scalar later without keeping the backward pass alive.
-            let loss_inner = loss.clone().inner();
-            let mut grads = splats.bwd_validate(loss).await;
+            loss = Some(match loss {
+                Some(l) => l + view_loss,
+                None => view_loss,
+            });
+            // Aux merges: union of contributing splats across views.
+            aux_visible = Some(match aux_visible {
+                Some(v) => v.max_pair(diff_out.visible),
+                None => diff_out.visible,
+            });
+            aux_opacities = Some(match aux_opacities {
+                Some(o) => o.max_pair(diff_out.opacities),
+                None => diff_out.opacities,
+            });
+            aux_max_radius = Some(match aux_max_radius {
+                Some(r) => r.max_pair(diff_out.max_radius),
+                None => diff_out.max_radius,
+            });
+            coeffs_grad_sq_sum = Some(match coeffs_grad_sq_sum {
+                Some(c) => c + diff_out.coeffs_grad_sq_holder,
+                None => diff_out.coeffs_grad_sq_holder,
+            });
+            refine_weights.push(refine_weight_holder);
+        }
+        let loss = loss.expect("at least one view") / n_views;
+        let visible = aux_visible.expect("at least one view");
+        let opacities = aux_opacities.expect("at least one view");
+        let max_radius = aux_max_radius.expect("at least one view");
+        let coeffs_grad_sq_holder = coeffs_grad_sq_sum.expect("at least one view") / n_views;
+        let num_visible = (num_visible_acc as f32 / n_views) as u32;
 
-            let refine_weight = refine_weight_holder
-                .grad_remove(&mut grads)
-                .expect("XY gradients need to be calculated.")
-                .without_autodiff();
-            // Reduced in the backward off the compact rows, so the dense SH
-            // gradient never gets squared just to be summed away.
-            let coeffs_grad_sq = diff_out
-                .coeffs_grad_sq_holder
-                .grad_remove(&mut grads)
-                .map(Tensor::without_autodiff);
+        // Strip the autodiff graph off the loss so consumers can read the
+        // scalar later without keeping the backward pass alive.
+        let loss_inner = loss.clone().inner();
+        let mut grads = splats.bwd_validate(loss).await;
 
-            (
-                grads,
-                visible,
-                opacities,
-                diff_out.num_visible,
-                loss_inner,
-                refine_weight,
-                max_radius,
-                coeffs_grad_sq,
-            )
-        };
+        let coeffs_grad_sq = coeffs_grad_sq_holder
+            .grad_remove(&mut grads)
+            .map(Tensor::without_autodiff);
+
+        let refine_weight_list: Vec<Tensor<1>> = refine_weights
+            .into_iter()
+            .map(|h| {
+                h.grad_remove(&mut grads)
+                    .expect("XY gradients need to be calculated.")
+                    .without_autodiff()
+            })
+            .collect();
+
+        // The optimizer runs with base LR 1 and these per-column scales.
+        let lr_scaling =
+            self.lr_scaling_fixed.clone() + self.lr_mean_columns.clone() * lr_mean as f32;
 
         // The optimizer strips autodiff before stepping, so optimizer state
         // (scaling, momentum) lives on the inner device.
         let opt_device = device.clone().inner();
+
+        // Sparse Adam: indices of the splats that contributed pixels this
+        // step (union over the batch's views). One small D2H sync per step;
+        // on unified-memory GPUs the indices are nearly free.
+        let vis_inds = if self.config.sparse_adam {
+            Some(
+                visible
+                    .clone()
+                    .greater_elem(0.5)
+                    .argwhere_async()
+                    .await
+                    .squeeze_dim::<1>(1),
+            )
+        } else {
+            None
+        };
+        let vis_inds = vis_inds.as_ref();
+
+        // SH scaling = base per-band scale × unlock mask. Rebuilt only when
+        // the set of locked bands changes (rare — once per unlock point).
+        let num_coeffs = splats.sh_coeffs.dims()[1];
+        let locked_bits = self.locked_sh_bits(num_coeffs, progress);
+        let sh_scaling = match &self.sh_scale_cur {
+            Some((bits, t)) if *bits == locked_bits => t.clone(),
+            _ => {
+                let base = self.sh_scale_base.get_or_insert_with(|| {
+                    let mut scales = vec![1.0f32; num_coeffs];
+                    let rest_scale = 1.0 / self.config.lr_coeffs_sh_scale;
+                    for s in &mut scales[1..] {
+                        *s = rest_scale;
+                    }
+                    Tensor::<1>::from_floats(scales.as_slice(), &opt_device)
+                        .reshape([1, num_coeffs as i32, 1])
+                });
+                let t = if locked_bits == 0 {
+                    base.clone()
+                } else {
+                    let mask: Vec<f32> = (0..num_coeffs)
+                        .map(|c| {
+                            if locked_bits & (1u64 << c) == 0 {
+                                1.0
+                            } else {
+                                0.0
+                            }
+                        })
+                        .collect();
+                    base.clone()
+                        * Tensor::<1>::from_floats(mask.as_slice(), &opt_device)
+                            .reshape([1, num_coeffs as i32, 1])
+                };
+                self.sh_scale_cur = Some((locked_bits, t.clone()));
+                t
+            }
+        };
+
         let optimizer =
             self.optim.get_or_insert_with(|| {
-                let sh_degree = splats.sh_degree();
-                let num_coeffs = sh_coeffs_for_degree(sh_degree) as usize;
-
-                // DC (band 0) uses full LR; bands 1+ are scaled down.
-                let mut scales = vec![1.0f32; num_coeffs];
-                let rest_scale = 1.0 / self.config.lr_coeffs_sh_scale;
-                for s in &mut scales[1..] {
-                    *s = rest_scale;
-                }
-                let sh_lr_scales = Tensor::<1>::from_floats(scales.as_slice(), &opt_device)
-                    .reshape([1, num_coeffs as i32, 1]);
-
                 SplatOptim {
                     adam: AdamScaled::new(1e-15),
                     transforms: AdamState::new(None, false),
-                    sh_coeffs: AdamState::new(Some(sh_lr_scales), true),
+                    // `scaling` is filled in per step above (SH unlock mask).
+                    sh_coeffs: AdamState::new(None, true),
                     opacities: AdamState::new(None, false),
                 }
             });
-
         optimizer.transforms.scaling = Some(lr_scaling);
+        optimizer.sh_coeffs.scaling = Some(sh_scaling);
+
+        let lr_coeffs = self.config.lr_coeffs_dc * early_boost;
+        let lr_opac = self.config.lr_opac * early_boost;
 
         splats = trace_span!("Optimizer step").in_scope(|| {
             splats.transforms = trace_span!("Transforms step").in_scope(|| {
@@ -420,26 +652,29 @@ impl SplatTrainer {
                     &mut optimizer.transforms,
                     &mut grads,
                     None,
+                    vis_inds,
                 )
             });
             splats.sh_coeffs = trace_span!("SH Coeffs step").in_scope(|| {
                 step_param(
                     &optimizer.adam,
-                    self.config.lr_coeffs_dc,
+                    lr_coeffs,
                     splats.sh_coeffs,
                     &mut optimizer.sh_coeffs,
                     &mut grads,
                     coeffs_grad_sq,
+                    vis_inds,
                 )
             });
             splats.raw_opacities = trace_span!("Opacity step").in_scope(|| {
                 step_param(
                     &optimizer.adam,
-                    self.config.lr_opac,
+                    lr_opac,
                     splats.raw_opacities,
                     &mut optimizer.opacities,
                     &mut grads,
                     None,
+                    vis_inds,
                 )
             });
             splats
@@ -453,12 +688,14 @@ impl SplatTrainer {
             let record = self
                 .refine_record
                 .get_or_insert_with(|| RefineRecord::new(splats.num_splats(), &device));
-            record.gather_stats(
-                refine_weight,
-                visible.clone(),
-                max_radius,
-                opacities.clone(),
-            );
+            for w in refine_weight_list {
+                record.gather_stats(
+                    w,
+                    visible.clone(),
+                    max_radius.clone(),
+                    opacities.clone(),
+                );
+            }
         });
 
         // Noise uses the forward's floored opacities, without building an autodiff graph.
@@ -490,8 +727,8 @@ impl SplatTrainer {
             lr_mean,
             lr_rotation: self.config.lr_rotation,
             lr_scale: self.config.lr_scale,
-            lr_coeffs: self.config.lr_coeffs_dc,
-            lr_opac: self.config.lr_opac,
+            lr_coeffs,
+            lr_opac,
             loss: loss_inner,
         };
 
@@ -499,7 +736,7 @@ impl SplatTrainer {
     }
 
     pub async fn refine(&mut self, iter: u32, splats: Splats) -> (Splats, RefineStats) {
-        let progress = iter as f32 / self.config.total_train_iters.max(1) as f32;
+        let progress = self.progress(iter);
         // Refine manipulates the canonical (un-floored) params, so bake the
         // current 3D-filter floor into them first — split/clone/prune then see
         // the splat's true scales with no double-apply. A freshly recomputed
@@ -684,10 +921,13 @@ impl SplatTrainer {
         let num_split_oversized = (split_inds.len() - pre_oversized) as u32;
 
         let pre_high_grad = split_inds.len();
-        if iter >= self.config.growth_start_iter
-            && iter < self.config.growth_stop_iter
-            && mode != RefineMode::Mcmc
-        {
+        // The growth window is expressed as schedule fractions so it means
+        // the same thing in iter mode and --budget-s mode.
+        let growth_start =
+            self.config.growth_start_iter as f32 / self.config.total_train_iters.max(1) as f32;
+        let growth_stop =
+            self.config.growth_stop_iter as f32 / self.config.total_train_iters.max(1) as f32;
+        if progress >= growth_start && progress < growth_stop && mode != RefineMode::Mcmc {
             let above_threshold = refiner.above_threshold(self.config.growth_grad_threshold);
 
             let threshold_count = above_threshold
@@ -905,7 +1145,7 @@ impl SplatTrainer {
             );
         }
 
-        let train_t = (iter as f32 / self.config.total_train_iters.max(1) as f32).clamp(0.0, 1.0);
+        let train_t = self.progress(iter);
         let t_shrink_strength = 1.0 - train_t;
         let minus_opac = self.config.opac_decay * t_shrink_strength;
 

@@ -26,6 +26,7 @@ log.workspace = true
 hashbrown.workspace = true
 ball-tree.workspace = true
 rayon.workspace = true
+web-time.workspace = true
 
 tokio = { workspace = true, features = ["io-util", "rt"] }
 burn = { workspace = true, features = ["autodiff"] }

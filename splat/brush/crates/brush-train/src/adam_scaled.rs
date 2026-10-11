@@ -1,4 +1,4 @@
-use burn::tensor::{ElementConversion, Tensor};
+use burn::tensor::{ElementConversion, IndexingUpdateOp::Assign, Int, Tensor};
 
 /// Adam with per-parameter second-moment reduction (via [`AdamState::reduce_moment_2`])
 /// and per-component learning-rate scaling (via [`AdamState::scaling`]).
@@ -156,6 +156,95 @@ impl AdamScaled {
         let grad = moment_1_corrected.div(moment_2_corrected.sqrt().add_scalar(self.epsilon));
         (grad, state)
     }
+
+    /// Sparse variant: update only the rows listed in `inds` (the splats
+    /// visible in the current view, Taming-3DGS SparseAdam style). Rows not
+    /// listed get neither a parameter update nor momentum decay — their
+    /// momentum is left as-is rather than decayed towards zero, so a splat
+    /// re-entering view resumes where it left off. Compute runs on the
+    /// compact `[V, ...]` gather, not the dense `[N, ...]` tensors.
+    ///
+    /// `grad` is the dense per-splat gradient; invisible rows are expected
+    /// to be zero (the backward expands compact grads through a zero row).
+    /// `grad_sq_mean` is the reduced second moment on the same dense
+    /// indexing; it is gathered along with everything else.
+    pub fn step_sparse<const D: usize>(
+        &self,
+        lr: f64,
+        tensor: &Tensor<D>,
+        grad: &Tensor<D>,
+        inds: &Tensor<1, Int>,
+        grad_sq_mean: Option<Tensor<D>>,
+        state: &mut AdamState<D>,
+    ) -> Tensor<D> {
+        if inds.dims()[0] == 0 {
+            return tensor.clone();
+        }
+
+        let grad_c = grad.clone().select(0, inds.clone());
+        let param_c = tensor.clone().select(0, inds.clone());
+        let grad_sq_c = grad_sq_mean.map(|m| m.select(0, inds.clone()));
+
+        // Pull the momentum rows for the visible set (zeros for a
+        // first-visit row — matching the dense init path in `transform`).
+        let reduce = state.reduce_moment_2;
+        let time = state.momentum.as_ref().map_or(0, |m| m.time);
+        let (m1_c, m2_c) = match &state.momentum {
+            Some(m) => (
+                m.moment_1.clone().select(0, inds.clone()),
+                m.moment_2.clone().select(0, inds.clone()),
+            ),
+            None => (
+                Tensor::zeros(param_c.dims(), &param_c.device()),
+                Tensor::zeros(m2_dims(param_c.dims(), reduce), &param_c.device()),
+            ),
+        };
+
+        let (grad_c, compact) = self.transform(
+            &grad_c,
+            grad_sq_c,
+            Some(MomentumState {
+                moment_1: m1_c,
+                moment_2: m2_c,
+                time,
+            }),
+            reduce,
+        );
+
+        // Scatter the updated momentum rows back into the dense state.
+        let (m1_dense, m2_dense) = match state.momentum.take() {
+            Some(m) => (m.moment_1, m.moment_2),
+            None => (
+                Tensor::zeros(tensor.dims(), &tensor.device()),
+                Tensor::zeros(m2_dims(tensor.dims(), reduce), &tensor.device()),
+            ),
+        };
+        state.momentum = Some(MomentumState {
+            moment_1: m1_dense.select_assign(0, inds.clone(), compact.moment_1, Assign),
+            moment_2: m2_dense.select_assign(0, inds.clone(), compact.moment_2, Assign),
+            time: compact.time,
+        });
+
+        let delta = if let Some(scale) = &state.scaling {
+            grad_c * (scale.clone() * lr).unsqueeze()
+        } else {
+            grad_c * lr
+        };
+        tensor
+            .clone()
+            .select_assign(0, inds.clone(), param_c - delta, Assign)
+    }
+}
+
+/// Shape of `moment_2` for a parameter: full shape normally, size-1
+/// trailing dims under `reduce_moment_2`.
+fn m2_dims<const D: usize>(mut dims: [usize; D], reduce: bool) -> [usize; D] {
+    if reduce {
+        for d in &mut dims[1..] {
+            *d = 1;
+        }
+    }
+    dims
 }
 
 /// Reduce to a single mean per row by averaging across all trailing dims (1..D).
