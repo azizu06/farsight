@@ -775,13 +775,41 @@ impl SplatTrainer {
         let vis_inds = if self.config.sparse_adam {
             Some(if std::env::var_os("BRUSH_SPARSE_ALL").is_some() {
                 Tensor::arange(0..(splats.transforms.dims()[0] as i64), &opt_device)
+            } else if std::env::var_os("BRUSH_SPARSE_HOST").is_some() {
+                // Host path: one D2H read of the 0/1 visible buffer, index
+                // list built on the CPU and uploaded. Avoids the argwhere
+                // kernel entirely (nondeterministic codegen issues on some
+                // wgpu backends) at the cost of one sync per step — cheap on
+                // unified-memory Metal.
+                let host = visible.clone().inner();
+                let data = host.into_data();
+                let inds_vec: Vec<i64> = data
+                    .iter::<f32>()
+                    .enumerate()
+                    .filter_map(|(i, v)| (v > 0.5).then_some(i as i64))
+                    .collect();
+                let n = inds_vec.len();
+                if std::env::var_os("BRUSH_SPARSE_DEBUG").is_some() {
+                    eprintln!(
+                        "[sparse] it={} inds {n}/{}",
+                        self.step_count,
+                        splats.transforms.dims()[0]
+                    );
+                }
+                Tensor::from_ints(inds_vec.as_slice(), &opt_device)
             } else {
-                visible
+                let inds = visible
                     .clone()
                     .greater_elem(0.5)
                     .argwhere_async()
                     .await
-                    .squeeze_dim::<1>(1)
+                    .squeeze_dim::<1>(1);
+                if std::env::var_os("BRUSH_SPARSE_DEBUG").is_some() {
+                    let n = inds.dims()[0];
+                    let total = splats.transforms.dims()[0];
+                    eprintln!("[sparse] it={} inds {n}/{total}", self.step_count);
+                }
+                inds
             })
         } else {
             None

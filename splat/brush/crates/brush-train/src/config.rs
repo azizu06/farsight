@@ -351,7 +351,7 @@ impl TrainConfig {
         }
         // sparse_adam stays off in the bundle until the visible-index
         // starvation bug in step_sparse is fixed (see schedule.md).
-        self.ssim_weight = 0.2;
+        self.ssim_weight = 0.5;
         if self.ema_decay == 0.0 {
             self.ema_decay = 0.95;
         }
