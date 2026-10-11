@@ -69,6 +69,14 @@ pub struct MeshOptions {
     pub plane_normals: bool,
     /// Lock plane-intersection crease vertices during decimation.
     pub decimate_lock_creases: bool,
+    /// Run local plane detection when no shared Planes result is passed in.
+    pub plane_fallback: bool,
+    /// Inlier distance threshold for fallback plane detection/labelling (m).
+    pub plane_eps: f32,
+    /// Minimum inliers for a fallback plane.
+    pub plane_min_inliers: u32,
+    /// Inlier normal agreement for fallback plane detection.
+    pub plane_normal_cos: f32,
 }
 
 impl Default for MeshOptions {
@@ -99,6 +107,10 @@ impl Default for MeshOptions {
             plane_smooth: true,
             plane_normals: true,
             decimate_lock_creases: true,
+            plane_fallback: true,
+            plane_eps: 0.05,
+            plane_min_inliers: 500,
+            plane_normal_cos: 0.9,
         }
     }
 }
@@ -1367,12 +1379,47 @@ pub fn run_with_planes(mesh: &mut Mesh, cloud: &PointCloud, opts: &MeshOptions, 
     run_inner(mesh, cloud, opts, planes_nd, labels)
 }
 
+/// Local fallback plane detection while the shared planes module is wired in:
+/// reuse densify's histogram detector (needs cloud normals) then label each
+/// cloud point by its closest plane within `plane_eps`.
+fn detect_planes_fallback(cloud: &PointCloud, opts: &MeshOptions) -> (Vec<(V3, f32)>, Vec<u32>) {
+    let det = crate::densify::planes::detect(cloud, opts.plane_min_inliers as usize, opts.plane_eps, opts.plane_normal_cos);
+    let nd: Vec<(V3, f32)> = det.iter().map(|p| (p.fit.n, -dot(p.fit.n, p.fit.c))).collect();
+    if nd.is_empty() {
+        return (nd, Vec::new());
+    }
+    let eps2 = opts.plane_eps * opts.plane_eps;
+    let labels: Vec<u32> = cloud
+        .pos
+        .par_iter()
+        .map(|p| {
+            let mut best = u32::MAX;
+            let mut bd = eps2;
+            for (l, &(n, d)) in nd.iter().enumerate() {
+                let t = dot(n, *p) + d;
+                if t * t < bd {
+                    bd = t * t;
+                    best = l as u32;
+                }
+            }
+            best
+        })
+        .collect();
+    (nd, labels)
+}
+
 pub fn run(mesh: &mut Mesh, cloud: &PointCloud, opts: &MeshOptions) -> Stats {
     run_inner(mesh, cloud, opts, &[], &[])
 }
 
 fn run_inner(mesh: &mut Mesh, cloud: &PointCloud, opts: &MeshOptions, planes_nd: &[(V3, f32)], labels: &[u32]) -> Stats {
     let t0 = Instant::now();
+    let (fb_nd, fb_lab) = if planes_nd.is_empty() && opts.plane_fallback && cloud.len() >= 10_000 {
+        detect_planes_fallback(cloud, opts)
+    } else {
+        (Vec::new(), Vec::new())
+    };
+    let (planes_nd, labels) = if planes_nd.is_empty() { (&fb_nd[..], &fb_lab[..]) } else { (planes_nd, labels) };
     let mut s = serde_json::json!({});
     macro_rules! ms {
         ($name:expr, $t:expr) => {
@@ -1638,6 +1685,42 @@ mod tests {
         let pin = boundary_vertex_mask(m.pos.len(), &m.idx);
         bilateral_smooth(&mut m, &opts, &vf, &pin, None);
         assert_eq!(m.pos, before); // all verts are boundary -> pinned
+    }
+
+    #[test]
+    fn planes_flatten_and_harden_creases() {
+        // 4x4 grid in z=0 with interior verts bumped; a wall plane x=0.
+        let n = 5usize;
+        let mut m = Mesh::default();
+        for y in 0..n {
+            for x in 0..n {
+                let interior = x > 0 && y > 0 && x < n - 1 && y < n - 1;
+                m.pos.push([x as f32, y as f32, if interior { 0.04 } else { 0.0 }]);
+            }
+        }
+        for y in 0..n - 1 {
+            for x in 0..n - 1 {
+                let (a, b, c, d) = ((y * n + x) as u32, (y * n + x + 1) as u32, ((y + 1) * n + x) as u32, ((y + 1) * n + x + 1) as u32);
+                m.idx.extend_from_slice(&[a, c, b, b, c, d]);
+            }
+        }
+        let mut cloud = PointCloud::default();
+        for y in 0..8 {
+            for x in 0..8 {
+                cloud.pos.push([x as f32 * 0.6, y as f32 * 0.6, 0.0]);
+                cloud.nrm.push([0.0, 0.0, 1.0]);
+            }
+        }
+        let planes_nd = [([0.0f32, 0.0, 1.0], 0.0f32)];
+        let labels = vec![0u32; cloud.pos.len()];
+        let opts = MeshOptions { smooth_iters: 4, smooth_strength: 1.0, plane_assign_dist: 0.5, ..Default::default() };
+        let s = run_with_planes(&mut m, &cloud, &opts, &planes_nd, &labels);
+        let max_z = m.pos.iter().map(|p| p[2].abs()).fold(0.0f32, f32::max);
+        assert!(max_z < 1e-4, "plane verts must be flattened, max_z={}", max_z);
+        assert!(s["split_verts"].as_u64().unwrap_or(0) == 0); // single plane: no creases
+        for v in m.nrm.iter() {
+            assert!(v[2].abs() > 0.99, "normals must be plane-exact, got {:?}", v);
+        }
     }
 
     #[test]

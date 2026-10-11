@@ -178,10 +178,10 @@ mod tests {
 
     #[test]
     fn gpu_matches_cpu() {
-        let Some(g) = super::super::gpu() else { eprintln!("[skip] no gpu adapter"); return; };
+        let Some(_g) = super::super::gpu() else { eprintln!("[skip] no gpu adapter"); return; };
         let pts = refcloud(4000);
         let q = refcloud(64);
-        let (gi, gd) = knn_gpu_dev(&g.inner, "knn", &pts, &q, 8, 100.0);
+        let (gi, gd) = knn(&pts, &q, 8, 100.0);
         let (ci, cd) = knn_cpu(&pts, &q, 8, 100.0);
         assert_eq!(gi, ci);
         for (a, b) in gd.iter().zip(cd.iter()) {
