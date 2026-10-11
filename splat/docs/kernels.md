@@ -143,3 +143,21 @@ pool, outside the profiled thread; the wall delta contains them + gathers.)
 - **Mac check item**: rerun `fuzz_bwd_*` + `test_scan_blocks_no_planes`
   on Metal (MSL path, not SPIR-V) to confirm both the early-exit vote
   and the use_planes gate behave there.
+
+## Mac tuning knobs (sweep with `splat/bench_mac.sh`)
+
+All tile/WG sizes are consts — edit, rebuild, run the bench:
+
+| Knob | File | Now | Sweep | Affects |
+|------|------|----:|-------|---------|
+| `TILE_WIDTH` | `brush-render/src/kernels/helpers.rs` | 16 | 8 | Tile grid + fwd rasterize WG (`TILE_SIZE` threads) + bwd pixel batching. `shaders::helpers` re-exports it — single source. 8×8=64 threads/WG ⇒ 2 Apple simdgroups/tile (vs 8 at 16×16): more WGs, less shared memory each. |
+| `SPLAT_BATCH` | `bwd/kernels/rasterize_backwards.rs` | 32 | 16/64 | Diagonal-walk batch width; 32 = one simdgroup. Also the kernel's `cube_dim`. |
+| `WG_SIZE` | `project_forward.rs`, `project_visible.rs`, `map_gaussians.rs`, `bwd/project_backwards.rs` | 256 | 128/512 | Elementwise passes' workgroup width. |
+| `WG` | `brush-scan/src/kernels.rs`, `brush-sort/src/kernels.rs` | 256 | — | Scan/sort cube width (keep 256; shared-mem layouts assume it). |
+| `BITS_PER_PASS` | `brush-sort/src/kernels.rs` | 8 | 4/11 | Radix digit width: passes = ceil(key_bits/BITS_PER_PASS). 8 optimal so far (halved dispatches vs 4). |
+
+Trade-offs: 16×16 gives larger per-splat tile footprints (~4 isects more per
+splat than 8×8 — tile count ×4) but half the workgroups. At 1920×1440
+(10,800 tiles) 8×8 yields 43,200 tiles → 16-bit sort keys stay same. Expected
+Mac effect is workload-dependent; sweep on the M5 with `BRUSH_PROFILE=1` +
+`--profile` device timestamps.

@@ -10,8 +10,10 @@ pub mod helpers {
     use crate::kernels::camera_model::{CameraModel, JacobianClampLimits};
     use crate::kernels::types::ProjectUniformsLaunch;
 
-    pub const TILE_WIDTH: u32 = 16;
-    pub const TILE_SIZE: u32 = TILE_WIDTH * TILE_WIDTH;
+    // Single source of truth lives in `kernels::helpers` — the host and
+    // kernel sides must sweep together, so these are re-exports.
+    pub const TILE_WIDTH: u32 = crate::kernels::helpers::TILE_WIDTH;
+    pub const TILE_SIZE: u32 = crate::kernels::helpers::TILE_SIZE;
 
     #[derive(Debug, Clone, Copy)]
     pub struct ProjectUniforms {
