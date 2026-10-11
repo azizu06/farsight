@@ -39,6 +39,56 @@ def test_choose_prefers_near_big_ahead_and_skips_blacklist():
     assert frontiers.choose([behind, far, near], robot) is near
     assert frontiers.choose([behind, near], robot, blacklist=[(1.1, 0.0)]) is behind
     assert frontiers.choose([frontiers.Frontier((0.1, 0), (0.1, 0), 1.0)], robot) is None
+
+
+def corridor_grid():
+    """6 x 6 m at 10 cm: a free room so the last-resort chooser can measure seen
+    free stretch; the unknown rim stays outside these picks."""
+    return np.zeros((60, 60), np.int16)
+
+
+def test_fallback_ignores_view_edge_and_prefers_free_corridor():
+    grid = corridor_grid()
+    robot = (1.05, 3.05, 0.0)
+    edge = frontiers.Frontier((1.75, 3.65), (1.75, 3.65), 1.0)      # 0.92 m view edge, 40 deg off: under min_distance
+    corridor = frontiers.Frontier((5.05, 3.05), (5.05, 3.05), 1.0)  # 4 m straight down open floor
+    pick = frontiers.choose([edge, corridor], robot,
+                            grid=grid, resolution=0.1, origin=(0.0, 0.0))
+    assert pick is corridor
+    # Under ~1 m is a view edge, not a goal: even alone it is not picked.
+    too_close = frontiers.Frontier((1.65, 3.05), (1.65, 3.05), 2.0)
+    assert frontiers.choose([too_close], robot,
+                            grid=grid, resolution=0.1, origin=(0.0, 0.0)) is None
+    assert frontiers.choose([too_close, corridor], robot,
+                            grid=grid, resolution=0.1, origin=(0.0, 0.0)) is corridor
+
+
+def test_fallback_prefers_ahead_over_behind_but_still_picks_behind_when_alone():
+    grid = corridor_grid()
+    robot = (3.05, 3.05, 0.0)
+    ahead = frontiers.Frontier((5.05, 3.05), (5.05, 3.05), 1.0)
+    behind = frontiers.Frontier((1.05, 3.05), (1.05, 3.05), 1.5)  # bigger, still loses
+    pick = frontiers.choose([behind, ahead], robot,
+                            grid=grid, resolution=0.1, origin=(0.0, 0.0))
+    assert pick is ahead
+    assert frontiers.choose([behind], robot,
+                            grid=grid, resolution=0.1, origin=(0.0, 0.0)) is behind
+
+
+def test_fallback_counts_blocked_approach_against_a_frontier():
+    grid = corridor_grid()
+    robot = (3.05, 3.05, 0.0)
+    grid[20:32, 35] = 100  # wall stub at x = 3.55 m across the ahead ray only
+    ahead = frontiers.Frontier((5.55, 3.05), (5.55, 3.05), 1.0)   # 2.5 m out, behind the wall
+    flank = frontiers.Frontier((4.55, 4.05), (4.55, 4.05), 1.0)   # 34 deg off, open floor
+    pick = frontiers.choose([ahead, flank], robot,
+                            grid=grid, resolution=0.1, origin=(0.0, 0.0))
+    assert pick is flank
+
+
+def test_still_frontier_matches_goal_or_centroid_nearby():
+    near = frontiers.Frontier(goal=(1.0, 0.0), centroid=(1.0, 0.0), size_m=1.0)
+    far = frontiers.Frontier(goal=(4.0, 0.0), centroid=(4.0, 0.0), size_m=1.0)
     assert frontiers.still_frontier([near], (1.2, 0.1))
     assert not frontiers.still_frontier([far], (1.2, 0.1))
 

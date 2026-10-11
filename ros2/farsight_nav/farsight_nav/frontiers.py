@@ -61,19 +61,59 @@ def find(grid, resolution, origin, min_cells=MIN_CELLS):
     return frontiers
 
 
-def choose(frontiers, robot, blacklist=(), blacklist_radius=0.5, min_distance=0.25):
-    """Geometric chooser: near, big, ahead. Explore's fallback when Explorer's
-    measured-approach checks reject every frontier (Nav2 plans through unknown)."""
+def turn_to(robot, point):
+    """Absolute heading change from robot's yaw to face point, 0..pi."""
+    bearing = math.atan2(point[1] - robot[1], point[0] - robot[0])
+    return abs(math.atan2(math.sin(bearing - robot[2]), math.cos(bearing - robot[2])))
+
+
+def free_stretch(grid, resolution, origin, start, goal, blind_m=0.45, limit_m=6.0):
+    """Seen traversable distance along start -> goal: how much approach is measured
+    free floor. The body disc is trusted (the swept footprint owns it); the run
+    stops at the first cell that is unknown, nontraversable or off the map, and
+    never beyond the goal."""
+    dx, dy = goal[0] - start[0], goal[1] - start[1]
+    distance = math.hypot(dx, dy)
+    if distance <= 0 or resolution <= 0:
+        return 0.0
+    ux, uy = dx / distance, dy / distance
+    end = min(distance, limit_m)
+    s = blind_m
+    step = max(resolution, 0.025)
+    rows, cols = np.asarray(grid).shape
+    while s < end:
+        col = math.floor((start[0] + ux * s - origin[0]) / resolution)
+        row = math.floor((start[1] + uy * s - origin[1]) / resolution)
+        if not (0 <= row < rows and 0 <= col < cols):
+            return s
+        value = grid[row, col]
+        if value < 0 or value > FREE_MAX:
+            return s
+        s += step
+    return end
+
+
+def choose(frontiers, robot, blacklist=(), blacklist_radius=0.5, min_distance=1.0,
+           grid=None, resolution=1.0, origin=(0.0, 0.0)):
+    """Geometric chooser: Explore's fallback when Explorer's measured-approach
+    checks reject every frontier (Nav2 plans through unknown).
+
+    Closer than ~1 m is a camera view edge, not a goal: it is reached or gone in
+    a second and only churns the pick. Seen free stretch toward the goal is the
+    corridor test, and a big turn must earn its way: behind loses unless nothing
+    is ahead."""
     best, best_score = None, math.inf
     for frontier in frontiers:
         dx, dy = frontier.goal[0] - robot[0], frontier.goal[1] - robot[1]
         distance = math.hypot(dx, dy)
         if distance < min_distance:
-            continue  # already there: its unknown side gets seen from here or it is unreachable
+            continue  # a view edge or already there: its unseen side gets seen from here
         if any(math.dist(frontier.goal, bad) < blacklist_radius for bad in blacklist):
             continue
-        turn = abs(math.atan2(math.sin(math.atan2(dy, dx) - robot[2]), math.cos(math.atan2(dy, dx) - robot[2])))
-        score = distance - 1.5 * min(frontier.size_m, 2.0) + 0.4 * turn
+        turn = turn_to(robot, frontier.goal)
+        stretch = (free_stretch(grid, resolution, origin, robot[:2], frontier.goal)
+                   if grid is not None else 0.0)
+        score = distance - 1.5 * min(frontier.size_m, 2.0) + 1.5 * turn - stretch
         if score < best_score:
             best, best_score = frontier, score
     return best
