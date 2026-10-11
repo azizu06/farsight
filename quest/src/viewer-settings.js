@@ -4,6 +4,7 @@
  * one deep link sets the headset up for later plain loads. The rover's /health
  * `camera_pan` only picks the default mount; it never overrides a choice.
  * Display and convenience only: nothing here gates motion. */
+import { demoMode } from "./demo-config.js";
 export const SETTINGS_KEY = "farsight.viewer";
 
 const bit = value => value === "1" || value === true ? true : value === "0" || value === false ? false : undefined;
@@ -12,7 +13,7 @@ const PARSERS = {
   h264: bit, voice: bit, diag: bit,
 };
 /** @type {ViewerSettings} */
-export const DEFAULTS = { mount: "servo", h264: false, voice: false, diag: false };
+export const DEFAULTS = { mount: "servo", h264: false, voice: true, diag: false };
 
 /** @param {Pick<Storage, "getItem"> | null | undefined} storage */
 export function readSaved(storage) {
@@ -33,7 +34,7 @@ export function readSaved(storage) {
  * @returns {{ values: ViewerSettings, origin: SettingOrigins, explicit: Partial<ViewerSettings> }} */
 export function resolveSettings(search, saved = {}) {
   const query = new URLSearchParams(search);
-  /** @type {any} */ const values = { ...DEFAULTS }, origin = {}, explicit = {};
+  /** @type {any} */ const values = { ...DEFAULTS, voice: demoMode(search) }, origin = {}, explicit = {};
   for (const name of Object.keys(PARSERS)) {
     const fromQuery = PARSERS[name](query.get(name)), fromSaved = PARSERS[name](saved[name]);
     if (fromQuery !== undefined) { values[name] = explicit[name] = fromQuery; origin[name] = "query"; }
