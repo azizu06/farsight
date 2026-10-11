@@ -8,6 +8,8 @@
 <aside>
 <a href="http://localhost:8080/?view=map" target="_blank" rel="noopener" style="color:#8acbff">Open Mac-rendered preview ↗</a>
 <label>View <select id="mode"><option value="local">Quest dense path / local GPU</option><option value="raw">Raw RGB-D / textured surfaces</option></select></label>
+<label><input id="surfaces" type="checkbox" checked style="width:auto"> Camera-textured surfaces (raw view)</label>
+<label><input id="points" type="checkbox" checked style="width:auto"> Measured points (raw view)</label>
 <label>Splat diameter <input id="size" type="range" min="0.012" max="0.1" step="0.002" value="0.012"><span id="size-value">12 mm</span></label>
 <div class="poses"><button data-pose="0">Front</button><button data-pose="1">Side</button><button data-pose="2">Above</button></div>
 <label><input id="follow" type="checkbox" checked style="width:auto"> Follow live scan (drag to explore)</label>

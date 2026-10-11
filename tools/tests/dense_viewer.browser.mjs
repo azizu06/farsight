@@ -15,9 +15,18 @@ try{
  await page.waitForFunction(()=>window.denseLab.stats().raw_points===48,{timeout:10000});
  await page.waitForFunction(()=>window.denseLab.stats().raw_frame===1);
  const followed=await page.evaluate(()=>window.denseLab.stats());assert.ok(followed.target[0]>4,'live view follows a moved/reset measured scan');
- await page.evaluate(()=>{window.denseLab.setFrozen(true);window.denseLab.pose(0);});
+ await page.evaluate(()=>{window.denseLab.setFrozen(true);window.denseLab.pose(0);window.denseLab.setSize(.1);});
  await page.waitForTimeout(1200);
  const stats=await page.evaluate(()=>window.denseLab.stats()),coverage=await page.evaluate(()=>window.denseLab.coverage());
+ // With a supported measured plane, coplanar points must not paint over its
+ // interior texture; hiding the plane must restore the retained samples.
+ const interior=()=>{window.denseLab.render();const c=window.denseLab.canvas,d=document.createElement('canvas');d.width=c.width;d.height=c.height;const x=d.getContext('2d');x.drawImage(c,0,0);return [...x.getImageData(Math.floor(c.width*.4),Math.floor(c.height*.4),Math.floor(c.width*.2),Math.floor(c.height*.2)).data];};
+ const combined=await page.evaluate(interior);
+ await page.evaluate(()=>window.denseLab.setLayers({points:false}));
+ const meshOnly=await page.evaluate(interior);assert.deepEqual(combined,meshOnly,'mesh depth suppresses coplanar point overlay');
+ await page.evaluate(()=>window.denseLab.setLayers({points:true,surfaces:false}));
+ const pointsOnly=await page.evaluate(interior);assert.notDeepEqual(meshOnly,pointsOnly,'retained dots remain available without a surface');
+ await page.evaluate(()=>window.denseLab.setLayers({surfaces:true}));
  assert.equal(stats.raw_triangles,70);assert.ok(coverage.coverage>.1,JSON.stringify(coverage));
  assert.equal(await page.locator('video').count(),0,'no video overlay can obscure local canvas');
  assert.equal(requests.some(u=>u.includes('/ws/control')||u.includes('/ws/macview-pose')),false);
