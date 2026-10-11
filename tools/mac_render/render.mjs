@@ -173,6 +173,7 @@ root.add(cloud);
 // snapshot fallback when they do not provide the incremental dense endpoint.
 const denseState = new DenseCloudState({ capacity: 5_000_000 });
 const denseReceiver = new DenseCloudReceiver({ state: denseState, endpoint: `${upstream}/dense/delta.bin` });
+const hasDenseSource = () => denseReceiver.identity !== null && denseReceiver.identity !== "waiting";
 const denseGpu = new DenseGpuChunks({ state: denseState, THREE, material: densePointsMaterial, parent: root });
 denseGpu.group.renderOrder = 2;
 const surfaceMaterial = style === "lit"
@@ -540,11 +541,11 @@ function exposeMap() {
   const mac = window.__mac;
   const statusAge = status && Number.isFinite(status.age_ms) ? status.age_ms + Math.max(0, performance.now() - statusReceivedAt) : Infinity;
   const fresh = status?.fresh === true && statusAge < 2000;
-  const points = denseState.size || cloudCount || 0;
+  const points = hasDenseSource() ? denseState.size : cloudCount || 0;
   const densityTris = measuredSurface?.view.triangles || 0;
   const triangles = (surfaces.visible ? meshTris : 0) + densityTris;
   const sourceLabel = status?.geometry_source || status?.source || "WAITING";
-  const source = denseState.size ? `${sourceLabel} · ${denseReceiver.sourceLabel}` : sourceLabel;
+  const source = hasDenseSource() ? `${sourceLabel} · ${denseReceiver.sourceLabel}` : sourceLabel;
   const retained = points > 0 && (mapError !== null || !fresh || status?.geometry?.retained === true);
   mac.points = points;
   mac.triangles = triangles;
@@ -857,7 +858,9 @@ function drawScene(measure) {
   densePagesSeen = denseReceiver.pages;
   denseResetSeen = denseState.resetVersion;
   denseGpu.flush();
-  cloud.visible = denseState.size === 0;
+  // An authoritative empty dense scene must stay empty. Falling back to old
+  // coarse dots here would undo a revisit or reset that removed the last cell.
+  cloud.visible = !hasDenseSource();
   const denseMatchesMap = denseReceiver.identity === `rgbd:${status?.session_id?.toLowerCase()}:${status?.map_epoch}`;
   surfaces.visible = denseState.size === 0 || denseMatchesMap;
   if (cloud.visible !== cloudVisibleSeen || surfaces.visible !== surfacesVisibleSeen) {
