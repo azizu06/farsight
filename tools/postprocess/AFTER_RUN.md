@@ -5,16 +5,21 @@ from [commit 217bb22](https://github.com/azizu06/farsight/commit/217bb22) (2026-
 workflow and RTX 4070 results. Mac automation lives in `after_run.py`; it does
 not change the Jetson, renderer, relay, or headset app.
 
-## Four-minute desktop demo
+## Judging desktop demo
 
 The explicit demo mode uses the newest run only, **10 seconds** of stable
 capture metadata, a 10-second poll, and **no rsync bandwidth limit**. Its preset
 is 5,000 steps, SH3, an initial seed capped at 300k measured points. The polite
 non-demo defaults below retain 60 seconds of stability and bandwidth limiting.
+Demo builds select at most **150 evenly spaced photos** from the latest moving
+interval within roughly three minutes of its last movement. Only selected
+photos are pulled and decoded, so long captures do not enlarge training or face
+extraction. `--recent-frames` and `--recent-seconds` override these limits;
+`--recent-frames 0` retains the original full-drive selection.
 
 ```sh
 .venv/bin/python -u tools/postprocess/after_run.py --demo --watch \
-  --host jetson-ts --since "$(date -u +%Y%m%dT%H%M%S)" --skip-quest
+  --host jetson-ts --since "$(date -u +%Y%m%dT%H%M%S)" --skip-quest --open-chrome
 ```
 
 Use `--host jetson` for USB when `192.168.55.1` is reachable. On the 09:13 EDT
@@ -23,6 +28,26 @@ Omit `--watch` for one newest finished run. `--steps` and `--seed-max-points`
 override the demo preset. This remains an image-idle heuristic, rather than a
 motor stop signal. Final seed export must also finish before the pull starts.
 The watcher excludes captures older than `--since`; arm it before the drive.
+With `--open-chrome`, the completion notifier runs `open -a 'Google Chrome'`
+on the complete walk URL (including `faces=`) immediately after atomic scene
+and sidecar publication, before optional pruning/scoring. It records the open
+result in the timing receipt. Close room tabs before another build to avoid
+competing for the Mac GPU.
+
+Some deployed archives contain only images and transforms. In demo mode,
+when neither `init.ply` nor `dense.ply` exists, the Mac retrieves the local
+relay's retained measured RGB-D snapshot for the transforms' exact session and
+map epoch. A different session or empty retained cloud cannot seed that run.
+The receipt records the seed source. This uses the existing relay API and makes
+no Jetson or relay changes.
+
+The real 14:37 capture's recent snapshot used 150 photos and 171,331 measured
+seed points: Jetson photo pull **10.07 s**, preparation **1.45 s**, Brush **124.07 s**,
+CPU face extraction **19.13 s** overlapped, publication **0.06 s**, scoring
+**1.81 s**, total **138.03 s** including seed retrieval/transfer. It produced
+three face spots and **24.24 dB across 19 held-out views**. This supports the
+roughly 2–2.5 minute judging budget under that measured load; transfer speed,
+seed size, cold startup and other GPU users still affect elapsed time.
 
 The full model is atomically published **before** optional Quest pruning or
 post-hoc PSNR scoring. The runner prints a `/scenes/walk.html` URL with its
@@ -169,7 +194,7 @@ requires another idle observation before any pull.
    `--load-test` adds an optional one-step diagnostic before training; it is
    disabled by default because cold initialization can be expensive.
    `--fast` selects 2,000 steps; `--train-sh-degree 1` selects cheaper SH.
-   No viewer or live provider is launched.
+   `--open-chrome` launches the completed room viewer only after training.
 5. Atomically publish the complete SH3 model and matching transforms into
    `dist/scenes/`, copy `walk.html`, and immediately print its walkthrough URL.
    Then, unless `--skip-quest`, prune to 300k/SH1 using `tools.splat.prune` and

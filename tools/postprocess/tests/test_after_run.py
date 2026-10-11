@@ -12,6 +12,80 @@ from tools.postprocess import after_run as pipeline
 
 
 class AfterRunTests(unittest.TestCase):
+    def test_recent_photos_use_latest_motion_and_cap_long_archive(self):
+        import numpy as np
+        frames = []
+        for i in range(1000):
+            pose = np.eye(4)
+            pose[0, 3] = min(i, 900) * .05
+            frames.append(dict(file_path=f'images/{i:06d}.jpg', transform_matrix=pose.tolist(), t_capture=i))
+        selected = pipeline.recent_frames({'frames': frames}, 150, 180)
+        self.assertEqual(len(selected), 150)
+        self.assertEqual(selected[-1]['t_capture'], 900)
+        self.assertGreaterEqual(selected[0]['t_capture'], 719)
+        self.assertLess(len(selected), len(frames))
+
+    def test_demo_without_archive_seed_waits_for_capture_idle(self):
+        capture = {'run': [150, 100, 0, 1234]}
+        seen, ready = pipeline.finished({}, capture, 0, 10, require_seed=False)
+        self.assertEqual(ready, [])
+        _, ready = pipeline.finished(seen, capture, 10, 10, require_seed=False)
+        self.assertEqual(ready, ['run'])
+        _, normal = pipeline.finished(seen, capture, 60)
+        self.assertEqual(normal, [])
+
+    def test_open_notifier_passes_complete_faces_url_to_chrome(self):
+        url = 'http://localhost:8080/scenes/walk.html?scene=room.ply&faces=room-faces/faces.json'
+        with patch.object(pipeline, 'command', return_value=subprocess.CompletedProcess([], 0)) as command:
+            receipt = pipeline.open_walk({'walk_url': url})
+        self.assertEqual(command.call_args.args[0], ['open', '-a', 'Google Chrome', url])
+        self.assertEqual(receipt['chrome_open_returncode'], 0)
+
+    def test_recent_pull_transfers_only_selected_photo_paths(self):
+        import numpy as np
+        with tempfile.TemporaryDirectory() as tmp:
+            args = argparse.Namespace(work_dir=Path(tmp), demo=True, host='jetson',
+                recent_frames=150, recent_seconds=180, drive_gap_seconds=60)
+            frames = []
+            for i in range(1000):
+                pose = np.eye(4)
+                pose[0, 3] = i * .05
+                frames.append(dict(file_path=f'images/{i:06d}.jpg', transform_matrix=pose.tolist(), t_capture=i))
+            calls = []
+            def transfer(argv, **kwargs):
+                calls.append(argv)
+                destination = Path(tmp) / 'captures/run'
+                if len(calls) == 1:
+                    self.assertNotIn('--include=/images/*.jpg', argv)
+                    (destination / 'transforms.json').write_text(json.dumps(dict(frames=frames)))
+                    (destination / 'init.ply').write_text('measured seed')
+                else:
+                    listing = next(str(a).split('=', 1)[1] for a in argv if str(a).startswith('--files-from='))
+                    photos = Path(listing).read_text().splitlines()
+                    self.assertEqual(len(photos), 150)
+                    self.assertEqual(photos[-1], 'images/000999.jpg')
+                return subprocess.CompletedProcess(argv, 0)
+            with patch.object(pipeline, 'command', transfer):
+                source = pipeline.pull(args, 'run')
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(len(json.loads((source / 'transforms.json').read_text())['frames']), 150)
+
+    def test_retained_seed_preserves_measured_coordinates_and_session(self):
+        import io
+        import struct
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp)
+            meta = json.dumps(dict(source=['session', 1], more=False)).encode()
+            body = struct.pack('<I', len(meta)) + meta + struct.pack('<iiiBBBB', -1000, 2000, 3000, 20, 40, 60, 1)
+            args = argparse.Namespace(base_url='http://localhost:8080')
+            with patch.object(pipeline, 'urlopen', return_value=io.BytesIO(body)):
+                pipeline.retained_seed(args, source, dict(session_id='session', map_epoch=1))
+            data = (source / 'init.ply').read_bytes().split(b'end_header\n', 1)[1]
+            self.assertEqual(struct.unpack('<fffBBB', data), (-1., 2., 3., 20, 40, 60))
+            with patch.object(pipeline, 'urlopen', return_value=io.BytesIO(body)):
+                with self.assertRaisesRegex(RuntimeError, 'another capture session'):
+                    pipeline.retained_seed(args, source, dict(session_id='different', map_epoch=1))
+
     def test_faces_python_keeps_virtualenv_launcher_symlink(self):
         with tempfile.TemporaryDirectory() as tmp:
             launcher = Path(tmp) / 'faces-python'
@@ -276,7 +350,7 @@ class AfterRunTests(unittest.TestCase):
                     drive_gap_seconds=60, seed_max_points=0, brush=Path('brush'),
                     max_resolution=1600, train_sh_degree=3, load_test=False,
                     trainer='turbo' if skip else 'stable', max_splats=300000, brush_extra=[],
-                    faces=skip,
+                    faces=skip, open_chrome=skip,
                     skip_quest=skip, desktop_name=None, dist=root / 'dist', base_url='http://localhost:8080',
                     eye_height=1.6)
                 args.work_dir.mkdir(exist_ok=True)
@@ -305,8 +379,15 @@ class AfterRunTests(unittest.TestCase):
                     self.assertEqual(desktop.read_bytes(), b'full SH3 model')
                     Path(argv[4]).write_bytes(b'pruned SH1 model')
                     return subprocess.CompletedProcess(argv, 0, stdout='{}')
+                def open_room(receipt):
+                    self.assertIn('faces=', receipt['walk_url'])
+                    self.assertTrue((args.dist / 'scenes' / (name + '-desktop.ply')).is_file())
+                    self.assertTrue((args.dist / 'scenes' / (name + '-faces/faces.json')).is_file())
+                    order.append('open-chrome')
+                    return {'chrome_open_returncode': 0}
                 with patch.object(pipeline, 'prepare', return_value=(dataset, {'seed_points': 100})), \
                      patch.object(pipeline, 'command', side_effect=run), \
+                     patch.object(pipeline, 'open_walk', side_effect=open_room), \
                      patch.object(pipeline, 'FaceJob', Faces):
                     result = pipeline.process(args, name, root, pull_s=2)
                 self.assertIn('sh=3', result['desktop_url'])
@@ -314,7 +395,7 @@ class AfterRunTests(unittest.TestCase):
                 self.assertLessEqual(result['desktop_ready_s'], result['total_s'])
                 self.assertEqual('published' in result, not skip)
                 if skip:
-                    self.assertEqual(order, ['faces-start', 'train', 'faces-wait', 'faces-close'])
+                    self.assertEqual(order, ['faces-start', 'train', 'faces-wait', 'faces-close', 'open-chrome'])
                     self.assertIn('faces=', result['walk_url'])
                     self.assertEqual(result['faces_count'], 1)
                     self.assertEqual((args.dist / 'scenes' / (name + '-faces') /

@@ -12,11 +12,13 @@ import re
 import shlex
 import shutil
 import signal
+import struct
 import subprocess
 import sys
 import threading
 import time
 from urllib.parse import urlencode
+from urllib.request import urlopen
 
 ROOT = Path(__file__).resolve().parents[2]
 BRUSH = Path.home() / '.cache/farsight-splat/brush-v0.3.0/brush-app-aarch64-apple-darwin/brush_app'
@@ -73,7 +75,7 @@ def run_order(name):
     return stamp.group(0) if stamp else name
 
 
-def finished(previous, current, now, stable_seconds=60):
+def finished(previous, current, now, stable_seconds=60, require_seed=True):
     """Track capture signatures. Any active capture defers ALL remote pulls."""
     observations = {}
     for name, signature in current.items():
@@ -82,7 +84,78 @@ def finished(previous, current, now, stable_seconds=60):
         observations[name] = (signature, since)
     ready = [name for name, (_, since) in observations.items() if now - since >= stable_seconds]
     idle = len(ready) == len(current)
-    return observations, [name for name in ready if current[name][2] and current[name][3]] if idle else []
+    return observations, [name for name in ready if (current[name][2] or not require_seed) and current[name][3]] if idle else []
+
+
+def recent_frames(transforms, limit=150, seconds=180, gap=60):
+    """Keep the newest moving interval, with evenly spaced camera coverage."""
+    import numpy as np
+    frames = transforms['frames']
+    if not limit or len(frames) < 2:
+        return frames
+    matrices = np.asarray([frame['transform_matrix'] for frame in frames])
+    positions = matrices[:, :3, 3]
+    yaw = np.degrees(np.unwrap(np.arctan2(-matrices[:, 0, 2], -matrices[:, 2, 2])))
+    moving = np.flatnonzero((np.linalg.norm(np.diff(positions, axis=0), axis=1) > .01) |
+                           (np.abs(np.diff(yaw)) > 2)) + 1
+    if not len(moving):
+        raise RuntimeError('No motion in this capture')
+    times = [frame.get('t_capture', i / 2.5) for i, frame in enumerate(frames)]
+    last = int(moving[-1])
+    first = last
+    for index in reversed(moving[:-1]):
+        if times[first] - times[index] > gap or times[last] - times[index] > seconds:
+            break
+        first = int(index)
+    first = max(0, first - 1)
+    indices = np.linspace(first, last, min(limit, last - first + 1), dtype=int)
+    return [frames[int(index)] for index in indices]
+
+
+def retained_seed(args, source, transforms):
+    """Use the local relay's retained measured RGB-D for this exact ARKit session."""
+    import numpy as np
+    params = {'after': 0, 'snapshot': 'true'}
+    parts = []
+    pages = 0
+    while True:
+        with urlopen(args.base_url.rstrip('/') + '/dense/delta.bin?' + urlencode(params), timeout=5) as response:
+            body = response.read()
+        length = struct.unpack_from('<I', body)[0]
+        meta = json.loads(body[4:4 + length])
+        if meta['source'] != [transforms['session_id'], transforms['map_epoch']]:
+            raise RuntimeError('Retained measured cloud belongs to another capture session')
+        parts.append(body[4 + length:])
+        pages += 1
+        if not meta.get('more'):
+            break
+        params.update(epoch=meta['epoch'], after=meta['cursor'], anchor=meta['anchor'])
+    points = np.frombuffer(b''.join(parts), dtype=[('x', '<i4'), ('y', '<i4'), ('z', '<i4'),
+                          ('r', 'u1'), ('g', 'u1'), ('b', 'u1'), ('op', 'u1')])
+    points = points[points['op'] == 1]
+    if not len(points):
+        raise RuntimeError('No retained measured RGB-D points')
+    output = np.empty(len(points), dtype=[('x', '<f4'), ('y', '<f4'), ('z', '<f4'),
+                                         ('red', 'u1'), ('green', 'u1'), ('blue', 'u1')])
+    for axis in ('x', 'y', 'z'):
+        output[axis] = points[axis] / 1000
+    for target, original in [('red', 'r'), ('green', 'g'), ('blue', 'b')]:
+        output[target] = points[original]
+    header = ('ply\nformat binary_little_endian 1.0\ncomment retained same-session measured RGB-D\n'
+              f'element vertex {len(output)}\nproperty float x\nproperty float y\nproperty float z\n'
+              'property uchar red\nproperty uchar green\nproperty uchar blue\nend_header\n')
+    temporary = source / 'init.ply.tmp'
+    temporary.write_bytes(header.encode() + output.tobytes())
+    temporary.replace(source / 'init.ply')
+    (source / 'seed-source.json').write_text(json.dumps(dict(
+        source='local relay retained same-session measured RGB-D', points=len(output), pages=pages)))
+
+
+def open_walk(receipt):
+    """The judging completion notifier: open the published face-enabled room in Chrome."""
+    opened = command(['open', '-a', 'Google Chrome', receipt['walk_url']], capture_output=True, text=True)
+    return {'chrome_open_returncode': opened.returncode,
+            'chrome_open_utc': datetime.now(timezone.utc).isoformat()}
 
 
 def wait_for_run(args):
@@ -98,7 +171,8 @@ def wait_for_run(args):
                 print('Jetson unreachable; using saved LOCAL run, no pull.', flush=True)
                 return name, runs[name], 'offline-local', 0, time.monotonic() - started
             raise RuntimeError('Jetson unreachable and no complete local run is available')
-        observations, ready = finished(observations, current, time.monotonic(), args.idle_seconds)
+        observations, ready = finished(observations, current, time.monotonic(), args.idle_seconds,
+                                       require_seed=not args.demo)
         name = args.run_id or (max(current, key=run_order) if args.demo and current else max(ready, key=run_order) if ready else None)
         if name in ready:
             stage = time.monotonic()
@@ -111,6 +185,23 @@ def wait_for_run(args):
 def pull(args, name):
     destination = args.work_dir / 'captures' / name
     destination.mkdir(parents=True, exist_ok=True)
+    if getattr(args, 'recent_frames', 0):
+        bandwidth = [] if args.demo else ['--bwlimit=' + str(args.bwlimit)]
+        # Metadata first, only after capture-idle observation; never pull the full photo archive.
+        command(['rsync', '-a', *bandwidth, '-e', 'ssh -o BatchMode=yes -o ConnectTimeout=5',
+                 '--include=/transforms.json', '--include=/init.ply', '--include=/dense.ply',
+                 '--exclude=*', f'{args.host}:captures/{name}/', str(destination) + '/'])
+        transforms = json.loads((destination / 'transforms.json').read_text())
+        selected = recent_frames(transforms, args.recent_frames, args.recent_seconds, args.drive_gap_seconds)
+        listing = destination / 'selected-photos.txt'
+        listing.write_text('\n'.join(frame['file_path'] for frame in selected) + '\n')
+        command(['rsync', '-a', *bandwidth, '-e', 'ssh -o BatchMode=yes -o ConnectTimeout=5',
+                 '--files-from=' + str(listing), f'{args.host}:captures/{name}/', str(destination) + '/'])
+        transforms['frames'] = selected
+        (destination / 'transforms.json').write_text(json.dumps(transforms))
+        if not (destination / 'init.ply').is_file() and not (destination / 'dense.ply').is_file():
+            retained_seed(args, destination, transforms)
+        return destination
     command(['rsync', '-a', *([] if args.demo else ['--bwlimit=' + str(args.bwlimit)]),
              '-e', 'ssh -o BatchMode=yes -o ConnectTimeout=5',
              '--include=/images/', '--include=/images/*.jpg', '--include=/transforms.json',
@@ -119,11 +210,14 @@ def pull(args, name):
     return destination
 
 
-def prepare(source, destination, drive_gap_seconds=60):
+def prepare(source, destination, drive_gap_seconds=60, frame_limit=0, recent_seconds=180):
     from PIL import Image, ImageFile
     ImageFile.LOAD_TRUNCATED_IMAGES = False
     dataset = source if (source / 'transforms.json').is_file() else source / 'photos'
     transforms = json.loads((dataset / 'transforms.json').read_text())
+    original_frames = len(transforms['frames'])
+    if frame_limit:
+        transforms['frames'] = recent_frames(transforms, frame_limit, recent_seconds, drive_gap_seconds)
     clean = destination / 'decoded'
     clean.mkdir(parents=True)
     frames, rejected, normalized = [], [], []
@@ -164,7 +258,7 @@ def prepare(source, destination, drive_gap_seconds=60):
     def duration(segment):
         a, b = segment
         return frames[b].get('t_capture', b / 2.5) - frames[a].get('t_capture', a / 2.5)
-    a, b = (0, len(frames) - 1) if len(segments) == 1 else max(segments, key=duration)
+    a, b = (0, len(frames) - 1) if frame_limit or len(segments) == 1 else max(segments, key=duration)
     cut = destination / 'drive'
     command([sys.executable, ROOT / 'tools/postprocess/find_drives.py', clean, '--cut', a, b, cut])
     seed_source = source / 'init.ply' if (source / 'init.ply').is_file() else source / 'dense.ply'
@@ -181,7 +275,8 @@ def prepare(source, destination, drive_gap_seconds=60):
             raise RuntimeError('init.ply has no vertex count')
     return cut, {'input_frames': len(frames) + len(rejected), 'rejected': rejected,
                  'normalized_short_jpegs': normalized, 'drive_gap_seconds': drive_gap_seconds,
-                 'selection': 'whole-run' if len(segments) == 1 else 'longest-drive',
+                 'selection': 'recent-motion' if frame_limit else 'whole-run' if len(segments) == 1 else 'longest-drive',
+                 'archive_frames': original_frames, 'frame_limit': frame_limit,
                  'seed_file': str(seed_source),
                  'drive_frames': b - a + 1, 'drive_duration_s': duration((a, b)), 'seed_points': points}
 
@@ -292,8 +387,11 @@ def process(args, name, source, pull_s=0, transport='local', wait_s=0, last_imag
         receipt['last_photo_utc'] = utc(last_image_mtime_ns / 1e9)
     try:
         stage = time.monotonic()
-        dataset, prep = prepare(source, output, args.drive_gap_seconds)
+        dataset, prep = prepare(source, output, args.drive_gap_seconds,
+                                getattr(args, 'recent_frames', 0), getattr(args, 'recent_seconds', 180))
         receipt.update(prep, prep_s=time.monotonic() - stage)
+        if (source / 'seed-source.json').is_file():
+            receipt['retained_seed'] = json.loads((source / 'seed-source.json').read_text())
         exports = output / 'exports'
         exports.mkdir()
         work = args.work_dir / 'brush'
@@ -375,6 +473,12 @@ def process(args, name, source, pull_s=0, transport='local', wait_s=0, last_imag
         receipt['after_observation_start_ready_s'] = receipt['desktop_ready_s'] + wait_s
         print('DESKTOP READY: ' + receipt['walk_url'], flush=True)
         (output / 'timing-receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
+        if getattr(args, 'open_chrome', False):
+            try:
+                receipt.update(open_walk(receipt))
+            except Exception as error:
+                receipt['chrome_open_error'] = str(error)
+                print(f'Chrome open failed: {error}', file=sys.stderr, flush=True)
         stage = time.monotonic()
         if not args.skip_quest:
             pruned = command([sys.executable, '-m', 'tools.splat.prune', raw, output / 'splat.ply',
@@ -418,7 +522,8 @@ def watch(args):
                   f'{(error.stderr or str(error)).strip()}', file=sys.stderr, flush=True)
             candidates = [(name, path, 'offline-local') for name, path in saved_runs(args).items()]
         else:
-            observations, ready = finished(observations, current, tick, args.idle_seconds)
+            observations, ready = finished(observations, current, tick, args.idle_seconds,
+                                           require_seed=not args.demo)
             newest = max(current, key=run_order) if current else None
             print(f'{time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())} '
                   f'inventory={len(current)} idle_ready={len(ready)} '
@@ -470,6 +575,9 @@ def main():
     parser.add_argument('--load-test', action='store_true', help='optional one-step diagnostic before training')
     parser.add_argument('--skip-quest', action='store_true', help='publish only the full-quality Mac scene')
     parser.add_argument('--faces', action='store_true', help='CPU face pins alongside Brush; enabled in demo mode')
+    parser.add_argument('--open-chrome', action='store_true', help='open the walk URL in Chrome immediately after publication')
+    parser.add_argument('--recent-frames', type=int, help='cap most recent moving photos; demo default 150, normal default 0/full')
+    parser.add_argument('--recent-seconds', type=float, default=180, help='recent motion window before sampling photos')
     parser.add_argument('--faces-python', type=Path, help='Python with ultralytics/open3d; defaults to the faces venv')
     parser.add_argument('--desktop-name', help='override the full-quality scene filename stem')
     parser.add_argument('--wait-for-gpu', action='store_true', help='queue a manual trial behind an active automatic job')
@@ -491,6 +599,7 @@ def main():
     args.steps = args.steps if args.steps is not None else int(os.environ.get('SPLAT_STEPS', '5000'))
     args.seed_max_points = args.seed_max_points if args.seed_max_points is not None else (300000 if args.demo else 0)
     args.faces = args.faces or args.demo
+    args.recent_frames = args.recent_frames if args.recent_frames is not None else (150 if args.demo else 0)
     args.brush = args.brush or Path(os.environ.get('BRUSH', str(
         args.work_dir / 'turbo-target/release/brush-cli' if args.trainer == 'turbo' else BRUSH)))
     args.work_dir = args.work_dir.expanduser().resolve()
