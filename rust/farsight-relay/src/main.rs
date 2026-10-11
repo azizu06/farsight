@@ -7,7 +7,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -15,7 +15,7 @@ use axum::body::Body;
 mod closures;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Request, State};
+use axum::extract::{FromRequestParts, Request, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode, Uri};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -94,6 +94,11 @@ struct Args {
     /// Mac-assembly split: phone mesh -> Mac assembler -> Quest).
     #[arg(long)]
     geometry_upstream: Option<String>,
+    /// Optional loopback Mac render origin (tools/mac_render/server.py).
+    /// /ws/macview and /ws/macview-pose proxy to it instead of the Jetson;
+    /// when unset those paths return 503 like operator_relay.py.
+    #[arg(long)]
+    render_upstream: Option<String>,
     /// Opt-in second route to the same --bonded-control Jetson; JPEG only
     #[arg(long)]
     bonded_upstream: Option<String>,
@@ -121,6 +126,12 @@ struct AppState {
     origin: Url,
     /// farsight-geometry origin for assembled-mesh routes (None = Jetson).
     geometry: Option<Url>,
+    /// Loopback Mac render origin for /ws/macview* (None = 503 unconfigured).
+    render: Option<Url>,
+    /// tools/operator_relay.py render_connections parity (cap 4).
+    render_connections: Arc<AtomicUsize>,
+    /// Port this relay listens on (same-port render guard).
+    listen_port: u16,
     dist: PathBuf,
     http: reqwest::Client,     // general pool (limit ~16)
     control: reqwest::Client,  // control pool (limit ~4)
@@ -155,6 +166,46 @@ pub(crate) fn upstream_origin(value: &str) -> Result<Url, String> {
         || url.fragment().is_some()
     {
         return Err("Upstream must be an http(s) origin without credentials, path, or query".into());
+    }
+    Ok(url.origin().ascii_serialization().parse::<Url>().unwrap())
+}
+
+/// tools/operator_relay.py render_origin parity: the Mac render upstream is
+/// a credential-free loopback HTTP(S) origin whose port differs from every
+/// loopback Jetson origin — a different spelling or scheme must not turn
+/// the reserved render paths into Jetson routes.
+fn render_origin(value: &str, jetson: &[&Url]) -> Result<Url, String> {
+    let err = "Render upstream must be a credential-free loopback HTTP(S) origin";
+    let url = Url::parse(value).map_err(|_| err.to_string())?;
+    let host = url.host_str().unwrap_or("");
+    let local = host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .map(|ip| ip.is_loopback())
+            .unwrap_or(false);
+    if !matches!(url.scheme(), "http" | "https")
+        || !local
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || !matches!(url.path(), "" | "/")
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(err.into());
+    }
+    let render_port = url.port();
+    for j in jetson.iter().copied() {
+        let jh = j.host_str().unwrap_or("");
+        let jlocal = jh.eq_ignore_ascii_case("localhost")
+            || jh.parse::<std::net::IpAddr>()
+                .map(|ip| ip.is_loopback())
+                .unwrap_or(false);
+        // aiohttp URL.port is the explicit port only; None == None matches.
+        if jlocal && j.port() == render_port {
+            return Err(
+                "Render upstream must use a different port from loopback Jetson routes".into(),
+            );
+        }
     }
     Ok(url.origin().ascii_serialization().parse::<Url>().unwrap())
 }
@@ -238,6 +289,12 @@ async fn relay_health(State(s): State<Arc<AppState>>) -> Response {
         "relay": true,
         "upstream": s.origin.as_str().trim_end_matches('/'),
         "geometry_upstream": s.geometry.as_ref().map(|u| u.as_str().trim_end_matches('/')),
+        "render": {
+            "configured": s.render.is_some(),
+            "upstream": s.render.as_ref().map(|u| u.as_str().trim_end_matches('/')),
+            "endpoints": ["/ws/macview", "/ws/macview-pose"],
+            "transport_only": true,
+        },
         "quest_built": s.dist.join("index.html").is_file(),
         // eab0c88: enabled only while the single upstream route exists;
         // bonded-control is excluded from these counters by contract.
@@ -330,7 +387,73 @@ async fn ws_upgrade(
     let target = target.replacen("http", "ws", 1);
     let send_timeout = s.send_timeout;
     ws.on_upgrade(move |socket| async move {
-        relay_ws(socket, s, &target, control, camera_video, send_timeout).await;
+        relay_ws(socket, s, &target, control, camera_video, false, false, send_timeout).await;
+    })
+}
+
+/// tools/operator_relay.py render_websocket parity: /ws/macview{,-pose} proxy
+/// to the loopback Mac render server, never to the Jetson — configured or
+/// not, these paths never fall through to the rover route.
+async fn render_ws(State(s): State<Arc<AppState>>, req: Request) -> Response {
+    let render = match &s.render {
+        Some(r) => r.clone(),
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Mac render transport is not configured",
+            )
+                .into_response()
+        }
+    };
+    if render.port() == Some(s.listen_port) {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Mac render upstream points back to this relay",
+        )
+            .into_response();
+    }
+    if req.method() != axum::http::Method::GET {
+        return (StatusCode::METHOD_NOT_ALLOWED, [("allow", "GET")]).into_response();
+    }
+    let (mut parts, _body) = req.into_parts();
+    let ws = match WebSocketUpgrade::from_request_parts(&mut parts, &s).await {
+        Ok(ws) => ws,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "Mac render endpoint requires a WebSocket upgrade",
+            )
+                .into_response()
+        }
+    };
+    let req = Request::from_parts(parts, Body::empty());
+    if s.render_connections.fetch_add(1, Ordering::SeqCst) >= 4 {
+        s.render_connections.fetch_sub(1, Ordering::SeqCst);
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Mac render connection limit reached",
+        )
+            .into_response();
+    }
+    let path_and_query = req
+        .uri()
+        .path_and_query()
+        .map(|pq| pq.as_str())
+        .unwrap_or("/");
+    let target = format!("{}{}", render.as_str().trim_end_matches('/'), path_and_query)
+        .replacen("http", "ws", 1);
+    let pose = req.uri().path() == "/ws/macview-pose";
+    let send_timeout = s.send_timeout;
+    let conns = s.render_connections.clone();
+    ws.on_upgrade(move |socket| async move {
+        struct RenderGuard(Arc<AtomicUsize>);
+        impl Drop for RenderGuard {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+        let _guard = RenderGuard(conns);
+        relay_ws(socket, s, &target, false, false, true, pose, send_timeout).await;
     })
 }
 
@@ -348,9 +471,9 @@ fn exc_name(e: &tokio_tungstenite::tungstenite::Error) -> &'static str {
     }
 }
 
-async fn relay_ws(local: WebSocket, s: Arc<AppState>, target: &str, control: bool, camera_video: bool, send_timeout: Duration) {
+async fn relay_ws(local: WebSocket, s: Arc<AppState>, target: &str, control: bool, camera_video: bool, render_lane: bool, render_pose: bool, send_timeout: Duration) {
     // Do not accept the Quest socket until the upstream socket exists.
-    let max_msg = if control { 16 * 1024 } else { 8 * 1024 * 1024 };
+    let max_msg = if control || render_pose { 16 * 1024 } else { 8 * 1024 * 1024 };
     // control_closures parity: only the single-route /ws/control proxy is
     // diagnosed (bonded control is excluded).
     let attempt = control.then(|| s.closures.begin());
@@ -396,10 +519,14 @@ async fn relay_ws(local: WebSocket, s: Arc<AppState>, target: &str, control: boo
     let local_seen = Arc::new(AtomicU64::new(now_ms()));
     // Camera sends carry a 150 ms backpressure deadline: a slow consumer is
     // reset rather than accumulating seconds of video (#157).
-    let deadline = if control {
+    // operator_relay.py: control and render pose echo share the tightest
+    // 100 ms bound; camera video 150 ms; other render frames 500 ms.
+    let deadline = if control || render_pose {
         send_timeout.min(Duration::from_millis(100))
     } else if camera_video {
         send_timeout.min(Duration::from_millis(150))
+    } else if render_lane {
+        send_timeout.min(Duration::from_millis(500))
     } else {
         send_timeout
     };
@@ -976,6 +1103,17 @@ async fn main() {
         }
         None => None,
     };
+    let render = match args.render_upstream.as_deref().map(|v| {
+        let jetson: Vec<&Url> = [Some(&origin), second.as_ref()].into_iter().flatten().collect();
+        render_origin(v, &jetson)
+    }) {
+        Some(Ok(u)) => Some(u),
+        Some(Err(e)) => {
+            eprintln!("error: --render-upstream: {e}");
+            std::process::exit(2);
+        }
+        None => None,
+    };
     let bonded = second.map(|second| {
         // Bonded GETs never follow redirects (aiohttp allow_redirects=False)
         // and ride the same CA trust as the shared pools.
@@ -995,6 +1133,9 @@ async fn main() {
     let state = Arc::new(AppState {
         origin,
         geometry,
+        render,
+        render_connections: Arc::new(AtomicUsize::new(0)),
+        listen_port: args.port,
         dist,
         http: http_client,
         control: control_client,
@@ -1040,6 +1181,8 @@ async fn main() {
 fn build_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/relay/health", get(relay_health))
+        .route("/ws/macview", axum::routing::any(render_ws))
+        .route("/ws/macview-pose", axum::routing::any(render_ws))
         .route("/ws/{*path}", get(ws_upgrade).post(proxy_or_static))
         .fallback(proxy_or_static)
         .layer(middleware::from_fn_with_state(state.clone(), bonded_guards))
@@ -1192,6 +1335,9 @@ mod recovery_tests {
         Arc::new(AppState {
             origin: upstream_origin(&format!("http://127.0.0.1:{upstream_port}")).unwrap(),
             geometry: None,
+            render: None,
+            render_connections: Arc::new(AtomicUsize::new(0)),
+            listen_port: 0,
             dist: PathBuf::from("/nonexistent-dist"),
             http: reqwest::Client::new(),
             control: reqwest::Client::new(),
@@ -1483,5 +1629,101 @@ mod video_lane_tests {
         assert_eq!(health["video"]["stale_disconnects"], 1);
         drop(tx);
         drop(state);
+    }
+}
+
+#[cfg(test)]
+mod render_lane_tests {
+    //! tools/operator_relay.py render_websocket parity: 503 unconfigured,
+    //! 503 same-port, 405 non-GET, 400 missing upgrade, 503 at 4 conns.
+    use super::*;
+    use crate::recovery_tests::test_state;
+    use std::sync::atomic::AtomicUsize;
+
+    fn render_state(render: Option<Url>, listen_port: u16, conns: usize) -> Arc<AppState> {
+        let mut s = test_state(1, 10_000, 30_000);
+        {
+            let state = Arc::get_mut(&mut s).unwrap();
+            state.render = render;
+            state.listen_port = listen_port;
+            state.render_connections = Arc::new(AtomicUsize::new(conns));
+        }
+        s
+    }
+
+    #[tokio::test]
+    async fn unconfigured_render_paths_are_unavailable() {
+        let (port, _h) = recovery_tests::start_relay(render_state(None, 0, 0)).await;
+        for path in ["/ws/macview", "/ws/macview-pose"] {
+            let r = reqwest::get(format!("http://127.0.0.1:{port}{path}")).await.unwrap();
+            assert_eq!(r.status(), 503, "{path}");
+            assert!(r.text().await.unwrap().contains("not configured"));
+        }
+    }
+
+    #[tokio::test]
+    async fn render_checks_precede_upgrade_in_python_order() {
+        // Dead loopback render origin; upstream is never dialed on error paths.
+        let render = upstream_origin("http://127.0.0.1:9").unwrap();
+        let (port, _h) = recovery_tests::start_relay(render_state(Some(render), 0, 0)).await;
+        let client = reqwest::Client::new();
+        // Non-GET -> 405 with Allow: GET (checked before the upgrade gate).
+        let r = client
+            .post(format!("http://127.0.0.1:{port}/ws/macview"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 405);
+        assert_eq!(r.headers()["allow"], "GET");
+        // Plain GET without an upgrade -> 400 with the Python message.
+        let r = reqwest::get(format!("http://127.0.0.1:{port}/ws/macview")).await.unwrap();
+        assert_eq!(r.status(), 400);
+        assert!(r.text().await.unwrap().contains("requires a WebSocket upgrade"));
+        // Connection limit -> 503.
+        let state = render_state(Some(upstream_origin("http://127.0.0.1:9").unwrap()), 0, 4);
+        let (port2, _h2) = recovery_tests::start_relay(state).await;
+        let r = client
+            .get(format!("http://127.0.0.1:{port2}/ws/macview"))
+            .header("connection", "upgrade")
+            .header("upgrade", "websocket")
+            .header("sec-websocket-version", "13")
+            .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 503);
+        assert!(r.text().await.unwrap().contains("connection limit"));
+    }
+
+    #[tokio::test]
+    async fn render_origin_validation_matches_python() {
+        let jetson = upstream_origin("http://127.0.0.1:18445").unwrap();
+        for bad in [
+            "http://example.com",                 // not loopback
+            "http://127.0.0.1:18445",             // same explicit port as loopback Jetson
+            "http://user@127.0.0.1:9000",         // credentials
+            "http://127.0.0.1:9000/path",         // path
+            "http://127.0.0.1:9000?q=1",          // query
+            "ftp://127.0.0.1:9000",               // scheme
+        ] {
+            assert!(render_origin(bad, &[&jetson]).is_err(), "{bad}");
+        }
+        assert!(render_origin("http://127.0.0.1:9000", &[&jetson]).is_ok());
+        assert!(render_origin("http://localhost:9000", &[&jetson]).is_ok());
+        // A non-loopback Jetson never triggers the port collision.
+        let remote = upstream_origin("https://rover.tailnet.ts.net").unwrap();
+        assert!(render_origin("http://127.0.0.1:443", &[&remote]).is_ok());
+    }
+
+    #[tokio::test]
+    async fn render_same_port_as_relay_is_rejected() {
+        let (port, _h) = recovery_tests::start_relay(render_state(None, 0, 0)).await;
+        // Render upstream explicitly pointing at the relay's own port.
+        let render = upstream_origin(&format!("http://127.0.0.1:{port}")).unwrap();
+        let state = render_state(Some(render), port, 0);
+        let (port2, _h2) = recovery_tests::start_relay(state).await;
+        let r = reqwest::get(format!("http://127.0.0.1:{port2}/ws/macview")).await.unwrap();
+        assert_eq!(r.status(), 503);
+        assert!(r.text().await.unwrap().contains("points back to this relay"));
     }
 }
