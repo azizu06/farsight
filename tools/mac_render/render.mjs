@@ -134,16 +134,18 @@ function makeSplatTexture() {
   return texture;
 }
 const splatTexture = cine ? makeSplatTexture() : null;
-function pointMaterial(size) {
+function pointMaterial(size, minPixel = 2) {
   const material = new THREE.PointsMaterial({
     size, vertexColors: true, toneMapped: cine ? false : style === "lit",
     map: splatTexture, alphaTest: splatTexture ? 0.5 : 0,
     depthFunc: cine ? THREE.LessDepth : THREE.LessEqualDepth,
   });
   material.userData.surfaceDepthBias = { value: 0 };
+  material.userData.pointPixelFloor = { value: minPixel };
   material.onBeforeCompile = shader => {
     shader.uniforms.surfaceDepthBias = material.userData.surfaceDepthBias;
-    shader.vertexShader = "uniform float surfaceDepthBias;\n" + shader.vertexShader;
+    shader.uniforms.pointPixelFloor = material.userData.pointPixelFloor;
+    shader.vertexShader = "uniform float surfaceDepthBias, pointPixelFloor;\n" + shader.vertexShader;
     shader.vertexShader = shader.vertexShader.replace("#include <project_vertex>", `
       #include <project_vertex>
       if (surfaceDepthBias > 0.0) {
@@ -153,7 +155,7 @@ function pointMaterial(size) {
     `);
     if (cine) shader.vertexShader = shader.vertexShader.replace(
         "#include <logdepthbuf_vertex>",
-        "gl_PointSize = clamp(gl_PointSize * projectionMatrix[1][1], 2.0, 64.0);\n#include <logdepthbuf_vertex>",
+        "gl_PointSize = clamp(gl_PointSize * projectionMatrix[1][1], pointPixelFloor, 64.0);\n#include <logdepthbuf_vertex>",
       );
   };
   return material;
@@ -163,7 +165,9 @@ function pointMaterial(size) {
 // scene lighting/tone mapping so points and RGB textures agree.
 const flatPointSize = style === "lit" ? 0.014 : 0.025;
 const pointsMaterial = pointMaterial(cine ? 0.072 : flatPointSize);
-const densePointsMaterial = pointMaterial(cine ? 0.035 : flatPointSize);
+// Slight overlap closes a 1 cm lattice without spreading each colour over
+// several measured cells. Retain small/distant details with the native floor.
+const densePointsMaterial = pointMaterial(cine ? 0.016 : flatPointSize, 1.25);
 const pointMaterials = [pointsMaterial, densePointsMaterial];
 const cloudGeometry = new THREE.BufferGeometry();
 const cloud = new THREE.Points(cloudGeometry, pointsMaterial);
@@ -173,7 +177,7 @@ root.add(cloud);
 // snapshot fallback when they do not provide the incremental dense endpoint.
 const denseState = new DenseCloudState({ capacity: 5_000_000 });
 const denseReceiver = new DenseCloudReceiver({ state: denseState, endpoint: `${upstream}/dense/delta.bin` });
-const hasDenseSource = () => denseReceiver.identity !== null && denseReceiver.identity !== "waiting";
+const hasDenseSource = () => denseReceiver.identity !== null && denseReceiver.identity !== "waiting" && !status?.scan;
 const denseGpu = new DenseGpuChunks({ state: denseState, THREE, material: densePointsMaterial, parent: root });
 denseGpu.group.renderOrder = 2;
 const surfaceMaterial = style === "lit"
@@ -502,11 +506,11 @@ function registerLayer(layer) {
 }
 window.__macRegisterLayer = registerLayer;
 
-// Spacing-sized samples plus a density mesh built from the dense cloud
-// (measured-surface.mjs). ?msurf=0 keeps the original fixed-size discs.
-const measuredSurface = params.get("msurf") === "0" ? null : measuredSurfaceLayer({
+// The live default draws every measured dot with its original colour. The
+// averaged density mesh remains an explicit ?msurf=1 diagnostic comparison.
+const measuredSurface = params.get("msurf") === "1" ? measuredSurfaceLayer({
   THREE, state: denseState, denseGroup: denseGpu.group, options: measuredSurfaceOptions(params),
-});
+}) : null;
 if (measuredSurface) {
   registerLayer(measuredSurface);
   window.__macMeasuredSurface = measuredSurface;
@@ -692,6 +696,12 @@ async function refresh(force = false) {
     const next = await readStatus(abort.signal);
     const nextIdentity = sourceIdentity(next);
     if (!acceptMapStatus(next)) return false;
+    if (hasDenseSource()) {
+      // Keep pose/status updates, but leave bulk bandwidth to the displayed
+      // dense stream instead of downloading hidden coarse replacements.
+      mapError = null;
+      return true;
+    }
     const now = performance.now();
     const voxelM = Number(next.voxel_m) > 0 ? next.voxel_m : 0;
     if (voxelM > 0) cloudVoxelM = voxelM;
@@ -858,11 +868,14 @@ function drawScene(measure) {
   densePagesSeen = denseReceiver.pages;
   denseResetSeen = denseState.resetVersion;
   denseGpu.flush();
+  if (!measuredSurface) denseGpu.group.visible = hasDenseSource();
   // An authoritative empty dense scene must stay empty. Falling back to old
   // coarse dots here would undo a revisit or reset that removed the last cell.
   cloud.visible = !hasDenseSource();
-  const denseMatchesMap = denseReceiver.identity === `rgbd:${status?.session_id?.toLowerCase()}:${status?.map_epoch}`;
-  surfaces.visible = denseState.size === 0 || denseMatchesMap;
+  // Coarse face colours interpolate away fine measured markings. Once the
+  // dense source is identified, its dots own the live scene; legacy sources
+  // retain their coarse mesh fallback. Native camera textures are independent.
+  surfaces.visible = !hasDenseSource();
   if (cloud.visible !== cloudVisibleSeen || surfaces.visible !== surfacesVisibleSeen) {
     cloudVisibleSeen = cloud.visible;
     surfacesVisibleSeen = surfaces.visible;
