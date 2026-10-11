@@ -225,8 +225,10 @@ pub struct TrainConfig {
     /// Run one full step (render+loss+backward+optimizer) plus one refine
     /// pass before the training loop starts, so every cubecl kernel is
     /// compiled and every wgpu pipeline created at the real image size and
-    /// splat count before the budget clock's first step. The warmup step's
-    /// result is discarded beyond keeping its compiled-kernel side effects.
+    /// splat count before the budget clock's first step. The warmup is
+    /// real work, not a throwaway: it advances the optimizer one step,
+    /// applies the iter-0 prune/refine, and consumes one dataloader batch.
+    /// Compare budgets like-for-like (always --warmup on every side).
     #[arg(long, help_heading = "Training options", default_value = "false")]
     pub warmup: bool,
 

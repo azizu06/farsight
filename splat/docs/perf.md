@@ -127,6 +127,10 @@ observed on disk — first .splat lands on the next export run.
   training loop — compiles every kernel the loop touches at the REAL
   image/splat sizes, including the grow/prune kernels that otherwise pay
   their compile cost inside the budget window at the first refine tick.
+  Warmup is REAL work, not a throwaway: it advances Adam one step,
+  applies the iter-0 prune/refine, and consumes one batch — Splats can't
+  be cloned cheaply (burn Module has no Clone), so keep the effects and
+  always compare --warmup runs against --warmup runs.
 - Lavapipe cold vs warm (toy 160x120, iters=1): cold ~1 s, warm ~2 s,
   warm+`--warmup` +4.5 s (one step + refine at these sizes). At toy scale
   autotune barely matters — the value is at 300k splats/1920x1440 where
