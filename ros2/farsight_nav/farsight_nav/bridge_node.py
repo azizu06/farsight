@@ -518,26 +518,31 @@ class FarsightBridge(Node):
         candidates = found
         if escape is not None:  # a genuinely different goal: nothing near the stuck spot
             candidates = [f for f in found if math.dist(f.goal, escape) >= self.explore_escape_m] or found
-        if prefer_forward:
-            forward = [f for f in candidates
-                       if frontiers.turn_to(robot_map, f.goal) <= self.explore_skip_forward_rad]
-            candidates = forward or candidates
-        choice = explorer.choose(candidates, robot_map, cells, info.resolution, origin,
-                                 now=now, blacklist=blacklist)
-        if choice is None:  # never stop while a rover-width route to any frontier exists
-            choice = explorer.choose(candidates, robot_map, cells, info.resolution, origin,
-                                     now=now, blacklist=blacklist, relaxed=True)
-        fallback = False
-        if choice is None:
-            # Real rooms: the approach to most frontiers is still unknown, so the measured
-            # corridor checks reject them all. Hand Nav2 the nearest broad one anyway; it plans
-            # through unknown, and a failure or stall re-picks at once. Scan only with none.
-            keep = None
-            if target is not None and not timed_out and self.explore_fallback:
-                keep = next((f for f in found if math.dist(f.goal, target) < 0.5), None)
-            choice = keep or frontiers.choose(candidates, robot_map, blacklist=blacklist,
-                                              grid=cells, resolution=info.resolution, origin=origin)
-            fallback = choice is not None
+        forward = ([f for f in candidates
+                    if frontiers.turn_to(robot_map, f.goal) <= self.explore_skip_forward_rad]
+                   if prefer_forward else [])
+        # A forward candidate may be blacklisted or unusable. Only keep the
+        # preference when a chooser accepts it; otherwise retain usable flanks.
+        pools = (forward, candidates) if 0 < len(forward) < len(candidates) else (candidates,)
+        choice, fallback = None, False
+        for pool in pools:
+            choice = explorer.choose(pool, robot_map, cells, info.resolution, origin,
+                                     now=now, blacklist=blacklist)
+            if choice is None:  # never stop while a rover-width route to any frontier exists
+                choice = explorer.choose(pool, robot_map, cells, info.resolution, origin,
+                                         now=now, blacklist=blacklist, relaxed=True)
+            if choice is None:
+                # Real rooms: the approach to most frontiers is still unknown, so the measured
+                # corridor checks reject them all. Hand Nav2 the nearest broad one anyway; it plans
+                # through unknown, and a failure or stall re-picks at once. Scan only with none.
+                keep = None
+                if target is not None and not timed_out and self.explore_fallback:
+                    keep = next((f for f in found if math.dist(f.goal, target) < 0.5), None)
+                choice = keep or frontiers.choose(pool, robot_map, blacklist=blacklist,
+                                                  grid=cells, resolution=info.resolution, origin=origin)
+                fallback = choice is not None
+            if choice is not None:
+                break
         with self.lock:
             if (session != self.explore_session or not self.exploring
                     or time.monotonic() - self.pose_at >= 0.5 or time.monotonic() - self.depth_at >= 0.5):

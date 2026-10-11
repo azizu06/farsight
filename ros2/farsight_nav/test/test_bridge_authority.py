@@ -326,6 +326,28 @@ class ExploreStallTests(unittest.TestCase):
         self.assertAlmostEqual(fresh.goals[-1][1]["x"], 3.02, places=2)
         self.assertAlmostEqual(fresh.goals[-1][1]["y"], 4.43, places=2)
 
+    def test_skipped_forward_goal_does_not_hide_a_usable_flank(self):
+        node = self.make_node()
+        node.explore_target = (4.5, 2.5)
+        node.progress_at = time.monotonic() - 4.0
+        east = frontiers.Frontier((4.5, 2.5), (4.5, 2.5), 1.0)
+        flank = frontiers.Frontier((3.02, 4.43), (3.02, 4.43), 1.0)
+        self.tick(node, [east, flank])
+        self.assertEqual(len(node.blacklist), 1)
+        self.assertEqual(len(node.goals), 1)
+        self.assertAlmostEqual(node.goals[0][1]["x"], 3.02)
+        self.assertAlmostEqual(node.goals[0][1]["y"], 4.43)
+
+    def test_rejected_forward_view_edge_does_not_hide_a_usable_flank(self):
+        node = self.make_node()
+        node.blacklist = [(9.9, 9.9, time.monotonic())]
+        view_edge = frontiers.Frontier((3.2, 2.5), (3.2, 2.5), 1.0)
+        flank = frontiers.Frontier((3.02, 4.43), (3.02, 4.43), 1.0)
+        self.tick(node, [view_edge, flank])
+        self.assertEqual(len(node.goals), 1)
+        self.assertAlmostEqual(node.goals[0][1]["x"], 3.02)
+        self.assertAlmostEqual(node.goals[0][1]["y"], 4.43)
+
 
 if __name__ == "__main__":
     unittest.main()
