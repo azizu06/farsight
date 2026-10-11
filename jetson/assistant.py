@@ -58,6 +58,9 @@ class SceneAssistant:
         self._processes = set()
         self._voice, self._voice_path = None, None
         self._lock = asyncio.Lock()
+        # Latest measured stage latencies (ms) and whether the vision model answered last time, for /health models.
+        self.last_timings = dict(stt=None, vlm=None, tts=None)
+        self.vision_ok = None
 
     @staticmethod
     def _loopback(url):
@@ -166,6 +169,7 @@ class SceneAssistant:
                 except (httpx.HTTPError, asyncio.TimeoutError, ValueError, KeyError, TypeError, IndexError):
                     warning = "Local vision model unavailable; showing the observation summary"
                 timings["vlm"] = round((time.monotonic() - stage) * 1000)
+                self.vision_ok = warning is None
             answer = guard_answer(answer, action, 2 if model == "local-vision-model" else None)
             result = dict(question=question, answer=answer, action=action, model=model,
                           source=facts["source"], simulated=facts["simulated"],
@@ -182,6 +186,7 @@ class SceneAssistant:
             if self.piper_bin or self.piper_model:
                 timings["tts"] = round((time.monotonic() - stage) * 1000)
             result["timings"] = timings
+            self.last_timings.update({stage: ms for stage, ms in timings.items() if ms is not None})
             result["ms"] = round((time.monotonic() - started) * 1000)
             return result
 

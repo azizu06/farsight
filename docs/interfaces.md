@@ -44,7 +44,7 @@ explicit ray-cast camera/map and virtual rover sources. See
 |---|---|
 | `GET /` | Quest WebXR app (built `quest/dist`) |
 | `GET /stream.mjpg` | Camera, MJPEG, 640x480, 15 fps by default (camera capture loop, `jetson/camera.py`) |
-| `GET /health` | `{"camera": bool, "detector_fps": float, "rover": bool, "estop": bool}`; optional `camera_pan: bool` (see below); optional `face_detector: bool`, `face_error: string\|null` (see below) |
+| `GET /health` | `{"camera": bool, "detector_fps": float, "rover": bool, "estop": bool}`; optional `camera_pan: bool` (see below); optional `face_detector: bool`, `face_error: string\|null` (see below); optional `models` (see below) |
 | `GET /camera.jpg` | Latest JPEG; `X-Frame-Id`, `X-Frame-Age-Ms`, `X-Frame-Source`, optional `X-Frame-Server-Wait-Ms`; no-store |
 | `GET /control/status` | Read-only control status; no usable permit |
 | `GET /mission/report` | Evidence, persistence/source labels, drill results, control `summary` and `timeline` (below) |
@@ -63,6 +63,14 @@ applied v/w, in metres, x forward, y left, so they are approximate
 (`route_approximate: true`). `summary` is null while running. Once time runs out
 or every victim is found, it is
 `{time_s, found, total, estops_avoided, found_at_s, breadcrumb}`.
+
+Optional `models` in `/health` lists the on-rover models:
+`[{role, name, source, repo, file, loaded, last_ms}]`. `role` is `detector`, `vision`, `stt`, `tts`,
+`tts-es`, `depth` or `face`. `source` is `huggingface`, `ultralytics` or `local`; `repo` is the
+Hub repo id, or null when the file is unknown. The llama-server and whisper-server model files
+come from their installed systemd units. `last_ms` is the latest `/ask` stage time (`stt`,
+`vlm`, `tts`) or the detector inference time; null until measured. The Quest HUD shows
+`On-rover AI: <Whisper> X s · <vision model> Y s · Piper Z s` from it.
 
 Optional `face_detector: bool` and `face_error: string|null` appear in `/health` and
 in `GET`/`POST /mission/drill`. The drill scores only `cls:"face"` boxes, which appear
