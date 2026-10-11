@@ -56,7 +56,7 @@ Same room, same 1,454,055-dot seed, same 90 held-out photos, separate full runs 
 |---|---|---|---|
 | 2,000 | **81 s** | 19.0 dB | 16× faster, −2.9 dB |
 | 5,000 | **174 s** | **20.4 dB** | 7.6× faster, −1.5 dB |
-| 10,000 | pending | pending | |
+| 10,000 | **382 s** | 20.97 dB | 3.5× faster, −0.9 dB |
 | 30,000 | 1,325 s | 21.9 dB | baseline |
 
 Sai's `farsight-compiler` (dots + painted photos, no training) on the same run and photos: **12.3 dB**, 61 s on an
