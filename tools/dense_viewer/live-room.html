@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head><meta charset="utf-8"><title>Farsight · live Mac room</title>
+<style>html,body{margin:0;height:100%;background:#1c2228;overflow:hidden}canvas{display:block}#banner{position:fixed;left:12px;bottom:12px;color:#d7e2ea;font:13px/1.3 monospace;pointer-events:none}#review{position:fixed;top:12px;left:12px;color:#d7e2ea;font:14px monospace;background:#111b;padding:10px}button{color:#fff;background:#27333d;border:1px solid #627381;padding:6px;cursor:pointer}</style>
+</head><body><div id="banner">Loading measured room…</div><div id="review">LIVE Mac canvas · measured geometry · grid is a display guide <button id="fit">Fit captured room</button></div>
+<script>window.__mac={ready:false,error:null};</script>
+<script type="module">
+import '/render/render.mjs';
+let context, fitted = false;
+window.__macRegisterLayer({init(ctx){context=ctx;},poll(){
+  if (!fitted && window.__mac.points > 0) fitted=fit();
+}});
+function fit(){
+  const {THREE,root,camera,renderer}=context, bounds=new THREE.Box3();
+  root.traverse(object=>{
+    if (!object.isPoints && !object.isMesh) return;
+    const geometry=object.geometry;
+    if (!geometry?.attributes?.position || geometry.drawRange.count===0) return;
+    if (!geometry.boundingBox) geometry.computeBoundingBox();
+    if (geometry.boundingBox && !geometry.boundingBox.isEmpty()) bounds.union(geometry.boundingBox);
+  });
+  if(bounds.isEmpty()) return false;
+  const center=bounds.getCenter(new THREE.Vector3()), size=bounds.getSize(new THREE.Vector3());
+  const radius=Math.max(size.length()/2,.5);
+  camera.position.copy(center).add(new THREE.Vector3(.8,.6,1).normalize().multiplyScalar(radius*3));
+  camera.lookAt(center);camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth,innerHeight,false); context.requestFrame();return true;
+}
+document.querySelector('#fit').onclick=()=>{fitted=fit();};
+</script></body></html>

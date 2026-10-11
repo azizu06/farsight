@@ -67,7 +67,8 @@ walk-through mode.
 ## Retention and display
 
 Jetson keeps a 600k-cell working cache; budget eviction is not a deletion of
-the Mac's retained detail. Mac retains up to five million unique 1 cm cells.
+the Mac's retained detail. Mac retains up to ten million unique 1 cm cells;
+the measured draw/capture limits and live link witness are in `docs/mac-capacity.md`.
 Real reset/removal clears the appropriate geometry; capture-session/epoch
 changes always clear old coordinates. A bounded revision journal falls back
 to an anchored, paginated snapshot if the client misses its history.

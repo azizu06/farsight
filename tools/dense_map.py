@@ -23,6 +23,7 @@ from jetson.mapping.dense import DenseMap, RECORD, MAX_RECORDS, packet, unpack
 
 CHUNK_MM = 2000
 VIEW_CHUNKS = 32
+MAC_RETAINED_CELLS = 10_000_000  # measured full Metal upload/draw; docs/mac-capacity.md
 DENSE_PATHS = frozenset(("/dense/status", "/dense/metrics", "/dense/manifest",
                          "/dense/chunk.bin", "/dense/delta.bin"))
 READ_ERRORS = (aiohttp.ClientError, OSError, ValueError, KeyError, TypeError,
@@ -34,7 +35,7 @@ class MacCloud(DenseMap):
         self.retained_history = retained_history
         if retained_history:
             kwargs["ttl"] = 86400  # compatible legacy metadata; history is session-retained
-        super().__init__(capacity=5_000_000, **kwargs)
+        super().__init__(capacity=MAC_RETAINED_CELLS, **kwargs)
         self.chunks = {}
         self.chunk_revisions = {}
         self.view_cache = {}
