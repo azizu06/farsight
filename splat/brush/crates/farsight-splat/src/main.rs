@@ -33,8 +33,9 @@ struct PipelineArgs {
     #[arg(long)]
     no_cull: bool,
     /// Seeder: T5 farsight-seed | T1 raw-dot port | none (capture's own ply).
-    #[arg(long, value_enum)]
-    seed: Option<farsight_splat::seed::SeedKind>,
+    /// (field is `seed_kind`: ProcessConfig::seed already owns the `seed` arg id)
+    #[arg(long = "seed", value_enum)]
+    seed_kind: Option<farsight_splat::seed::SeedKind>,
     /// Dot sources for --seed raw (points.bin / *.xyzrgb / *.ply).
     #[arg(long, num_args = 1..)]
     dots: Vec<PathBuf>,
@@ -125,10 +126,20 @@ fn pipeline_of(args: &PipelineArgs) -> Pipeline {
 
 fn opts_of(capture_dir: &PathBuf, out: &PathBuf, args: &PipelineArgs) -> RunOptions {
     let budget_s = args.config.train_config.budget_s;
-    let seed_kind = match args.seed {
+    let mut dots = args.dots.clone();
+    // Raw seeding defaults to the dot files the capture already carries.
+    if dots.is_empty() {
+        for cand in ["points.bin", "dense.xyzrgb", "init.ply"] {
+            let p = capture_dir.join(cand);
+            if p.exists() {
+                dots.push(p);
+                break;
+            }
+        }
+    }
+    let seed_kind = match args.seed_kind {
         Some(k) => k,
         None if args.seed_ply.is_some() => farsight_splat::seed::SeedKind::None,
-        None if !args.dots.is_empty() => farsight_splat::seed::SeedKind::Raw,
         None => farsight_splat::seed::SeedKind::Raw,
     };
     RunOptions {
@@ -140,7 +151,7 @@ fn opts_of(capture_dir: &PathBuf, out: &PathBuf, args: &PipelineArgs) -> RunOpti
         reserve_s: args.reserve_s,
         drive: args.drive.as_ref().map(|v| (v[0], v[1])),
         no_cull: args.no_cull,
-        seed_inputs: args.dots.clone(),
+        seed_inputs: dots,
         seed_kind,
         seed_args: args.seed_args.clone(),
         schedule: args.schedule.unwrap_or_default(),
@@ -180,7 +191,7 @@ async fn main() -> Result<()> {
         }
         Cmd::Drives { capture_dir } => {
             let cap = Capture::load(&capture_dir)?;
-            let drives = cull::find_drives(&cap.transforms.frames, 12.0);
+            let drives = cull::find_drives(&cap.transforms.frames, 60.0);
             for d in &drives {
                 println!(
                     "frames {:4}-{:4} ({:3})  {:5.0} s  path {:5.2} m  moving {:3}",
@@ -304,5 +315,81 @@ fn print_run(r: &farsight_splat::RunReport) {
         r.wall_s,
         r.out
     );
+    // MAC_RECEIPT-format row: Prep/Train/Export/Score/Total/PSNR
+    let prep_s = (r.phases.load_ms
+        + r.phases.cull_ms
+        + r.phases.write_ms
+        + r.phases.seed_ms
+        + r.phases.calib_ms) as f64
+        / 1000.0;
+    println!(
+        "receipt Prep={:.1}s Train={:.1}s Export={:.1}s Score={:.1}s Total={:.1}s PSNR={}",
+        prep_s,
+        r.phases.train_ms as f64 / 1000.0,
+        r.phases.export_ms as f64 / 1000.0,
+        r.phases.score_ms as f64 / 1000.0,
+        r.wall_s,
+        sc.map(|s| format!("{:.2}", s.psnr_mean))
+            .unwrap_or("n/a".into())
+    );
     let _ = eval::eval_frames; // keep eval module referenced
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    /// Every subcommand's clap spec must pass clap's own definition checks
+    /// (duplicate arg ids, bad defaults, ...). Regressed once when our
+    /// `--seed` enum collided with `ProcessConfig::seed` (RNG seed u64).
+    #[test]
+    fn clap_debug_assert() {
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn parse_run_and_bench() {
+        let run = Cli::try_parse_from([
+            "farsight-splat",
+            "run",
+            "cap",
+            "--out",
+            "o",
+            "--budget-s",
+            "60",
+            "--seed",
+            "raw",
+            "--schedule",
+            "stock",
+            "--refine-mode",
+            "budget",
+        ])
+        .expect("run parse");
+        let Cmd::Run { args, .. } = run.cmd else {
+            panic!("not run");
+        };
+        assert_eq!(args.config.train_config.budget_s, Some(60.0));
+        assert_eq!(args.seed_kind, Some(farsight_splat::seed::SeedKind::Raw));
+        assert_eq!(
+            args.schedule,
+            Some(farsight_splat::pipeline::ScheduleKind::Stock)
+        );
+        let bench = Cli::try_parse_from([
+            "farsight-splat",
+            "bench",
+            "cap",
+            "--out",
+            "o",
+            "--budgets",
+            "30,60",
+            "--seed",
+            "farsight",
+        ])
+        .expect("bench parse");
+        let Cmd::Bench { budgets, .. } = bench.cmd else {
+            panic!("not bench");
+        };
+        assert_eq!(budgets, vec![30.0, 60.0]);
+    }
 }

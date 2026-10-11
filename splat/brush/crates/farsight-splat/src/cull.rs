@@ -3,7 +3,6 @@
 
 use std::path::Path;
 
-use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 use crate::capture::{Capture, Frame};

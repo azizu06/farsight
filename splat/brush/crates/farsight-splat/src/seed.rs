@@ -282,7 +282,7 @@ fn farsight_seed_bin() -> Result<PathBuf> {
 /// with ply_file_path -> seed.ply plus depth/ and linked images).
 pub fn run_farsight_seed(capture_dir: &Path, out_dir: &Path, extra: &[String]) -> Result<SeedReport> {
     let bin = farsight_seed_bin()?;
-    let t0 = std::time::Instant::now();
+    let _t0 = std::time::Instant::now();
     let status = std::process::Command::new(&bin)
         .arg(capture_dir)
         .arg(out_dir)

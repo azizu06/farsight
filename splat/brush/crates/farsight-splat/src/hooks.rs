@@ -20,7 +20,7 @@ use anyhow::Result;
 use brush_process::config::TrainStreamConfig;
 
 use crate::capture::{Capture, Frame};
-use crate::cull::{self, CullReport};
+use crate::cull;
 use crate::seed::{self, SeedReport};
 
 /// T6 — view selection & appearance. Replaces drive-cut + parked/blur cull.

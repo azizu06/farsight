@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::Serialize;
 
 #[derive(Clone, Debug, Default, Serialize)]

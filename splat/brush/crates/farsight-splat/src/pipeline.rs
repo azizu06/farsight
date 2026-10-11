@@ -2,10 +2,10 @@
 //! (wall-clock budget) -> export .ply/.splat -> held-out score.
 //! `bench` runs the same pipeline once per budget.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Instant;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use brush_process::config::TrainStreamConfig;
 use serde::Serialize;
 
