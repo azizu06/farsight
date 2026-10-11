@@ -36,7 +36,7 @@ from std_msgs.msg import String
 from std_srvs.srv import Trigger
 from tf2_ros import Buffer, StaticTransformBroadcaster, TransformBroadcaster, TransformListener
 
-from . import frames, frontiers, local_motion, protocol
+from . import frames, frontiers, local_motion, protocol, speed
 
 try:
     import websockets
@@ -132,6 +132,11 @@ class FarsightBridge(Node):
             budget_s=p("explore_gap_budget_s", 4.0).value,
             scan_budget_s=p("explore_scan_budget_s", 10.0).value)
         self.swept = frontiers.SweptFootprint(radius=p("explore_body_radius", 0.35).value)
+        # Explore drives at the server's top speed from this clearance out, slowing to the
+        # 0.15 m/s AUTO floor by speed_tight_clearance_m (captain: fast in open space, slow in corners).
+        self.speed_bands = dict(floor_mps=p("speed_floor_mps", 0.15).value,
+                                tight_m=p("speed_tight_clearance_m", 0.3).value,
+                                open_m=p("speed_open_clearance_m", 0.8).value)
         # "events": rclpy's C++ EventsExecutor. The Python MultiThreadedExecutor
         # rebuilt its wait set on every TF/costmap/feedback wakeup and spent
         # most of a core doing it. Callbacks here never block, so one thread is enough.
@@ -200,6 +205,7 @@ class FarsightBridge(Node):
         self.global_grid = None
         self.global_grid_at = -math.inf
         self.local_support = None
+        self.lethal = None          # (measured lethal cells, resolution, origin) of the last Explore map
         self.depth_snapshot = None
         self.depth_at = self.pose_at = -math.inf
         self.nav_command = None
@@ -270,7 +276,7 @@ class FarsightBridge(Node):
             self.frontiers, self.frontiers_odom = [], []
             self.velocity = frames.VelocityEstimator()
             self.robot = None
-            self.global_grid, self.local_support, self.depth_snapshot = None, None, None
+            self.global_grid, self.local_support, self.depth_snapshot, self.lethal = None, None, None, None
             self.depth_at = self.pose_at = self.global_grid_at = -math.inf
             self.explorer = frontiers.Explorer(self.explore_config)
             self.swept = frontiers.SweptFootprint(self.swept.radius)
@@ -484,6 +490,7 @@ class FarsightBridge(Node):
             if session != self.explore_session or not self.exploring:
                 return
             self.local_support = (support, info.resolution, origin, obstacles)
+            self.lethal = (cells >= 100, info.resolution, origin)
             if now - self.pose_at >= 0.5 or now - self.depth_at >= 0.5 or now - self.global_grid_at >= 2.5:
                 return  # server capture-loss interlock owns stopping and explicit rearming
             target = self.explore_target
@@ -595,12 +602,15 @@ class FarsightBridge(Node):
                 col, row = math.floor((rx - origin[0]) / resolution), math.floor((ry - origin[1]) / resolution)
                 body_clear = (0 <= row < obstacles.shape[0] and 0 <= col < obstacles.shape[1]
                               and obstacles[row, col] >= self.swept.radius)
+            clearance = (speed.clearance(*self.lethal, to_map(*robot)[:2], self.speed_bands["open_m"])
+                         if robot is not None and self.lethal is not None else None)
             command = self.local_motion.command(
                 now=now, active=True, nav_command=self.nav_command, nav_at=self.nav_command_at,
                 robot=robot, pose_at=self.pose_at, depth=depth, header=header, depth_at=self.depth_at,
                 support=support, resolution=resolution, origin=origin, map_at=self.global_grid_at,
                 to_map=to_map, body_clear=body_clear)
             if command is not None:
+                command = speed.limit(command, clearance, speed.top_speed(self.config), **self.speed_bands)
                 self.send(protocol.cmd_vel(*command, self.goal_id, self.generation))
 
     # -- Nav2 ----------------------------------------------------------------------------
