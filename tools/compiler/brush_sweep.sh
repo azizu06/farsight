@@ -15,8 +15,9 @@ set -euo pipefail
 [ $# -ge 2 ] || { sed -n 2,14p "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 CAP=$(cd "$1" && pwd); shift
 BRUSH=${BRUSH:?set BRUSH=/path/to/brush_app}
-OUT=$(cd "$(dirname "${OUT:-/tmp/brush_sweep}")" && pwd -P || mkdir -p "${OUT:-/tmp/brush_sweep}" && cd "${OUT:-/tmp/brush_sweep}" && pwd)
+OUT=${OUT:-/tmp/brush_sweep}
 mkdir -p "$OUT"
+OUT=$(cd "$OUT" && pwd -P)
 EXTRA=()
 if [ "${1:-}" = "--" ]; then shift; EXTRA=("$@"); fi
 declare -A ARGS=(
