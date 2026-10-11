@@ -128,19 +128,36 @@ function makeSplatTexture() {
   return texture;
 }
 const splatTexture = cine ? makeSplatTexture() : null;
-const pointsMaterial = new THREE.PointsMaterial({
-  size: (style === "lit" ? 0.014 : 0.025) * (splatTexture ? 1.45 : 1),
-  vertexColors: true, toneMapped: style === "lit",
-  map: splatTexture, alphaTest: splatTexture ? 0.5 : 0,
-});
+function pointMaterial(size) {
+  const material = new THREE.PointsMaterial({
+    size, vertexColors: true, toneMapped: cine ? false : style === "lit",
+    map: splatTexture, alphaTest: splatTexture ? 0.5 : 0,
+    depthFunc: cine ? THREE.LessDepth : THREE.LessEqualDepth,
+  });
+  if (cine) material.onBeforeCompile = shader => {
+    shader.vertexShader = shader.vertexShader.replace(
+      "#include <logdepthbuf_vertex>",
+      "gl_PointSize = clamp(gl_PointSize * projectionMatrix[1][1], 2.0, 64.0);\n#include <logdepthbuf_vertex>",
+    );
+  };
+  return material;
+}
+// Coarse 4cm cells need overlapping discs, not the same 2cm footprint as
+// the independently retained 1cm dense samples. Native camera colors bypass
+// scene lighting/tone mapping so points and RGB textures agree.
+const flatPointSize = style === "lit" ? 0.014 : 0.025;
+const pointsMaterial = pointMaterial(cine ? 0.072 : flatPointSize);
+const densePointsMaterial = pointMaterial(cine ? 0.035 : flatPointSize);
 const cloudGeometry = new THREE.BufferGeometry();
 const cloud = new THREE.Points(cloudGeometry, pointsMaterial);
+cloud.renderOrder = 2;
 root.add(cloud);
 // Full measured RGB-D detail stays on the Mac. Older relays retain the bounded
 // snapshot fallback when they do not provide the incremental dense endpoint.
 const denseState = new DenseCloudState({ capacity: 5_000_000 });
 const denseReceiver = new DenseCloudReceiver({ state: denseState, endpoint: `${upstream}/dense/delta.bin` });
-const denseGpu = new DenseGpuChunks({ state: denseState, THREE, material: pointsMaterial, parent: root });
+const denseGpu = new DenseGpuChunks({ state: denseState, THREE, material: densePointsMaterial, parent: root });
+denseGpu.group.renderOrder = 2;
 const surfaceMaterial = style === "lit"
   ? new THREE.MeshStandardMaterial({
     color: 0xffffff, vertexColors: true, side: THREE.DoubleSide,
@@ -155,6 +172,7 @@ const surfaceMaterial = style === "lit"
   });
 const surfaceGeometry = new THREE.BufferGeometry();
 const surfaces = new THREE.Mesh(surfaceGeometry, surfaceMaterial);
+surfaces.renderOrder = 1;
 surfaces.castShadow = style === "lit";
 surfaces.receiveShadow = style === "lit";
 if (style === "lit") {
@@ -342,6 +360,7 @@ function applyFxTier(fx) {
     // program cache key); needsUpdate just makes it land this frame.
     surfaceMaterial.needsUpdate = true;
     pointsMaterial.needsUpdate = true;
+    densePointsMaterial.needsUpdate = true;
   }
   const fog = fx >= 1 ? sceneFog : null;
   if (scene.fog !== fog) scene.fog = fog;
@@ -597,6 +616,10 @@ function acceptMapStatus(next) {
     clearGeometry(); mapIdentity = nextIdentity; mapGeneration = next.generation;
   } else if (status && (next.revision < status.revision || next.mesh_revision < status.mesh_revision)) return false;
   status = next; statusReceivedAt = performance.now();
+  if (cine) {
+    pointsMaterial.size = (next.voxel_m || 0.04) * 1.8;
+    frameDirty = true;
+  }
   return true;
 }
 async function readStatus(signal) {
@@ -874,6 +897,8 @@ function drawScene(measure) {
 window.__macCapture = () => {
   // "capture" forces a draw in this same task, so toDataURL never reads a cleared buffer.
   drawScene("capture");
+  window.__mac.surfaceDisplay = { coarse_splat_m: pointsMaterial.size,
+    dense_splat_m: densePointsMaterial.size, raw: window.__macRawLayer?.stats() ?? null };
   const captureStarted = performance.now();
   const data = renderer.domElement.toDataURL("image/jpeg", jpegQuality).split(",")[1];
   window.__mac.captureMs = performance.now() - captureStarted;
