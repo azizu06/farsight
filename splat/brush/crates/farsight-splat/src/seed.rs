@@ -238,3 +238,74 @@ pub fn seed_from_dots(cap: &mut Capture, inputs: &[PathBuf], out_dir: &Path) -> 
         ply: Some(ply.display().to_string()),
     })
 }
+
+/// Which seeder a run uses.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum, serde::Serialize)]
+pub enum SeedKind {
+    /// No seeding: train from whatever `ply_file_path` the capture has.
+    None,
+    /// T1's port of seed_from_dots.py: dot files -> SOR -> init.ply.
+    #[default]
+    Raw,
+    /// T5's farsight-seed binary (decimated, view-coloured seed + depth).
+    Farsight,
+}
+
+/// Locate the `farsight-seed` binary: $FARSIGHT_SEED, next to our own exe,
+/// the workspace target dir, then PATH.
+fn farsight_seed_bin() -> Result<PathBuf> {
+    if let Ok(p) = std::env::var("FARSIGHT_SEED") {
+        return Ok(PathBuf::from(p));
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(d) = exe.parent() {
+            let p = d.join("farsight-seed");
+            if p.exists() {
+                return Ok(p);
+            }
+        }
+    }
+    for p in [
+        "target/release/farsight-seed",
+        "splat/brush/target/release/farsight-seed",
+        "../farsight-seed/target/release/farsight-seed",
+        "farsight-seed",
+    ] {
+        if Path::new(p).exists() || p == "farsight-seed" {
+            return Ok(PathBuf::from(p));
+        }
+    }
+    Ok(PathBuf::from("farsight-seed"))
+}
+
+/// Run T5's `farsight-seed <capture_dir> <out_dir>` (it writes transforms.json
+/// with ply_file_path -> seed.ply plus depth/ and linked images).
+pub fn run_farsight_seed(capture_dir: &Path, out_dir: &Path, extra: &[String]) -> Result<SeedReport> {
+    let bin = farsight_seed_bin()?;
+    let t0 = std::time::Instant::now();
+    let status = std::process::Command::new(&bin)
+        .arg(capture_dir)
+        .arg(out_dir)
+        .args(extra)
+        .status()
+        .with_context(|| format!("spawning {}", bin.display()))?;
+    if !status.success() {
+        anyhow::bail!("farsight-seed exited {status}");
+    }
+    let stats = out_dir.join("seed_stats.json");
+    let mut rep = SeedReport {
+        source: "farsight-seed".to_string(),
+        ply: Some(out_dir.join("seed.ply").display().to_string()),
+        ..Default::default()
+    };
+    if let Ok(s) = std::fs::read_to_string(&stats) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&s) {
+            rep.input_points = v["input_points"].as_u64().unwrap_or(0) as usize;
+            rep.kept_points = v["splats"]
+                .as_u64()
+                .or_else(|| v["kept_points"].as_u64())
+                .unwrap_or(0) as usize;
+        }
+    }
+    Ok(rep)
+}

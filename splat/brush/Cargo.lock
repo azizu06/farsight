@@ -3939,6 +3939,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "farsight-splat"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "ball-tree",
+ "brush-async",
+ "brush-dataset",
+ "brush-process",
+ "brush-render",
+ "brush-serde",
+ "brush-train",
+ "brush-vfs",
+ "burn",
+ "bytemuck",
+ "clap",
+ "env_logger",
+ "glam",
+ "humantime",
+ "image",
+ "indicatif",
+ "log",
+ "memory-stats",
+ "rand 0.10.2",
+ "rayon",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+]
+
+[[package]]
 name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

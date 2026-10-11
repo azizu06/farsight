@@ -15,8 +15,21 @@ use crate::eval;
 use crate::export;
 use crate::hooks::Pipeline;
 use crate::score::ScoreReport;
-use crate::seed::SeedReport;
+use crate::seed::{SeedKind, SeedReport};
 use crate::train::{self, PeakMem, TrainOutcome};
+
+/// How the wall-clock budget reaches the trainer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum, Serialize)]
+pub enum ScheduleKind {
+    /// T3's in-trainer schedule: `TrainConfig::budget_s` paces LR decay,
+    /// progressive res, SH unlock and the refine window by wall clock, and
+    /// the trainer stops when the budget elapses.
+    #[default]
+    Budget,
+    /// Upstream behaviour: fixed `--total-train-iters` on the stock
+    /// iter-fraction schedule (T1 measures steps/s and converts).
+    Stock,
+}
 
 #[derive(Clone)]
 pub struct RunOptions {
@@ -36,6 +49,12 @@ pub struct RunOptions {
     pub no_cull: bool,
     /// Dot sources to seed from; empty = keep capture's own ply_file_path.
     pub seed_inputs: Vec<PathBuf>,
+    /// Seeder: raw dots (T1 port), T5 farsight-seed binary, or none.
+    pub seed_kind: SeedKind,
+    /// Extra args forwarded to the farsight-seed binary.
+    pub seed_args: Vec<String>,
+    /// Schedule: in-trainer wall-clock budget vs stock fixed iters.
+    pub schedule: ScheduleKind,
     /// Which frame index serves as eval split period (Brush loader semantic).
     pub eval_split_every: usize,
     /// Progress print cadence.
@@ -56,6 +75,9 @@ impl Default for RunOptions {
             drive: None,
             no_cull: false,
             seed_inputs: vec![],
+            seed_kind: SeedKind::default(),
+            seed_args: vec![],
+            schedule: ScheduleKind::default(),
             eval_split_every: 8,
             log_every: 50,
             config: TrainStreamConfig::default(),
@@ -150,14 +172,30 @@ pub async fn run(opts: &RunOptions, pipeline: &Pipeline) -> Result<RunReport> {
 
     // --- seed ---
     t = Instant::now();
+    // The dataset dir training sees: `prepared` for raw/none seeding, or the
+    // farsight-seed output dir (it rewrites transforms.json + links images).
+    let mut dataset_dir = prepared.clone();
     if let Some(seed_hook) = &pipeline.seed {
         let srep = seed_hook.seed(&mut prep_cap, &prepared)?;
         prep_cap.save(&prepared)?;
         rep.seed = Some(srep);
-    } else if !opts.seed_inputs.is_empty() {
-        let srep = crate::seed::seed_from_dots(&mut prep_cap, &opts.seed_inputs, &prepared)?;
-        prep_cap.save(&prepared)?;
-        rep.seed = Some(srep);
+    } else {
+        match opts.seed_kind {
+            SeedKind::Farsight => {
+                let seeded = opts.out_dir.join("seeded");
+                let srep = crate::seed::run_farsight_seed(&prepared, &seeded, &opts.seed_args)?;
+                rep.seed = Some(srep);
+                dataset_dir = seeded;
+                prep_cap = Capture::load(&dataset_dir)?;
+            }
+            SeedKind::Raw if !opts.seed_inputs.is_empty() => {
+                let srep =
+                    crate::seed::seed_from_dots(&mut prep_cap, &opts.seed_inputs, &prepared)?;
+                prep_cap.save(&prepared)?;
+                rep.seed = Some(srep);
+            }
+            _ => {}
+        }
     }
     phases.seed_ms = t.elapsed().as_millis() as u64;
     mem.sample();
@@ -169,22 +207,41 @@ pub async fn run(opts: &RunOptions, pipeline: &Pipeline) -> Result<RunReport> {
     cfg.process_config.export_path = opts.out_dir.display().to_string();
     pipeline.densify.tune(&mut cfg);
 
-    // --- decide step count ---
+    // --- decide step count / schedule ---
+    // `--schedule budget` hands the remaining wall clock to T3's in-trainer
+    // schedule (progress = elapsed/budget); the trainer stops itself via
+    // budget_exhausted and our deadline break is the backstop. `--steps`
+    // pins iters; `--schedule stock` measures steps/s then converts.
     let mut rate: Option<f64> = None;
+    let budget_schedule = opts.schedule == ScheduleKind::Budget
+        && opts.budget_s.is_some()
+        && opts.steps.is_none();
     let total_iters = if let Some(s) = opts.steps {
         rep.plan_note = Some(format!("--steps {s}"));
         s
+    } else if budget_schedule {
+        let remaining = (opts.budget_s.unwrap_or(0.0)
+            - t0.elapsed().as_secs_f64()
+            - opts.reserve_s)
+            .max(1.0);
+        cfg.train_config.budget_s = Some(remaining);
+        rep.plan_note = Some(format!(
+            "schedule=budget train_budget={remaining:.1}s"
+        ));
+        // High cap: the wall-clock budget, not iters, ends the run.
+        1_000_000
     } else {
         if opts.calib_steps > 0 {
             t = Instant::now();
             let calib_deadline = deadline;
             let mut calib_cfg = cfg.clone();
             calib_cfg.train_config.total_train_iters = opts.calib_steps;
+            calib_cfg.train_config.budget_s = None;
             calib_cfg.process_config.eval_every = u32::MAX;
             calib_cfg.process_config.export_every = u32::MAX;
             calib_cfg.process_config.export_path =
                 opts.out_dir.join("calib").display().to_string();
-            let h = train::train_once(&prepared, calib_cfg, calib_deadline, 0).await?;
+            let h = train::train_once(&dataset_dir, calib_cfg, calib_deadline, 0).await?;
             rate = Some(h.outcome.steps_per_s);
             rep.calib_steps_per_s = rate;
             phases.calib_ms = t.elapsed().as_millis() as u64;
@@ -209,7 +266,7 @@ pub async fn run(opts: &RunOptions, pipeline: &Pipeline) -> Result<RunReport> {
     cfg.process_config.eval_every = total_iters; // eval fires at the last step
     cfg.process_config.export_every = total_iters;
     cfg.process_config.export_name = "export_{iter}.ply".to_string();
-    let handle = train::train_once(&prepared, cfg, deadline, opts.log_every).await?;
+    let handle = train::train_once(&dataset_dir, cfg, deadline, opts.log_every).await?;
     let outcome = handle.outcome.clone();
     rep.train = outcome.clone();
     phases.train_ms = t.elapsed().as_millis() as u64;

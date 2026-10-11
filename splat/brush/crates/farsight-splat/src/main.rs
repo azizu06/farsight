@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use brush_process::config::TrainStreamConfig;
 use clap::{Args, Parser, Subcommand};
-use farsight_splat::hooks::{DotsSeed, PassthroughSeed, Pipeline};
+use farsight_splat::hooks::{PassthroughSeed, Pipeline};
 use farsight_splat::{Capture, RunOptions, bench, cull, eval, export, score, seed, synth};
 
 #[derive(Parser)]
@@ -17,9 +17,6 @@ struct Cli {
 
 #[derive(Args, Clone)]
 struct PipelineArgs {
-    /// Wall-clock budget end to end (seconds). No limit when omitted.
-    #[arg(long)]
-    budget_s: Option<f64>,
     /// Fixed step count (skips calibration + scheduling).
     #[arg(long)]
     steps: Option<u32>,
@@ -35,19 +32,26 @@ struct PipelineArgs {
     /// Skip culling (keep every decodable, normal-tracking frame).
     #[arg(long)]
     no_cull: bool,
-    /// Dot sources to seed from (points.bin / *.xyzrgb / *.ply).
+    /// Seeder: T5 farsight-seed | T1 raw-dot port | none (capture's own ply).
+    #[arg(long, value_enum)]
+    seed: Option<farsight_splat::seed::SeedKind>,
+    /// Dot sources for --seed raw (points.bin / *.xyzrgb / *.ply).
     #[arg(long, num_args = 1..)]
-    seed: Vec<PathBuf>,
+    dots: Vec<PathBuf>,
     /// Use an existing ply as the seed verbatim.
     #[arg(long)]
     seed_ply: Option<PathBuf>,
-    /// Held-out split period (every Nth kept frame is eval-only).
-    #[arg(long, default_value = "8")]
-    eval_split_every: usize,
+    /// Extra args forwarded verbatim to the farsight-seed binary.
+    #[arg(long, num_args = 1.., allow_hyphen_values = true)]
+    seed_args: Vec<String>,
+    /// Schedule: in-trainer wall-clock budget (T3) vs stock fixed iters.
+    #[arg(long, value_enum)]
+    schedule: Option<farsight_splat::pipeline::ScheduleKind>,
     /// Progress print cadence in iters.
     #[arg(long, default_value = "50")]
     log_every: u32,
-    /// Full Brush training config passthrough (all upstream flags).
+    /// Full Brush training config passthrough (all upstream flags incl.
+    /// --budget-s, --eval-split-every, --refine-mode, --sparse-adam, ...).
     #[clap(flatten)]
     config: TrainStreamConfig,
 }
@@ -115,26 +119,32 @@ fn pipeline_of(args: &PipelineArgs) -> Pipeline {
     let mut p = Pipeline::default();
     if let Some(ply) = &args.seed_ply {
         p = p.with_seed(Box::new(PassthroughSeed { ply: ply.clone() }));
-    } else if !args.seed.is_empty() {
-        p = p.with_seed(Box::new(DotsSeed {
-            inputs: args.seed.clone(),
-        }));
     }
     p
 }
 
 fn opts_of(capture_dir: &PathBuf, out: &PathBuf, args: &PipelineArgs) -> RunOptions {
+    let budget_s = args.config.train_config.budget_s;
+    let seed_kind = match args.seed {
+        Some(k) => k,
+        None if args.seed_ply.is_some() => farsight_splat::seed::SeedKind::None,
+        None if !args.dots.is_empty() => farsight_splat::seed::SeedKind::Raw,
+        None => farsight_splat::seed::SeedKind::Raw,
+    };
     RunOptions {
         capture_dir: capture_dir.clone(),
         out_dir: out.clone(),
-        budget_s: args.budget_s,
+        budget_s,
         steps: args.steps,
         calib_steps: args.calib_steps,
         reserve_s: args.reserve_s,
         drive: args.drive.as_ref().map(|v| (v[0], v[1])),
         no_cull: args.no_cull,
-        seed_inputs: vec![],
-        eval_split_every: args.eval_split_every,
+        seed_inputs: args.dots.clone(),
+        seed_kind,
+        seed_args: args.seed_args.clone(),
+        schedule: args.schedule.unwrap_or_default(),
+        eval_split_every: args.config.load_config.eval_split_every.unwrap_or(8),
         log_every: args.log_every,
         config: args.config.clone(),
     }
