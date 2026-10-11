@@ -32,7 +32,7 @@ fn frame(tracking: &str) -> RgbdFrame {
 fn fixture(lidar_drive: bool, tracking: &str) -> (Arc<MapState>, CameraService) {
     let mapping = Arc::new(MapState::new(false));
     mapping.start_session(("test".to_string(), 1), "synthetic fixture".into());
-    mapping.process(&frame(tracking)).unwrap();
+    mapping.process(&mut frame(tracking)).unwrap();
     (mapping.clone(), CameraService::new(mapping, None, lidar_drive))
 }
 

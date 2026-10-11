@@ -16,6 +16,8 @@ fn frame(frame_id: i64, source: &str) -> CameraFrame {
         mirrored: false,
         socket_received: None,
         published: None,
+        native_jpeg: None,
+        sensor_key: None,
     }
 }
 

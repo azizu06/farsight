@@ -194,6 +194,8 @@ fn box_on_the_upright_picture_finds_the_same_depth_transform_and_calibration() {
         mirrored: true,
         socket_received: None,
         published: None,
+        native_jpeg: None,
+        sensor_key: None,
     };
     let mut boxes = vec![json!({"x": 0.31, "y": 0.22, "w": 0.2, "h": 0.4, "cls": "person", "id": 1})];
     locator.annotate(&mut boxes, &camera);
@@ -212,6 +214,8 @@ fn box_on_the_upright_picture_finds_the_same_depth_transform_and_calibration() {
         mirrored: false,
         socket_received: None,
         published: None,
+        native_jpeg: None,
+        sensor_key: None,
     };
     let mut baseline_boxes = vec![json!({"x": 0.31, "y": 0.22, "w": 0.2, "h": 0.4, "cls": "person", "id": 1})];
     baseline_locator.annotate(&mut baseline_boxes, &baseline_camera);

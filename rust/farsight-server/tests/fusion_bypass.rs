@@ -33,7 +33,7 @@ fn bypass_keeps_pose_and_depth_but_never_fuses() {
     state.fusion_bypass = true;
     let mapping = Arc::new(state);
     mapping.start_session(("test".to_string(), 1), "synthetic fixture".into());
-    mapping.process(&frame()).unwrap();
+    mapping.process(&mut frame()).unwrap();
     let s = mapping.status();
     // The depth lane still recorded (Nav2 keeps working); "frames" counts
     // fused frames only, so bypass leaves it at 0.
@@ -51,7 +51,7 @@ fn bypass_keeps_pose_and_depth_but_never_fuses() {
 fn default_still_fuses() {
     let mapping = Arc::new(MapState::new(false));
     mapping.start_session(("test".to_string(), 1), "synthetic fixture".into());
-    mapping.process(&frame()).unwrap();
+    mapping.process(&mut frame()).unwrap();
     let s = mapping.status();
     assert_eq!(s["fusion_bypass"], false);
     assert!(s["points"].as_u64().unwrap() > 0);

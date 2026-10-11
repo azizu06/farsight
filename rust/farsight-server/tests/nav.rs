@@ -25,7 +25,7 @@ fn frame(w: usize, h: usize) -> RgbdFrame {
 
 fn nav() -> (Arc<NavService>, Arc<MapState>) {
     let mapping = Arc::new(MapState::new(true));
-    let service = NavService::new(mapping.clone(), 0.45, 3.0, 0.7, 0.8, 0.15, None).unwrap();
+    let service = NavService::new(mapping.clone(), 0.45, 3.0, 0.7, 0.8, 0.15, None, None).unwrap();
     (Arc::new(service), mapping)
 }
 
@@ -178,7 +178,7 @@ fn goal_refused_without_control_when_unattached() {
     // Without attach() the refusal is the earlier "no rover control" link in
     // the Python refusal chain.
     let mapping = Arc::new(MapState::new(true));
-    let service = NavService::new(mapping, 0.45, 3.0, 0.7, 0.8, 0.15, None).unwrap();
+    let service = NavService::new(mapping, 0.45, 3.0, 0.7, 0.8, 0.15, None, None).unwrap();
     match service.set_goal(1.0, 0.0, None, None) {
         Err(GoalError::Refused { message, .. }) => {
             assert_eq!(message, "No rover control on this server")
@@ -262,7 +262,7 @@ fn goal_stages_while_stopped_and_drives_only_on_a_new_press() {
         "frame_id": 1, "t_capture": 1.0, "tracking": "normal",
         "transform": farsight_server::geometry::flatten_f(&IDENTITY).to_vec(),
     });
-    _mapping.process(&f).unwrap();
+    _mapping.process(&mut f).unwrap();
     service.offer_frame(&f);
     service.connect_bridge_for_test();
     service
@@ -277,7 +277,7 @@ fn goal_stages_while_stopped_and_drives_only_on_a_new_press() {
     assert_eq!(nav["goal"], json!({"x": 1.0, "z": -2.0}));
     assert_eq!(service.intent()["active"], json!(false));
     service
-        .receive(&json!({"type": "cmd_vel", "linear": 0.3, "angular": 0.0, "goal_id": 1}))
+        .receive(&json!({"type": "cmd_vel", "linear": 0.3, "angular": 0.0, "goal_id": 1, "generation": service.hello()["generation"]}))
         .unwrap();
     assert_eq!(control.output().0, 0); // staged: nothing moves without a press
     let status = control.status(true);
@@ -292,7 +292,7 @@ fn goal_stages_while_stopped_and_drives_only_on_a_new_press() {
     assert!(control.accept(&hb(2, true, "goto"), &session));
     assert_eq!(control.output().0, 0); // pre-press cmd_vel is discarded
     service
-        .receive(&json!({"type": "cmd_vel", "linear": 0.2, "angular": 0.0, "goal_id": 1}))
+        .receive(&json!({"type": "cmd_vel", "linear": 0.2, "angular": 0.0, "goal_id": 1, "generation": service.hello()["generation"]}))
         .unwrap();
     assert!(control.output().0 > 0);
 }
@@ -328,7 +328,7 @@ fn goal_refused_for_foreign_session_even_while_stopped() {
         "frame_id": 1, "t_capture": 1.0, "tracking": "normal",
         "transform": farsight_server::geometry::flatten_f(&IDENTITY).to_vec(),
     });
-    _mapping.process(&f).unwrap();
+    _mapping.process(&mut f).unwrap();
     service.offer_frame(&f);
     service.connect_bridge_for_test();
     service

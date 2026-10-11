@@ -167,15 +167,15 @@ fn map_state_process_and_clear() {
     let state = MapState::new(false);
     state.start_session(("test".into(), 1), "iPhone".into());
     let mut frame = flat_frame();
-    state.process(&frame).unwrap();
+    state.process(&mut frame).unwrap();
     assert_eq!(state.inner.lock().unwrap().frames, 1);
     // Stale t_capture is rejected.
-    state.process(&frame).unwrap();
+    state.process(&mut frame).unwrap();
     assert_eq!(state.inner.lock().unwrap().frames, 1);
     assert_eq!(state.inner.lock().unwrap().rejected, 1);
     frame.header["t_capture"] = json!(1.0);
     frame.header["frame_id"] = json!(1);
-    state.process(&frame).unwrap();
+    state.process(&mut frame).unwrap();
     assert_eq!(state.inner.lock().unwrap().frames, 2);
     assert!(state.inner.lock().unwrap().cloud.cells.len() > 0);
     state.clear();
