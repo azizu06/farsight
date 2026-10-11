@@ -58,7 +58,7 @@ controller_server:
       vx_std: 0.15
       vy_std: 0.0
       wz_std: 0.5
-      vx_max: 0.70                   # AUTONOMY_MAX_PWM 200 on the 2026-10-10 drive profile: 0.74 m/s, 3.8 rad/s
+      vx_max: 0.95                   # AUTONOMY_MAX_PWM 255 on the 2026-10-10 drive profile: 0.95 m/s, 3.8 rad/s
       vx_min: -0.12
       vy_max: 0.0
       wz_max: 2.5                    # faster spins smear ARKit tracking; the profile allows 3.8
@@ -128,7 +128,7 @@ controller_server:
         mode: 0
     RPP:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-      desired_linear_vel: 0.70        # under the profile's 0.74 m/s at AUTONOMY_MAX_PWM 200 (captain: roam at speed)
+      desired_linear_vel: 0.95        # the profile's top at AUTONOMY_MAX_PWM 255: full power, as manual (captain, 2026-10-11)
       lookahead_dist: 0.35            # short: pure pursuit cuts corners by about the lookahead
       min_lookahead_dist: 0.2
       max_lookahead_dist: 0.5         # 0.9 cut the sim deadend divider corner at 0.7 m/s
@@ -136,7 +136,7 @@ controller_server:
       rotate_to_heading_angular_vel: 2.2
       transform_tolerance: 0.3
       use_velocity_scaled_lookahead_dist: true
-      min_approach_linear_velocity: 0.25   # Explore goals are waypoints: barely slow for them
+      min_approach_linear_velocity: 0.45   # Explore goals are waypoints: never crawl into them (Sai, 2026-10-11)
       approach_velocity_scaling_dist: 0.2
       use_collision_detection: false   # no stop zone: replanning steers around new obstacles
       max_allowed_time_to_collision_up_to_carrot: 1.0
@@ -307,7 +307,7 @@ behavior_server:
     transform_tolerance: 0.3
     simulate_ahead_time: 1.5
     max_rotational_vel: 2.2
-    min_rotational_vel: 1.5            # ~PWM 78 per side on the drive profile: in-place spins stay above both wheel floors
+    min_rotational_vel: 2.2            # PWM 109/104 like RPP's in-place turn; 1.5 (PWM 80) did not break the loaded rover free
     rotational_acc_lim: 4.0
 
 lifecycle_manager_navigation:
@@ -341,8 +341,8 @@ farsight_bridge:
     explore_tick_s: 0.5                # frontier re-score / goal decision period
     explore_switch_margin: 0.8
     explore_transition_distance: 0.6
-    explore_creep_mps: 0.3           # above both wheel floors (PWM 70/40) on the drive profile
-    explore_scan_radps: 1.8           # ~PWM 95 per side; 0.82 rad/s sat at L75/R60, just above the floors, and stalled on the floor
+    explore_creep_mps: 0.3           # above both wheel floors (PWM 70/40); 0.45 brushed a wall in simulated explore
+    explore_scan_radps: 2.2           # PWM 109/104 like RPP's in-place turn; 1.8 (PWM 91/87) sits near the loaded rover's breakaway
     explore_gap_budget_s: 4.0
     explore_scan_budget_s: 10.0
     explore_body_radius: 0.2          # rover half-width + 2.5 cm: body-disc and driven-floor checks
