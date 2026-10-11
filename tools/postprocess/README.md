@@ -62,4 +62,4 @@ Same room, same 1,454,055-dot seed, same 90 held-out photos, separate full runs 
 Sai's `farsight-compiler` (dots + painted photos, no training) on the same run and photos: **12.3 dB**, 61 s on an
 M2 8 GB CPU. So even a 2k-step seeded splat beats the untrained textured mesh by ~6.7 dB.
 
-Run a fast room: `train_job.ps1 <dataset> fast "--total-steps 5000"` (later args override the 30k default).
+Run a fast room directly: `brush_app <dataset> --total-steps 5000 --export-every 5000 --eval-every 5000 --eval-split-every 8 --eval-save-to-disk --export-path out-fast` (`train_job.ps1` hard-codes 30k).
