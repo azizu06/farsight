@@ -184,10 +184,9 @@ pub fn run(cloud: &PointCloud, capture: Option<&Capture>, depths: Option<&[crate
     t = Instant::now();
     let mut fill_d = depthfill::DepthFill::default();
     if opts.depth_prior {
-        if let Some(cap) = capture {
-            let maps = crate::learned::complete_depth_opts(cap, &cur, &crate::learned::options());
+        if let (Some(cap), Some(maps)) = (capture, depths) {
             fill_d = depthfill::fill_from_depth(
-                &maps,
+                maps,
                 cap,
                 &cur,
                 &meas_grid,
