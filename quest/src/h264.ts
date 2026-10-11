@@ -24,6 +24,8 @@ export class H264Viewer {
   private objectURL = "";
   private stopped = true;
   private retry = 0;
+  /** Set by a client-side reset of a live stream: the link works, so reconnect without the 1 s backoff. */
+  private reconnectNow = false;
   private mime = "";
   private problem: string | null = null;
   private connecting = false;
@@ -132,7 +134,8 @@ export class H264Viewer {
     socket.onclose = () => {
       this.connecting = false; this.onReset();
       this.problem ??= "H.264 link ended; retrying, or select JPEG.";
-      if (!this.stopped) this.retry = window.setTimeout(() => { this.cleanMedia(); this.connect(); }, 1000);
+      const delay = this.reconnectNow ? 0 : 1000; this.reconnectNow = false;
+      if (!this.stopped) this.retry = window.setTimeout(() => { this.cleanMedia(); this.connect(); }, delay);
     };
   }
   private initialize(mime: string) {
@@ -203,7 +206,8 @@ export class H264Viewer {
   }
   private reset(reason: string) {
     if (this.stopped) return;
-    this.problem = reason; this.state = reason; this.onReset(); this.socket?.close(); this.cleanMedia();
+    this.problem = reason; this.state = reason; this.onReset();
+    this.reconnectNow = this.socket?.readyState === WebSocket.OPEN; this.socket?.close(); this.cleanMedia();
   }
   private cleanMedia() {
     this.queue = []; this.buffer = null; this.media = null; this.segments = [];
