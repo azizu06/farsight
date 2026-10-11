@@ -115,3 +115,97 @@ observed on disk — first .splat lands on the next export run.
 - `cargo check -p brush-render -p brush-sort -p brush-train -p brush-bench-test --tests`: clean.
 - lavapipe before/after + synth-capture PSNR-vs-seconds ablation: pending
   T1's `farsight-splat synth` capture; bench via `splat/bench_mac.sh` on the Mac.
+
+## Time-to-first-step + caches (f40722b, warmup + CUBECL_CACHE_DIR)
+
+- `brush-cli` main calls `cubecl_environment::environment::set_root` with
+  `CUBECL_CACHE_DIR` else `~/.cache/farsight-splat/cubecl` — the autotune
+  cache (and cubecl's other persisted state) lands in one predictable dir
+  the Mac bench can snapshot/clear. wgpu has no portable disk pipeline
+  cache; on Metal the OS caches compiled pipelines itself.
+- `--warmup` (TrainConfig) runs one real step + one `refine(0)` before the
+  training loop — compiles every kernel the loop touches at the REAL
+  image/splat sizes, including the grow/prune kernels that otherwise pay
+  their compile cost inside the budget window at the first refine tick.
+- Lavapipe cold vs warm (toy 160x120, iters=1): cold ~1 s, warm ~2 s,
+  warm+`--warmup` +4.5 s (one step + refine at these sizes). At toy scale
+  autotune barely matters — the value is at 300k splats/1920x1440 where
+  first-compile of the loss/rasterize/sort kernels costs seconds inside
+  the 60 s window. Mac run: `bench_mac.sh` exports CUBECL_CACHE_DIR and
+  passes `--warmup`; compare a cleared `~/.cache/farsight-splat` first run
+  against the second to see the warmup amortization.
+
+## `--profile <file>` per-kernel GPU table (620a9c2)
+
+`ProcessConfig::profile` installs a cubecl `LaunchObserver` with
+`TimingRequest::Resolved`: every kernel gets device timestamps, dumped to
+JSON `{kernel: launches, total_ms, mean_ms, methods}` on DoneTraining.
+Resolved waits per kernel → serializes the queue — profiling runs only,
+NEVER a timed budget run. `methods.device` vs `methods.system` separates
+real device timestamps from cubecl's host-clock fallback (wgpu timestamp
+budget spent, or backends without queries).
+
+Lavapipe, 20-iter toy run (160x120, 400 splats), top of 33 kernels:
+
+| kernel | launches | total_ms | ms/launch |
+|---|---|---|---|
+| `image_loss_backward_kernel<f32>` | 20 | 341 | 17.05 |
+| `elemwise_fuse` (fused burn ops) | 329 | 110 | 0.34 |
+| `image_loss_forward_kernel<f32>` | 26 | 103 | 3.97 |
+| `rasterize_kernel` | 23 | 97 | 4.23 |
+| `sort_scan_add_kernel` | 115 | 93 | 0.81 |
+
+**Loss backward already dominates on lavapipe — at 1920x1440 (~144x the
+pixels) it is the #1 per-step cost on the M5 Pro run; that's exactly what
+`ssim_bench` + the tile-variant features are for.** Mac kernel table:
+`--profile kernels.json` on any bench run.
+
+## MSL-direct feature `metal-msl` (f40722b)
+
+`brush-cli/metal-msl` → `brush-process` → `brush-render`/`brush-train` →
+`brush-cube/metal` (MSL codegen instead of WGSL→transpile for cube
+kernels). Default ON only for `aarch64-apple-darwin` via
+`splat/bench_mac.sh` (uname gate); everything else keeps wgpu/WGSL — CI
+and lavapipe need WGSL (the metal path has real MSL codegen, still
+experimental in cubecl; the u8-bool kernel paths would fail on non-Metal
+drivers). Linux `cargo check` with the feature passes.
+Mac run must check: (a) identical eval PSNR vs a WGSL run at same iters —
+any drift is an MSL codegen bug, report it; (b) first-run vs second-run
+cold time (MSL skips WGSL→transpile so time-to-first-step drops);
+(c) kernels.json `methods` should stay `device`.
+
+## Eval + cadence syncs (bff8686, 84bd953)
+
+- run_eval kept `into_scalar().await` per view — 90 held-out views = 90
+  serialized GPU drains. Now scalars accumulate as GPU tensors during the
+  render loop and read back once via `Transaction::execute_async` — the
+  GPU stays queued across all eval renders, one read at the end.
+- Refine's `argwhere_async`/`into_data_async` calls are already issued
+  async; the await is in-place because the indices feed `select`/`scatter`
+  in the same call — they can't be deferred without a cross-step refine
+  state machine. They're cadence-gated (every `refine_every` steps), so
+  the residual stall is once per refine tick, not per step.
+- Stats/bookkeeping reads (`counts`, `splat_dist` percentiles) already
+  defer to end-of-step or use `into_data_async`.
+
+## Unified-memory image uploads (Mac)
+
+T6's `img_gpu` uploads go through `queue.write_buffer` into cubecl's
+device buffers. On Apple unified memory wgpu's Metal backend allocates
+shared-storage buffers, so the "staging copy" is a host memcpy — there is
+no PCIe transfer to remove, and wgpu's public API exposes no faster
+zero-copy path for `write_buffer`. The remaining Mac lever is not the
+copy but the *count*: `img_gpu` is populated once at scene load (not per
+step), so per-step cost is already zero-copy-by-omission. Verify on Mac:
+`--profile` shows no upload kernels mid-step; the only H2D traffic is at
+startup.
+
+## SSIM tile variants (20c137c / 06416a3)
+
+`brush-loss` feature flags pick kernel tile consts:
+`ssim-fwd-32x8` (32-wide rows = one full simdgroup per row on M5),
+`ssim-fwd-8x8`, `ssim-bwd-8x4` (smaller bwd tile for Apple's 32 KiB
+threadgroup, where cubecl-wgpu's shared-mem check double-counts).
+Default stays 16x16 fwd / 8x8 bwd. Bench per variant:
+`cargo test --release -p brush-loss --features <variant> ssim_bench -- --ignored --nocapture`
+— times fwd and fwd+bwd at 480x640 and 1200x1600 and prints ms/call.
