@@ -141,6 +141,29 @@ The controls layer drives it:
 (`RoverExperience.roamStep`, 1.5 m/s, 30° snap turns); entering VR resets to the
 start pose, and a new map generation resets the viewer. Display only: this module sends no commands and gates no motion.
 
+### Splat walkthrough (`/splat.html`)
+
+A separate page for the post-run RIIS walkthrough. It has no rover sockets or controls, and the driving page is
+unchanged. `splat.html?scene=<url>` loads a Gaussian splat (`.ply`, `.splat`, `.ksplat` or `.spz`) with
+Spark (`@sparkjsdev/spark`, pinned) inside three.js. On a Quest, press Enter VR (`local-floor`).
+
+- **Controls in VR:** the left stick walks where you look (1.5 m/s, horizontal only). The right stick
+  snap-turns 30° about your head. A or X resets to the start pose.
+- **Controls on desktop:** drag to orbit and scroll to zoom. Reset view, Flip upright and Open file
+  (a local file, which also works in the Quest browser) are in the top bar.
+- **URL options:**
+  - `type=` sets the format for extensionless URLs.
+  - `flip=1` turns a Y-down (COLMAP/3DGS) scene upright.
+  - `pos=x,y,z` and `yaw=deg` set the start pose: your floor point and heading in the scene.
+  - `sh=0..3` caps spherical harmonics, to trade quality for speed.
+- **Serving:** the relay serves anything under `quest/dist`, so a scene copied to `dist/splats/run.ply`
+  opens as `/splat.html?scene=/splats/run.ply`. Other origins need CORS.
+- **Diagnostics:** `globalThis.__splatStats` reports `{fps, splats, loadMs, xr, error}`, so you can read
+  it over CDP on the headset.
+- **Verified so far:** desktop Chromium on the Mac loaded the public samples (butterfly `.spz` 177k,
+  bonsai `.ksplat` 176k, train `.splat` 1.03M) and a synthetic 300k `.ply` without errors. Quest frame
+  rate is not yet measured. Spark applies its WebXR defaults, and fixed foveation is on.
+
 ### Mac render in AUTO (`?macview=1`, flat)
 
 Opt-in. With `?macview=1`, AUTO in VR plays the Mac-rendered map

@@ -13,6 +13,7 @@
     "perf": "node tests/frame-budget.browser.mjs"
   },
   "dependencies": {
+    "@sparkjsdev/spark": "2.2.0",
     "three": "^0.180.0"
   },
   "devDependencies": {

@@ -6,6 +6,7 @@ export default defineConfig({
       input: {
         main: "index.html",
         macview: "macview.html",
+        splat: "splat.html",
       },
     },
   },
