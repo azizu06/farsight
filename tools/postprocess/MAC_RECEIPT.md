@@ -130,3 +130,42 @@ The Mac's reproduced 5k result remains `scenes/run-20261011T094259.ply`.
 Release asset download completed successfully. The 2k source has 1,739,510
 splats (410,525,912 bytes); the 5k source has 2,159,401 (509,620,188 bytes).
 Both published Quest copies have 300,000 splats / SH1.
+
+## Face-enabled 60-second demo — 2026-10-11 10:02 EDT
+
+Dechante's face pins (`walk-face-detection` 98cc0e2) now run on CPU alongside
+Brush, with local viewer modules and per-run face sidecars. On the saved 094259
+prefix: 59.69 s, 119 photos, original measured seed strided to 290,811 points,
+5,000 steps, SH3, later growth cap 300k, nice 10:
+
+| Stage | Seconds |
+|---|---:|
+| Prep | 1.33 |
+| Brush including final eval/export | 112.19 |
+| CPU faces, overlapping Brush | 61.58 |
+| Face wait after Brush | 0.00008 |
+| Room + face sidecar ready | 113.73 |
+| Separately measured local rsync stand-in | 0.31 |
+| Demo idle observation allowance | 10.00 |
+| Post-run ready with those allowances | **124.04** |
+
+Held-out PSNR: **24.61 dB / 15 views**; one face spot from two sightings.
+This prefix reuses the whole saved run's seed and is not a full-room quality
+comparison. Real Jetson transfer and browser parsing are excluded from 124.04 s.
+The Jetson's USB and Tailscale SSH paths were unavailable for a real live-run test.
+
+The exact face-enabled walkthrough loaded with HTTPS blocked: local modules,
+zero external resource entries, zero page/unhandled-rejection errors. Selecting
+the face pin opened its boxed camera photo successfully. The task tab was closed.
+The armed Mac watcher uses this 5k/300k/SH3 + CPU faces preset, newest run only,
+10 s stable capture metadata, and unlimited rsync in explicit `--demo` mode.
+Non-demo mode retains 60 s stability and bandwidth limiting.
+
+The separate `scenes/run-094259-best.ply` Quest candidate is 300k/SH1, blend-weight
+pruned and fine-tuned using Sai's pinned native trainer. Its **actual exported
+PLY** scores **18.99 dB / 90** on the Dechante 714-photo set (frozen reload, maximum
+parameter delta 2.384e-7), versus 11.38 dB for the earlier volume-pruned copy.
+It loads in local `/splat.html` with exactly 300,000 splats and zero page errors.
+This is desktop software evidence; physical Quest and real drive-end timing
+remain unqualified. See [QUALITY_RECEIPT.md](QUALITY_RECEIPT.md) for full-run,
+short-run, native, and export-quality measurements and their limits.
