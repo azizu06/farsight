@@ -28,3 +28,44 @@ export function steerCurve(x, y) {
   const shaped = Math.min(1, (ax - STEER.deadzone) / (1 - STEER.deadzone));
   return Math.sign(x) * shaped ** STEER.expo;
 }
+
+/** Quest right-stick forward ease-in (captain: start ~10% softer, then build up so it never jerks). */
+export const DRIVE = {
+  /** Gain reached at the end of the onset rise, from rest. */
+  onsetGain: 0.9,
+  /** Onset rise (s): the gain climbs from 0 to onsetGain, so there is no step at the first push. */
+  onsetSeconds: 0.3,
+  /** Then, while forward is still held, the gain climbs smoothly from onsetGain to 1 over this long (s). */
+  climbSeconds: 2,
+  /** Longest frame gap credited to the ease-in (s), so a stalled frame cannot skip it. */
+  maxStep: 0.1,
+};
+
+/** Forward gain after `held` seconds of continuous forward (or reverse) demand. */
+export function forwardGain(held) {
+  const t = Number.isFinite(held) && held > 0 ? held : 0;
+  if (t < DRIVE.onsetSeconds) return DRIVE.onsetGain * t / DRIVE.onsetSeconds;
+  const k = Math.min(1, (t - DRIVE.onsetSeconds) / DRIVE.climbSeconds);
+  return DRIVE.onsetGain + (1 - DRIVE.onsetGain) * k * k * (3 - 2 * k);
+}
+
+/**
+ * Eases forward/back demand in from rest. Output never exceeds the stick's demand, so
+ * easing off, release, B, deadman and a reversal (through zero) all apply immediately;
+ * returning to center or reversing restarts the ease-in.
+ */
+export class ForwardRamp {
+  constructor() { this.reset(); }
+  reset() { this.v = 0; this.held = 0; this.sign = 0; this.at = null; }
+  /** @param {number} demand stick demand in [-1, 1] @param {number} now ms */
+  step(demand, now) {
+    const goal = Number.isFinite(demand) ? Math.max(-1, Math.min(1, demand)) : 0;
+    const dt = this.at === null || !Number.isFinite(now) ? 0 : Math.min(Math.max(0, (now - this.at) / 1000), DRIVE.maxStep);
+    this.at = Number.isFinite(now) ? now : null;
+    const sign = Math.sign(goal);
+    if (sign === 0 || sign !== this.sign) { this.held = 0; this.sign = sign; }
+    else this.held += dt;
+    this.v = goal * forwardGain(this.held) + 0; // never -0
+    return this.v;
+  }
+}

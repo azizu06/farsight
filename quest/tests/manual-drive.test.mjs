@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {STEER,manualDrive,steerCurve} from '../src/manual-drive.js';
+import {DRIVE,ForwardRamp,STEER,forwardGain,manualDrive,steerCurve} from '../src/manual-drive.js';
 const root=fileURLToPath(new URL('../../',import.meta.url));
 const python=`${root}.venv/bin/python`;
 function motorOutputs(inputs) {
@@ -54,5 +54,49 @@ test('forward stick stays full power with the new steering: straight push is str
 test('rover.ts feeds raw stick axes to the steering curve, forward unchanged',async()=>{
   const {readFileSync}=await import('node:fs');
   const source=readFileSync(new URL('../src/rover.ts',import.meta.url),'utf8');
-  assert.match(source,/manualDrive\(-stick\(stickY, XR_STICK_DEADZONE\), steerCurve\(stickX, stickY\)\)/);
+  assert.match(source,/manualDrive\(forward, steerCurve\(stickX, stickY\)\)/);
+});
+
+test('forward ease-in: no step at the first push, ~90% after the onset, full after ~2 s held',()=>{
+  const close=(a,b,m,eps=1e-9)=>assert.ok(Math.abs(a-b)<eps,`${m}: ${a} vs ${b}`);
+  assert.deepEqual(DRIVE,{onsetGain:0.9,onsetSeconds:0.3,climbSeconds:2,maxStep:0.1});
+  const ramp=new ForwardRamp(),out=[];
+  for(let t=0;t<=2600;t+=10)out.push([t,ramp.step(1,t)]);
+  const at=ms=>out.find(([t])=>t===ms)[1];
+  assert.equal(at(0),0,'first tick from rest moves nothing');
+  close(at(100),0.3,'onset rises gradually (no step)');
+  close(at(300),0.9,'~90% of demand at the end of the onset');
+  assert.ok(at(1300)>0.9&&at(1300)<1,'climbing while still held');
+  close(at(2300),1,'full demand ~2 s after the onset');
+  assert.equal(at(2600),1,'never above the stick demand');
+  for(let i=1;i<out.length;i++)assert.ok(out[i][1]>=out[i-1][1]-1e-12,'monotonic while held');
+  // Partial stick: the same gain applies to the demand.
+  const half=new ForwardRamp();half.step(-0.5,0);for(let t=10;t<=300;t+=10)half.step(-0.5,t);close(half.v,-0.45,'reverse half stick eases in too');
+  // A stalled frame cannot skip the ease-in.
+  const stalled=new ForwardRamp();stalled.step(1,0);close(stalled.step(1,5000),forwardGain(DRIVE.maxStep),'gap capped');
+});
+test('forward ease-in: easing off, release, reversal and stops are immediate and restart it',()=>{
+  const ramp=new ForwardRamp();
+  for(let t=0;t<=3000;t+=10)ramp.step(1,t);
+  assert.equal(ramp.v,1);
+  assert.equal(ramp.step(0.4,3010),0.4,'easing off applies at once');
+  assert.equal(ramp.step(0,3020),0,'release stops at once');
+  assert.equal(ramp.step(1,3030),0,'and the next push starts the ease-in again');
+  for(let t=3040;t<=6000;t+=10)ramp.step(1,t);
+  assert.equal(ramp.step(-1,6010),0,'reversal passes through rest at once, then eases in the other way');
+  assert.ok(ramp.step(-1,6110)<0&&ramp.step(-1,6110)>-0.31);
+  for(let t=6120;t<=9000;t+=10)ramp.step(-1,t);
+  ramp.reset();assert.equal(ramp.v,0,'B / stop / deadman reset to rest');
+  assert.equal(ramp.step(-1,9010),0,'next push eases in again');
+  assert.equal(ramp.step(NaN,9020),0,'invalid demand is rest');
+  for(let held=0;held<=3;held+=0.05)assert.ok(forwardGain(held)<=1,'gain never exceeds 1');
+});
+test('rover.ts eases only the Quest stick forward demand and resets on every stop path',async()=>{
+  const {readFileSync}=await import('node:fs');
+  const source=readFileSync(new URL('../src/rover.ts',import.meta.url),'utf8');
+  assert.match(source,/this\.forwardRamp\.step\(-stick\(stickY, XR_STICK_DEADZONE\), now\)/);
+  assert.match(source,/manualDrive\(forward, steerCurve\(stickX, stickY\)\)/);
+  assert.match(source,/stop\(reason: string, hard = false\) \{\s*this\.forwardRamp\.reset\(\);/);
+  assert.match(source,/if \(!moving\) this\.forwardRamp\.reset\(\);/);
+  assert.match(source,/if \(!tracked\) \{\s*this\.forwardRamp\.reset\(\);/);
 });

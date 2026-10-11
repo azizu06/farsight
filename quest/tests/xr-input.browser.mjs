@@ -86,7 +86,9 @@ try {
   // Full forward plus .625 stick steering (32 degrees, past the straight-ahead lock) becomes
   // v=1 and w=.5^2.5: half-way past the .25 deadzone, through the steering expo curve.
   // Preserve forward authority instead of restoring the old diagonal-to-pivot mapping.
-  assert.equal(result.manual.v,1,'steering preserves full forward demand');
+  // Forward eases in from rest (manual-drive.js ForwardRamp): the first sampled push sends no forward
+  // step; steering is not eased and keeps its curve.
+  assert.equal(result.manual.v,0,'forward eases in from rest instead of stepping to full');
   assert.ok(Math.abs(result.manual.w-.5**2.5)<1e-9,'steering uses its dead-zoned, expo-curved demand');
   assert.equal(result.centered.deadman,false);assert.equal(result.centered.v,0);assert.equal(result.centered.w,0);
   assert.equal(result.autoOnPress,true);assert.equal(result.auto.deadman,true);assert.equal(result.auto.mode,'explore');assert.equal(result.auto.v,0);assert.equal(result.auto.w,0);
