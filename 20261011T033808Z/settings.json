@@ -1,0 +1,15 @@
+{
+  "core_pin": "98d8d1279b794806b865c35518a9d5524d8ccc77",
+  "adapter_pin": "24a9da05f8c28221ed417d07610f06089f350f3a",
+  "renderer_pid": 30496,
+  "relay_pid": 75341,
+  "services_restarted": false,
+  "jetson_changes": false,
+  "raw_requests": 1,
+  "receiver_accepted": false,
+  "raw_polling": false,
+  "frame_integrity_bytes_match": true,
+  "packet_sha256": "2bb91866446d45f142d0a985ddba2d33a6f3760f235d3cec4ee7a9062a8f3a29",
+  "headset_note": "Firstmate073: captain not wearing Quest; LINK verification deferred to wearer",
+  "nav_hold": "073 no further captures until nav posts READY"
+}

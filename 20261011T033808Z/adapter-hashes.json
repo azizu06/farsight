@@ -1,0 +1,15 @@
+{
+  "pin": "24a9da05f8c28221ed417d07610f06089f350f3a",
+  "files": {
+    "raw-texture-layer.mjs": {
+      "local_sha256": "5a01c65151c4aa55dde6ef3dc58473ec61501d090976dd373ae35ac01e77779e",
+      "served_sha256": "5a01c65151c4aa55dde6ef3dc58473ec61501d090976dd373ae35ac01e77779e",
+      "expected_match": true
+    },
+    "assets/raw-fusion.worker-BXro9ZgK.js": {
+      "local_sha256": "6e23e872895503108855f52501fe11e2355e5744df623cd5049f674b0251466c",
+      "served_sha256": "6e23e872895503108855f52501fe11e2355e5744df623cd5049f674b0251466c",
+      "expected_match": true
+    }
+  }
+}

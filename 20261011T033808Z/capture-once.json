@@ -1,0 +1,262 @@
+{
+  "receipt": {
+    "requests": 1,
+    "startedAt": "2026-10-11T03:38:04.825Z",
+    "done": true,
+    "guard": {
+      "nav": {
+        "state": "idle",
+        "mode": null,
+        "goal": null,
+        "path": [],
+        "frontiers": [
+          [
+            1.075,
+            -1.575
+          ],
+          [
+            0.325,
+            -1.575
+          ],
+          [
+            0.025,
+            0.275
+          ]
+        ],
+        "backend": "nav2",
+        "message": "Nav2 ready",
+        "revision": 56,
+        "detail": {
+          "available": true,
+          "bridge": true,
+          "bridge_age_ms": 49,
+          "bridge_hello": {
+            "node": "farsight_bridge",
+            "nav2": true,
+            "controller": "RPP",
+            "slam": false,
+            "costmap_source": null
+          },
+          "goal_id": 0,
+          "backed_modes": [
+            "explore",
+            "goto",
+            "seek"
+          ],
+          "remote": {
+            "state": "idle",
+            "goal_id": null,
+            "message": "sensor session changed",
+            "controller_hz": 0,
+            "planner_ms": null,
+            "recoveries": 0,
+            "result": null,
+            "costmap": null,
+            "nav2": true
+          },
+          "pose_source": "arkit",
+          "sensor_fault": null,
+          "generation": 3,
+          "depth_age_ms": 91,
+          "speed_mps": 0.45,
+          "turn_radps": 3,
+          "max_v": 0.7,
+          "max_w": 0.8
+        }
+      },
+      "control": {
+        "type": "control_status",
+        "permit": null,
+        "permit_ms": 250,
+        "seq": -1,
+        "range_cm": null,
+        "estop": false,
+        "mode": "teleop",
+        "link_ms": null,
+        "autonomy_state": "idle",
+        "target_id": null,
+        "rover": true,
+        "simulated": false,
+        "requires_release": false,
+        "reason": "release_required",
+        "left_pwm": 0,
+        "right_pwm": 0,
+        "pan_deg": 90,
+        "max_pwm": 255,
+        "min_pwm": 70,
+        "drive_profile": true,
+        "calibration_allowed": true,
+        "drive_mode": "normalized",
+        "nav": {
+          "state": "idle",
+          "mode": null,
+          "goal": null,
+          "path": [],
+          "frontiers": [
+            [
+              1.075,
+              -1.575
+            ],
+            [
+              0.325,
+              -1.575
+            ],
+            [
+              0.025,
+              0.275
+            ]
+          ],
+          "backend": "nav2",
+          "message": "Nav2 ready",
+          "revision": 56
+        }
+      }
+    },
+    "http": 200,
+    "headers": {
+      "cache-control": "no-store",
+      "content-length": "280969",
+      "content-type": "application/octet-stream",
+      "date": "Sun, 11 Oct 2026 03:38:08 GMT",
+      "server": "Python/3.13 aiohttp/3.14.4",
+      "x-capture-age-ms": "54.78",
+      "x-capture-key": "D523F31D-E2F8-47D3-B25D-B9980105CCF1:1:2:5829"
+    },
+    "bodyBytes": 280969
+  },
+  "raw": {
+    "raw_enabled": true,
+    "raw_polling": false,
+    "raw_mode": "latest",
+    "raw_point_mode": "uncovered",
+    "raw_fallback_points": 0,
+    "raw_point_draw_count": 0,
+    "raw_surface_history": true,
+    "raw_surface_ttl_s": 30,
+    "raw_oldest_surface_age_ms": null,
+    "raw_poll_interval_ms": 500,
+    "raw_point_capacity": 0,
+    "raw_point_transfer_bytes": 0,
+    "raw_patches": 0,
+    "raw_splat_m": 0.012,
+    "raw_pixel_floor": 1.25,
+    "raw_surfaces": true,
+    "raw_point_overlay": true,
+    "raw_source": null,
+    "raw_points": 0,
+    "raw_triangles": 0,
+    "raw_frame": null,
+    "raw_identity": "",
+    "raw_age_ms": null,
+    "raw_bytes": 280969,
+    "raw_worker_ms": null,
+    "raw_error": "Error: Raw RGB-D age missing, invalid or expired during transfer",
+    "raw_ttl_s": 2
+  },
+  "capture": {
+    "ready": true,
+    "stereo": false,
+    "renderMs": 0.29999998211860657,
+    "captureMs": 22.200000017881393,
+    "draws": 375,
+    "points": 129336,
+    "source": "IPHONE LIDAR \u00b7 SOURCE RGB-D SAMPLES",
+    "poseEcho": null,
+    "refreshBusy": true,
+    "poseValid": false,
+    "drawnPoints": 129336,
+    "drawnTriangles": 5577,
+    "dense": {
+      "received_upserts": 137467,
+      "received_deletes": 0,
+      "retained_cells": 129336,
+      "local_evictions": 0,
+      "pending_gpu_chunks": 0,
+      "received_payload_bytes": 2204075,
+      "received_pages": 17,
+      "source_reported_cells": 129354,
+      "source_label": "SOURCE RGB-D SAMPLES",
+      "selected_source": "rgbd",
+      "bootstrap_incomplete": false,
+      "cursor": 2867691,
+      "resets": 1,
+      "request_active": true,
+      "error": null,
+      "gpu_uploaded_cells": 129336,
+      "gpu_uploaded_cell_writes": 132826,
+      "gpu_drawn_cells": 129336,
+      "gpu_chunks": 16
+    },
+    "rayVisible": false,
+    "viewPosition": [
+      9,
+      6,
+      9
+    ],
+    "triangles": 5577,
+    "retained": false,
+    "mapError": null,
+    "lod": {
+      "index": 0,
+      "pixelRatio": 1.5,
+      "fraction": 1,
+      "fx": 2,
+      "adaptive": true
+    },
+    "mapStatus": {
+      "source": "IPHONE LIDAR",
+      "geometry_source": null,
+      "points": 11466,
+      "triangles": 5577,
+      "generation": 2,
+      "revision": 6459,
+      "mesh_revision": 1,
+      "applied_points_revision": 6436,
+      "applied_mesh_revision": 1,
+      "points_delta": false,
+      "fresh": true,
+      "age_ms": 546.2999999821186,
+      "connected": true,
+      "retained": false,
+      "partial": false
+    },
+    "surfaceDisplay": {
+      "coarse_splat_m": 0.07200000000000001,
+      "dense_splat_m": 0.035,
+      "raw": {
+        "raw_enabled": true,
+        "raw_polling": false,
+        "raw_mode": "latest",
+        "raw_point_mode": "uncovered",
+        "raw_fallback_points": 0,
+        "raw_point_draw_count": 0,
+        "raw_surface_history": true,
+        "raw_surface_ttl_s": 30,
+        "raw_oldest_surface_age_ms": null,
+        "raw_poll_interval_ms": 500,
+        "raw_point_capacity": 0,
+        "raw_point_transfer_bytes": 0,
+        "raw_patches": 0,
+        "raw_splat_m": 0.012,
+        "raw_pixel_floor": 1.25,
+        "raw_surfaces": true,
+        "raw_point_overlay": true,
+        "raw_source": null,
+        "raw_points": 0,
+        "raw_triangles": 0,
+        "raw_frame": null,
+        "raw_identity": "",
+        "raw_age_ms": null,
+        "raw_bytes": 280969,
+        "raw_worker_ms": null,
+        "raw_error": "Error: Raw RGB-D age missing, invalid or expired during transfer",
+        "raw_ttl_s": 2
+      }
+    }
+  },
+  "url": "http://127.0.0.1:8091/render/render.html?upstream=http%3A%2F%2F127.0.0.1%3A8091&presentation=canvas&width=1280&height=720&aa=0&qaShots=farsight-densemap",
+  "at": "2026-10-11T03:38:08.746706+00:00",
+  "camera": null,
+  "accepted": false,
+  "scope": "One explicit raw attempt in independent local canvas; accepted only if HTTP200 and worker texture patch present. Production renderer/headset not seeded or reloaded."
+}

@@ -1,0 +1,68 @@
+{
+  "callback_host_t": 1518.436734416,
+  "capture_bound": false,
+  "capture_clock": "arkit_unverified",
+  "capture_clock_verified": false,
+  "capture_permit": "--_GAZC5C08SP_hFaO-SxEPXW4-r_Cjf",
+  "capture_permit_received_t": 1518.393843125,
+  "confidence": {
+    "format": "uint8_0_2",
+    "height": 192,
+    "len": 49152,
+    "width": 256
+  },
+  "depth": {
+    "format": "float32_m",
+    "height": 192,
+    "len": 196608,
+    "width": 256
+  },
+  "frame_id": 5829,
+  "image": {
+    "height": 480,
+    "intrinsics": [
+      476.42425537109375,
+      0,
+      0,
+      0,
+      476.42425537109375,
+      0,
+      317.5794982910156,
+      238.14012145996094,
+      1
+    ],
+    "jpeg_len": 34052,
+    "orientation": "landscape_right",
+    "width": 640
+  },
+  "map_epoch": 1,
+  "producer_delay_ms": 3.852875,
+  "sensor_host_delta_ms": 43.27087499996196,
+  "sensor_timestamp_raw_t": 1518.393463541,
+  "session_id": "D523F31D-E2F8-47D3-B25D-B9980105CCF1",
+  "t_capture": 1518.393463541,
+  "t_wall_ms": 1791689884761,
+  "tracking": "normal",
+  "transform": [
+    -0.9904109835624695,
+    -0.04242780804634094,
+    0.13147683441638947,
+    0,
+    0.0314265713095665,
+    -0.9959152340888977,
+    -0.08464818447828293,
+    0,
+    0.13453122973442078,
+    -0.07970460504293442,
+    0.9876987338066101,
+    0,
+    -0.020434603095054626,
+    0.04716618359088898,
+    -0.062445271760225296,
+    1
+  ],
+  "type": "frame",
+  "version": 1,
+  "map_generation": 2,
+  "capture_source": "IPHONE LIDAR"
+}
