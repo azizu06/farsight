@@ -22,36 +22,53 @@ class LocalMotion:
         self.reset()
 
     BACKOFF_M = 0.35  # at most this far back per episode, only over observed free or driven floor
+    # A sample this far below the camera still counts as level: ARKit height
+    # wobbles by mm, and a ray dropping 1 cm over 0.55 m meets the floor ~8 m
+    # out, past LiDAR range, so no return there still means far away.
+    LEVEL_TOLERANCE_M = 0.01
 
     def reset(self):
         self.gap_since = None
         self.backoff_from = None
         self.heading = 0.0
+        self.scan_dir = 0.0  # look-around turn sign; kept apart from the last arc heading
         self.scan_since = None
         self.scan_yaw = None
         self.scan_angle = 0.0
         self.scan_exhausted = False
+        self.arc_since = None  # when the current passing arc side started holding steady
+        self.arc_side = 0.0
 
-    @staticmethod
-    def depth_clear(points, depth, header):
-        """Every sampled body-height ray must have a measured return beyond it.
+    @classmethod
+    def depth_clear(cls, points, depth, header):
+        """Body-height rays must be clear of anything measured in front of them.
 
-        Project odom samples into the capture camera. Missing/invalid depth,
-        outside-image samples and near returns are blocked, never open space.
+        Project odom samples into the capture camera. A ray that hits something
+        before the sample, or lands outside the image, is blocked. A ray with no
+        return is open space only when the sample is level with or above the
+        camera in the world (gravity up, not the phone's tilt): those rays miss
+        the floor and only come back from a wall. Rays to samples below the
+        camera must come back past the sample, so a dropped floor or a near
+        obstacle stays blocked at any phone pitch.
         """
         transform = frames.transform_from_column_major(header["transform"])
         world = np.asarray(points) @ frames.M
         world[:, 1] += header.get("floor_y", -0.15)
+        low = world[:, 1] < transform[1, 3] - cls.LEVEL_TOLERANCE_M  # ARKit world y is up
         camera = (world - transform[:3, 3]) @ transform[:3, :3]
         z = -camera[:, 2]
         if (z <= 0.1).any():
             return False
         u = np.rint(header["fx"] * camera[:, 0] / z + header["cx"]).astype(int)
         v = np.rint(header["cy"] - header["fy"] * camera[:, 1] / z).astype(int)
-        if (u < 0).any() or (u >= depth.shape[1]).any() or (v < 0).any() or (v >= depth.shape[0]).any():
+        inside = (u >= 0) & (u < depth.shape[1]) & (v >= 0) & (v < depth.shape[0])
+        if not inside.all():
             return False
         measured = depth[v, u]
-        return bool((np.isfinite(measured) & (measured >= z + 0.1) & (measured <= 4.0)).all())
+        returned = np.isfinite(measured) & (measured > 0)  # 0 = no return on the wire
+        near = returned & (measured < z + 0.1)
+        missing_low = low & ~returned
+        return not bool(near.any() or missing_low.any())
 
     def command(self, *, now, active, nav_command, nav_at, robot,
                 pose_at, depth, header, depth_at, support, resolution, origin, map_at, to_map=None, body_clear=None):
@@ -68,7 +85,14 @@ class LocalMotion:
             self.reset()
             return None
         if nav_command is not None and now - nav_at <= 0.2 and any(nav_command):
+            # A hand-off back to the look-around starts from Nav2's last turn,
+            # not from a hard-coded left. Remember the sign past the reset, and
+            # past a straight command that carries no turn of its own.
+            if nav_command[1]:
+                self.scan_dir = math.copysign(1.0, nav_command[1])
+            seeded = self.scan_dir
             self.reset()
+            self.scan_dir = seeded
             return nav_command
         if self.gap_since is None:
             self.gap_since = now
@@ -112,7 +136,8 @@ class LocalMotion:
                 dx, dy = (odom[near, :2] - (x, y)).T
                 left = float(np.mean(-math.sin(yaw) * dx + math.cos(yaw) * dy))
                 self.heading = -1.0 if left > 0 else 1.0  # obstacle on the left: turn right
-            return 0.0, math.copysign(self.turn_radps, self.heading or 1)
+                self.scan_dir = self.heading
+            return 0.0, self.scan_turn()
         self.backoff_from = None
         if self.scan_yaw is not None:
             delta = yaw - self.scan_yaw
@@ -164,6 +189,15 @@ class LocalMotion:
         if choices:
             _, angle = max(choices)
             self.heading = angle
+            # A passing arc does not flip the look-around. Only ~1 s of one side
+            # reseeds it; a straight arc never picks a side.
+            side = math.copysign(1.0, angle) if angle else 0.0
+            if not side:
+                self.arc_since, self.arc_side = None, 0.0
+            elif self.arc_since is None or side != self.arc_side:
+                self.arc_since, self.arc_side = now, side
+            elif now - self.arc_since >= 1.0:
+                self.scan_dir = side
             # The live profile maps 0.2 m/s to L78/R69 PWM, above L70/R40
             # moving floors; the server still applies trim and the autonomy cap.
             # Gentle arcs retain both wheels above their calibrated floors.
@@ -171,4 +205,13 @@ class LocalMotion:
             return self.creep_mps, 0.5 * angle
         if self.scan_since is None:
             self.scan_since, self.scan_yaw = now, yaw
-        return 0.0, math.copysign(self.turn_radps, self.heading or 1)
+        self.arc_since, self.arc_side = None, 0.0
+        return 0.0, self.scan_turn()
+
+    def scan_turn(self):
+        """Look-around turn rate. The side is picked once, when a scan first needs
+        one (toward the last arc, else left), and then held: a momentary opposite
+        arc never flips it, only ~1 s of steady arc or a Nav2 hand-off reseeds it."""
+        if not self.scan_dir:
+            self.scan_dir = math.copysign(1.0, self.heading) if self.heading else 1.0
+        return math.copysign(self.turn_radps, self.scan_dir)
