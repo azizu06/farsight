@@ -1,0 +1,356 @@
+Join a hackathon 
+Host a hackathon 
+Resources 
+ 
+Notifications
+
+Loading...
+
+Overview
+My projects
+Participants (713)
+Resources
+Rules
+Project gallery
+Updates
+Discussions
+Knight Hacks IX
+Venture into the enchanted forest with Knight Hacks IX for 36 hours of hacking and innovation on October 9-11, 2026. YOU MUST SUBMIT BY 10 A.M!! EDITS UP UNTIL 11:00 AM
+
+This hackathon has ended
+
+Find more hackathons View projects
+Who can participate
+Ages 18+ only
+College students only
+All countries/territories, excluding standard exceptions 
+View full rules
+
+Winners announced soon
+
+View schedule
+
+Oct 11, 2026
+UCF Engineering II (ENG2)
+	
+Public
+
+$317,784 in cash	713 participants
+Knight Hacks
+Beginner Friendly
+🌳🪻✨ WELCOME TO KNIGHT HACKS IX ✨🌸🌲
+
+See https://2026.knighthacks.org/ for more information!
+
+Deep within the mystical woods, a new legend stirs...
+
+Florida's best hackathon, Knight Hacks IX, awakens beneath a canopy of glowing trees and forgotten magic...
+
+During this 36-Hour coding adventure, hackers will harness the power of workshops, swag, tech talks, side quests, free food, games, and community to restore balance to the enchanted forest! Our beloved forest guardians are in peril, and it is YOUR quest to answer the call. In a world where algorithms are spells and bugs are curses, every hacker must choose their path...
+
+Break the curse or let the forest fall!!!
+
+REQUIREMENTS
+
+To Be Eligible for Judging:
+
+Teams must submit their projects to Knight Hacks IX’s Devpost by Sunday, October 11th at 10:00 AM
+Teams must stop committing changes to GitHub by Sunday, October 11th at 11:00 AM.
+All Devpost submission requirements must be met.
+
+How to Submit on Devpost:
+
+The Knight Hacks IX’s Devpost can be accessed via https://knight-hacks-ix.devpost.com/.
+
+Devpost Submission Requirements:
+
+✅ One team member should create the team and invite others on Devpost. (This determines team composition and prize distribution. Team members missing from the Devpost submission will not receive prizes.)
+
+✅ Record and attach a demo video of your project.
+
+✅ Select the sponsored and category prizes you’d like to be considered for. (Teams are automatically opted in to be judged for Tracks and Overall)
+
+✅ Include a public GitHub repository link (private or missing repos will lead to disqualification.)
+
+Devpost Submission Recommendations (not required!):
+
+💡 Add screenshots, graphs, or visuals to showcase your work.
+
+💡 Put effort into your project description: clear, detailed write-ups stand out to judges!
+
+Important Note: Please use the same email on your Devpost submission that you used to register, so you can receive post-event project feedback!
+
+For those unsure about how to use or submit on Devpost, please attend our Intro to Devpost Workshop on Saturday, October 10th at 11:00 PM. 
+
+PRIZES
+$317,784+ in prizes
++ other prizes
+Best Overall Hack (1st)
+$203,680 in cash
+1 winner
+
+Apple Mac mini (M6, 2026) 16GB Unified Memory, 256GB SSD x 4; Knight Hacks IX Winner Trophy x 4; Full Sail full ride scholarship opportunity;
+
+Best Overall Hack (2nd)
+$2,080 in cash
+1 winner
+
+Samsung Odyssey OLED G5 G50SF 27" QHD 180Hz Gaming Monitor 4x + Knight Hacks IX Winner Trophy 4x
+
+Best Overall Hack (3rd)
+$1,240 in cash
+1 winner
+
+Wob Key Rainy 75 & HyperX Quadcast V2 4x + Knight Hacks IX Winner Trophy 4x
+
+Most "Useful" Hack
+$1,080 in cash
+1 winner
+
+Leafant Roomba & Mop 4x + Knight Hacks IX Winner Trophy 4x
+
+Best Embedded Hack
+$1,180 in cash
+1 winner
+
+Bambu A1 Mini 4x + Knight Hacks IX Winner Trophy 4x
+
+Best AI Hack
+$1,080 in cash
+1 winner
+
+Apple Watch SE3 4x + Knight Hacks IX Winner Trophy 4x
+
+Best Game Dev Hack
+$800 in cash
+1 winner
+
+Tenz or Faker Viper V3 Pro 4x + Knight Hacks IX Winner Trophy 4x
+
+Best First-Time Hacker
+$600 in cash
+1 winner
+
+AirPods 4 4x + Knight Hacks IX Winner Trophy 4x
+
+[MLH] Best Use of ElevenLabs
+1 winner
+
+Wireless Earbuds
+Deploy natural, human-sounding audio with ElevenLabs. Create realistic, dynamic, and emotionally expressive voices for any project, from interactive AI companions to narrated stories and voice-enabled apps. ElevenLabs will empower you to build rich, immersive experiences without the need for actors or complex audio production, using simply the power of AI.
+
+Integrate fully autonomous audio experiences into your hack with ElevenLabs and give your project a voice, along with giving your team the chance to win some wireless earbuds!
+
+[MLH] Best Use of Gemini API
+1 winner
+
+MLH Swag Kits
+It’s time to push the boundaries of what’s possible with AI using Google Gemini. Check out the Gemini API to build AI-powered apps that make your friends say WHOA. So, what can Gemini do for your hackathon project?
+
+Understand language like a human and build a chatbot that gives personalized advice
+Analyze info like a supercomputer and create an app that summarizes complex research papers
+Generate creative content like code, scripts, music, and more
+Think of the possibilities… what will you build with the Google Gemini API this weekend?
+
+[MLH] Best Use of Tiger Data
+1 winner
+
+Stream Deck Mini
+Building high-performance apps under hackathon deadlines shouldn't mean spending half your weekend configuring complex databases or learning obscure query languages. Tiger Data extends PostgreSQL to give student developers an ultra-fast foundation for real-time data, time-series metrics, and complex analytics.
+
+Why build with Tiger Data this weekend?
+
+Standard SQL Power: Query massive datasets instantly using the SQL you already know, with no complex NoSQL aggregation pipelines required.
+
+Unified Data Stack: Store relational user profiles and high-frequency metric streams side-by-side in a single database.
+
+Instant Dashboards: Serve lag-free, real-time frontend charts using pre-computed Continuous Aggregates.
+
+90%+ Data Compression: Store millions of events on free-tier cloud instances without running out of disk space.
+
+Whether you’re building real-time IoT monitoring, AI-driven analytics dashboards, or financial prediction engines, show us how Tiger Data powers your project. The team that demonstrates the most innovative, impactful, and performance-driven use of Tiger Data will take home some great prizes!
+
+[MLH] Best Use of Solana
+1 winner
+
+Assorted Prizes
+The world of development is evolving fast and Solana is leading the charge with a network built to handle all of your infrastructure needs. Forget high fees and slow confirmations, it’s time to build applications that are fast, efficient, and scalable.
+
+Harness Solana’s core advantages like blazing fast execution and near-zero transaction costs to make your hackathon ideas become real world projects. With Solana, the possibilities are endless.
+
+Create a game, social app, or consumer product that relies on instant, high-frequency transactions.
+Design a sophisticated trading, lending, or decentralized exchange (DEX).
+Build a prototype for supply chain, identity, or payments that can handle massive, real-world volume.
+Show us how you can innovate with Solana for a chance to win some cool prizes for you and each member of your team!
+
+[MLH] Best Use of Presage
+1 winner
+
+Fitbit Inspire & Presage Perks
+Presage is pioneering the Human Sensing Layer, enabling any application to understand a person’s real-time physical and emotional state. With Presage, you can leverage clinically-proven vital signs, movement, emotion, and/or focus tracking to build a project that gives the standard camera super powers.
+
+Use any of the Presage SDKs to integrate capabilities like real-time heart rate, breathing rate, engagement levels, and facial expressions into your hack with just a few lines of code.
+
+Immersive Gaming & Entertainment: Dynamically change game difficulty or story elements based on a player's excitement or focus levels.
+Contactless Wellness & Fitness: Build a non-invasive app that monitors stress, recovery, or fitness performance.
+Accessibility & Security: Utilize vital signs for effortless authentication, or to enhance accessibility.
+Productivity: Design a tool that tracks focus or stress.
+Build your next hack with Presage and show us the future of human-computer interaction! Win awesome prizes along for with the following perks from the Presage team:
+Free refills for Presage Development credits to accelerate you through your next three months of building
+30% off all Presage usage charges for your first year after going live
+
+[MLH] Best Use of Vultr
+1 winner
+
+M5Stack Official Tab5
+Vultr empowers hackers to bring their high-performance projects to life instantly; providing everything from the speed of one-click deployment and scalable cloud compute, to specialized Vultr Cloud GPUs that can power AI-driven applications. We want you to push the limits of what can be built when infrastructure is no longer the bottleneck!
+
+Sign up for a Vultr account today and claim your free cloud credits! Take your next hack to the cloud with Vultr for a chance to win some awesome prizes for you and your team!
+
+[MLH] Best Domain Name from GoDaddy Registry
+1 winner
+
+Digital Gift Card
+GoDaddy Registry is giving you everything you need to be the best hacker no matter where you are. Register your domain name with GoDaddy Registry for a chance to win some amazing prizes!
+
+Hugging Face: Best Use of Open Source AI
+$4,000 in cash
+3 winners
+
+1st: $500 in credits x 4;
+2nd: $300 in credits x 4;
+3rd: $200 in credits x 4;
+
+Full Sail: Pathways & Perception, A Serious Games & Simulation Challenge
+$12,276 in cash
+1 winner
+
+1st: MSI Vector x 4;
+
+NVIDIA: Best Use of Jetson Nano
+$5,388 in cash
+3 winners
+
+1st: (Jetson Orin Nano + NVIDIA hat + tote + zipper bag) x 4;
+2nd: (Jetson Orin Nano + NVIDIA hat + tote) x 4;
+3rd: (Jetson Orin Nano + NVIDIA hat) x 4;
+
+Encompass: Data Capturing Hardware
+$2,200 in cash
+3 winners
+
+1st: ($300 AI credits + swag bag) x 4;
+2nd: $150 AI credits x 4;
+3rd: $75 AI credits x 4;
+
+BNY: Financial Services Challenge
+$1,092 in cash
+2 winners
+
+1st: (Lululemon Everyday backpack + BNY Stanley + JBL headphones) x 4;
+2nd: (BNY backpack + JBL headphones + BNY mug + laptop sleeve + BNY umbrella) x 4;
+
+NextEra Energy: SPOT Management Dashboard
+$0 in cash
+1 winner
+
+1st: Internship interview x 4;
+
+OneEthos: Innovation for Good
+$600 in cash
+3 winners
+
+1st: (In-person interview with OneEthos’ CEO + $50 Foxtail gift card + OneEthos headphones) x 4;
+2nd: $50 Foxtail gift card x 4;
+3rd: $25 Foxtail gift card x 4;
+
+AMD: Best Use of AMD Technologies
+$8,000 in cash
+2 winners
+
+1st: ROG Xbox Ally X x 4;
+2nd: $1,000 Credit for AMD Dev Cloud
+
+Databricks: Best Use of Databricks
+$1,280 in cash
+3 winners
+
+1st: (Databricks backpack + water bottle) x 4;
+2nd: (Databricks backpack or water bottle) x 4;
+3rd: (Remaining Databricks backpack or water bottle) x 4;
+
+Neon: Best Use of Neon
+$4,000 in cash
+1 winner
+
+1st: $1,000 Neon credits x 4;
+
+Figma: Best Design
+$340 in cash
+1 winner
+
+1st place: (Figma long sleeve + hat + water bottle + plushie) x 4
+
+The base requirement is that you create the project prototype in Figma Design
+include images of Figma Design file in Devpost
+create sharable link to the file and add to Devpost submission description
+
+During judging, projects will be judged solely on the UI/UX/design shown in the demo!
+
+Adobe: Prettiest Hack
+$10,280 in cash
+3 winners
+
+1st: (Wacom Drawing Tablet + 1 year Adobe Creative Cloud) x 4;
+2nd: (Adobe swag + 1 year Adobe Creative Cloud) x 4;
+3rd: 1 year Adobe Creative Cloud x 4;
+
+JUDGES
+
+Knight Hacks Team
+
+
+JUDGING CRITERIA
+Originality
+- Do you think the problem or topic space is unique? - Do you think the approach to the problem is original? - Have you heard of/seen this solution or project type before?
+Technical Understanding
+- Do the presenters actually know what they’re talking about? - If they can’t explain something, do they successfully admit/callout the tools that helped them? - Did the hackers learn or grow this weekend? Did they admit to their technical challenges?
+Functionality
+- Is the project polished, or still a proof of concept? - Does the project reliably work as intended and advertised? - Is the project end-to-end, or is it still largely fragmented?
+Design
+- How appealing is the project to the eye? - Does it have good user experience? - Is the design intentional, or a bit random and inconsistent?
+Wow Factor
+- Does this project give you hope for humanity? - If you were a company, would you acquire this project and give the team six figure salaries? - Do you want to show this project to your friends, family, coworkers, and/or social media?
+
+Questions? Email the hackathon manager
+
+Hackathon sponsors
+                  
+
+This site is protected by reCAPTCHA and the Google Privacy Policy and Terms of Service apply.
+
+Devpost
+About
+Careers
+Contact
+Help
+Hackathons
+Browse hackathons
+Explore projects
+Host a hackathon
+Hackathon guides
+Portfolio
+Your projects
+Your hackathons
+Settings
+Connect
+ Twitter
+ Discord
+ Facebook
+ LinkedIn
+© 2026 Devpost, Inc. All rights reserved.
+Community guidelines
+Security
+CA notice
+Privacy policy
+Terms of service

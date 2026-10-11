@@ -1,0 +1,672 @@
+[
+  {
+    "title": "InterviewOS",
+    "url": "https://devpost.com/software/interviewos-ft05ag",
+    "text": "InterviewOS InterviewOS automates initial round interviews at scale. AI conducts adaptive interviews without a recruiter present, giving hiring teams structured, evidence-backed insights for human review. 0 0"
+  },
+  {
+    "title": "A.D.A: Autonomous Device Assistant",
+    "text": "A.D.A: Autonomous Device Assistant LLMs can't really interact with the physical world, and most other AI robotics are unable to learn and improve in deployment, but A.D.A can! She is able to scan new objects, build models, and improve! 1 0",
+    "url": "https://devpost.com/software/a-d-a-autonomous-device-assistant"
+  },
+  {
+    "title": "AuditPilot \u2014 Internal Audit Policy Navigator",
+    "url": "https://devpost.com/software/auditpilot-internal-audit-policy-navigator",
+    "text": "AuditPilot \u2014 Internal Audit Policy Navigator Bring your policies home \u2014 get answers without sending your documents to external AI services. Your policies. Your machine. Your answers. Private, local, and built for trust. 0 0"
+  },
+  {
+    "title": "Knight Study Space",
+    "url": "https://devpost.com/software/knight-study-space",
+    "text": "Knight Study Space Turn handwritten notes into LaTeX, find cheap eats near campus, and keep your lofi playing on every tab. Everything a UCF student needs to study smarter, all in one place. 2 0"
+  },
+  {
+    "title": "ADACVA",
+    "url": "https://devpost.com/software/adacva",
+    "text": "ADACVA An accessible piano tutor for learners who can\u2019t rely on visual sheet music. 0 0"
+  },
+  {
+    "title": "Nod & Read",
+    "text": "Nod & Read An accessible comic reader for blind, low-vision and dyslexic readers. Panels play one by one with character voices, controlled by your face. 0 0",
+    "url": "https://devpost.com/software/nod-read"
+  },
+  {
+    "title": "SketchSensAI",
+    "url": "https://devpost.com/software/sketchsensai",
+    "text": "SketchSensAI SketchSensAI is an AI drawing coach for all ages, offering personalized drawing tips and custom reference images to help everyone learn, improve, and bring their creative ideas to life. 0 0"
+  },
+  {
+    "title": "The Hackathon Oracle",
+    "url": "https://devpost.com/software/the-hackathon-oracle",
+    "text": "The Hackathon Oracle Divine your project's future. Change your fate and claim the win. 0 0"
+  },
+  {
+    "title": "Knight-Wagon",
+    "text": "Knight-Wagon fast and efficient campus food service delivery robot 0 0",
+    "url": "https://devpost.com/software/knight-wagon"
+  },
+  {
+    "title": "Paralassist",
+    "url": "https://devpost.com/software/paralassist",
+    "text": "Paralassist Helping paralyzed patients communicate when their voice cannot 4 0"
+  },
+  {
+    "title": "Watchdog",
+    "text": "Watchdog Watchdog transforms Boston Dynamics SPOT robot inspection data into actionable insights, helping power plant operators detect hidden anomalies, monitor equipment, and prevent overlooked failures. 4 0",
+    "url": "https://devpost.com/software/watchdog-5iav14"
+  },
+  {
+    "title": "BlackBox",
+    "url": "https://devpost.com/software/blackbox-s1qdc4",
+    "text": "BlackBox It\u2019s a black box for your car that runs on your phone: it detects a crash, saves the evidence, and reconstructs what happened in 3D within seconds. 0 0"
+  },
+  {
+    "title": "Home Pilot",
+    "url": "https://devpost.com/software/grimassist",
+    "text": "Home Pilot HomePilot turns voice commands and product photos into grocery lists using FastAPI, local Ollama AI, SigLIP2 image recognition, and ElevenLabs\u2019 speech API. 0 0"
+  },
+  {
+    "title": "Here",
+    "text": "Here Here is a spatial awareness platform for the deaf and hard of hearing. It identifies the sounds and voices around you and tells you where they are with a haptic belt. 3 0",
+    "url": "https://devpost.com/software/here-vqlrhg"
+  },
+  {
+    "title": "Mimisis",
+    "text": "Mimisis Low-cost robot teleoperation with just two webcams and your bare hands 2 0",
+    "url": "https://devpost.com/software/mimisis"
+  },
+  {
+    "title": "Certifi",
+    "url": "https://devpost.com/software/certifi-kywta3",
+    "text": "Certifi Good music. Good people. Great nights. 1 0"
+  },
+  {
+    "title": "CodeSquire",
+    "url": "https://devpost.com/software/codesquire",
+    "text": "CodeSquire Custom trained LLM Coding Agent, cheaper than Claude & Codex 2 0"
+  },
+  {
+    "title": "Lenny Roasts",
+    "url": "https://devpost.com/software/lenny-roasts",
+    "text": "Lenny Roasts Let Lenny roast your hackathon idea, rank it against simulated competitors, and help you sharpen your pitch before judging. 0 0"
+  },
+  {
+    "title": "Golden Egg",
+    "url": "https://devpost.com/software/uncharted-yres3o",
+    "text": "Golden Egg A brainstorming and idea validation app that helps teams compare ideas with 57,000+ hackathon projects, question their assumptions, and decide together what to build. 4 0"
+  },
+  {
+    "title": "Apprentice",
+    "text": "Apprentice The universal tutor for humans and robots 5 3",
+    "url": "https://devpost.com/software/apprentice-0owzs7"
+  },
+  {
+    "title": "CampBuddy",
+    "text": "CampBuddy This is a local AI assistant for campers/hikers or individuals needing informational assistance for survival/camping contexts such as identifying a plant, safety tips, hiking/camping tips, etc. 0 0",
+    "url": "https://devpost.com/software/campbuddy"
+  },
+  {
+    "title": "Glint",
+    "url": "https://devpost.com/software/nuggies",
+    "text": "Glint Real eyes. Realize. Real lies. 3 2"
+  },
+  {
+    "title": "RiskDiff",
+    "url": "https://devpost.com/software/risk-diff",
+    "text": "RiskDiff RiskDiff is the Git Diff of companies' 10-Ks. Every year, publicly traded companies publish a 10k outlining their risk factors. RiskDiff compares this year\u2019s 10-K report to last year\u2019s. 3 0"
+  },
+  {
+    "title": "Waverio Studio",
+    "url": "https://devpost.com/software/waverio-studio",
+    "text": "Waverio Studio Music DAWs can have a steep learning curve. Waverio Studio is a browser DAW for beginners. Record vocals, describe the sound you want, and AI builds effects tailored for your voice. 1 0"
+  },
+  {
+    "title": "StoryForge",
+    "url": "https://devpost.com/software/storyforge-x78pfk",
+    "text": "StoryForge Draw a hero, and watch an AI storybook bring them to life. 0 0"
+  },
+  {
+    "title": "Dancify",
+    "url": "https://devpost.com/software/dancify-18howf",
+    "text": "Dancify Transform any video into an interactive dance game, making learning choreography fun, engaging, and accessible to everyone! 0 0"
+  },
+  {
+    "title": "SteadyForum: A Form-Correcting, Gym Journey, Social Media",
+    "url": "https://devpost.com/software/steadyflow-a-form-correction-gym-journey-social-media",
+    "text": "SteadyForum: A Form-Correcting, Gym Journey, Social Media Everybody has a cell phone, and personal trainers are expensive and only available at set times. Introducing SteadyForum, a new way to learn how to go to the gym without injury, hassle or humiliation. 8 2"
+  },
+  {
+    "title": "scap! sprout",
+    "url": "https://devpost.com/software/scap-sprout",
+    "text": "scap! sprout SCRAP! is a first-person browser boxing game that turns your webcam into the controller. Jab at the screen, lean to slip punches, and duck strikes with your real body. 2 0"
+  },
+  {
+    "title": "Bin-It",
+    "url": "https://devpost.com/software/bin-it-yg2xb7",
+    "text": "Bin-It Residents report overflowing bins from their phones. Staff get a dashboard that corrects for reporting bias and ranks the best places to add bins, shown as estimates and never as measured outcome 0 0"
+  },
+  {
+    "title": "ArchAI",
+    "url": "https://devpost.com/software/archai-y1kv57",
+    "text": "ArchAI ArchAI is an architectural intelligence layer within the construction industry's operating system, orchestrating design, material engineering, execution intelligence, and lifecycle optimisation. 0 0"
+  },
+  {
+    "title": "Hakit",
+    "url": "https://devpost.com/software/hakit-1qejr3",
+    "text": "Hakit Hakit is the OS for hackathons. It generates project ideas, matches tasks to teammates' skills, tracks live progress through GitHub, and uses AI to keep your team on track and ahead of deadlines. 0 0"
+  },
+  {
+    "title": "Argos",
+    "text": "Argos Argos is an Anti-Cheat monitoring tool designed to help exam proctors spot potential cheating Live. Using cameras and RF detectors it can find hidden smart devices and usual student activity! 1 0",
+    "url": "https://devpost.com/software/argos-fd8rie"
+  },
+  {
+    "title": "Blurr",
+    "url": "https://devpost.com/software/blurr-lgyc03",
+    "text": "Blurr Ask for the blur. Local AI video redaction on one AMD GPU. 2 0"
+  },
+  {
+    "title": "SPOTlight",
+    "url": "https://devpost.com/software/spotlightdog",
+    "text": "SPOTlight An operator console for SPOT: open Hugging Face models on AMD ROCm flag and explain each anomaly live or after a mission, backed by Neon, so plant operators know what to do next. 4 0"
+  },
+  {
+    "title": "Aria Vision",
+    "text": "Aria Vision An AI-powered assistant for Meta Aria glasses that describes your surroundings, answers questions by voice, and provides spoken warnings to help you navigate the world with greater confidence. 1 1",
+    "url": "https://devpost.com/software/aria-vision"
+  },
+  {
+    "title": "Doorway",
+    "url": "https://devpost.com/software/doorway-0eysjv",
+    "text": "Doorway Lost in a UCF building? Point your phone, pick a room, and follow a glowing AR path on the floor to the door. Doorway finds you from walls and room signs, fully offline. 3 0"
+  },
+  {
+    "title": "KYU-BOT",
+    "url": "https://devpost.com/software/kyu-bot",
+    "text": "KYU-BOT A disaster management system leveraging 3D city physics and multi agent AI to synthesize incoming casualty reports, plan optimal dispatch routes, and score situational awareness against ground truth. 2 1"
+  },
+  {
+    "title": "Knight's Address",
+    "url": "https://devpost.com/software/knight-s-address",
+    "text": "Knight's Address A website that is meant for you to deliver the best speech you possibly can with AI powered coaching. 0 0"
+  },
+  {
+    "title": "Beacon",
+    "url": "https://devpost.com/software/recall-bou9l6",
+    "text": "Beacon Every face has a story to it. Remember it. 0 0"
+  },
+  {
+    "title": "Rate That Slop",
+    "url": "https://devpost.com/software/rate-that-slop",
+    "text": "Rate That Slop Sniff out the slop. Stitch with confidence. 0 0"
+  },
+  {
+    "title": "Gatesmith",
+    "text": "Gatesmith A unified pipeline for quantum circuit development that slots into any researcher\u2019s Qiskit workflow 0 0",
+    "url": "https://devpost.com/software/gatesmith"
+  },
+  {
+    "title": "UltraFit",
+    "url": "https://devpost.com/software/ultrafit",
+    "text": "UltraFit When working out most people have difficulty on ensuring that they perform the exercise with the right pose or right angle. Well look no further with this app that can easily help you correct that. 0 0"
+  },
+  {
+    "title": "Spot-a-Vibe",
+    "url": "https://devpost.com/software/spot-a-vibe-xmqrot",
+    "text": "Spot-a-Vibe Ever wonder what vibe you give off? Or are you looking for new music that suits you? Look no further than Spot-a-Vibe! Upload a photo of yourself and get a suggested genre that matches you! 0 0"
+  },
+  {
+    "title": "Dottie",
+    "text": "Dottie An interactive, multi-modal braille learning system that helps young, blind learners build literacy through touch, voice, and storytelling. 1 0",
+    "url": "https://devpost.com/software/gerald-2hb7v3"
+  },
+  {
+    "title": "Hold Short",
+    "text": "Hold Short An air traffic control safety enhancement software suite. Includes, MAPF route pathfinding, a controller fatigue monitor, and incident avoidance. 1 0",
+    "url": "https://devpost.com/software/hold-short"
+  },
+  {
+    "title": "CrowdSense",
+    "text": "CrowdSense CrowdSense uses two cameras, one on you and one on the room, and tells you mid-talk when you're starting to lose people. Afterward, you get a replay and tips on what to work on next time. 0 0",
+    "url": "https://devpost.com/software/crowdsense-y6oq2h"
+  },
+  {
+    "title": "Accessibility Audit",
+    "url": "https://devpost.com/software/accessibility-audit",
+    "text": "Accessibility Audit A quick and easy way to ensure your website is accessible. 0 0"
+  },
+  {
+    "title": "KnightMaps",
+    "url": "https://devpost.com/software/knightmaps",
+    "text": "KnightMaps KnightMaps brings navigation indoors, using Wi-Fi signals to locate you and guide you to classrooms and campus resources\u2014so you spend less time lost and more time where you need to be. 0 0"
+  },
+  {
+    "title": "OmniBelt",
+    "url": "https://devpost.com/software/omnibelt",
+    "text": "OmniBelt What if seeing for the blind is as easy as feeling it? 0 0"
+  },
+  {
+    "title": "StormBox",
+    "text": "StormBox When cell towers fail, StormBox stays alert. This offline hurricane safety box detects home hazards, tracks NOAA storm data, and guides you through emergencies without internet or cell service. 3 0",
+    "url": "https://devpost.com/software/stormbox"
+  },
+  {
+    "title": "Spot-MIA",
+    "url": "https://devpost.com/software/spot-mia",
+    "text": "Spot-MIA An operator console for Boston Dynamics Spot that replays every inspection, surfaces hidden failures, and writes a checked plain-English brief. 2 0"
+  },
+  {
+    "title": "Farsight",
+    "text": "Farsight Explore a building through a rescue rover: live camera and person detection, LiDAR-guided indoor autonomy, and a dense room you can walk through in VR. 0 0",
+    "url": "https://devpost.com/software/farsight-t4qyli"
+  },
+  {
+    "title": "SocietySim",
+    "url": "https://devpost.com/software/societysim",
+    "text": "SocietySim AI models play Werewolf, a game of hidden roles and bluffing. We replay their moves and measure which models deceive others, and which ones spot the lies. 0 0"
+  },
+  {
+    "title": "ThirdEye",
+    "url": "https://devpost.com/software/third-eye-mzrl95",
+    "text": "ThirdEye ThirdEye is an edge AI security system that tracks people, objects, and events over time, remembers what happened, detects meaningful activity, and records only important incidents. 4 0"
+  },
+  {
+    "title": "Lumen",
+    "url": "https://devpost.com/software/lumen-eik96x",
+    "text": "Lumen Lumen turns spare devices into extra ears for your home: with real-time captions, visual alerts, and family updates. From a doorbell to a smoke alarm, see what matters as it happens. 1 0"
+  },
+  {
+    "title": "TrueView",
+    "url": "https://devpost.com/software/trueview-egql7p",
+    "text": "TrueView TrueView: on-device AI deepfake detection for iPhone. Spot AI-generated photos and voice clips. No uploads and no cloud. Bloom-Blessed or Blight-Touched verdicts with confidence. Private by design. 1 0"
+  },
+  {
+    "title": "Knight's Eye",
+    "url": "https://devpost.com/software/knight-s-eye-security-cam-sim",
+    "text": "Knight's Eye Security guards lose focus on long night shifts. Our game watches the watcher. 0 0"
+  },
+  {
+    "title": "diarockets",
+    "url": "https://devpost.com/software/diarockets",
+    "text": "diarockets Trained on human society's flaws and virtues, how well can AI simulate the world that shaped it? We built our project, GEarth, to find out: recreating governance, trade, and conflict to watch it live. 0 0"
+  },
+  {
+    "title": "Permanence",
+    "url": "https://devpost.com/software/permanence",
+    "text": "Permanence Intelligent Spatial Awareness & Object Permanence 6 0"
+  },
+  {
+    "title": "Campus Time Machine",
+    "text": "Campus Time Machine Turn familiar UCF locations into a world-model powered video time machine. See snow across Engineering II, a rocket flying above Memory Mall, or drones and flying cars around the Student Union. 1 0",
+    "url": "https://devpost.com/software/hugging-transformers-forever"
+  },
+  {
+    "title": "Kairos",
+    "text": "Kairos Catch the puddle. Clear the storm. A weather and water plugin for Orbit: Spot gets RECALL when a storm turns mid-round and HOLD when its camera sees water in the path. 2 0",
+    "url": "https://devpost.com/software/kairos-690od7"
+  },
+  {
+    "title": "Fireline",
+    "url": "https://devpost.com/software/fireline-764nir",
+    "text": "Fireline Satellites see a wildfire once it is big. Fireline sees the first smoke. 1 0"
+  },
+  {
+    "title": "Ecoforest",
+    "url": "https://devpost.com/software/ecoforest",
+    "text": "Ecoforest Our project utilizes AI to identify different objects and tell the user how to properly dispose of them in an eco-friendly way, all from an interactive task list website made for staying green! 0 0"
+  },
+  {
+    "title": "R3AI",
+    "text": "R3AI R3AI helps communities recognize waste with AI, recover it through autonomous robotic collection, and restore the environment with advanced cleanup operations. 2 0",
+    "url": "https://devpost.com/software/r3ai"
+  },
+  {
+    "title": "Atlas",
+    "text": "Atlas Your cameras record. Atlas remembers. A private AI assistant that runs locally, connects to devices, replies with evidence, and continuously learns. 2 0",
+    "url": "https://devpost.com/software/atlas-q4wypt"
+  },
+  {
+    "title": "Understory",
+    "text": "Understory Scout for invasive species with a VR field-survey robot! 9 0",
+    "url": "https://devpost.com/software/understory-gj3in2"
+  },
+  {
+    "title": "3D CADASTRAL SYSTEM",
+    "text": "3D CADASTRAL SYSTEM A 3D Cadastral System that transforms LiDAR and survey data into an interactive digital twin, enabling accurate property mapping, ownership visualization, and smarter urban land management. 2 2",
+    "url": "https://devpost.com/software/3d-cadastral-system-bf49x6"
+  },
+  {
+    "title": "PenUmbra SOC Auditor\u2122\ufe0f",
+    "url": "https://devpost.com/software/penumbra-soc-auditor",
+    "text": "PenUmbra SOC Auditor\u2122\ufe0f Security logs tell a story, but finding it is hard. PenUmbra analyzes simulated logs to provide users with interactive attack graphs, event timelines, and AI-generated event reports. 1 0"
+  },
+  {
+    "title": "En-vision",
+    "text": "En-vision A wildlife sighting log and social app for national parks. 0 0",
+    "url": "https://devpost.com/software/en-vision-8m74cy"
+  },
+  {
+    "title": "Waymaker",
+    "text": "Waymaker Fully offline AI backpack for the blind with haptic obstacle warning and voice assistant 0 0",
+    "url": "https://devpost.com/software/veil-8xerbq"
+  },
+  {
+    "title": "Tattle",
+    "url": "https://devpost.com/software/tattle",
+    "text": "Tattle Your phone is tattling on you. Tattle shows every company your apps secretly contact, live, and explains it in plain English. It sees hostnames only and stores nothing. 2 0"
+  },
+  {
+    "title": "JimmyIt",
+    "url": "https://devpost.com/software/jimmyit",
+    "text": "JimmyIt A friend who celebrates effort at every pace! 11 4"
+  },
+  {
+    "title": "Knightro Tracker",
+    "text": "Knightro Tracker Easily track Knightro across campus through an interactive radar. Snap a photo, drop an instant sighting pin on the live map, and tackle daily bounties to earn points and climb up the leaderboard! 4 0",
+    "url": "https://devpost.com/software/token-eaters"
+  },
+  {
+    "title": "ContextLens",
+    "url": "https://devpost.com/software/contextlens-1g0xk5",
+    "text": "ContextLens See the full story behind viral videos. ContextLens fact-checks Instagram Reels and reveals missing context in short clips using AI-powered analysis and evidence. 0 0"
+  },
+  {
+    "title": "HearthWatch",
+    "url": "https://devpost.com/software/hearthwatch-0bkwp4",
+    "text": "HearthWatch An Edge-AI platform for simulating and monitoring at-risk nursing home and dementia patients in real-time. 7 0"
+  },
+  {
+    "title": "Cookie Crumbs",
+    "url": "https://devpost.com/software/cookie-crumbs",
+    "text": "Cookie Crumbs Analyze cookies, spot hidden trackers, and visualize your digital footprint, one crumb at a time. Open up the cookie jar to learn more about the cookies that follow you around. 6 1"
+  },
+  {
+    "title": "TrueFan",
+    "url": "https://devpost.com/software/truefan",
+    "text": "TrueFan TrueFan turns any franchise into an interactive constellation. See where to start, watch in order, unlock entries as you go, and ask AI about confusing lore. Never watch out of order again. 0 0"
+  },
+  {
+    "title": "VIGIL",
+    "text": "VIGIL Low-cost thermal person detection and geolocation for search-and-rescue (SAR) drones. 7 0",
+    "url": "https://devpost.com/software/vigil-1fx8gp"
+  },
+  {
+    "title": "Spore Protocol",
+    "url": "https://devpost.com/software/spore-protocol",
+    "text": "Spore Protocol An endless horde and zero bullets. Survive the Spore Protocol by freezing the infected to secure your extraction. 0 0"
+  },
+  {
+    "title": "BopItMania",
+    "url": "https://devpost.com/software/bopitmania",
+    "text": "BopItMania hmmm 3 0"
+  },
+  {
+    "title": "Market Maps",
+    "url": "https://devpost.com/software/market-maps",
+    "text": "Market Maps Lower the physical and mental cost of your grocery trip! A simulation demo that takes your shopping list and calculates the shortest route to every item and the checkout. 0 0"
+  },
+  {
+    "title": "Game Controller",
+    "text": "Game Controller We play games all the time but we rarely have games that help us exercise. This game controller uses computer vision to detect your hands so you can solve the classic game 2048 with lifted arms. 0 0",
+    "url": "https://devpost.com/software/game-controller"
+  },
+  {
+    "title": "Alien Interrogation",
+    "url": "https://devpost.com/software/alien-interrogation",
+    "text": "Alien Interrogation You're an alien pretending to be a human. Make the right face! 2 0"
+  },
+  {
+    "title": "The Last Commit",
+    "url": "https://devpost.com/software/the-last-commit",
+    "text": "The Last Commit Trapped in a fantasy world, you have 36 minutes to solve four coding challenges and escape. With Bao Bao, your AI-powered panda companion, turn programming practice into an adventure! 3 0"
+  },
+  {
+    "title": "Swarm",
+    "text": "Swarm Cheap attack drones are now one of the biggest threats to bases and infrastructure. Operators practice against scripted enemies. We built a trainer where the enemy learned to attack 4 0",
+    "url": "https://devpost.com/software/swarm-oqg6l4"
+  },
+  {
+    "title": "Presence",
+    "text": "Presence Cameras record known threats but don\u2019t recognize them. Presence alerts security within seconds when a flagged person appears on any camera. A human confirms every alert. It finds missing people too. 0 0",
+    "url": "https://devpost.com/software/presence-uqne7o"
+  },
+  {
+    "title": "ParaEditor",
+    "url": "https://devpost.com/software/para-editor",
+    "text": "ParaEditor ParaEditor is a perspective based parallax video and photo editor, which also allows you to create visual effects and filters using math. 1 0"
+  },
+  {
+    "title": "RAWRchery",
+    "text": "RAWRchery Draw a real bow with your real muscles. A VR survival game where an EMG armband turns your arm\u2019s strength into arrows against dinosaurs, meteors and a boss. 2 0",
+    "url": "https://devpost.com/software/rawrchery"
+  },
+  {
+    "title": "Sprouts of Safety",
+    "text": "Sprouts of Safety Defend Lenny's forest with your eyes: blink Morse code to summon allies in a hands-free tower defense game that teaches you SOS and beyond. 0 0",
+    "url": "https://devpost.com/software/morse-code-defense"
+  },
+  {
+    "title": "Sporandy Funguy",
+    "url": "https://devpost.com/software/sporandy-funguy",
+    "text": "Sporandy Funguy You are Sporandy Funguy, a mushroom come-to-life by the powers of blight. Give your limbs to blight to move to puzzle your way to the \"Bloomflower\". Find the most efficient path! 6 0"
+  },
+  {
+    "title": "GestureLab",
+    "text": "GestureLab With the implementation of an AI assistant, we are able to directly manipulate objects within a 3D workspace directly with our hands. 0 0",
+    "url": "https://devpost.com/software/shapeshift-enyqlj"
+  },
+  {
+    "title": "CrowdClear",
+    "text": "CrowdClear A Web & Immersive VR emergency evacuation training simulation: spot crowd jams, open exits, unblock obstacles, redirect the flow, and calm evacuators. 1 0",
+    "url": "https://devpost.com/software/crowdclear"
+  },
+  {
+    "title": "Enchanted Defense",
+    "url": "https://devpost.com/software/enchanted-defence",
+    "text": "Enchanted Defense Enchanted Defense: A game where the Bloom fights the Blight, and two first-timers fight GitHub and DevPost! 0 0"
+  },
+  {
+    "title": "Dronautics",
+    "text": "Dronautics Revolutionizing drone control with wireless local detection and GPS tracking at a very low cost 0 0",
+    "url": "https://devpost.com/software/dronautics"
+  },
+  {
+    "title": "ReefRoute",
+    "url": "https://devpost.com/software/reefroute",
+    "text": "ReefRoute ReefRoute is an application that boaters can use to help them saflty navigate around reefs to reach their desired location. 2 0"
+  },
+  {
+    "title": "KnightHack_IX_syntaxError",
+    "url": "https://devpost.com/software/knighthack_ix_syntaxerror",
+    "text": "KnightHack_IX_syntaxError Not like some other tower defense games, get ready to defend your CPU from bugs ready to ruin your development! 0 0"
+  },
+  {
+    "title": "In-cube-ator",
+    "url": "https://devpost.com/software/in-cub-ator",
+    "text": "In-cube-ator Plant so thirsty it drank. 0 0"
+  },
+  {
+    "title": "Guiding Hands",
+    "text": "Guiding Hands Projection meets physical therapy. 4 0",
+    "url": "https://devpost.com/software/guiding-hands"
+  },
+  {
+    "title": "WaveBoard",
+    "url": "https://devpost.com/software/waveboard-7y94fk",
+    "text": "WaveBoard Education at the flick of your wrist. 1 0"
+  },
+  {
+    "title": "B.O.B. (Building-Site Observation Bot)",
+    "text": "B.O.B. (Building-Site Observation Bot) BOB is construction site monitoring robot that uses AI & sensors to navigate pre-shift & mid-shift construction sites, identify potential hazards, & help construction teams improve personnel safety. 2 0",
+    "url": "https://devpost.com/software/bob-pjfhcx"
+  },
+  {
+    "title": "Sophro Shoppers",
+    "url": "https://devpost.com/software/shopping-cart-yvkgd2",
+    "text": "Sophro Shoppers Make shopping easier through the art of accessibility 0 0"
+  },
+  {
+    "title": "KnightScribe",
+    "url": "https://devpost.com/software/knightscribe",
+    "text": "KnightScribe A Raspberry Pi in the back of the classroom that records the lecture and the whiteboard, plus a chatbot that knows the whole course and only the course material. 6 2"
+  },
+  {
+    "title": "Cue",
+    "text": "Cue Cue: a longevity coach on Meta glasses. AI vision auto-logs healthy habits, suggests swaps the moment you slip, and a clip-on sensor coaches reps, tempo and form. One Longevity Score, zero logging. 0 0",
+    "url": "https://devpost.com/software/cue-5ry2b4"
+  },
+  {
+    "title": "R2 Hope",
+    "url": "https://devpost.com/software/r2-hope",
+    "text": "R2 Hope It\u2019s an autonomous triage-support droid. It finds the patient in a room on its own, drives to them, and monitors their eyes for fatigue \u2014 so nobody gets overlooked when staff are stretched 0 0"
+  },
+  {
+    "title": "ARCHER Program",
+    "text": "ARCHER Program The ARCHER program coordinates drone fleets for reconnaissance and surveillance, helping responders locate missing people and monitor emergencies before rescue teams can reach the scene. 1 0",
+    "url": "https://devpost.com/software/archer-program"
+  },
+  {
+    "title": "Clairvoyance",
+    "text": "Clairvoyance Clairvoyance is a wearable camera necklace for visually impaired users, paired with a voice assistant. + 1 1 0",
+    "url": "https://devpost.com/software/clairvoyance-kt3e6h"
+  },
+  {
+    "title": "Pulse",
+    "text": "Pulse We made a radar that can be used to help find people that are trapped due to natural disasters or other crises, it uses frequencies to find people through walls, and can read also their heart rate. 3 0",
+    "url": "https://devpost.com/software/pulse-cpnfut"
+  },
+  {
+    "title": "Echo",
+    "url": "https://devpost.com/software/echo-7kojgs",
+    "text": "Echo Nobody left behind 2 0"
+  },
+  {
+    "title": "Ghost Hands",
+    "url": "https://devpost.com/software/ghost-hands",
+    "text": "Ghost Hands Learning a hands on skill is hard- what makes it easier is learning from a professional. What makes it even easier, is having a hand by hand representation of that professional besides you. 3 0"
+  },
+  {
+    "title": "handoff",
+    "text": "handoff We gave AI a hand. Handoff is a wearable exoskeleton designed to help people with paralysis regain independence in everyday life and empower anyone to learn physical skills through AI-guided movement. 0 0",
+    "url": "https://devpost.com/software/handoff-nphg8b"
+  },
+  {
+    "title": "AquaWave",
+    "text": "AquaWave AquaWave makes water monitoring smarter with real-time wireless sensor telemetry, custom software-defined radio decoding, and cloud analytics to detect environmental changes. 2 0",
+    "url": "https://devpost.com/software/perry-water-sensor"
+  },
+  {
+    "title": "Jolteon",
+    "text": "Jolteon Every data center runs hot. We made that heat pay back. 12 1",
+    "url": "https://devpost.com/software/jolteon"
+  },
+  {
+    "title": "TrailBuddy",
+    "url": "https://devpost.com/software/trailbuddy",
+    "text": "TrailBuddy TrailBuddy is a Raspberry Pi hiking companion featuring a pixel-art animal companion, GPS tracking, and friend location sharing. 4 0"
+  },
+  {
+    "title": "CardioView",
+    "text": "CardioView A 3D heart that beats with your real time ECG. A Polar H10 streams your heartbeat into the browser, every beat moves the heart, and Gemini turns any patient you describe into a rhythm. 8 1",
+    "url": "https://devpost.com/software/cardioview-0qx9uc"
+  },
+  {
+    "title": "The AIFA (American Infrastructure Fixing Agent)",
+    "text": "The AIFA (American Infrastructure Fixing Agent) I learned about how Computer Vision yesterday from the guys at #NextEraEnergy and decided try the spot challenge because at the workshop I instantly thought of a moonshot agent for good - #OneEthos 1 0",
+    "url": "https://devpost.com/software/the-aifa-american-infrastructure-fixing-agent"
+  },
+  {
+    "title": "Parking Enforcement RC Car",
+    "text": "Parking Enforcement RC Car UCF enforces parking via large trucks, consuming gas and paid hours. This is cost ineffective. Instead, we trained an autonomous ground car with computer vision to assess parking availability 0 0",
+    "url": "https://devpost.com/software/parking-enforcement-rc-car"
+  },
+  {
+    "title": "Lenny VR Fighter Game",
+    "text": "Lenny VR Fighter Game Vr fighting game through a enchanted forest with the mascots of Knight Hacks! 0 0",
+    "url": "https://devpost.com/software/lenny-vr-fighter-game"
+  },
+  {
+    "title": "Knight Buddy",
+    "text": "Knight Buddy Knight Buddy is a low level embedded project. It uses two ESP32s, a database hosted on the web and various embedded components to function like as smart magic 8-ball. 0 0",
+    "url": "https://devpost.com/software/knight-buddy"
+  },
+  {
+    "title": "Sprout",
+    "text": "Sprout Sprout is an AI-powered desktop companion that helps blind and low-vision people create, understand, and edit presentations and other visual work independently through natural voice conversations. 0 0",
+    "url": "https://devpost.com/software/sprout-dhmxjv"
+  },
+  {
+    "title": "fpga_LangModel",
+    "text": "fpga_LangModel AI and the hardware it runs on are both getting expensive, so we decided to make our own. 0 0",
+    "url": "https://devpost.com/software/fpga_langmodel"
+  },
+  {
+    "title": "He Can See Us",
+    "text": "He Can See Us One Virtual Reality Monster VS Many PC Goblins 7 1",
+    "url": "https://devpost.com/software/he-can-see-us"
+  },
+  {
+    "title": "KnightSaver",
+    "text": "KnightSaver Cheap Surprise Bags of leftover food from UCF dining spots. Pick up with your Knight Pass, see the food and CO2 you saved, and earn Saver Cash and rewards for every rescue. 0 0",
+    "url": "https://devpost.com/software/knightsaver"
+  },
+  {
+    "title": "Cyclops",
+    "text": "Cyclops Say what you're looking for. Cyclops finds it with your phone's camera and walks you there, warning you about anything in the way. Built for blind and low-vision people, on any phone. 0 0",
+    "url": "https://devpost.com/software/cyclops-vuxk0d"
+  },
+  {
+    "title": "Aim Not",
+    "text": "Aim Not Robot which can play video games! This project uses 3d printed hardware, custom electronics, computer vision, and web sockets to play video games for you. 0 0",
+    "url": "https://devpost.com/software/aim-not"
+  },
+  {
+    "title": "Spotlight",
+    "text": "Spotlight Spotlight turns robot data into actionable insights. 3 0",
+    "url": "https://devpost.com/software/spotlight-fxqamj"
+  },
+  {
+    "title": "RiHab",
+    "text": "RiHab RiHab is an Arduino-powered wearable that gamifies physical therapy. By tracking joint motion, speed, and stability, it delivers real-data-driven recovery scores to patients and providers. 0 0",
+    "url": "https://devpost.com/software/rihab"
+  },
+  {
+    "title": "KinematiX",
+    "text": "KinematiX In the increasing world of embedded devices, researchers want to find out what a board does quick and fast. Our robot can probe pins, and we use detection algos to see what kind of data is going out. 0 0",
+    "url": "https://devpost.com/software/audit-the-llc"
+  },
+  {
+    "title": "Resonance",
+    "text": "Resonance Resonance is a gesture-controlled instrument that turns music into sound, visual notation, and vibration, letting Deaf and hard-of-hearing users create, see, and feel every layer. 0 0",
+    "url": "https://devpost.com/software/resonance-0uf6wq"
+  },
+  {
+    "title": "Vegi Knights",
+    "text": "Vegi Knights Enjoy slicing some vegetables with your friend though your camera! 1 0",
+    "url": "https://devpost.com/software/vegi-knights"
+  },
+  {
+    "title": "Tilted",
+    "text": "Tilted Tilted is a cooperative physics game where players tilt their phones to control one shared board. Team up, coordinate, and don\u2019t get tilted. 0 0",
+    "url": "https://devpost.com/software/tilted-01dbpv"
+  },
+  {
+    "title": "The Speakery",
+    "text": "The Speakery A cozy bakery game where kids practice their R, S, and K sounds by baking treats for Lenny the dragon, who actually listens and helps when a sound comes out wrong. 5 0",
+    "url": "https://devpost.com/software/the-speakery"
+  },
+  {
+    "title": "ForkAround&FindOut",
+    "text": "ForkAround&FindOut Quantum Privacy Firewall: Protecting quantum algorithms from reverse engineering through privacy-aware circuit transformations, verified correctness, and adaptive security evaluation. 0 0",
+    "url": "https://devpost.com/software/forkaround-findout"
+  },
+  {
+    "title": "T.A.G: Totally Awesome Game",
+    "text": "T.A.G: Totally Awesome Game Inspired by the sights and sounds of Jet Set Radio, T.A.G. is a stylish, fast-paced competitive 2D online multiplayer game. Hop into a lobby with 4 friends and race to see who can tag the most turf. 5 0",
+    "url": "https://devpost.com/software/t-a-g-totally-awesome-game"
+  },
+  {
+    "title": "Fobo",
+    "text": "Fobo We all know FOMO, but what about the fear of burning out? Fobo helps you make room for what matters most, without spreading yourself too thin. 20 2",
+    "url": "https://devpost.com/software/fobo-fear-of-burning-out"
+  }
+]
