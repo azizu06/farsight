@@ -140,3 +140,28 @@ Selecting the pin opened its boxed camera photo with nonzero natural width,
 again with zero errors. Private receipt/screenshot files are in
 `.cache/autosplat/quality/faces-*`; the task tab was closed afterward. This is
 desktop browser evidence, not a physical Quest test or real network run.
+
+The pinned 34d2d416 Quest blend-weight 500k/SH1 trial completed in **222.17 s**,
+**19.61 dB / 90**, with a 600k training cap and the last 200 steps reserved for
+fine-tuning after pruning. The exact 500,000-splat SH1 export is published as
+`scenes/run-094259-quest-blend-500k.ply`; that timing misses the 120 s goal.
+The 300k comparison and actual published-model frozen scores remain pending.
+A newer exact Sai benchmark was requested afterward and is a separate revision,
+not a replacement interpretation of these older pinned results.
+
+The pinned 300k/SH1 blend-weight trial measured **202.18 s**, **19.48 dB / 90**
+in its native evaluation. Frozen reloads of the actual published files scored
+**18.99 dB / 90** for 300k (9.74 s evaluation) and **19.19 dB / 90** for 500k
+(16.03 s), with maximum parameter differences 2.384e-7 and no property loss.
+These lower exported-model scores are the publication quality authority.
+The 300k model is `scenes/run-094259-best.ply`; it respects the requested Quest
+count and loses 0.20 dB against the 500k export while substantially improving on
+the volume-pruned 11.38 dB copy. Matched first and midpoint camera renders were
+inspected in the private `matched-export-views.png`: blend pruning retains the
+rover/shoe outline and room boundaries that volume pruning obscured, while
+fine texture remains blurred. No venue images are posted publicly.
+
+The exact 300k/SH1 candidate loaded in the locally served `/splat.html`: 300,000
+splats, reported load 265 ms, `error=null`, and zero page/unhandled-rejection
+errors. This was a desktop, non-XR browser sample; its instantaneous FPS is not
+a headset frame-budget qualification. The task tab was closed.
