@@ -116,13 +116,27 @@ pub fn rasterize_backwards_kernel<A: AtomicAddF32>(
     // them inline in the inner loop. Smaller shared footprint → more
     // workgroup occupancy on Apple.
     let mut pix_state = Shared::new_slice((TILE_SIZE * 4u32) as usize);
-    load_pixel_state(output, u, tile_origin_x, tile_origin_y, &mut pix_state);
+    let num_done = Shared::<[Atomic<u32>]>::new_slice(1usize);
+    if UNIT_POS == 0u32 {
+        Atomic::store(&num_done[0], 0u32);
+    }
+    // Order the store before the outside-pixel adds in load_pixel_state.
+    sync_cube();
+    load_pixel_state(output, u, tile_origin_x, tile_origin_y, &mut pix_state, &num_done);
     let (range_lo, range_hi) = load_range(tile_offsets, tile_id);
     let num_splats_in_tile = range_hi - range_lo;
     let rounds = (num_splats_in_tile + SPLAT_BATCH - 1u32) / SPLAT_BATCH;
 
     let mut batch_idx = 0u32;
     while batch_idx < rounds {
+        // Early exit: once every pixel's transmittance has decayed below
+        // cutoff, remaining splat batches contribute exactly zero
+        // gradient. The uniform load runs unconditionally at loop top —
+        // it contains a barrier, so it must stay in workgroup-uniform
+        // control flow (never inside a short-circuit `||`/`&&` or `if`).
+        if workgroup_uniform_load_atomic(&num_done[0]) >= TILE_SIZE {
+            break;
+        }
         let (compact_gid, splat, splat_active) = load_splat_for_batch(
             compact_gid_from_isect,
             projected,
@@ -138,6 +152,7 @@ pub fn rasterize_backwards_kernel<A: AtomicAddF32>(
             num_splats_in_tile,
             batch_idx,
             &mut pix_state,
+            &num_done,
             output,
             v_output,
             u,
@@ -194,6 +209,7 @@ fn load_pixel_state(
     tile_origin_x: u32,
     tile_origin_y: u32,
     pix_state: &mut Shared<[f32]>,
+    num_done: &Shared<[Atomic<u32>]>,
 ) {
     let pixels_per_load = (TILE_SIZE + SPLAT_BATCH - 1u32) / SPLAT_BATCH;
     let mut p = 0u32;
@@ -221,6 +237,8 @@ fn load_pixel_state(
                 pix_state[s + 1] = 0.0f32;
                 pix_state[s + 2] = 0.0f32;
                 pix_state[s + 3] = 0.0f32;
+                // Pixels outside the image count as done from the start.
+                Atomic::fetch_add(&num_done[0], 1u32);
             }
         }
         p += 1u32;
@@ -257,6 +275,7 @@ fn accumulate_grads_for_batch(
     num_splats_in_tile: u32,
     batch_idx: u32,
     pix_state: &mut Shared<[f32]>,
+    num_done: &Shared<[Atomic<u32>]>,
     output: &Tensor<f32>,
     v_output: &Tensor<f32>,
     u: RasterizeUniforms,
@@ -310,6 +329,9 @@ fn accumulate_grads_for_batch(
                     let next_t = state_w * (1.0f32 - alpha_eff);
                     if next_t <= 1.0e-4f32 {
                         pix_state[s + 3] = 0.0f32;
+                        // Pixel just saturated: count it for the
+                        // tile-level early-exit vote.
+                        Atomic::fetch_add(&num_done[0], 1u32);
                     } else {
                         let vis = alpha_eff * state_w;
                         // Re-derive v_out and inv_final_a from `v_output` /

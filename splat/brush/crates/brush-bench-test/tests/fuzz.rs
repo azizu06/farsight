@@ -555,3 +555,71 @@ async fn fuzz_bwd_extreme_inputs_stay_finite() {
         }
     }
 }
+
+/// Regression for the rasterize_backwards early-exit SPIR-V failure:
+/// `workgroup_uniform_load_atomic` is a barrier+load and must sit in
+/// workgroup-uniform control flow. Driving it through the real launch
+/// path (`bwd::render_splats`, which picks HfAtomicAdd/CasAtomicAdd from
+/// device features) catches non-uniform placements at WGSL/SPIR-V
+/// validation time. Covers both outcomes of the vote: a fully-covered
+/// opaque scene (all pixels saturate -> break fires) and a scene whose
+/// splats stay transparent (vote never fires, loop runs to `rounds`).
+#[tokio::test]
+async fn bwd_early_exit_vote_runs_under_real_variant() {
+    let device = brush_cube::test_helpers::test_device().await;
+    let device_d = burn::tensor::Device::from(device.clone()).autodiff();
+    let cam = std_cam();
+    // 64x64 => a 4x4 tile grid; splats centered on the middle only.
+    let img_size = glam::uvec2(64, 64);
+
+    // Big, near-1 opacity splats covering the whole image: pixels
+    // saturate within the first batch, so `num_done` reaches TILE_SIZE
+    // and the uniform `break` in rasterize_backwards fires.
+    let n = 128;
+    let means: Vec<f32> = (0..n)
+        .flat_map(|i| {
+            let x = ((i % 16) as f32 - 8.0) * 0.1;
+            let y = ((i / 16) as f32 - 4.0) * 0.1;
+            [x, y, 4.0]
+        })
+        .collect();
+    let rots: Vec<f32> = (0..n).flat_map(|_| [1.0, 0.0, 0.0, 0.0]).collect();
+    let big_ls: Vec<f32> = (0..n).flat_map(|_| [0.0, 0.0, 0.0]).collect();
+    let dc: Vec<f32> = (0..n).flat_map(|_| [1.0, -0.5, 0.25]).collect();
+    let opaque = vec![12.0f32; n]; // sigmoid ~1
+    let splats = Splats::from_raw(
+        means,
+        rots,
+        big_ls,
+        dc,
+        opaque,
+        SplatRenderMode::Default,
+        &device_d,
+    );
+    let diff =
+        brush_render::bwd::render_splats(splats.clone(), &cam, img_size, glam::Vec3::ZERO)
+            .await;
+    splats.bwd_validate(diff.img.mean()).await;
+
+    // Near-transparent tiny splats: no pixel saturates, the vote never
+    // fires and the batch loop runs through `rounds`.
+    let n2 = 64;
+    let means2: Vec<f32> = (0..n2).flat_map(|_| [0.05, 0.05, 4.0]).collect();
+    let rots2: Vec<f32> = (0..n2).flat_map(|_| [1.0, 0.0, 0.0, 0.0]).collect();
+    let ls2: Vec<f32> = (0..n2).flat_map(|_| [-8.0, -8.0, -8.0]).collect();
+    let dc2: Vec<f32> = (0..n2).flat_map(|_| [0.1, 0.2, 0.3]).collect();
+    let faint = vec![-8.0f32; n2]; // sigmoid ~0
+    let splats2 = Splats::from_raw(
+        means2,
+        rots2,
+        ls2,
+        dc2,
+        faint,
+        SplatRenderMode::Default,
+        &device_d,
+    );
+    let diff2 =
+        brush_render::bwd::render_splats(splats2.clone(), &cam, img_size, glam::Vec3::ZERO)
+            .await;
+    splats2.bwd_validate(diff2.img.mean()).await;
+}
