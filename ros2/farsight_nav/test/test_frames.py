@@ -98,6 +98,27 @@ def test_optical_points_match_arkit_world_projection():
     np.testing.assert_allclose(through_tf, expected, atol=1e-5)
 
 
+def test_camera_stays_at_mount_height_wherever_the_arkit_session_started():
+    """Floor test 2026-10-11: ARKit y -0.75 (session began 0.75 m up) put the camera 0.6 m under the floor."""
+    floor_y = -0.15
+    for height in (-0.75, 0.0, 1.07):
+        pose = arkit_pose(0.3, -0.4, math.radians(25), pitch=math.radians(-30), height=height)
+        position, rotation = frames.camera_in_odom(pose, floor_y)
+        assert math.isclose(position[2], 0.15, abs_tol=1e-12)
+        # The floor 0.15 m under the camera lands at odom Z = 0 through TF.
+        down = math.radians(30)
+        depth = np.zeros((120, 160), np.float32)
+        depth[60, 80] = 0.15 / math.sin(down)
+        optical = frames.depth_points(depth, 100.0, 100.0, 80.0, 60.0)[0]
+        x, y, z, w = frames.OPTICAL_QUATERNION
+        optical_rotation = np.array([
+            [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+            [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]])
+        floor = rotation @ optical_rotation @ optical + position
+        assert math.isclose(floor[2], 0.0, abs_tol=1e-6)
+
+
 def test_depth_packet_decoding():
     import json
     import struct
