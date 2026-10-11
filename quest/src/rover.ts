@@ -737,8 +737,8 @@ export class RoverExperience {
       if (this.auto) this.roamStep(now, stickX, stickY);
       this.lastRoamAt = this.auto ? now : -Infinity;
       this.input = { held,
-        v: this.auto ? 0 : -stick(stickY, XR_STICK_DEADZONE) * 0.675,
-        w: this.auto ? 0 : stick(stickX, XR_STICK_DEADZONE) * 0.825,
+        v: this.auto ? 0 : -stick(stickY, XR_STICK_DEADZONE),
+        w: this.auto ? 0 : stick(stickX, XR_STICK_DEADZONE),
         pan: this.digitalPan ? 0 : this.panSmoother.step(-THREE.MathUtils.radToDeg(yaw), this.panDt()) };
       if (aHold) {
         this.stop("Actions open: release trigger");
