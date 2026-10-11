@@ -38,6 +38,10 @@ const receive=raw.worker.onmessage;
 raw.worker.onmessage=event=>{
  const data=event.data,input=inFlightInput;inFlightInput=null;
  if(input?.cancelled){data.patch?.image.close();raw.busy=false;updateLabels();change();return;}
+ if(!data.error&&raw.active){
+  gpu.group.visible=input?.kind!=='recorded';
+  if(input?.kind==='recorded'||inputKind==='recorded'){raw.clear();framed=false;}
+ }
  if(!data.error){const prepared=prepareComparisonCapture(data);data.patch.indices=prepared.indices;data.fallback_indices=prepared.fallbackIndices;data.patch.comparisonColors=prepared.colors;}
  receive(event);
  if(!data.error&&raw.active&&raw.frame===data.frame){
@@ -56,7 +60,7 @@ const workerError=raw.worker.onerror;
 raw.worker.onerror=event=>{inFlightInput=null;workerError(event);freezeAfterCapture=false;streaming=false;frozen=true;updateLabels();change();};
 const titles={points:['A · Points only','Measured points, without connecting faces.'],balanced:['B · Small triangles + points','Same native depth faces, with camera colors sampled at their vertices.'],texture:['C · Camera color + points','Same native depth faces, with the full camera image across each face.']};
 function setMode(value){mode=value;applyComparisonMode(raw,mode);cloudMaterial.size=mode==='points'?.035:.018;updateLabels();change();return stats();}
-function bounds(){const box=new THREE.Box3();for(const slot of gpu.slots.values())if(slot.points.geometry.boundingBox)box.union(slot.points.geometry.boundingBox);if(raw.count&&raw.points.geometry.boundingBox)box.union(raw.points.geometry.boundingBox);return box;}
+function bounds(){const box=new THREE.Box3();if(gpu.group.visible)for(const slot of gpu.slots.values())if(slot.points.geometry.boundingBox)box.union(slot.points.geometry.boundingBox);if(raw.count&&raw.points.geometry.boundingBox)box.union(raw.points.geometry.boundingBox);return box;}
 function setPose(value='front'){
  const box=bounds();if(box.isEmpty())return;const center=box.getCenter(new THREE.Vector3()),radius=Math.max(.3,box.getSize(new THREE.Vector3()).length()/2);
  const vectors={front:new THREE.Vector3(.45,.3,1),side:new THREE.Vector3(1,.25,.25),above:new THREE.Vector3(.1,1,.2)};
@@ -66,7 +70,7 @@ function setPose(value='front'){
 function frameScan(){setPose('front');}
 function stats(){
  const native=raw.stats(),triangles=mode==='points'?0:native.raw_triangles;
- return {mode,input:inputKind,requested_input:requestedKind,capture_pending:raw.busy,frozen,streaming,accepted_captures:accepted,recording:recordingName||null,recorded_wall_ms:recordedWall,source:inputKind==='recorded'?`RECORDED ${native.raw_source??'UNVERIFIED RGB-D'}`:inputKind==='live'?(native.raw_source??'WAITING FOR NATIVE RGB-D'):receiver.sourceLabel,retained_points:state.size,native_points:raw.count,triangles,native_faces:native.raw_triangles,fallback_points:raw.fallbackCount,native_frame:native.raw_frame,native_identity:native.raw_identity,native_age_ms:inputKind==='recorded'?null:native.raw_age_ms,recorded_decode_age_ms:inputKind==='recorded'?native.raw_age_ms:null,native_bytes:native.raw_bytes,error:native.raw_error,dense_error:receiver.error,bootstrap_incomplete:receiver.cursor.snapshot==='true',dense_epoch:receiver.epoch,camera:camera.position.toArray(),target:controls.target.toArray(),draw_calls:renderer.info.render.calls,scope:'Read-only desktop comparison; no rover control or headset performance claim'};
+ return {mode,input:inputKind,requested_input:requestedKind,capture_pending:raw.busy,frozen,streaming,accepted_captures:accepted,recording:recordingName||null,recorded_wall_ms:recordedWall,source:inputKind==='recorded'?`RECORDED ${native.raw_source??'UNVERIFIED RGB-D'}`:inputKind==='live'?(native.raw_source??'WAITING FOR NATIVE RGB-D'):receiver.sourceLabel,retained_points:gpu.group.visible?state.size:0,stored_retained_points:state.size,native_points:raw.count,triangles,native_faces:native.raw_triangles,native_patches:native.raw_patches,fallback_points:raw.fallbackCount,native_frame:native.raw_frame,native_identity:native.raw_identity,native_age_ms:inputKind==='recorded'?null:native.raw_age_ms,recorded_decode_age_ms:inputKind==='recorded'?native.raw_age_ms:null,native_bytes:native.raw_bytes,error:native.raw_error,dense_error:receiver.error,bootstrap_incomplete:receiver.cursor.snapshot==='true',dense_epoch:receiver.epoch,camera:camera.position.toArray(),target:controls.target.toArray(),draw_calls:renderer.info.render.calls,scope:'Read-only desktop comparison; no rover control or headset performance claim'};
 }
 function updateLabels(){
  const s=stats();document.querySelector('#title').textContent=titles[mode][0];document.querySelector('#subtitle').textContent=titles[mode][1];
@@ -75,7 +79,7 @@ function updateLabels(){
  document.querySelector('#source').textContent=source;
  document.querySelector('#stats').textContent=`${s.retained_points.toLocaleString()} retained points · ${s.native_points.toLocaleString()} native samples · ${s.triangles.toLocaleString()} triangles · ${s.fallback_points.toLocaleString()} uncovered samples${s.native_frame!==null?' · frame '+s.native_frame:''}${s.bootstrap_incomplete?' · point bootstrap incomplete':''}`;
  document.querySelector('#error').textContent=raw.error??(!s.native_faces&&mode!=='points'?'No native triangles accepted yet. Capture a sample or load a recorded RGB-D packet.':receiver.error??'');
- shownError=raw.error;document.querySelector('#capture').disabled=raw.busy;document.querySelector('#recording').disabled=raw.busy;document.querySelector('#live').textContent=streaming?'Stop live capture':'Start live capture';document.querySelector('#freeze').textContent=frozen?'Resume point history':'Freeze comparison';
+ shownError=raw.error;document.querySelector('#capture').disabled=raw.busy;document.querySelector('#recording').disabled=raw.busy;document.querySelector('#live').textContent=streaming?'Stop live capture':'Start live capture';document.querySelector('#freeze').disabled=inputKind==='recorded';document.querySelector('#freeze').textContent=inputKind==='recorded'?'Recorded sample frozen':frozen?'Resume point history':'Freeze comparison';
 }
 async function captureOnce(){
  if(raw.busy)return;
@@ -84,7 +88,7 @@ async function captureOnce(){
  if(!raw.busy){freezeAfterCapture=false;frozen=true;}
  updateLabels();change();
 }
-function setFrozen(value){frozen=value;if(value){streaming=false;receiver.request?.abort();cancelPendingLive();}updateLabels();change();}
+function setFrozen(value){if(inputKind==='recorded'&&!value)return;frozen=value;if(value){streaming=false;receiver.request?.abort();cancelPendingLive();}updateLabels();change();}
 async function loadRecording(buffer,name='recorded-frame.bin'){
  if(raw.busy)return false;
  streaming=false;frozen=true;freezeAfterCapture=false;requestedKind='recorded';receiver.request?.abort();
