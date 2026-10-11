@@ -8,8 +8,8 @@ The desktop map is a bare canvas for the incoming 3D points: right-drag orbits,
 left-drag pans, scroll zooms, and F frames the scan. **Escape** opens settings;
 **Controls** inside settings opens rover actions and source, connection and stop
 details. Escape closes the controls again. Opening controls or changing views
-stops motion and requires a fresh deadman press. The grid and floating HUD are
-absent, and points-only is the desktop default; headset geometry remains hybrid.
+stops motion and requires a fresh deadman press. A subtle grid gives depth context;
+the floating HUD is absent. Points-only is the desktop default; headset geometry remains hybrid.
 
 Build with `npm ci && npm run build` from `quest/`. Run `npm test` for protocol,
 full-frame geometry, action-menu hit testing, and control safety checks. `npm run test:browser` runs the

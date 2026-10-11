@@ -167,12 +167,14 @@ const gridMaterial = new THREE.ShaderMaterial({
     major: { value: new THREE.Color("#616161") },
     cellSize: { value: 0.5 },
     sectionSize: { value: 2 },
-    fadeDistance: { value: 25 },
+    fadeDistance: { value: 40 },
+    opacity: { value: 0.4 },
   },
   vertexShader: `varying vec3 world;
     void main() { vec4 p = modelMatrix * vec4(position, 1.0); world = p.xyz; gl_Position = projectionMatrix * viewMatrix * p; }`,
   fragmentShader: `varying vec3 world; uniform vec3 minor; uniform vec3 major;
     uniform float cellSize; uniform float sectionSize; uniform float fadeDistance;
+    uniform float opacity;
     float line(vec2 p, float width) {
       vec2 d = max(fwidth(p), vec2(0.00001));
       vec2 a = abs(fract(p - 0.5) - 0.5) / d;
@@ -181,7 +183,7 @@ const gridMaterial = new THREE.ShaderMaterial({
     void main() {
       float fine = line(world.xz / cellSize, 0.5); float coarse = line(world.xz / sectionSize, 0.8);
       float fade = pow(1.0 - smoothstep(0.0, fadeDistance, distance(cameraPosition, world)), 1.6);
-      float alpha = max(fine * 0.65, coarse * 0.8) * fade;
+      float alpha = max(fine * 0.65, coarse * 0.8) * fade * opacity;
       if (alpha < 0.01) discard;
       gl_FragColor = vec4(mix(minor, major, coarse), alpha);
       #include <colorspace_fragment>
@@ -352,7 +354,7 @@ renderer.setAnimationLoop((_time, frame) => {
   if (rover) rover.navLayer.position.y = walking ? mapWalk.floorY : 0;
   if (rover) { const { packet, at } = rover.latestDetections; personMarkers.update(packet, at, start); }
   mapAxes.visible = false;
-  grid.visible = renderer.xr.isPresenting && !walking;
+  grid.visible = !walking;
   surfaces.material = renderer.xr.isPresenting ? immersiveSurfaceMaterial : desktopSurfaceMaterial;
   if (renderer.xr.isPresenting) {
     gridMaterial.uniforms.minor.value.set("#4d4d4d");
@@ -360,6 +362,7 @@ renderer.setAnimationLoop((_time, frame) => {
     gridMaterial.uniforms.cellSize.value = 1;
     gridMaterial.uniforms.sectionSize.value = 10;
     gridMaterial.uniforms.fadeDistance.value = 160;
+    gridMaterial.uniforms.opacity.value = 1;
     grid.scale.setScalar(Math.max(vrMapSpan, 4) / 2000);
     grid.position.x = vrMapCenter.x; grid.position.z = vrMapCenter.z;
     renderer.setClearColor(0x080f16);
@@ -368,7 +371,8 @@ renderer.setAnimationLoop((_time, frame) => {
     gridMaterial.uniforms.major.value.set("#51565e");
     gridMaterial.uniforms.cellSize.value = 0.5;
     gridMaterial.uniforms.sectionSize.value = 2;
-    gridMaterial.uniforms.fadeDistance.value = 25;
+    gridMaterial.uniforms.fadeDistance.value = 40;
+    gridMaterial.uniforms.opacity.value = 0.4;
     grid.scale.setScalar(1); grid.position.x = grid.position.z = 0;
     renderer.setClearColor(0x202226);
   }
