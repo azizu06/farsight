@@ -1009,7 +1009,7 @@ async fn stream_mjpg(State(s): State<Arc<AppState>>) -> Response {
                     while off < all.len() {
                         let end = (off + PACE_CHUNK).min(all.len());
                         crate::pacer::pace_live(end - off).await;
-                        yield Ok::<_, std::io::Error>(all.slice(off..end).to_vec());
+                        yield Ok::<_, std::io::Error>(all.slice(off..end));
                         off = end;
                     }
                     last = identity;
