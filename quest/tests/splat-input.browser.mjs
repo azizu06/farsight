@@ -73,9 +73,17 @@ try {
     const beforeTurn=head();right.axes[2]=1;nav.update(.1,frame,[]);const afterTurn=head();const xrYaw=rig.rotation.y;
     right.axes[2]=0;nav.update(.1,frame,[]);left.buttons[4].pressed=true;nav.update(.1,frame,[]);
     const xrReset=head(),resetYaw=rig.rotation.y-Math.PI/2;
+    session.inputSources=[{handedness:'right',gamepad:right}];nav.update(0,frame,[]);
+    const rightOnlyStart=head();right.axes[3]=-1;
+    for(let i=0;i<10;i++)nav.update(.1,frame,[]);
+    const rightOnlyWalk=head(),beforeFallbackTurn=rig.rotation.y;
+    right.axes[3]=0;right.axes[2]=1;nav.update(.1,frame,[]);
+    const rightOnlyTurn=rig.rotation.y-beforeFallbackTurn;
+    right.buttons[4].pressed=true;nav.update(.1,frame,[]);const rightOnlyReset=head();
     renderer.xr.isPresenting=false;nav.reset();const exit=position();
     controls.dispose();renderer.dispose();
-    return {initial,flatWalk,flatYaw,flatPivot,heldYaw,reset,xrStart,xrWalk,beforeTurn,afterTurn,xrYaw,xrReset,resetYaw,exit};
+    return {initial,flatWalk,flatYaw,flatPivot,heldYaw,reset,xrStart,xrWalk,beforeTurn,afterTurn,xrYaw,xrReset,resetYaw,exit,
+      rightOnlyStart,rightOnlyWalk,rightOnlyTurn,rightOnlyReset};
   });
   const close=(a,b)=>assert.ok(Math.abs(a-b)<1e-6,`${a} vs ${b}`);
   result.initial.forEach((v,i)=>close(v,[2,1.4,-3][i]));
@@ -88,6 +96,9 @@ try {
   close(result.xrYaw,-Math.PI/6);
   result.xrReset.forEach((v,i)=>close(v,result.initial[i]));
   close(result.resetYaw,0);
+  close(result.rightOnlyWalk[0],result.rightOnlyStart[0]);close(result.rightOnlyWalk[2]-result.rightOnlyStart[2],-1.5);
+  close(result.rightOnlyTurn,-Math.PI/6);
+  result.rightOnlyReset.forEach((v,i)=>close(v,result.initial[i]));
   result.exit.forEach((v,i)=>close(v,result.initial[i]));
   console.log('PASS splat flat/XR walk, fresh head yaw, 30-degree snap pivot, hold, A/X reset and session exit; SOFTWARE ONLY');
 }finally{

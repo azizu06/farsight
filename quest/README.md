@@ -271,7 +271,8 @@ liveness timing are unchanged. The diagnostics overlay (`src/diagnostics.js`,
 `splat.html?scene=scenes/<room>.ply&type=ply` is separate from driving. With
 Quest Touch controllers, press **ENTER VR** first: left stick walks/strafe at
 1.5 m/s relative to the head, right stick turns 30° per push, A/X resets. In the
-flat browser panel, drag/scroll to orbit/zoom; standard gamepads also walk/turn.
+absence of a left controller, right stick Y walks forward/back while X still turns.
+In the flat browser panel, drag/scroll to orbit/zoom; standard gamepads also walk/turn.
 Touch pads are XR input sources and are not returned by `navigator.getGamepads()`;
 the flat panel cannot read their sticks when Quest Browser does not expose them.
 

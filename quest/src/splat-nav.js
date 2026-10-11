@@ -27,11 +27,15 @@ export function stickAxes(gamepad) {
 export function walkInputs(session, gamepads = []) {
   const inputs = { left: { x: 0, y: 0, reset: false }, right: { x: 0, y: 0, reset: false } };
   if (session) {
+    let hasLeft = false;
     for (const source of session.inputSources) {
       if (source.gamepad && (source.handedness === "left" || source.handedness === "right")) {
+        if (source.handedness === "left") hasLeft = true;
         inputs[source.handedness] = { ...stickAxes(source.gamepad), reset: !!source.gamepad.buttons[4]?.pressed };
       }
     }
+    // A single right Touch controller can still explore: Y walks, X snap-turns.
+    if (!hasLeft) inputs.left.y = inputs.right.y;
   } else {
     for (const pad of gamepads) {
       if (!pad || pad.connected === false) continue;

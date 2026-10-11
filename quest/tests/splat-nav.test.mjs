@@ -54,6 +54,9 @@ test("flat standard pads map both sticks; an XR session always owns Touch input"
   });
   assert.deepEqual(walkInputs(null, [{...touch,id:"Oculus Touch (Left)"}]).left,{x:.7,y:-.9,reset:true});
   assert.equal(walkInputs(null,[{...pad,connected:false}]).left.y,0);
+  const rightOnly=walkInputs({inputSources:[{handedness:"right",gamepad:touch}]});
+  assert.deepEqual(rightOnly.left,{x:0,y:-.9,reset:false},"right Y walks when left controller is absent");
+  assert.deepEqual(rightOnly.right,{x:.7,y:-.9,reset:true},"right X snap and A reset retained");
 });
 
 test("start at a captured camera eye and yaw, or inside the room bounds", () => {
