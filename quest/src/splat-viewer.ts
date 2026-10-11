@@ -2,7 +2,8 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { VRButton } from "three/addons/webxr/VRButton.js";
 import { SparkRenderer, SplatMesh, type SplatFileType } from "@sparkjsdev/spark";
-import { SnapTurn, moveStep, splatParams, stickAxes, sceneFileType, turnAbout } from "./splat-nav.js";
+import { splatParams, sceneFileType, sceneStart } from "./splat-nav.js";
+import { SplatNavigation } from "./splat-navigation";
 
 /**
  * Post-run Gaussian splat walkthrough (splat.html). Separate from the driving page:
@@ -35,54 +36,63 @@ rig.add(camera);
 scene.add(rig);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
+const navigation = new SplatNavigation(renderer, rig, camera, controls);
 
 let mesh: SplatMesh | null = null;
 let flipped = params.flip;
 const UPRIGHT = new THREE.Quaternion(), FLIPPED = new THREE.Quaternion(1, 0, 0, 0);
+let transforms: unknown = null;
 
-function placeRig() {
-  rig.position.fromArray(params.start);
-  rig.rotation.set(0, THREE.MathUtils.degToRad(params.yawDeg), 0);
-  rig.updateMatrixWorld(true);
-}
-
-/** Desktop framing: orbit the scene's center from far enough back to see it whole. */
-function frameDesktop() {
+function setStart() {
   const box = mesh?.isInitialized ? mesh.getBoundingBox(true).applyMatrix4(mesh.matrixWorld) : null;
-  const local = (point: THREE.Vector3) => rig.worldToLocal(point.clone());
-  if (box && !box.isEmpty()) {
-    const center = box.getCenter(new THREE.Vector3()), size = box.getSize(new THREE.Vector3()).length() || 1;
-    controls.target.copy(local(center));
-    camera.position.copy(local(center.clone().add(new THREE.Vector3(0, size * 0.15, size * 0.6))));
-  } else {
-    controls.target.set(0, 1.6, -1);
-    camera.position.set(0, 1.6, 0);
-  }
-  controls.update();
+  const start = sceneStart(transforms, box, flipped);
+  const query = new URLSearchParams(location.search);
+  if (query.has("pos")) start.eye = [params.start[0], params.start[1] + 1.6, params.start[2]];
+  if (query.has("yaw")) start.yaw = THREE.MathUtils.degToRad(params.yawDeg);
+  navigation.setStart(start);
+  stats.start = start;
 }
 
 function resetView() {
-  placeRig();
-  if (!renderer.xr.isPresenting) frameDesktop();
+  navigation.reset();
+}
+
+/** Explicit transforms= wins, then scene-specific or adjacent dataset sidecars. */
+async function loadTransforms(url?: string) {
+  if (!url) return null;
+  const sceneUrl = new URL(url, location.href);
+  const sidecar = new URL(sceneUrl.href);
+  sidecar.pathname = sidecar.pathname.replace(/\.[^/.]+$/, "") + ".transforms.json";
+  const explicit = new URLSearchParams(location.search).get("transforms");
+  const candidates = explicit ? [new URL(explicit, location.href)] : [sidecar, new URL("transforms.json", sceneUrl)];
+  for (const candidate of candidates) {
+    try {
+      const response = await fetch(candidate);
+      if (response.ok) return await response.json();
+    } catch { /* A bare scene file still has a bounds-based start. */ }
+  }
+  return null;
 }
 
 async function load(options: { url?: string; fileBytes?: ArrayBuffer; fileName?: string; fileType?: string }) {
   if (mesh) { scene.remove(mesh); mesh.dispose(); mesh = null; }
   status.textContent = `Loading ${options.fileName ?? options.url}…`;
   const started = performance.now();
+  const pose = loadTransforms(options.url);
   try {
     const next = new SplatMesh({ ...options, fileType: options.fileType as SplatFileType | undefined });
     next.quaternion.copy(flipped ? FLIPPED : UPRIGHT);
     mesh = next;
     scene.add(next);
-    await next.initialized;
+    const [, capture] = await Promise.all([next.initialized, pose]);
     if (mesh !== next) return;
+    transforms = capture;
     if (Number.isInteger(shParam) && shParam >= 0 && shParam <= 3) next.maxSh = shParam;
     next.updateMatrixWorld(true);
     stats.splats = next.packedSplats?.numSplats ?? null;
     stats.loadMs = Math.round(performance.now() - started);
     status.textContent = `${options.fileName ?? options.url} · ${stats.splats?.toLocaleString() ?? "?"} splats · ${stats.loadMs} ms`;
-    resetView();
+    setStart(); resetView();
   } catch (error) {
     status.textContent = `Could not load scene: ${error instanceof Error ? error.message : String(error)}`;
     stats.error = status.textContent;
@@ -94,7 +104,7 @@ document.getElementById("splat-flip")!.onclick = () => {
   flipped = !flipped;
   mesh?.quaternion.copy(flipped ? FLIPPED : UPRIGHT);
   mesh?.updateMatrixWorld(true);
-  if (!renderer.xr.isPresenting) frameDesktop();
+  setStart(); resetView();
 };
 document.getElementById("splat-file")!.addEventListener("change", async event => {
   const file = (event.target as HTMLInputElement).files?.[0];
@@ -105,56 +115,32 @@ addEventListener("resize", () => {
   camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
 });
-renderer.xr.addEventListener("sessionstart", () => { controls.enabled = false; placeRig(); });
+renderer.xr.addEventListener("sessionstart", () => { controls.enabled = false; resetView(); });
 renderer.xr.addEventListener("sessionend", () => { controls.enabled = true; resetView(); });
 
 /** Read by tests and over CDP on the headset: frame rate, splat count, load time. */
-const stats = { fps: 0, splats: null as number | null, loadMs: null as number | null, xr: false, error: null as string | null };
+const stats = { fps: 0, splats: null as number | null, loadMs: null as number | null, xr: false, error: null as string | null,
+  start: null as ReturnType<typeof sceneStart> | null, rig: [0, 0, 0], yaw: 0, inputs: navigation.inputs,
+  eye: [0, 1.6, 0], flatGamepads: 0 };
 (globalThis as unknown as { __splatStats: typeof stats }).__splatStats = stats;
 
-const snap = new SnapTurn();
-const head = new THREE.Vector3(), headQuat = new THREE.Quaternion(), euler = new THREE.Euler();
-const resetHeld = { left: false, right: false };
 let last = performance.now(), frames = 0, windowStart = last;
-
-function walk(dt: number) {
-  const session = renderer.xr.getSession();
-  if (!session) return;
-  const xrCamera = renderer.xr.getCamera();
-  xrCamera.getWorldPosition(head); xrCamera.getWorldQuaternion(headQuat);
-  euler.setFromQuaternion(headQuat, "YXZ");
-  for (const source of session.inputSources) {
-    const gamepad = source.gamepad;
-    if (!gamepad || (source.handedness !== "left" && source.handedness !== "right")) continue;
-    const { x, y } = stickAxes(gamepad);
-    if (source.handedness === "left") {
-      const { dx, dz } = moveStep(x, y, euler.y, dt);
-      rig.position.x += dx; rig.position.z += dz;
-    } else {
-      const turn = snap.step(x);
-      if (turn) {
-        const next = turnAbout(rig.position, head, turn);
-        rig.position.x = next.x; rig.position.z = next.z; rig.rotation.y += turn;
-      }
-    }
-    // A (right) or X (left): back to the start pose, on the press edge.
-    const pressed = !!gamepad.buttons[4]?.pressed;
-    if (pressed && !resetHeld[source.handedness]) placeRig();
-    resetHeld[source.handedness] = pressed;
-  }
-}
-
-renderer.setAnimationLoop(() => {
+const eye = new THREE.Vector3(), orientation = new THREE.Quaternion(), heading = new THREE.Euler(0, 0, 0, "YXZ");
+renderer.setAnimationLoop((_time, frame) => {
   const now = performance.now(), dt = (now - last) / 1000;
   last = now;
   stats.xr = renderer.xr.isPresenting;
-  if (stats.xr) walk(dt);
-  else controls.update();
+  const pads = stats.xr ? [] : [...navigator.getGamepads()];
+  navigation.update(dt, frame, pads);
+  if (!stats.xr) controls.update();
+  stats.rig = rig.position.toArray();
+  stats.inputs = navigation.inputs; stats.flatGamepads = pads.filter(Boolean).length;
   renderer.render(scene, camera);
+  camera.getWorldPosition(eye); camera.getWorldQuaternion(orientation);
+  stats.eye = eye.toArray(); stats.yaw = heading.setFromQuaternion(orientation, "YXZ").y;
   frames++;
   if (now - windowStart >= 1000) { stats.fps = Math.round(frames * 1000 / (now - windowStart)); frames = 0; windowStart = now; }
 });
 
-placeRig();
-frameDesktop();
+setStart(); resetView();
 if (params.scene) void load({ url: params.scene, fileType: params.type });

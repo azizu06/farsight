@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { NAV, SnapTurn, moveStep, sceneFileType, shaped, splatParams, stickAxes, turnAbout } from "../src/splat-nav.js";
+import { NAV, SnapTurn, moveStep, sceneFileType, shaped, splatParams, stickAxes, turnAbout, walkInputs, sceneStart } from "../src/splat-nav.js";
 
 const close = (a, b, label) => assert.ok(Math.abs(a - b) < 1e-9, `${label}: ${a} vs ${b}`);
 
@@ -15,6 +15,8 @@ test("left stick walks where the head faces, horizontally, at the configured spe
   assert.deepEqual(moveStep(0.1, -0.1, 0, 0.05), { dx: 0, dz: 0 }, "deadzone");
   assert.deepEqual(moveStep(0, -1, 0, NaN), { dx: 0, dz: 0 });
   assert.equal(shaped(NAV.deadzone + 1e-6) > 0, true, "motion starts from zero past the deadzone");
+  const diagonal = moveStep(1, -1, 0, .1);
+  close(Math.hypot(diagonal.dx, diagonal.dz), .15, "diagonal stays at 1.5 m/s");
 });
 
 test("right stick snap-turns once per push and re-arms only after returning", () => {
@@ -39,6 +41,38 @@ test("xr-standard thumbsticks read axes 2/3, older mappings 0/1", () => {
   assert.deepEqual(stickAxes({ axes: [0, 0, 0.5, -1] }), { x: 0.5, y: -1 });
   assert.deepEqual(stickAxes({ axes: [0.25, 0.75] }), { x: 0.25, y: 0.75 });
   assert.deepEqual(stickAxes(undefined), { x: 0, y: 0 });
+});
+
+test("flat standard pads map both sticks; an XR session always owns Touch input", () => {
+  const pad = { connected: true, mapping: "standard", axes: [.5, -1, -.8, .1], buttons: [{pressed:true}, {}, {pressed:false}] };
+  const flat = walkInputs(null, [null, pad]);
+  assert.deepEqual(flat.left, {x:.5,y:-1,reset:false});
+  assert.deepEqual(flat.right, {x:-.8,y:.1,reset:true});
+  const touch = {axes:[0,0,.7,-.9],buttons:[{},{},{},{},{pressed:true}]};
+  assert.deepEqual(walkInputs({inputSources:[{handedness:"left",gamepad:touch}]}, [pad]), {
+    left:{x:.7,y:-.9,reset:true},right:{x:0,y:0,reset:false},
+  });
+  assert.deepEqual(walkInputs(null, [{...touch,id:"Oculus Touch (Left)"}]).left,{x:.7,y:-.9,reset:true});
+  assert.equal(walkInputs(null,[{...pad,connected:false}]).left.y,0);
+  const rightOnly=walkInputs({inputSources:[{handedness:"right",gamepad:touch}]});
+  assert.deepEqual(rightOnly.left,{x:0,y:-.9,reset:false},"right Y walks when left controller is absent");
+  assert.deepEqual(rightOnly.right,{x:.7,y:-.9,reset:true},"right X snap and A reset retained");
+});
+
+test("start at a captured camera eye and yaw, or inside the room bounds", () => {
+  const transforms={frames:[{transform_matrix:[[0,0,-1,2],[0,1,0,1.4],[1,0,0,-3],[0,0,0,1]]}]};
+  assert.deepEqual(sceneStart(transforms,null),{eye:[2,1.4,-3],yaw:-Math.PI/2,source:"capture"});
+  assert.deepEqual(sceneStart(transforms,null,true),{eye:[2,-1.4,3],yaw:-Math.PI/2,source:"capture"});
+  const bounds={min:{x:-2,y:-.4,z:-6},max:{x:4,y:2.6,z:2}};
+  const pose=sceneStart(null,bounds);
+  close(pose.eye[0],1,"centre x");close(pose.eye[1],1.2,"eye above floor");close(pose.eye[2],-2,"centre z");
+  assert.equal(pose.source,"bounds");
+  assert.deepEqual(sceneStart(null,null),{eye:[0,1.6,0],yaw:0,source:"default"});
+  const path={frames:[
+    {transform_matrix:[[1,0,0,2],[0,1,0,1.2],[0,0,1,-3],[0,0,0,1]]},
+    {transform_matrix:[[1,0,0,2.1],[0,1,0,1.6],[0,0,1,-3],[0,0,0,1]]},
+  ]};
+  assert.deepEqual(sceneStart(path,null),{eye:[2,1.4,-3],yaw:0,source:"capture"},"first X/Z and mean path eye height");
 });
 
 test("scene URL, format, flip and start pose come from the page URL", () => {

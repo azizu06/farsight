@@ -20,6 +20,65 @@ export function stickAxes(gamepad) {
   return { x: Number.isFinite(x) ? x : 0, y: Number.isFinite(y) ? y : 0 };
 }
 
+/** Read XR controllers, or the pads a nonimmersive browser actually exposes.
+ * Touch controllers belong to XRSession.inputSources, not navigator.getGamepads().
+ * A regular two-stick gamepad uses the standard mapping (left 0/1, right 2/3).
+ */
+export function walkInputs(session, gamepads = []) {
+  const inputs = { left: { x: 0, y: 0, reset: false }, right: { x: 0, y: 0, reset: false } };
+  if (session) {
+    let hasLeft = false;
+    for (const source of session.inputSources) {
+      if (source.gamepad && (source.handedness === "left" || source.handedness === "right")) {
+        if (source.handedness === "left") hasLeft = true;
+        inputs[source.handedness] = { ...stickAxes(source.gamepad), reset: !!source.gamepad.buttons[4]?.pressed };
+      }
+    }
+    // A single right Touch controller can still explore: Y walks, X snap-turns.
+    if (!hasLeft) inputs.left.y = inputs.right.y;
+  } else {
+    for (const pad of gamepads) {
+      if (!pad || pad.connected === false) continue;
+      const hand = pad.hand || pad.handedness || String(pad.id).match(/\b(left|right)\b/i)?.[1]?.toLowerCase();
+      if (hand === "left" || hand === "right") {
+        inputs[hand] = { ...stickAxes(pad), reset: !!pad.buttons[4]?.pressed };
+      } else if (pad.mapping === "standard") {
+        inputs.left = { ...stickAxes({ axes: pad.axes.slice(0, 2) }), reset: !!pad.buttons[2]?.pressed };
+        inputs.right = { ...stickAxes({ axes: pad.axes.slice(2, 4) }), reset: !!pad.buttons[0]?.pressed };
+      }
+    }
+  }
+  return inputs;
+}
+
+/** Captures use row-major OpenGL camera-to-world matrices in the scene's Y-up metres.
+ * Match walk.html's recorded path (5 cm / 0.1 rad samples). Start at its first X/Z
+ * and heading, with the mean path camera Y as eye height; bounds are the bare-PLY fallback.
+ */
+export function sceneStart(transforms, bounds, flip = false) {
+  const cameras = [];
+  const sign = flip ? -1 : 1;
+  for (const frame of transforms?.frames ?? []) {
+    const m = frame.transform_matrix;
+    if (!Array.isArray(m) || m.length !== 4 || !m.every(row => Array.isArray(row) && row.length === 4 && row.every(Number.isFinite))) continue;
+    cameras.push([m[0][3], m[1][3], m[2][3], Math.atan2(m[0][2], sign * m[2][2])]);
+  }
+  const path = cameras.filter((p, i, a) => !i || Math.hypot(p[0] - a[i-1][0], p[2] - a[i-1][2]) > .05 || Math.abs(p[3] - a[i-1][3]) > .1);
+  if (path.length) {
+    const first = path[0];
+    const eyeY = path.reduce((sum, p) => sum + p[1], 0) / path.length;
+    return { eye: [first[0], sign * eyeY, sign * first[2]],
+      yaw: first[3], source: "capture" };
+  }
+  if (bounds && bounds.min.x <= bounds.max.x) {
+    const { min, max } = bounds;
+    const height = max.y - min.y;
+    return { eye: [(min.x + max.x) / 2, height > .3 ? Math.min(min.y + 1.6, max.y - .15) : (min.y + max.y) / 2,
+      (min.z + max.z) / 2], yaw: 0, source: "bounds" };
+  }
+  return { eye: [0, 1.6, 0], yaw: 0, source: "default" };
+}
+
 /** Rescale one axis past the deadzone so motion starts smoothly from zero. */
 export function shaped(value, deadzone = NAV.deadzone) {
   if (!Number.isFinite(value) || Math.abs(value) <= deadzone) return 0;
@@ -35,7 +94,7 @@ export function shaped(value, deadzone = NAV.deadzone) {
 export function moveStep(x, y, headYaw, dt, speed = NAV.moveSpeed) {
   const strafe = shaped(x), forward = -shaped(y);
   if (!strafe && !forward || !(dt > 0)) return { dx: 0, dz: 0 };
-  const step = Math.min(dt, 0.1) * speed;
+  const step = Math.min(dt, 0.1) * speed / Math.max(1, Math.hypot(strafe, forward));
   const sin = Math.sin(headYaw), cos = Math.cos(headYaw);
   // three.js: yaw 0 faces -Z; +X is to the right.
   return { dx: (strafe * cos - forward * sin) * step, dz: (-strafe * sin - forward * cos) * step };
