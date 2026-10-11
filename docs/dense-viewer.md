@@ -82,16 +82,28 @@ Raw GPU uploads reuse preallocated buffers but send a full retained point range
 per accepted frame in the lab's history mode; qualify this cost on a large cloud before increasing
 capture rate. This is an optional desktop prototype, separate from navigation.
 
-The Mac adapter uses **latest** mode instead: every valid native depth pixel in
-the current grid is projected, with one same-frame texture patch. It does not
-associate, rebuild or transfer the retained history. Point buffer capacity is
+The Mac adapter projects every valid native depth pixel in **latest** point
+mode and retains recent camera-textured surface patches independently. It does
+not associate, rebuild or transfer the retained point history. The core Mac
+renderer already retains those points, so the adapter's duplicate point overlay
+is hidden. Point buffer capacity is
 the largest accepted native grid (at most 640×640), not 2M points. A 256×192
 frame transfers 1,179,648 bytes of point position/color storage, independent of
 scan length; mesh arrays and the texture are additional. Confidence-zero pixels
 are omitted, depth discontinuities cannot be bridged, and session/generation
-resets and the 2s freshness deadline still apply. Latest geometry expires at
-2s capture age. `pollInterval` is clamped to125–4000ms with one pull/worker job in
-flight;125ms is an8Hz ceiling, not a measured live rate or permission to enable.
+resets and the 2s freshness deadline still apply. Latest points expire at
+2s capture age. Accepted textured patches remain for up to30s, bounded by the
+same12 images,500k vertices and1M triangles as the lab. Session/epoch/generation
+changes clear both. Nearby views replace the last patch; distinct views retain
+their measured RGB detail after the camera turns away. Texture filtering uses
+anisotropy4 for oblique floors/walls. These are recent historical observations,
+not live images of an unseen moving person.
+
+`pollInterval` defaults to500ms and is clamped to125–4000ms with one pull/worker
+job in flight. The default2Hz ceiling is not a measured live rate or permission
+to enable the optional stream. `surfaceHistory:false` restores a single recent
+patch. Stats expose the oldest surface age and the independent30s surface
+lifetime; point capacity and transfer cost stay bounded by one native grid.
 
 Checks:
 
@@ -107,6 +119,8 @@ PYTHON
 node tools/tests/dense_viewer.browser.mjs http://127.0.0.1:8086/ .cache/raw-fixture.bin
 # Build the adapter with vite.layer.config.mjs first:
 node tools/tests/raw_layer.browser.mjs
+# Native WebGL before/after: coarse gaps and texture loss after a new viewpoint.
+node tools/tests/mac_render_detail.browser.mjs --out /tmp/farsight-render-detail
 ```
 
 The browser check exercises the real worker's 48 measured points, 70 supported
@@ -133,7 +147,15 @@ accepted frame, identity and geometry. Freezing stops new pulls before draining
 the in-flight frame. The raw view starts at the displayed 12 mm world size and
 uses a 1.25 pixel floor for distant measured samples.
 
-The owner-mounted Mac adapter is `tools/dense_viewer/mac-layer.js`. Build it with `node quest/node_modules/vite/bin/vite.js build --config tools/dense_viewer/vite.layer.config.mjs`. The resulting `.cache/dense-layer-dist/raw-texture-layer.mjs` exports `rawTextureLayer({endpoint:'/phone/frame.bin',enabled:false,pollInterval:125})`; mount its adjacent `assets/` worker directory at the same origin, import it and pass the result to `window.__macRegisterLayer`. It shares the renderer's existing Three.js, uses `ctx.root` and `ctx.requestFrame()`, and exposes `layer.stats()`. Networking is default-off; only the runtime owner enables it in a qualified window with `layer.setEnabled(true)`. Disabling hides it and aborts an active HTTP pull. Stats expose mode, native point capacity, transferred point bytes, patch count and cadence. Registration, native route proxying and dense/coarse visibility remain the renderer owner's integration work.
+The owner-mounted Mac adapter is `tools/dense_viewer/mac-layer.js`. Build it with `node quest/node_modules/vite/bin/vite.js build --config tools/dense_viewer/vite.layer.config.mjs`. The resulting `.cache/dense-layer-dist/raw-texture-layer.mjs` exports `rawTextureLayer({endpoint:'/phone/frame.bin',enabled:false,pollInterval:500,surfaceHistory:true})`; mount its adjacent `assets/` worker directory at the same origin, import it and pass the result to `window.__macRegisterLayer`. It shares the renderer's existing Three.js, uses `ctx.root` and `ctx.requestFrame()`, and exposes `layer.stats()`. Networking is default-off; only the runtime owner enables it in a qualified window with `layer.setEnabled(true)`. Disabling hides it and aborts an active HTTP pull. Stats expose mode, native point capacity, transferred point bytes, patch count and cadence. The production renderer includes these stats in capture metadata under `surfaceDisplay.raw`.
+
+The production Mac renderer draws measured surfaces before fallback points.
+Its coarse splats follow the map's advertised voxel spacing (1.8×voxel size,
+72mm at4cm cells, corrected for the camera projection/FOV); the1cm dense lane
+uses a separate35mm material, matching the Pip Scout point footprint. Both
+retain native linear RGB without tone mapping, use a2px floor and64px ceiling,
+and upload no geometry when only the camera moves. This
+display footprint does not add measured points or fill missing depth triangles.
 
 Raw exports negotiate br/gzip and retain only the newest encoded packet variants. The relay owner must include `/phone/frame.bin` in its compression pass-through paths before this helps the tailnet hop. A recorded 270,259-byte physical packet compressed to 70,557 bytes with Brotli q4 in 3.1 ms on this Mac; that is a local compression measurement, not Jetson CPU or live link proof. Initial live uncompressed reads sometimes took 2.8 s and were rejected by the unchanged 2 s capture freshness limit. No service is restarted by the lab or adapter.
 
