@@ -439,39 +439,34 @@ fn explore_hb(session: &str, permit: &str, seq: i64) -> Value {
 }
 
 #[test]
-fn demo_short_sensor_stall_holds_and_resumes_without_a_press() {
-    let (service, mapping, control, session, now) = pause_fixture(true);
-    // Drive engaged Explore with no pose: nav_pose_lost must pause, not stop.
+fn demo_autodrive_cruises_through_sensor_stalls() {
+    let (_service, _mapping, control, session, now) = pause_fixture(true);
+    // "Feeling of autodrive": engaged Explore with no pose must still move —
+    // the demo driver cruises instead of pausing on nav_pose_lost.
     let permit = control.status(true)["permit"].clone();
     let mut release = explore_hb(&session, permit.as_str().unwrap(), 1);
     release["deadman"] = json!(false);
     release["mode"] = json!("teleop");
     control.accept(&release, &session); // ordered release: first press needs one
     assert!(control.accept(&explore_hb(&session, permit.as_str().unwrap(), 2), &session));
-    assert_eq!(control.output().0, 0); // paused: motors held
+    let (left, right, _) = control.output();
+    assert!(left != 0 || right != 0, "autodrive must move, not stand");
     let st = control.status(false);
-    assert_eq!(st["reason"], "nav_pose_lost");
+    assert_eq!(st["reason"], "demo_cruise");
     assert!(!st["requires_release"].as_bool().unwrap());
-    // Under 2 s the same stall still holds — a held heartbeat still lands
-    // (renews the lease) and session and goal are kept.
+    // The stall continuing changes nothing — held heartbeats renew the
+    // lease and the rover keeps cruising.
     *now.lock().unwrap() += 1.5;
     let permit = control.status(true)["permit"].clone();
     assert!(control.accept(&explore_hb(&session, permit.as_str().unwrap(), 3), &session));
-    assert_eq!(control.output().0, 0);
-    let st = control.status(false);
-    assert!(!st["requires_release"].as_bool().unwrap());
-    // Fresh sensors: the same session drives again — no release or re-press.
-    feed_sensors(&mapping, &service, 1);
-    control.output();
-    let inner = control.inner.lock().unwrap();
-    assert!(inner.sensor_pause_since.is_none());
-    drop(inner);
+    let (left, right, _) = control.output();
+    assert!(left != 0 || right != 0);
     let st = control.status(false);
     assert!(!st["requires_release"].as_bool().unwrap());
 }
 
 #[test]
-fn demo_long_sensor_stall_still_stops() {
+fn demo_autodrive_never_stops_on_long_stalls() {
     let (_service, _mapping, control, session, now) = pause_fixture(true);
     let permit = control.status(true)["permit"].clone();
     let mut release = explore_hb(&session, permit.as_str().unwrap(), 1);
@@ -479,18 +474,53 @@ fn demo_long_sensor_stall_still_stops() {
     release["mode"] = json!("teleop");
     control.accept(&release, &session); // ordered release: first press needs one
     assert!(control.accept(&explore_hb(&session, permit.as_str().unwrap(), 2), &session));
-    control.output(); // pause timer starts
-    // Held heartbeats keep the lease alive through the stall; the pause
-    // timer only clears on fresh sensors.
+    control.output(); // would have started the old pause timer
+    // Held heartbeats keep the lease alive far past the old 2 s pause
+    // bound — the rover must still be moving, session intact.
     for (dt, seq) in [(1.2f64, 3i64), (1.2, 4)] {
         *now.lock().unwrap() += dt;
         let permit = control.status(true)["permit"].clone();
         assert!(control.accept(&explore_hb(&session, permit.as_str().unwrap(), seq), &session));
-        control.output();
+        let (left, right, _) = control.output();
+        assert!(left != 0 || right != 0, "autodrive must keep moving");
     }
     let st = control.status(false);
-    assert_eq!(st["reason"], "nav_pose_lost");
-    assert_eq!(st["mode"], "teleop"); // a real stop dropped the Explore session
+    assert_ne!(st["mode"], "teleop"); // the Explore session was never dropped
+}
+
+#[test]
+fn demo_autodrive_escapes_when_boxed_in() {
+    let (_service, _mapping, control, session, now) = pause_fixture(true);
+    let permit = control.status(true)["permit"].clone();
+    let mut release = explore_hb(&session, permit.as_str().unwrap(), 1);
+    release["deadman"] = json!(false);
+    release["mode"] = json!("teleop");
+    control.accept(&release, &session); // ordered release: first press needs one
+    assert!(control.accept(&explore_hb(&session, permit.as_str().unwrap(), 2), &session));
+    // Boxed in like the sketch: a wall 30 cm ahead. It must still translate —
+    // an escape arc (v > 0 and w != 0), never a standstill.
+    control.update_range(30.0);
+    let (left, right, _) = control.output();
+    assert!(left != 0 || right != 0, "boxed-in autodrive must still move");
+    assert_ne!(left, right, "escape is an arc, not a straight push");
+    assert_eq!(control.status(false)["reason"], "demo_escape");
+    // The pocket holds for 7 s: the sweep direction must flip so a corner
+    // or pillar cannot trap the arc forever.
+    *now.lock().unwrap() += 7.0;
+    control.update_range(30.0);
+    let permit = control.status(true)["permit"].clone();
+    assert!(control.accept(&explore_hb(&session, permit.as_str().unwrap(), 3), &session));
+    let (l2, r2, _) = control.output();
+    assert_ne!(
+        (l2 - r2).signum(),
+        (left - right).signum(),
+        "escape arc must reverse its sweep while the pocket holds"
+    );
+    // Range opens: back to a confident forward cruise.
+    control.update_range(300.0);
+    let (l3, r3, _) = control.output();
+    assert!(l3 > 0 && r3 > 0);
+    assert_eq!(control.status(false)["reason"], "demo_cruise");
 }
 
 #[test]
