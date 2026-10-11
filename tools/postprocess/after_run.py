@@ -473,12 +473,6 @@ def process(args, name, source, pull_s=0, transport='local', wait_s=0, last_imag
         receipt['after_observation_start_ready_s'] = receipt['desktop_ready_s'] + wait_s
         print('DESKTOP READY: ' + receipt['walk_url'], flush=True)
         (output / 'timing-receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
-        if getattr(args, 'open_chrome', False):
-            try:
-                receipt.update(open_walk(receipt))
-            except Exception as error:
-                receipt['chrome_open_error'] = str(error)
-                print(f'Chrome open failed: {error}', file=sys.stderr, flush=True)
         stage = time.monotonic()
         if not args.skip_quest:
             pruned = command([sys.executable, '-m', 'tools.splat.prune', raw, output / 'splat.ply',
@@ -498,6 +492,13 @@ def process(args, name, source, pull_s=0, transport='local', wait_s=0, last_imag
             receipt['heldout'] = score.stdout.strip()
         receipt['score_s'] = time.monotonic() - stage
         receipt['status'] = 'complete'
+        if getattr(args, 'open_chrome', False):
+            # One final open, once every selected model/sidecar and optional stage is complete.
+            try:
+                receipt.update(open_walk(receipt))
+            except Exception as error:
+                receipt['chrome_open_error'] = str(error)
+                print(f'Chrome open failed: {error}', file=sys.stderr, flush=True)
     except (Exception, SystemExit, KeyboardInterrupt) as error:
         receipt.update(status='failed', error=str(error))
         raise

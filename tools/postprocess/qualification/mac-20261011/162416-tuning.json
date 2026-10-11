@@ -1,0 +1,70 @@
+{
+  "capture": "20261011T162416.549928Z-ae189c39",
+  "selected_saved_jpeg_resolution": [
+    640,
+    480
+  ],
+  "same_frames_and_poses": true,
+  "common_heldouts": 19,
+  "comparison_overhead_s": 18.719322541437577,
+  "overhead_method": "baseline actual last-photo-to-ready minus baseline local build; includes observed polling/idle/pull",
+  "variants": [
+    {
+      "recipe": "20261011T162416.549928Z-ae189c39",
+      "steps": 5000,
+      "frames": 150,
+      "train_s": 93.7684837920242,
+      "faces_s": 22.200869291031267,
+      "prep_s": 0.5248696670169011,
+      "publish_s": 0.05563162500038743,
+      "score_s": 1.2464049170375802,
+      "splats": 300000,
+      "psnr_db": 18.52,
+      "heldout_views": 19,
+      "local_ready_s": 94.3619753330131,
+      "last_photo_to_ready_s": 113.08129787445068,
+      "estimated_last_photo_to_ready_s": 113.08129787445068
+    },
+    {
+      "recipe": "run-162416-5500-150",
+      "steps": 5500,
+      "frames": 150,
+      "train_s": 155.05504674999975,
+      "faces_s": 107.86279304098571,
+      "prep_s": 1.617169500037562,
+      "publish_s": 0.04905983299249783,
+      "score_s": 0.756837708002422,
+      "splats": 300000,
+      "psnr_db": 18.55,
+      "heldout_views": 19,
+      "local_ready_s": 156.82757420901908,
+      "last_photo_to_ready_s": null,
+      "estimated_last_photo_to_ready_s": 175.54689675045665
+    },
+    {
+      "recipe": "run-162416-4500-400k",
+      "steps": 4500,
+      "frames": 150,
+      "train_s": 142.02594674995635,
+      "faces_s": 92.09671170799993,
+      "prep_s": 0.85306562500773,
+      "publish_s": 0.07023545796982944,
+      "score_s": 0.5126537919859402,
+      "splats": 400000,
+      "psnr_db": 18.78,
+      "heldout_views": 19,
+      "local_ready_s": 143.02686170797097,
+      "last_photo_to_ready_s": null,
+      "estimated_last_photo_to_ready_s": 161.74618424940854
+    }
+  ],
+  "selected": "20261011T162416.549928Z-ae189c39",
+  "selection_reason": "only measured recipe within120s; variants exceed budget",
+  "more_frames_trial": "not run: Jetson SSH inventory unreachable; no transfer",
+  "desktop_post_training_pruning": false,
+  "training_sh_degree": 3,
+  "walk_render_sh_degree": 2,
+  "qualification_scope": "native Metal saved-run measurements; variant stop-to-ready estimates reuse original overhead; no browser verification requested",
+  "chrome_open_returncode": 0,
+  "chrome_open_utc": "2026-10-11T16:42:43.414119+00:00"
+}

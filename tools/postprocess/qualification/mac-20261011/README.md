@@ -24,3 +24,31 @@ The stock raw seeder rewrote its private source copy through the prepared seed h
 [kernels.json](kernels.json) is a separate untimed 200-step `--seed none` stock profile, 320 photos and 1,395,570 initial splats. Resolved GPU timestamps serialize launches, so its wall time is not a turbo benchmark. `ProjectBackwardsKernel` and `RasterizeBackwardsKernel` each completed 200 device-timed launches without the reported dominance panic. Project backward averaged 6.62 ms; rasterize backward averaged 1.59 ms.
 
 The newer-head `f53fbfa99a8cbe3e24faede31190745bf39f8de7` stock 60-second confirmation was not run: its final link was preempted at 14:37:18Z when the live capture appeared, before Firstmate reiterated the stop at 14:37:45Z. The original-split full/prefix comparisons were prepared but never started. Therefore the profile proves the `511f55d` backward kernels ran on Metal at `0b82491`; it does not claim a newer-head stock 60-second pass. The demo watcher remains on the qualified stable Brush 5k/300k/SH3 plus CPU faces.
+# Two-minute judging tuning on capture 162416
+
+Local-only follow-up on `20261011T162416.549928Z-ae189c39`:
+[162416-tuning.json](162416-tuning.json). All variants use the same 150 photos,
+poses, measured seed, SH3 and 19 held-out views. The saved JPEGs are 640×480;
+raising the 1600-pixel training ceiling cannot add source detail.
+
+| Recipe | PSNR | Brush | Local room ready | Last-photo to ready |
+|---|---:|---:|---:|---:|
+| 5k steps / 300k splats | 18.52 dB | 93.77 s | 94.36 s | **113.08 s actual** |
+| 5.5k steps / 300k splats | 18.55 dB | 155.06 s | 156.83 s | 175.55 s estimated |
+| 4.5k steps / 400k splats | 18.78 dB | 142.03 s | 143.03 s | 161.75 s estimated |
+
+Variant estimates add the original capture's observed 18.72 seconds of
+polling/idle/transfer overhead to each measured local build. They are saved-run
+trials, not fresh Stop Capture measurements. Trials ran serially, with no other
+owned GPU job or opened candidate viewer; Mac load differed from the baseline.
+Face extraction overlapped training. This does not isolate the cause of the
+timing difference. The 250-photo trial could not be prepared because the Jetson
+was unreachable; no photo transfer occurred on that attempt.
+
+The 5k/150/300k recipe remains the best tested option inside the two-minute
+budget. The 400k model gained 0.26 dB but exceeded it. Judging retains the full
+trained SH3 PLY without Quest pruning; the walkthrough supports SH2 rendering.
+The selected complete baseline and four face spots were atomically republished,
+then opened once with macOS `open -a 'Google Chrome'`. No CDP/browser error check
+was performed for this follow-up, per the headless verification instruction.
+The watcher is re-armed with 5k/150/300k and opens once after all final stages.

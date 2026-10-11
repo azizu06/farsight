@@ -29,8 +29,8 @@ override the demo preset. This remains an image-idle heuristic, rather than a
 motor stop signal. Final seed export must also finish before the pull starts.
 The watcher excludes captures older than `--since`; arm it before the drive.
 With `--open-chrome`, the completion notifier runs `open -a 'Google Chrome'`
-on the complete walk URL (including `faces=`) immediately after atomic scene
-and sidecar publication, before optional pruning/scoring. It records the open
+on the complete walk URL (including `faces=`) once the final scene, sidecars,
+optional pruning and scoring have all completed. It records the open
 result in the timing receipt. Close room tabs before another build to avoid
 competing for the Mac GPU.
 

@@ -380,6 +380,7 @@ class AfterRunTests(unittest.TestCase):
                     Path(argv[4]).write_bytes(b'pruned SH1 model')
                     return subprocess.CompletedProcess(argv, 0, stdout='{}')
                 def open_room(receipt):
+                    self.assertEqual(receipt['status'], 'complete')
                     self.assertIn('faces=', receipt['walk_url'])
                     self.assertTrue((args.dist / 'scenes' / (name + '-desktop.ply')).is_file())
                     self.assertTrue((args.dist / 'scenes' / (name + '-faces/faces.json')).is_file())
