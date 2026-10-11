@@ -407,7 +407,10 @@ export class RoverExperience {
     const whisper = health?.assistant?.whisper === true;
     if (whisper === this.voice.voiceAvailable) return;
     this.voice.setAvailable(whisper);
-    document.querySelector<HTMLElement>("#rover-voice-help")!.hidden = !whisper;
+    // The help line lost its voice hint in the two-mode controls (b7fb39e); a missing hint must not
+    // abort the rest of the health handling (transport profile, video auto-selection).
+    const help = document.querySelector<HTMLElement>("#rover-voice-help");
+    if (help) help.hidden = !whisper;
     if (whisper && this.settings.values.voice) this.voice.restoreVR();
     this.dirty = true;
   }
