@@ -109,8 +109,7 @@ if (style !== "lit") scene.add(new THREE.AmbientLight(0xffffff, 1));
 
 // Round splats in cine: a radial-gradient sprite cut by alphaTest keeps the
 // points in the opaque pass (depth write, no sorting) but reads as discs
-// instead of squares, so dense regions shade like surfaces. One material
-// shared by the sparse cloud and every dense chunk.
+// instead of squares, so dense regions shade like surfaces.
 function makeSplatTexture() {
   const size = 64, half = size / 2;
   const sprite = document.createElement("canvas");
@@ -134,11 +133,21 @@ function pointMaterial(size) {
     map: splatTexture, alphaTest: splatTexture ? 0.5 : 0,
     depthFunc: cine ? THREE.LessDepth : THREE.LessEqualDepth,
   });
-  if (cine) material.onBeforeCompile = shader => {
-    shader.vertexShader = shader.vertexShader.replace(
-      "#include <logdepthbuf_vertex>",
-      "gl_PointSize = clamp(gl_PointSize * projectionMatrix[1][1], 2.0, 64.0);\n#include <logdepthbuf_vertex>",
-    );
+  material.userData.surfaceDepthBias = { value: 0 };
+  material.onBeforeCompile = shader => {
+    shader.uniforms.surfaceDepthBias = material.userData.surfaceDepthBias;
+    shader.vertexShader = "uniform float surfaceDepthBias;\n" + shader.vertexShader;
+    shader.vertexShader = shader.vertexShader.replace("#include <project_vertex>", `
+      #include <project_vertex>
+      if (surfaceDepthBias > 0.0) {
+        vec4 splatBack = projectionMatrix * vec4(mvPosition.xyz - vec3(0.0, 0.0, surfaceDepthBias), 1.0);
+        gl_Position.z = splatBack.z / splatBack.w * gl_Position.w;
+      }
+    `);
+    if (cine) shader.vertexShader = shader.vertexShader.replace(
+        "#include <logdepthbuf_vertex>",
+        "gl_PointSize = clamp(gl_PointSize * projectionMatrix[1][1], 2.0, 64.0);\n#include <logdepthbuf_vertex>",
+      );
   };
   return material;
 }
@@ -148,6 +157,7 @@ function pointMaterial(size) {
 const flatPointSize = style === "lit" ? 0.014 : 0.025;
 const pointsMaterial = pointMaterial(cine ? 0.072 : flatPointSize);
 const densePointsMaterial = pointMaterial(cine ? 0.035 : flatPointSize);
+const pointMaterials = [pointsMaterial, densePointsMaterial];
 const cloudGeometry = new THREE.BufferGeometry();
 const cloud = new THREE.Points(cloudGeometry, pointsMaterial);
 cloud.renderOrder = 2;
@@ -831,6 +841,16 @@ function drawScene(measure) {
   for (const layer of layers) {
     if (layer.poll?.(layerContext, now)) frameDirty = true;
   }
+  const rawSurfaces = window.__macRawLayer?.stats();
+  const textured = rawSurfaces?.raw_enabled && rawSurfaces.raw_surfaces && rawSurfaces.raw_patches > 0;
+  // A splat has a finite footprint. Use its back depth while native faces
+  // are visible, so neighboring/quantized samples do not paint discs over
+  // those faces. Positions, coverage, point buffers and counts stay intact.
+  for (const material of pointMaterials) {
+    const bias = textured ? material.size / 2 : 0;
+    if (material.userData.surfaceDepthBias.value !== bias) frameDirty = true;
+    material.userData.surfaceDepthBias.value = bias;
+  }
   if (frameDirty || measure === "capture") {
     denseGpu.beginFrame();
     if (stereoPass) {
@@ -898,7 +918,10 @@ window.__macCapture = () => {
   // "capture" forces a draw in this same task, so toDataURL never reads a cleared buffer.
   drawScene("capture");
   window.__mac.surfaceDisplay = { coarse_splat_m: pointsMaterial.size,
-    dense_splat_m: densePointsMaterial.size, raw: window.__macRawLayer?.stats() ?? null };
+    dense_splat_m: densePointsMaterial.size,
+    coarse_depth_bias_m: pointsMaterial.userData.surfaceDepthBias.value,
+    dense_depth_bias_m: densePointsMaterial.userData.surfaceDepthBias.value,
+    raw: window.__macRawLayer?.stats() ?? null };
   const captureStarted = performance.now();
   const data = renderer.domElement.toDataURL("image/jpeg", jpegQuality).split(",")[1];
   window.__mac.captureMs = performance.now() - captureStarted;
