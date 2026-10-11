@@ -40,6 +40,7 @@ from jetson.phrases import PhraseSpeaker, SpeechError
 from jetson.triage import TriageBusy, TriageService
 from jetson.drive_profile import DriveProfile
 from jetson.scan import ScanService
+from jetson.models import inventory, unit_model
 from jetson.nav import NavService, disabled_router
 from jetson.bulk import BulkPacer, BulkPacketTooLarge
 from jetson.bulk_response import bulk_response, PacedStreamingResponse
@@ -68,7 +69,7 @@ async def _session_thread(function, *args):
 def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=False,
                detector="hog", detector_model=None, h264=False, mission_dir=None, max_pwm=100, min_pwm=0,
                video_fps=10, video_bitrate=500000, assistant_url=None, whisper_bin=None, whisper_model=None,
-               piper_bin=None, piper_model=None, tts_dir=None, face_model=None, whisper_url=None,
+               piper_bin=None, piper_model=None, tts_dir=None, face_model=None, face_detector="pose", whisper_url=None,
                piper_model_es=None, speaker_cmd="auto", triage_interval=3.0,
                depth_model=None, scan_pan=False, scan_fov=70, scan_intrinsics=None, scan_turn_dps=90,
                record=False, replay=None, proximity_stop=True, pan_mount="servo", autonomy_max_pwm=None, nav2=False, nav_speed_mps=0.45,
@@ -122,7 +123,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
         state.frame_observers.append(run_capture.offer_frame)
     people = PersonLocator()
     state.frame_observers.append(people.offer_frame)
-    perception = ReplayPerception(camera_service) if replay is not None else PerceptionService(camera_service, model=detector_model, mode=detector, on_detection=mission.detect, face_model=face_model, annotate=people.annotate)
+    perception = ReplayPerception(camera_service) if replay is not None else PerceptionService(camera_service, model=detector_model, mode=detector, on_detection=mission.detect, face_model=face_model, annotate=people.annotate, face_source=face_detector)
     control = ReplayControl() if replay is not None else ControlService(serial_port=serial_port, simulate=simulate_rover, max_pwm=max_pwm, min_pwm=min_pwm,
                              drive_profile=drive_profile, allow_calibration=allow_calibration,
                              camera_ready=lambda: camera_service.status()["camera_drive_ready" if serial_port else "camera"],
@@ -183,6 +184,23 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
     scanner = ScanService(state, camera_service, control, perception, model=depth_model,
                           physical_pan=scan_pan, horizontal_fov=scan_fov,
                           intrinsics=scan_intrinsics, turn_dps=scan_turn_dps)
+    # llama-server and whisper-server are separate units; their model files are fixed at install time.
+    vision_file = (unit_model("farsight-llm.service", "FARSIGHT_SELECTED_LLM_MODEL") or "llama-server") if assistant_url else None
+    whisper_file = whisper_model or (unit_model("farsight-whisper.service", "FARSIGHT_SELECTED_WHISPER_MODEL")
+                                     or "whisper-server" if whisper_url else None)
+
+    def models(speech):
+        timings, detector_ms = assistant.last_timings, perception.health()["detector_inference_ms"]
+        loaded_detector = any(x is not None for x in (perception.pose, perception.engine, perception.net))
+        extra = [("depth", depth_model, scanner.depth is not None, None)]
+        if perception.face_source == "ultraface":
+            extra.append(("face", face_model, perception.face is not None, None))
+        return inventory(detector=(detector_model, loaded_detector, detector_ms) if detector_model else None,
+                         vision=(vision_file, assistant.vision_ok is not False, timings["vlm"]) if vision_file else None,
+                         whisper=(whisper_file, True, timings["stt"]) if whisper_file else None,
+                         voices=[("tts", piper_model, "en" in speech["voices"], timings["tts"]),
+                                 ("tts-es", piper_model_es, "es" in speech["voices"], None)],
+                         extra=extra)
 
     @asynccontextmanager
     async def lifespan(app):
@@ -288,6 +306,7 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                       assistant=dict(vision_model=bool(assistant_url), whisper=bool(whisper_url or (whisper_bin and whisper_model)),
                                      piper=bool(piper_model)),
                       speech=await asyncio.to_thread(phrases.status), triage=triage.status())
+        status["models"] = models(status["speech"])
         if nav is not None:  # absent without --nav2, like the Rust server
             status["nav"] = dict(enabled=True, available=nav.available())
         if sim is not None:
@@ -937,7 +956,10 @@ def main():
     parser.add_argument("--detector", choices=("hog", "pose", "none"), default="hog",
                         help="hog: bundled CPU detector; pose: YOLO11-pose (needs --detector-model); none")
     parser.add_argument("--detector-model", help="YOLOv8/11 ONNX or TensorRT engine path; overrides bundled HOG. With --detector pose: YOLO11-pose model")
-    parser.add_argument("--face-model", help="Enable extra UltraFace RFB-320 ONNX pass; omitted means off")
+    parser.add_argument("--face-detector", choices=("pose", "ultraface"), default="pose",
+                        help="pose: rescue-drill faces from YOLO11-pose head keypoints (needs --detector pose, default); "
+                             "ultraface: the --face-model ONNX pass on the CPU")
+    parser.add_argument("--face-model", help="UltraFace RFB-320 ONNX for --face-detector ultraface; ignored otherwise")
     parser.add_argument("--depth-model", help="Metric Indoor Small 308x406 ONNX or target-built TensorRT engine")
     parser.add_argument("--scan-pan", action="store_true", help="Physical camera pan installed; default is approximate rover turn")
     parser.add_argument("--scan-fov", type=float, default=70, help="Camera horizontal FOV degrees; ignored with calibrated intrinsics")
@@ -996,7 +1018,7 @@ def main():
                 h264=args.h264, mission_dir=args.mission_dir, max_pwm=args.max_pwm, min_pwm=args.min_pwm,
                 video_fps=args.video_fps, video_bitrate=args.video_bitrate, assistant_url=args.assistant_url,
                 whisper_bin=args.whisper_bin, whisper_model=args.whisper_model, piper_bin=args.piper_bin,
-                piper_model=args.piper_model, tts_dir=args.tts_dir, face_model=args.face_model,
+                piper_model=args.piper_model, tts_dir=args.tts_dir, face_model=args.face_model, face_detector=args.face_detector,
                 whisper_url=args.whisper_url, piper_model_es=args.piper_model_es,
                 speaker_cmd=args.speaker_cmd, triage_interval=args.triage_interval,
                 depth_model=args.depth_model, scan_pan=args.scan_pan, scan_fov=args.scan_fov,

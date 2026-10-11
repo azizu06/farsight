@@ -26,6 +26,7 @@ VALUE_FLAGS = (
     ("FARSIGHT_PIPER_BIN", "--piper-bin"), ("FARSIGHT_PIPER_MODEL", "--piper-model"),
     ("FARSIGHT_TTS_DIR", "--tts-dir"), ("FARSIGHT_PIPER_MODEL_ES", "--piper-model-es"),
     ("FARSIGHT_SPEAKER_CMD", "--speaker-cmd"), ("FARSIGHT_FACE_MODEL", "--face-model"),
+    ("FARSIGHT_FACE_DETECTOR", "--face-detector"),
     ("FARSIGHT_VIDEO_FPS", "--video-fps"), ("FARSIGHT_VIDEO_BITRATE", "--video-bitrate"),
     ("FARSIGHT_BULK_LIMIT_MBPS", "--bulk-limit-mbps"), ("FARSIGHT_VIDEO_LIMIT_MBPS", "--video-limit-mbps"),
     ("FARSIGHT_TRIAGE_INTERVAL", "--triage-interval"), ("FARSIGHT_DEPTH_MODEL", "--depth-model"),

@@ -136,7 +136,7 @@ class GpuRecoveryTests(unittest.TestCase):
         self.assertTrue(service._recover_gpu(caught.exception))
         self.assertTrue(broken.closed)
         self.assertEqual(service.rebuilds, 1)
-        self.assertEqual(len(service._detect(jpeg())), 2)
+        self.assertEqual([b["cls"] for b in service._detect(jpeg())], ["person", "person", "face"])
 
     def test_rebuilds_are_rate_limited_and_failures_stay_visible(self):
         service = self.service()
@@ -220,7 +220,7 @@ class GpuStartupRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("out of memory", service.health()["detector_error"])
                 self.assertEqual(service.health()["detector_fps"], 0)
                 await self.wait(lambda: bool(service.snapshot()["boxes"]))
-                self.assertEqual(len(service.snapshot()["boxes"]), 2)
+                self.assertEqual(sum(b["cls"] == "person" for b in service.snapshot()["boxes"]), 2)
                 self.assertEqual(service.health()["detector_backend"], "pose-tensorrt")
                 self.assertIsNone(service.health()["detector_error"])
             finally:
