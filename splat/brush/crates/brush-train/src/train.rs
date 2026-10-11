@@ -559,6 +559,10 @@ impl SplatTrainer {
         let mut coeffs_grad_sq_sum: Option<Tensor<3>> = None;
         let mut refine_weights: Vec<Tensor<1>> = Vec::with_capacity(batches.len());
         let mut counts_sum: Option<Tensor<1, Int>> = None;
+        // Per-view counts rows, cat'd for a single deferred readback — the
+        // row-max of counts[2] (true isect total) sizes next step's isect
+        // capacity (see brush_render::report_isect_total).
+        let mut counts_rows: Option<Tensor<1, Int>> = None;
 
         for batch in batches {
             let [img_h, img_w] = batch.img_size();
@@ -614,7 +618,11 @@ impl SplatTrainer {
             };
             let refine_weight_holder = diff_out.refine_weight_holder;
             counts_sum = Some(match counts_sum {
-                Some(c) => c + diff_out.counts,
+                Some(c) => c + diff_out.counts.clone(),
+                None => diff_out.counts.clone(),
+            });
+            counts_rows = Some(match counts_rows {
+                Some(r) => Tensor::cat(vec![r, diff_out.counts], 0),
                 None => diff_out.counts,
             });
 
@@ -714,6 +722,7 @@ impl SplatTrainer {
         let max_radius = aux_max_radius.expect("at least one view");
         let coeffs_grad_sq_holder = coeffs_grad_sq_sum.expect("at least one view") / n_views;
         let counts = counts_sum.expect("at least one view");
+        let counts_rows = counts_rows.expect("at least one view");
 
         // Accumulate into the run-lifetime blend weight (pruned/relocated
         // rows are zeroed elsewhere so indices stay aligned).
@@ -912,6 +921,23 @@ impl SplatTrainer {
             .try_into_vec::<u32>()
             .expect("counts dtype");
         let num_visible = (counts[0] as f32 / n_views) as u32;
+
+        // Feed next step's isect capacity: per-view max of the unclamped
+        // isect total (counts[2]); report_isect_total applies the 1.25x
+        // headroom and grow-only rule. Same deferred-readback slot as
+        // `counts` — zero extra mid-step syncs.
+        let rows: Vec<u32> = counts_rows
+            .into_data_async()
+            .await
+            .expect("counts rows readback")
+            .try_into_vec::<u32>()
+            .expect("counts dtype");
+        brush_render::report_isect_total(
+            rows.chunks_exact(3)
+                .map(|c| c[2] as u64)
+                .max()
+                .unwrap_or(0),
+        );
 
         // EMA tracks the stepped params (re-anchored after each refine).
         self.ema_update(&splats);

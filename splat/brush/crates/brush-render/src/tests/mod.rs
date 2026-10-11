@@ -987,3 +987,83 @@ async fn renders_thin_prism_fisheye() {
     }))
     .await;
 }
+
+#[wasm_bindgen_test(unsupported = tokio::test)]
+async fn high_density_scene_drops_no_intersections() {
+    // 40 huge splats each covering most of a 64x48 image (4x3 tiles) ->
+    // ~480 intersections, well above the old fixed 8x-splats cap (320).
+    // Adaptive sizing must keep counts[1] == counts[2] (zero drops), both
+    // on the first exact-sizing render and on a hinted second render.
+    let cam = Camera::new(
+        glam::vec3(0.0, 0.0, -5.0),
+        glam::Quat::IDENTITY,
+        0.5,
+        0.5,
+        glam::vec2(0.5, 0.5),
+        CameraModel::Pinhole,
+    );
+    let img_size = glam::uvec2(64, 48);
+    let device: burn::tensor::Device = brush_cube::test_helpers::test_device().await.into();
+
+    let num_splats = 40;
+    let means = Tensor::<2>::random(
+        [num_splats, 3],
+        Distribution::Uniform(-0.5, 0.5),
+        &device,
+    );
+    // Big enough to cover most tiles each.
+    let log_scales = Tensor::<2>::ones([num_splats, 3], &device) * 3.0;
+    let quats = Tensor::<2>::random([num_splats, 4], Distribution::Uniform(-1.0, 1.0), &device);
+    let sh_coeffs =
+        Tensor::<3>::random([num_splats, 1, 3], Distribution::Uniform(0.0, 1.0), &device);
+    let raw_opacity = Tensor::<1>::ones([num_splats], &device);
+
+    let read_counts = |aux: crate::RenderAux| async move {
+        aux.counts
+            .into_data_async()
+            .await
+            .unwrap()
+            .try_into_vec::<u32>()
+            .unwrap()
+    };
+
+    // Render 1: no hint yet -> exact sizing pass; zero drops by construction.
+    let splats = Splats::from_tensor_data(
+        means.clone(),
+        quats.clone(),
+        log_scales.clone(),
+        sh_coeffs.clone(),
+        raw_opacity.clone(),
+        SplatRenderMode::Default,
+    );
+    let (_out, aux) =
+        render_splats(splats, &cam, img_size, Vec3::ZERO, None, TextureMode::Float).await;
+    let counts = read_counts(aux).await;
+    assert!(counts[0] > 0, "all splats culled");
+    assert_eq!(
+        counts[1], counts[2],
+        "step-0 exact sizing dropped {} isects",
+        counts[2] - counts[1]
+    );
+
+    // Feed the hint like the train loop's deferred readback does.
+    crate::report_isect_total(counts[2] as u64);
+
+    // Render 2: hinted capacity -> still no drops.
+    let splats2 = Splats::from_tensor_data(
+        means,
+        quats,
+        log_scales,
+        sh_coeffs,
+        raw_opacity,
+        SplatRenderMode::Default,
+    );
+    let (_out2, aux2) =
+        render_splats(splats2, &cam, img_size, Vec3::ZERO, None, TextureMode::Float).await;
+    let counts2 = read_counts(aux2).await;
+    assert_eq!(
+        counts2[1], counts2[2],
+        "hinted capacity dropped {} isects",
+        counts2[2] - counts2[1]
+    );
+}

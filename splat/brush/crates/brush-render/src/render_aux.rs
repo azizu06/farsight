@@ -69,8 +69,11 @@ impl<B: Backend> RenderOutput<B> {
 /// pipeline and the backward registration.
 #[derive(Debug, Clone, ExtensionType)]
 pub struct RenderAuxInner<B: Backend> {
-    /// GPU-side `[num_visible, isect_used]` written by the write_counts
-    /// kernel. Read it back on your own schedule — reading forces a sync, so
+    /// GPU-side `[num_visible, isect_used, isect_total]` written by the
+    /// write_counts / seal_isects kernels. `isect_used` is clamped to the
+    /// isect buffer capacity; `isect_total` is the true unclamped count —
+    /// `isect_total > isect_used` means intersections were dropped this
+    /// step. Read it back on your own schedule — reading forces a sync, so
     /// the training loop defers it until the rest of the step is queued.
     pub counts: IntTensor<B>,
     pub visible: FloatTensor<B>,

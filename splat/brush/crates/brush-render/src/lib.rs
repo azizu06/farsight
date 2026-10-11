@@ -9,6 +9,7 @@ use glam::Vec3;
 use crate::gaussian_splats::SplatRenderMode;
 pub use crate::gaussian_splats::{Splats, TextureMode, render_splats};
 pub use crate::render_aux::{RenderAux, RenderAuxInner, RenderOutput};
+pub use crate::render::{report_isect_total, reset_isect_cap_hint};
 
 pub mod burn_glue;
 pub mod bwd;

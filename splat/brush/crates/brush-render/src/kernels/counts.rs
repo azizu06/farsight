@@ -24,5 +24,9 @@ pub fn seal_isects(cum_tiles_hit: &Tensor<u32>, counts: &mut Tensor<u32>, isect_
         let nv = counts[0];
         let total = if nv > 0u32 { cum_tiles_hit[(nv - 1u32) as usize] } else { 0u32 };
         counts[1] = min(total, isect_cap);
+        // counts[2] keeps the unclamped total so the train loop's deferred
+        // readback can size next step's isect capacity (and spot drops when
+        // counts[2] > counts[1]).
+        counts[2] = total;
     }
 }

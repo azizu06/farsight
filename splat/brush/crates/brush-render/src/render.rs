@@ -24,6 +24,31 @@ use burn_cubecl::kernel::into_contiguous;
 use glam::{Vec3, uvec2};
 use kernels::types::RasterizeUniformsLaunch;
 use std::f32::consts::PI;
+use std::sync::Mutex;
+
+/// Previous-step true (unclamped) intersection total, fed back through the
+/// train loop's deferred readback via [`report_isect_total`]. 0 = no hint
+/// yet, which selects the exact-sizing pass on the first render.
+static ISECT_CAP_HINT: Mutex<u64> = Mutex::new(0);
+/// Largest capacity actually allocated so far. Reallocation is grow-only:
+/// the buffer never shrinks mid-run, so one transiently small step can't
+/// churn allocations.
+static ISECT_CAP_USED: Mutex<u64> = Mutex::new(0);
+
+/// Report the true intersection total (`counts[2]`) of the step that just
+/// finished. Called from the train loop's end-of-step deferred readback, so
+/// `render()` never syncs the GPU mid-step. The next step's isect buffer
+/// capacity is `ceil(total * 1.25)` headroom, grow-only vs every value seen.
+pub fn report_isect_total(true_total: u64) {
+    let hinted = true_total.saturating_mul(5).div_ceil(4).max(1);
+    let mut cap = ISECT_CAP_HINT.lock().expect("isect cap hint");
+    *cap = (*cap).max(hinted);
+}
+
+/// Reset the capacity hint (e.g. on scene/splat-count changes).
+pub fn reset_isect_cap_hint() {
+    *ISECT_CAP_HINT.lock().expect("isect cap hint") = 0;
+}
 
 /// Record a phase boundary when `BRUSH_PROFILE` profiling is on: flush the
 /// queue and wait so the next phase's wall time is isolated. Identity when
@@ -185,15 +210,22 @@ impl SplatOps for CubeBackend {
         // own schedule (train defers it to the end of the step).
         let tile_bounds: glam::UVec2 = project_uniforms.tile_bounds.into();
         let num_tiles = tile_bounds.x * tile_bounds.y;
-        // Intersection capacity: a splat can cover at most num_tiles tiles;
-        // 8x total_splats covers dense scenes while bounding memory. If the
-        // cap binds, the overflow tail is dropped for that step only (the
-        // clamp is read from counts[1] by get_tile_offsets).
-        let isect_cap = total_splats
-            .saturating_mul(8)
-            .min(total_splats.saturating_mul(num_tiles))
-            .max(1);
-        let counts = create_tensor([2], &device, DType::U32);
+        // Intersection capacity. Sized from the previous step's true isect
+        // total x1.25 (reported through the train loop's deferred readback),
+        // grow-only vs every capacity used so far — the old fixed 8x cap
+        // silently dropped tail intersections on dense/high-res scenes
+        // (flickering tiles). No hint yet (first render): fall back to the
+        // theoretical max for the seal, then the exact-sizing pass below
+        // reads counts[2] once to pick the real capacity.
+        let max_isects = total_splats.saturating_mul(num_tiles).max(1);
+        let hint_cap = *ISECT_CAP_HINT.lock().expect("isect cap hint");
+        let used_cap = *ISECT_CAP_USED.lock().expect("isect cap used");
+        let mut isect_cap = if hint_cap == 0 && used_cap == 0 {
+            max_isects
+        } else {
+            hint_cap.max(used_cap).min(u64::from(max_isects)) as u32
+        };
+        let counts = create_tensor([3], &device, DType::U32);
         kernels::counts::write_counts::launch(
             &client,
             CubeCount::Static(1, 1, 1),
@@ -204,7 +236,6 @@ impl SplatOps for CubeBackend {
 
         // Kept capacity-sized: kernels take their bounds from `counts`.
         project_uniforms.num_visible = total_splats;
-        crate::profile::count("isect_cap", isect_cap as u64);
         profile_mark!("write_counts", client);
 
         let mip_splat = matches!(render_mode, SplatRenderMode::Mip);
@@ -237,6 +268,22 @@ impl SplatOps for CubeBackend {
             counts.clone().into_tensor_arg(),
             isect_cap,
         );
+        if isect_cap == max_isects {
+            // Exact sizing pass — runs once per process (first render only),
+            // the single allowed mid-step sync: read counts[2] = true isect
+            // total and allocate the isect buffers exactly.
+            let total_tensor = Self::int_slice(counts.clone(), &[(2..3).into()]);
+            let data = burn::cubecl::future::block_on(Self::int_into_data(total_tensor))
+                .expect("isect total readback");
+            isect_cap = data.as_slice::<u32>().expect("counts dtype")[0]
+                .max(1)
+                .min(max_isects);
+        }
+        {
+            let mut used = ISECT_CAP_USED.lock().expect("isect cap used");
+            *used = (*used).max(isect_cap as u64);
+        }
+        crate::profile::count("isect_cap", isect_cap as u64);
         profile_mark!("gather+scan", client);
         let projected_splats = create_tensor(
             [total_splats as usize, kernels::helpers::PROJECTED_LANES_USIZE],
