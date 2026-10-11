@@ -34,6 +34,8 @@ const upstream = (params.get("upstream") || "").replace(/\/$/, "");
 const width = Number(params.get("width") || 1280);
 const height = Number(params.get("height") || 720);
 const stereoRequested = params.get("layout") === SBS_LAYOUT;
+const canvasPresentation = params.get("presentation") === "canvas";
+const localFixture = params.get("fixture") === "1";
 
 const style = params.get("style") === "unlit" ? "unlit" : "lit";
 // Cinematic is the default look; ?quality=flat reproduces the pre-cine
@@ -54,10 +56,9 @@ const ACCENT = 0xc4a574;
 
 const renderer = new THREE.WebGLRenderer({
   antialias, alpha: false,
-  // Captures can read the canvas outside the render task; a preserved
-  // backbuffer means those reads can never hit a cleared buffer even if a
-  // path (raw screencast) skips the same-task draw guarantee.
-  preserveDrawingBuffer: true,
+  // Stream capture retains its backbuffer. Direct display presents to the
+  // compositor without retaining an additional capture buffer.
+  preserveDrawingBuffer: !canvasPresentation,
   powerPreference: "high-performance",
 });
 renderer.setSize(width, height, false);
@@ -786,7 +787,7 @@ let surfacesVisibleSeen = true;
 const denseMetricsView = {};
 function drawScene(measure) {
   const started = performance.now();
-  denseReceiver.update();
+  if (!localFixture) denseReceiver.update();
   // Dense deltas, resets and TTL expiries are the dense lane's "changed"
   // signal; without one a clean frame may skip rasterizing entirely.
   if (denseState.dirty.size > 0 || denseReceiver.pages !== densePagesSeen ||
@@ -886,9 +887,9 @@ window.__macCapture = () => {
 renderer.setAnimationLoop(() => { if (!window.__macCaptureDriven) drawScene("raf"); });
 window.__macRefreshMap = () => refresh(true);
 applyLod();
-refresh();
+if (!localFixture) refresh();
 // 300 ms polls drive the delta fast lane; full pulls pace themselves.
-const refreshTimer = window.setInterval(refresh, 300);
+const refreshTimer = localFixture ? null : window.setInterval(refresh, 300);
 window.addEventListener("pagehide", () => {
   window.clearInterval(refreshTimer); incomingPose = null; clearPose();
   denseReceiver.dispose(); denseGpu.dispose();
