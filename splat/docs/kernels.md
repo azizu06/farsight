@@ -83,50 +83,9 @@ Numbers = avg of 3 iters after warmup.
 (bwd phases — `rasterize_bwd`, `project_bwd` — run on burn's autodiff
 pool, outside the profiled thread; the wall delta contains them + gathers.)
 
-## Post-T7 sync-free pipeline (lavapipe)
-
-Same scene/harness after merging T7's device-side counts
-(`write_counts`, capacity buffers, `radix_argsort_len` GPU bound):
-
-| Phase | ms |
-|-------|---:|
-| project_forward | 39.0 |
-| write_counts | 0.4 |
-| depth_sort | 78.4 |
-| gather+scan | 4.9 |
-| project_visible | 7.4 |
-| map_gaussians | 90.4 |
-| tile_sort | 421.1 |
-| tile_offsets | 3.5 |
-| rasterize (fwd) | 141.0 |
-| phase_sum | 786 |
-| wall fwd+bwd | 1093 |
-
-Note: `isect_cap = min(8×total_splats, total×num_tiles)` = 3.2M **binds** on
-this scene (5.87M actual isects) — tail intersections are silently dropped.
-depth_sort/map_gaussians regressions vs the pre-merge run are capacity-launch
-overhead (wgs sized to total_splats, early-out on `counts[0]`).
-
 ## Change log
 
 (Each entry: change, lavapipe before→after, expected Mac effect, commit SHA.)
-
-- **render: drop per-splat `num_intersections` atomic** (`6324ce0`). The
-  inclusive prefix scan already yields the isect total as its last element;
-  `seal_isects` (single-cube launch after `prefix_sum`) writes
-  `counts[1] = min(total, cap)`. Removes ~`num_visible` global atomic adds
-  per step from `project_forward`.
-- **rasterize: dedupe `visible[]` writes** (`6324ce0`). `bwd_info` path used
-  to write `visible[gid]=1` once per contributing (pixel, splat) pair
-  (~1.5B writes on the 5.87M-isect scene). Now a `TILE_SIZE/32`-word shared
-  bitmap collects marks, flushed once per splat per tile (~isects writes,
-  identical result). 32/32 render tests pass.
-- **rasterize_backwards: tile-level early exit** (below). Shared `num_done`
-  counter: pixels count as done when `next_t <= 1e-4` (or start outside the
-  image); the batch loop exits once all 256 saturate — remaining batches
-  provably contribute zero gradient. Saturated-room tiles skip most of
-  `rounds × (SPLAT_BATCH+255)` iterations. 32/32 render tests pass;
-  autodiff train test green.
 
 - **brush-sort: 4-bit → 8-bit digits** (commit below). Tile sort 3→2 passes,
   depth sort 8→4 passes; histogram table 16→256 bins (count_buf = wgs×256,
