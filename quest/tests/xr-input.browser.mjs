@@ -83,6 +83,14 @@ try {
       rayPosition={x:0,y:0,z:0};tick();
       subject.onXRSelectStart({inputSource:right});
       const awayTarget={aimed:subject.aimedIntercom,pointer:subject.pointer.visible};
+      const aimedToggles=talkToggles;
+      // Left trigger: Talk on/off on the press edge, with a haptic pulse; holding does not repeat.
+      let pulses=0;left.gamepad.hapticActuators=[{pulse:()=>{pulses++;return Promise.resolve(true);}}];
+      const driveBefore=messages.length;
+      left.gamepad.buttons[0].pressed=true;tick();tick();left.gamepad.buttons[0].pressed=false;tick();
+      left.gamepad.buttons[0].pressed=true;tick();left.gamepad.buttons[0].pressed=false;tick();
+      const leftTalk={toggles:talkToggles-aimedToggles,pulses,
+        driveMoved:messages.slice(driveBefore).some(m=>m.deadman&&(m.v||m.w))};
       subject.identityCards._receive({type:'identity',source:'SIMULATED',frame:7,received:1,
         gallery_generation:1,fresh:true,error:null,age_ms:0,
         faces:[{name:'Mehdi',person_id:'enrolled-mehdi',x:.1,y:.2,w:.2,h:.3,conf:.99}]});
@@ -97,7 +105,7 @@ try {
       const identityExpired={visible:subject.identityPanel.visible,cameraPaintUnchanged:subject.lastCanvasDraw===cameraPaintAt};
       subject.dispose();renderer.dispose();
       return {initial,manual,centered,auto,autoOnPress,heldA,roaming,transition,heldAfterSwitch,rearmed,lost,stale,stopped,panels,
-        talkTarget,awayTarget,talkToggles,identityFresh,identityExpired,pixels:[...pixels],picture};
+        talkTarget,awayTarget,talkToggles:aimedToggles,leftTalk,identityFresh,identityExpired,pixels:[...pixels],picture};
     }finally{performance.now=realNow;}
   });
   assert.deepEqual(result.initial,{auto:false,mode:'teleop'});
@@ -121,6 +129,7 @@ try {
   assert.deepEqual(result.talkTarget,{aimed:true,pointer:true},'the actual right-controller ray visibly targets Talk');
   assert.deepEqual(result.awayTarget,{aimed:false,pointer:false});
   assert.equal(result.talkToggles,1,'only a right-trigger press aimed at Talk toggles it');
+  assert.deepEqual(result.leftTalk,{toggles:2,pulses:2,driveMoved:false},'left trigger toggles Talk once per press, buzzes, and never drives');
   assert.deepEqual(result.identityFresh,{visible:true,canvasHidden:true,cameraPaintUnchanged:true});
   assert.deepEqual(result.identityExpired,{visible:false,cameraPaintUnchanged:true});
   assert.ok(result.pixels.slice(0,3).some(v=>v>25),'actual camera pixels remain visible');

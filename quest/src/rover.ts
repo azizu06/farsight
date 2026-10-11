@@ -24,6 +24,7 @@ import { mapWalk } from "./map-walk.js";
 import { DEMO_BLIP_MS, DEMO_MODE } from "./demo-config.js";
 import { cueFor, drawChip, drawControllerHint, drawCue, motionTone } from "./vr-hud.js";
 import { QuestIntercom, type IntercomState } from "./intercom.js";
+import { hapticPulse } from "./xr-haptics.js";
 
 /** Quest sticks drift; a slightly off-center right stick must not override Explore/Seek/go-to. */
 const XR_STICK_DEADZONE = 0.25;
@@ -715,6 +716,13 @@ export class RoverExperience {
       if (!leftTracked) {
         this.voice?.stopListening("Left controller tracking unavailable: voice question cancelled");
         this.latchLeftButtons();
+      }
+      // Left trigger toggles Talk on its press edge (there is no pointer to click the panel in VR).
+      // A trigger held through tracking loss stays latched until it is released.
+      if (leftTracked) {
+        const talk = !!left?.gamepad?.buttons[0]?.pressed;
+        if (talk && !this.talkDown) { void this.intercom.toggle(); hapticPulse(left?.gamepad); }
+        this.talkDown = talk;
       }
       this.lastXRAt = now;
       this.updatePointer(frame, reference, right);
