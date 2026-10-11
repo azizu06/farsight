@@ -36,7 +36,7 @@ from std_msgs.msg import String
 from std_srvs.srv import Trigger
 from tf2_ros import Buffer, StaticTransformBroadcaster, TransformBroadcaster, TransformListener
 
-from . import frames, frontiers, local_motion, protocol, speed
+from . import frames, frontiers, local_motion, open_space, protocol, speed
 
 try:
     import websockets
@@ -551,6 +551,17 @@ class FarsightBridge(Node):
                 fallback = choice is not None
             if choice is not None:
                 break
+        interior = False
+        if choice is None:
+            # A fully observed room can have no frontier at all. Commit to an
+            # open interior destination and let Nav2 route around obstacles;
+            # do not reduce that high-level decision to another local scan.
+            choice = open_space.choose(
+                cells, info.resolution, origin, robot_map,
+                current_goal=target if not timed_out else None, blacklist=blacklist,
+                visits=explorer.visits, now=now,
+                transition_m=self.explore_config.transition_distance)
+            interior = choice is not None
         with self.lock:
             if (session != self.explore_session or not self.exploring
                     or time.monotonic() - self.pose_at >= 0.5 or time.monotonic() - self.depth_at >= 0.5):
@@ -586,7 +597,8 @@ class FarsightBridge(Node):
         sent = self.send_goal(goal_id, dict(x=gx, y=gy, yaw=yaw_odom), explore_session=session)
         with self.lock:
             if sent and session == self.explore_session:
-                self.goal_message = (f"Exploring frontier {choice.size_m:.1f} m (route still unseen)" if fallback
+                self.goal_message = ("Moving to open space through a mapped passage" if interior else
+                                     f"Exploring frontier {choice.size_m:.1f} m (route still unseen)" if fallback
                                      else f"Exploring broad frontier {choice.size_m:.1f} m")
 
     def motion_tick(self):
