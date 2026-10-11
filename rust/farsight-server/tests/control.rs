@@ -568,10 +568,54 @@ fn demo_teleop_ignores_camera_freshness_but_gated_modes_do_not() {
     *f.camera.lock().unwrap() = false;
     assert!(f.send(json!({"video_fresh": false, "video_age_ms": 2000})));
     assert_eq!(f.output(), (50, 50));
-    // A non-teleop command is still camera-gated; the transient stop does not latch.
+    // #175: demo AUTO modes skip the camera refusal too — a seek here falls
+    // through to unsupported_mode (this fixture has no autonomy backend),
+    // and a protocol fault is not transient: it latches like strict mode.
     assert!(!f.send(json!({"mode": "seek", "target_id": 1})));
-    assert_eq!(f.state.status(false)["reason"], "camera_stale");
-    assert!(!f.state.status(false)["requires_release"].as_bool().unwrap());
+    assert_eq!(f.state.status(false)["reason"], "unsupported_mode");
+    assert!(f.state.status(false)["requires_release"].as_bool().unwrap());
+}
+
+#[test]
+fn demo_auto_modes_are_exempt_from_viewer_video_freshness() {
+    // #175: in demo mode, AUTO heartbeats skip the 500 ms viewer-video gate —
+    // Quest H.264 runs ~450 ms so it cancelled goals every few seconds.
+    // Strict mode (demo off) keeps the gate for AUTO too.
+    for demo in [true, false] {
+        let now = Arc::new(Mutex::new(10.0f64));
+        let n = now.clone();
+        let clock: Clock = Arc::new(move || *n.lock().unwrap());
+        let detections: farsight_server::control::Detections = Arc::new(|| json!([]));
+        let state = ControlState::new(
+            false, 0, 100, None, Some(detections), Some(clock), None, false, true,
+            "servo", None, None, demo,
+        )
+        .unwrap();
+        state.set_connected(true, None);
+        let session = state.begin().unwrap();
+        state.update_range(100.0);
+        let f = Fixture { state, session, seq: std::cell::Cell::new(0), now };
+        f.send(json!({"deadman": false}));
+
+        for mode in ["explore", "seek"] {
+            let stale =
+                json!({"mode": mode, "target_id": 7, "video_fresh": false, "video_age_ms": 2000});
+            assert_eq!(
+                f.send(stale.clone()),
+                demo,
+                "{mode} demo={demo}: video gate outcome"
+            );
+            f.send(json!({"deadman": false}));
+        }
+        // Manual teleop keeps the gate in strict mode; demo teleop is ungated (#134).
+        assert_eq!(
+            f.send(json!({"mode": "teleop", "video_fresh": false, "video_age_ms": 2000})),
+            demo
+        );
+        if !demo {
+            assert_eq!(f.state.status(false)["reason"], "video_stale");
+        }
+    }
 }
 
 #[test]

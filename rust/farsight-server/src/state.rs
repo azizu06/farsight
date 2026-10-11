@@ -375,6 +375,7 @@ impl MapState {
             camera_receipt = camera_receipt.min(origin);
         }
         let generation;
+        let next_revision;
         let may_fuse;
         let may_dense;
         let dense_cloud;
@@ -409,6 +410,7 @@ impl MapState {
                 frame.header["t_capture"].clone(),
             ]);
             generation = s.processing_generation;
+            next_revision = s.revision + 1;
             Self::observe_pose_locked(&mut s, &frame.header, &frame.transform, Some(camera_receipt))?;
             s.jpeg = Some(frame.jpeg.clone());
             s.capture_diagnostics = crate::camera::capture_diagnostics(&frame.header);
@@ -482,8 +484,15 @@ impl MapState {
         if !may_fuse {
             return Ok(());
         }
-        let (points, colors, mesh, lods) =
-            crate::phone::reconstruct_lods(frame, 2, 1, &crate::phone::VISUAL_LODS);
+        // #176: the voxel cloud samples at stride 4 (VOXEL_POINT_STRIDE) while
+        // the mesh and its LODs keep their own finer sampling.
+        let (points, colors, mesh, lods) = crate::phone::reconstruct_lods(
+            frame,
+            2,
+            1,
+            &crate::phone::VISUAL_LODS,
+            Some(crate::phone::VOXEL_POINT_STRIDE),
+        );
         let point_count = points.len();
         // Admit under `inner`, then take `geometry` while still holding it
         // (lock order inner -> geometry) so a reset/disconnect cannot clear
@@ -501,7 +510,7 @@ impl MapState {
             }
             self.geometry.lock().unwrap()
         };
-        g.cloud.integrate(&points, &colors);
+        g.cloud.integrate(&points, &colors, next_revision);
         g.surfaces.integrate(mesh, &frame.transform, lods);
         drop(g);
         let mut s = self.inner.lock().unwrap();
@@ -555,6 +564,7 @@ impl MapState {
             "generation": s.generation,
             "revision": s.revision,
             "mesh_revision": g.surfaces.revision,
+            "points_delta": true,
             "paused": s.paused,
             "tracking": if fresh { s.tracking.clone() } else { "stale".into() },
             "points": g.cloud.cells.len(),
@@ -681,6 +691,45 @@ impl MapState {
             if enc.is_empty() { "i" } else { enc }
         );
         (body, enc, tag)
+    }
+
+    /// Additive point feed: every cell whose last integrate happened after
+    /// `after`, encoded in the standard points.bin layout (u32 count + 16 B
+    /// records). Clients re-derive each cell's voxel key from its position
+    /// at status.voxel_m and merge keyed in place; periodic full pulls stay
+    /// authoritative for evictions. Returns (body, coding, revision,
+    /// generation) — revision is the new appliedPoints watermark.
+    pub fn points_delta(&self, after: u64, accept_encoding: &str) -> (Bytes, &'static str, u64, u64) {
+        let (generation, revision, points, colors) = {
+            let s = self.inner.lock().unwrap();
+            let g = self.geometry.lock().unwrap();
+            let mut points = Vec::new();
+            let mut colors = Vec::new();
+            for cell in g.cloud.cells.values() {
+                if cell.touched > after {
+                    points.push([cell.pos[0] as f32, cell.pos[1] as f32, cell.pos[2] as f32]);
+                    colors.push([
+                        cell.color[0].clamp(0.0, 255.0) as u8,
+                        cell.color[1].clamp(0.0, 255.0) as u8,
+                        cell.color[2].clamp(0.0, 255.0) as u8,
+                    ]);
+                }
+            }
+            (s.generation, s.revision, points, colors)
+        };
+        let raw = encode_points(&points, &colors);
+        let coding = negotiate_encoding(accept_encoding);
+        let (body, enc) = if coding.is_none() || raw.len() < 1024 {
+            (Bytes::from(raw), "")
+        } else {
+            let body = match coding.unwrap() {
+                Coding::Zstd => zstd_compress(&raw),
+                Coding::Br => brotli_compress(&raw),
+                Coding::Gzip => gzip_compress(&raw),
+            };
+            (Bytes::from(body), coding.unwrap().name())
+        };
+        (body, enc, revision, generation)
     }
 
     pub fn point_packet(&self, accept_encoding: &str) -> (Bytes, &'static str, String) {
@@ -877,8 +926,38 @@ mod tests {
         let colors: Vec<[u8; 3]> = (0..300)
             .map(|i| [(i % 256) as u8, (i % 128) as u8, 42])
             .collect();
-        map.geometry.lock().unwrap().cloud.integrate(&points, &colors);
+        map.geometry.lock().unwrap().cloud.integrate(&points, &colors, 1);
         map
+    }
+
+    /// /map/points.delta carries only cells touched since `after`, in the
+    /// standard u32-count + 16 B record layout, and reports the live
+    /// revision/generation watermark.
+    #[test]
+    fn points_delta_emits_only_touched_cells() {
+        let map = filled_map(); // 300 cells at revision 1
+        let (body, coding, _rev, _gen) = map.points_delta(1, "");
+        assert_eq!(coding, "");
+        assert_eq!(
+            u32::from_le_bytes(body[0..4].try_into().unwrap()),
+            0,
+            "nothing newer than the watermark"
+        );
+        let (body, ..) = map.points_delta(0, "");
+        assert_eq!(u32::from_le_bytes(body[0..4].try_into().unwrap()), 300);
+
+        // Touch two cells at revision 2 — one new, one recolored.
+        map.geometry.lock().unwrap().cloud.integrate(
+            &[[100.0, 100.0, 100.0], [0.0, 0.0, 0.0]],
+            &[[9, 9, 9], [1, 2, 3]],
+            2,
+        );
+        let (body, ..) = map.points_delta(1, "");
+        assert_eq!(u32::from_le_bytes(body[0..4].try_into().unwrap()), 2);
+        // Records keep the standard layout: xyz f32 + rgb u8 + pad.
+        let rec = &body[4 + 16..4 + 32];
+        let z = f32::from_le_bytes(rec[8..12].try_into().unwrap());
+        assert_eq!(z, 0.0);
     }
 
     /// Fusion's voxel+surface integrate runs under `geometry`, not `inner`:

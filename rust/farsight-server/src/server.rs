@@ -125,6 +125,9 @@ pub struct AppState {
     /// Opt-in enrolled-face identity (jetson identity_service.py port);
     /// created unconditionally like Python, silently disabled with no models.
     pub identity: Arc<IdentityService>,
+    /// Opt-in same-frame RGB-D export (raw_capture.py port); mounted only
+    /// when FARSIGHT_RAW_CAPTURE=1, like the Python conditional import.
+    pub raw_capture: Option<Arc<crate::raw_capture::RawCapture>>,
 }
 
 pub fn build_state(
@@ -419,6 +422,22 @@ pub fn build_state(
         identity_gallery,
         3.0,
     ));
+    // raw_capture.mount() parity: FARSIGHT_RAW_CAPTURE=1 installs the
+    // observer + route; anything else leaves the lane inactive.
+    let raw_capture = if std::env::var("FARSIGHT_RAW_CAPTURE").ok().as_deref() == Some("1") {
+        let capture = crate::raw_capture::RawCapture::new(mapping.clone());
+        let observer = capture.clone();
+        mapping
+            .frame_observers
+            .lock()
+            .unwrap()
+            .push(Arc::new(move |frame: &crate::phone::RgbdFrame| {
+                observer.observe(frame)
+            }));
+        Some(capture)
+    } else {
+        None
+    };
     Arc::new(AppState {
         mapping,
         camera,
@@ -448,6 +467,7 @@ pub fn build_state(
         sim,
         sim_world,
         identity,
+        raw_capture,
     })
 }
 
@@ -529,9 +549,16 @@ pub fn start_services(state: &Arc<AppState>) {
         // --sim-world: poses at 30 Hz, frames at 10 Hz (sim/stream.py).
         crate::sim::spawn_world_stream(state.mapping.clone(), state.camera.clone(), feed);
     } else if state.demo {
-        // #59 parity: 15 Hz synthetic camera with bounded 5 Hz fusion —
-        // capture cadence is independent of map work; busy fusion skips
-        // candidates so queued geometry never goes stale.
+        // #59 parity: 15 Hz synthetic camera with bounded fusion — capture
+        // cadence is independent of map work; busy fusion skips candidates so
+        // queued geometry never goes stale. Python fused at 5 Hz to spare the
+        // CPU; Rust fusion is cheap, so the default is the full capture rate.
+        // FARSIGHT_DEMO_FUSION_HZ restores any tighter bound.
+        let fusion_hz: f64 = std::env::var("FARSIGHT_DEMO_FUSION_HZ")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|h: &f64| h.is_finite() && *h > 0.0)
+            .unwrap_or(15.0);
         let mapping = state.mapping.clone();
         let camera = state.camera.clone();
         let busy = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -564,7 +591,7 @@ pub fn start_services(state: &Arc<AppState>) {
                     && !busy.swap(true, std::sync::atomic::Ordering::SeqCst)
                 {
                     let (mapping, busy) = (mapping.clone(), busy.clone());
-                    next_fusion = captured + 0.2;
+                    next_fusion = captured + 1.0 / fusion_hz;
                     std::thread::spawn(move || {
                         let _ = mapping.process(&mut frame);
                         busy.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -781,6 +808,29 @@ fn packet_response(body: impl Into<bytes::Bytes>, coding: &'static str) -> Respo
 
 async fn map_export(State(s): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     map_packet_response(&s, crate::state::PacketKind::Ply, &headers, true)
+}
+
+/// Additive point feed (board 6104167521): cells touched since `?after=`
+/// in the standard 16 B record layout so map updates stay ~7x smaller than
+/// a full replacement — the client merges keyed in place at high cadence.
+async fn map_points_delta(
+    State(s): State<Arc<AppState>>,
+    headers: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let after = match q.get("after").map(|v| v.parse::<u64>()) {
+        Some(Ok(v)) => v,
+        _ => return (StatusCode::BAD_REQUEST, "points.delta requires integer ?after=").into_response(),
+    };
+    let (body, coding, revision, generation) =
+        s.mapping.points_delta(after, accept_encoding(&headers));
+    let mut response = packet_response(body, coding);
+    let h = response.headers_mut();
+    h.insert("X-Map-Revision", revision.to_string().parse().unwrap());
+    h.insert("X-Map-Generation", generation.to_string().parse().unwrap());
+    h.insert("X-Map-Delta", "1".parse().unwrap());
+    h.insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+    response
 }
 
 /// `/map/dense.bin` query surface: epoch/after/snapshot/anchor/limit
@@ -1371,6 +1421,59 @@ async fn control_status(State(s): State<Arc<AppState>>) -> Json<Value> {
 }
 
 // ---------- WebSocket routes ----------
+
+/// GET /phone/frame.bin — raw_capture.py snapshot(): 503 waiting/scope/
+/// stale, 204 on after==key, else the paced bulk body.
+async fn phone_frame_bin(
+    State(s): State<Arc<AppState>>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(capture) = &s.raw_capture else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    match capture.snapshot(q.get("after").map(|v| v.as_str())) {
+        Ok(snap) => {
+            let mut response = match snap.body {
+                None => StatusCode::NO_CONTENT.into_response(),
+                Some(raw) => {
+                    // EncodedCache.get('raw', ...) parity: br/gzip variant
+                    // cached per capture key, Vary + Content-Encoding set.
+                    let (body, coding) =
+                        capture.encoded_body(&snap.key, raw, accept_encoding(&headers));
+                    let mut r = Response::new(paced_body(body));
+                    r.headers_mut().insert(
+                        header::CONTENT_TYPE,
+                        "application/octet-stream".parse().unwrap(),
+                    );
+                    r.headers_mut()
+                        .insert(header::VARY, "Accept-Encoding".parse().unwrap());
+                    if !coding.is_empty() {
+                        r.headers_mut()
+                            .insert(header::CONTENT_ENCODING, coding.parse().unwrap());
+                    }
+                    r
+                }
+            };
+            response.headers_mut().insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+            response.headers_mut().insert("X-Capture-Key", snap.key.parse().unwrap());
+            // Python str(round(ms, 2)) keeps a trailing .0 on whole values.
+            response.headers_mut().insert(
+                "X-Capture-Age-Ms",
+                format!("{:?}", snap.age_ms).parse().unwrap(),
+            );
+            response
+        }
+        Err(e) => {
+            let (status, detail) = e.status();
+            (
+                StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                Json(json!({"detail": detail})),
+            )
+                .into_response()
+        }
+    }
+}
 
 async fn ws_map(
     ws: WebSocketUpgrade,
@@ -2244,6 +2347,7 @@ pub fn router(state: Arc<AppState>, dist: Option<PathBuf>) -> Router {
         // variants are cached per map version inside MapState.
         .route("/map/status", get(map_status))
         .route("/map/points.bin", get(map_points))
+        .route("/map/points.delta", get(map_points_delta))
         .route("/map/dense.bin", get(map_dense))
         .route("/map/mesh.bin", get(map_mesh))
         .route("/map/export.ply", get(map_export))
@@ -2282,6 +2386,13 @@ pub fn router(state: Arc<AppState>, dist: Option<PathBuf>) -> Router {
     // --bonded-control; /ws/control keeps its single-owner behaviour.
     let app = if state.bonded.is_some() {
         app.route("/ws/control/bonded", get(ws_control_bonded))
+    } else {
+        app
+    };
+    // raw_capture.mount() parity: explicit route ahead of the static
+    // fallback, present only under FARSIGHT_RAW_CAPTURE=1.
+    let app = if state.raw_capture.is_some() {
+        app.route("/phone/frame.bin", get(phone_frame_bin))
     } else {
         app
     };

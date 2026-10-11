@@ -225,7 +225,13 @@ reconnect or a new controller socket), `controller_disconnected`, `camera_stale`
 sensor faults (`nav_pose_lost`, `nav_tracking_limited`, `nav_depth_lost`,
 `nav_sensor_reset`). The next fresh `deadman: true` heartbeat with a valid permit
 resumes. Teleop heartbeats skip the camera-freshness checks (`camera_stale`,
-`video_fresh` / `video_age_ms`); autonomy, scan and drive-profile modes keep them.
+`video_fresh` / `video_age_ms`). Explore, Seek and Goto heartbeats skip them too:
+demo autonomy drives on the rover's own camera, pose and depth, never on the
+viewer's picture. While it is engaged, a `camera_stale`, `nav_pose_lost`,
+`nav_tracking_limited` or `nav_depth_lost` stall shorter than 2 s holds the motors
+at zero without stopping. The session, lease, goal and Nav2 intent stay, and
+motion resumes by itself on fresh sensors. A longer stall stops as above.
+Scan and drive-profile modes keep both checks.
 Unchanged: the 250 ms lease, the first press after server start needs one release,
 protocol faults (`invalid_*`, `wrong_session`, `unsupported_mode`, oversized or
 binary frames, `uno_rejected_command`) still latch, the Nav2 sensor gate still
@@ -650,7 +656,11 @@ with Quest A; trigger + left Y requests a scan. See [scan setup and evidence](sc
 preferred, then `gzip`; `q=0` refuses a coding. Bodies under 1 KiB and requests without a
 supported coding stay identity. Responses always carry `Vary: Accept-Encoding`. The Python server
 encodes once per map version (generation, revision, mesh revision) and reuses it across clients.
-Decoded bytes are identical to the uncompressed body; no other route is compressed.
+Decoded bytes are identical to the uncompressed body. The additive point-delta,
+dense and accepted raw-frame routes also support negotiated compression as
+specified in their sections below. Python operator relay preserves the client's
+`Accept-Encoding`, encoded bytes and response encoding/capture headers for
+`/map/points.delta` and `/phone/frame.bin`, as well as the three map routes above.
 
 ### Visual map wire cap (additive)
 
@@ -676,11 +686,38 @@ its original status + raw binary snapshot behavior. Clients must wait for the
 acknowledgement before using HTTP pulls, so an older server can still supply
 legacy binary packets. Rust must mirror the query and optional status field.
 
-The canonical viewer allows one map download at a time, with at least two seconds
-between starts, alternating point and mesh refreshes when both change. It closes
-the map socket and aborts map/preview downloads while the operator holds the
-deadman, retaining displayed geometry. Release reconnects and obtains new
-authoritative snapshots. Camera view also pauses map transfers as before. H.264 suppresses both the rover JPEG poll
+### Additive point feed: `GET /map/points.delta?after=<revision>` (additive)
+
+Returns only the voxel cells integrated since `after`, in the standard
+16-byte XYZ/RGB record layout — roughly one fusion frame of points per
+request instead of a whole-map replacement. `X-Map-Revision` is the new
+client watermark; `X-Map-Generation` and `X-Map-Delta: 1` are also
+emitted. `status()` exposes `points_delta: true` as the feature flag;
+older servers 404 and clients fall back to full `/map/points.bin` pulls.
+
+The Mac geometry assembler mirrors the same `/map/*` surface over the
+published mesh: `/map/points.bin` serves the vertex stream verbatim
+(u32 LE count + 16B records), `/map/mesh.bin` and `/map/export.ply`
+match the mapper layouts, `/map/status` merges the assembler's
+`geometry{...}` block, and `/ws/map` pushes status plus binary packets
+(`?points=http` opts to status-only, same as the mapper). `/map/reset`
+and `/map/pause` answer 409 there — restart the phone capture session
+instead. Binary routes 503 "Matching geometry not available" until the
+first complete snapshot publishes.
+
+The feed is additive-only: each record's identity is its voxel key,
+recomputed client-side as `floor(x/voxel_m), floor(y/voxel_m),
+floor(z/voxel_m)` (a cell's mean always stays inside its voxel). Clients
+merge keyed in place — new cells append, touched cells overwrite — and a
+periodic full pull stays authoritative for capacity evictions. `?after=`
+is required; missing or non-integer is a 400.
+
+The canonical viewer merges deltas at ~300 ms cadence and keeps full
+`/map/points.bin`/`/map/mesh.bin` pulls on the five-second authority
+cadence, alternating point and mesh refreshes when both change. Map
+transfers now continue while the operator holds the deadman (the map
+fills as the rover turns); the Mac render picture and the camera view
+still pause map transfers as before. H.264 suppresses both the rover JPEG poll
 and the settings RGB JPEG poll. Control leases, permits, view age and release
 latches are unchanged.
 
@@ -786,10 +823,15 @@ lease, deadman, release, camera-stale and disconnect stops are unchanged.
 navigation geometry. The Mac mounts `/dense/manifest`, `/dense/chunk.bin`,
 `/dense/delta.bin`, `/dense/status` and `POST /dense/metrics` on relay 8080.
 See `docs/dense-map.md` for launch, budgets and evidence limits.
-Jetson visual ingestion is latest-only background work (2 Hz, 4096 real pixels
-per job), disabled at startup by `FARSIGHT_DENSE=0`. Optional `/health.dense_worker`
+Jetson visual ingestion is latest-only background work (default 8 Hz, 12,288 real
+pixels per job), disabled at startup by `FARSIGHT_DENSE=0`. The rate, samples/job
+and thread-CPU budget are configurable (`docs/dense-map.md`); costly jobs reduce
+admission rather than building a stale-frame backlog. Optional `/health.dense_worker`
 reports enabled/budget/queued/processed/dropped/processing_ms/error independently
-of the camera/coarse frame timing; normal capture/control guards are unchanged.
+of the camera/coarse frame timing. Additional `cpu_ms`, `cpu_budget`,
+`admission_hz` and cumulative `sampled_points` distinguish CPU use, current
+admission ceiling and observations from unique retained cells. Normal
+capture/control guards are unchanged.
 
 Delta query: `epoch` (opaque server/capture-generation token), `after` (last
 cursor, initially zero), `limit` (1–8192), `snapshot` (boolean), and `anchor`
@@ -813,7 +855,15 @@ A mismatched epoch or journal gap returns
 returns to its start anchor so normal deltas replay updates/removals concurrent
 with bootstrap. A transport reconnect alone never changes capture identity.
 Jetson working-cache budget eviction emits no deletion; expiry, explicit
-removal and reset do. Mac enforces its own retention/expiry bound.
+removal and reset do. Mac's RGB-D history pool keeps observed upserts across
+producer-cache expiry tombstones and same-epoch snapshot bootstraps, clearing
+on a true producer epoch change or local capacity eviction. Its optional
+`retained_history:true` manifest/delta field identifies historical visual
+geometry; `ttl_s:86400` preserves compatibility for older consumers. A consumer
+that supports the history flag retains the historical cloud across source
+disconnects and reports source age separately. Native geometry retains its
+explicit anchor-removal semantics. These history rules do not apply to rover
+camera/depth freshness or navigation geometry.
 
 The endpoints negotiate Brotli/gzip over bounded records; no complete
 multi-million-point body is transferred. Chunk replies use the same framing
@@ -1001,6 +1051,16 @@ its layout is invalid or its echo lacks this page's `session_id`, names an unkno
 `pose_id`, or has no valid left and right eye pose and projection. Any echo naming
 another `session_id` is rejected, flat or stereo.
 
+Without a current tracked pose, the packed Mac renderer keeps a **desktop
+preview** running from the retained camera with illustrative 64 mm eye spacing.
+Its echo uses a separate `desktop-preview-*` session and `desktop_preview: true`;
+`pose_to_frame_ms` is null because no tracking input produced that picture.
+Current valid headset eyes always replace this fallback. Headset clients reject
+the marked desktop frames, including any that accidentally match their session;
+the desktop canvas can display them. Geometry source/age/counts are unchanged.
+This works even when an unworn headset keeps its visual pose socket connected.
+It does not qualify headset stereo, tracking or pose-to-photon latency.
+
 The Mac server's packed mode is explicit: `--stereo sbs-left-right`, default
 coded size 1920×1080 (960×1080 per eye); `--width 1280 --height 720` selects the
 smaller pair. Without that mode the server remains mono. A packed producer
@@ -1021,3 +1081,21 @@ decoded eye assignment and actual headset acceptance remain separate gates.
 The viewer finds a frame's render pose by the echoed `pose_id`, or failing
 that by an exact `sent_mono_ms`. It sizes the picture from the echoed
 `video_segment.fov_y_deg`, which defaults to 50.
+
+### Optional read-only native RGB-D preview
+
+`FARSIGHT_RAW_CAPTURE=1` enables `GET /phone/frame.bin`; default off. It returns
+one accepted phone frame in the existing RGB-D packet layout (u32LE JSON length,
+JSON, native JPEG, float32LE metric depth, uint8 confidence), with optional
+`map_generation` and `capture_source` metadata. Native intrinsics/pose and JPEG
+are from that exact capture, before display rotation. Reset/socket/tracking/
+disconnect/pause/>2s age reject with 503; new session/epoch/generation clears the
+consumer's cloud. `X-Capture-Key` identifies session:epoch:generation:frame;
+`?after=KEY` returns 204 if unchanged. `X-Capture-Age-Ms` measures adjusted receipt
+age, not verified sensor latency. Responses use the existing bulk pacer. This
+GET takes no drive lease and opens no control socket. The existing Mac relay
+`/phone/` prefix forwards it without a relay restart; desktop lab proxy exposes
+it as `/capture/frame.bin` on :8086. See `docs/dense-viewer.md` for bounded
+worker reconstruction, lifecycle and measurement limits.
+
+The optional raw RGB-D export also negotiates HTTP `br`/`gzip` (identity stays supported); decoded native frame bytes are unchanged. `Vary: Accept-Encoding` accompanies encoded export responses. Relay compression pass-through must explicitly include `/phone/frame.bin`; otherwise its existing identity request preserves compatibility without bandwidth savings. This does not change the shared bulk pacing or capture freshness limits.

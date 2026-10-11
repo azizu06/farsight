@@ -110,8 +110,7 @@ class FarsightBridge(Node):
         self.explore_goal_timeout_s = p("explore_goal_timeout_s", 25.0).value
         self.explore_stall_s = p("explore_stall_s", 3.0).value          # no 0.3 m of progress: frontier blocked
         self.explore_blacklist_s = p("explore_blacklist_s", 30.0).value  # a skipped frontier may come back after this
-        # A goal still this far off the nose is mid-turn, not stalled: the 3 s
-        # distance stall cannot start until the rover roughly faces it.
+        # While turning toward a goal, closing heading counts as progress.
         self.explore_stall_heading_rad = p("explore_stall_heading_rad", 1.0).value
         # Just after a skip, prefer frontiers inside this cone around the current heading.
         self.explore_skip_forward_rad = p("explore_skip_forward_rad", math.radians(60)).value
@@ -217,7 +216,7 @@ class FarsightBridge(Node):
         self.explore_fallback = False  # current goal came from the unscored fallback chooser
         self.escape_from, self.escape_until = None, 0.0  # (x, y) map point to leave after low progress
         self.progress_best, self.progress_at = math.inf, 0.0  # closest distance_remaining and when it improved
-        self.heading_error_prev = None  # last tick's heading error to the frontier target
+        self.heading_best = math.inf  # smallest heading error to the current frontier target
         self.create_timer(0.25, self.send_status)
         self.explore_busy = False
         self.explore_again = False   # a re-pick was requested while scoring ran
@@ -488,29 +487,24 @@ class FarsightBridge(Node):
             if now - self.pose_at >= 0.5 or now - self.depth_at >= 0.5 or now - self.global_grid_at >= 2.5:
                 return  # server capture-loss interlock owns stopping and explicit rearming
             target = self.explore_target
-            # A goal still well off the nose is mid-turn, not stalled: distance
-            # cannot close while the rover is swinging toward it, so neither the
-            # 3 s distance stall nor the net-motion window may drop it. A
-            # shrinking heading error counts as progress once the turn ends.
+            # Translation cannot close while swinging toward a goal. Count new
+            # heading progress, but not an oscillation back to an earlier angle.
             heading_error = frontiers.turn_to(robot_map, target) if target is not None else None
             turning = heading_error is not None and heading_error >= self.explore_stall_heading_rad
-            if (turning and self.heading_error_prev is not None
-                    and heading_error < self.heading_error_prev - 0.05):
-                self.progress_at = now
-            self.heading_error_prev = heading_error
+            if turning and heading_error < self.heading_best - 0.1:
+                self.heading_best, self.progress_at = heading_error, now
             # Low net progress (spinning, dithering, pushing) over the window: leave this spot.
             stuck = self.progress.update(now, robot_map[:2])
             if stuck:
                 self.progress.reset()
-                if turning:
-                    stuck = False  # the whole window was one slow turn toward the goal
+                if turning and now - self.progress_at <= self.explore_stall_s:
+                    stuck = False  # the turn is still making new heading progress
                 else:
                     self.escape_from, self.escape_until = tuple(robot_map[:2]), now + 6.0
             # Re-pick the moment the current frontier is blocked: Nav2 began a
             # recovery, or got no 0.3 m closer for explore_stall_s (15 s backstop).
             timed_out = target is not None and (
-                stuck or self.explore_blocked
-                or (not turning and now - self.progress_at > self.explore_stall_s)
+                stuck or self.explore_blocked or now - self.progress_at > self.explore_stall_s
                 or now - self.explore_since > self.explore_goal_timeout_s)
             if timed_out:
                 self.skip_frontier()
@@ -644,7 +638,7 @@ class FarsightBridge(Node):
             self.nav_command, self.nav_command_at = None, -math.inf
             self.explore_blocked = False
             self.progress_best, self.progress_at = math.inf, time.monotonic()
-            self.heading_error_prev = None
+            self.heading_best = math.inf
             self.goal_seq += 1
             self.goal_pending, self.goal_sent_at, seq = True, time.monotonic(), self.goal_seq
         future = self.navigate.send_goal_async(

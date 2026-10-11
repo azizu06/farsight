@@ -17,6 +17,7 @@ import uuid
 import numpy as np
 
 RECORD = struct.Struct("<iiiBBBB")
+_RECORD_DTYPE = np.dtype([("xyz", "<i4", (3,)), ("rgb", "u1", (3,)), ("op", "u1")])
 MAX_RECORDS = 8192
 
 
@@ -103,9 +104,17 @@ class DenseMap:
         valid = np.isfinite(points).all(axis=1) & (np.abs(points) < 10000).all(axis=1)
         xyz = np.floor(points[valid] * 1000).astype(np.int32)
         rgb = np.asarray(colors[valid], np.uint8)
-        # Retain a real sample per cell, not an interpolated surface.
-        _, keep = np.unique(np.floor_divide(xyz, 10), axis=0, return_index=True)
-        self.apply([(*map(int, xyz[i]), *map(int, rgb[i]), 1) for i in keep])
+        # Retain the first real sample per cell. Fixed-size keys avoid NumPy's
+        # expensive row comparison, but their byte order is not numeric order.
+        # Restore the original signed xyz lexicographic order for revisions,
+        # wire pages and capacity eviction, including negative coordinates.
+        keys = np.ascontiguousarray(np.floor_divide(xyz, 10))
+        _, keep = np.unique(keys.view(np.dtype((np.void, 12))).reshape(-1), return_index=True)
+        selected = keys[keep]
+        keep = keep[np.lexsort((selected[:, 2], selected[:, 1], selected[:, 0]))]
+        records = np.empty(len(keep), dtype=_RECORD_DTYPE)
+        records["xyz"], records["rgb"], records["op"] = xyz[keep], rgb[keep], 1
+        self.apply(RECORD.iter_unpack(records.tobytes()))
 
     def apply(self, records):
         with self.lock:

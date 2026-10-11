@@ -999,6 +999,80 @@ class LeaseTests(unittest.TestCase):
             self.nav.receive(dict(type="teleport"))
 
 
+class DemoSensorPauseTests(unittest.TestCase):
+    """Demo AUTO: a short pose/depth/camera stall holds the motors and resumes the same Explore."""
+
+    def setUp(self):
+        self.clock = Clock()
+        self.camera = [True]
+        self.nav = NavService(MapState(), clock=self.clock)
+        self.nav.bridge = object()
+        feed(self.nav)
+        self.state = ControlState(clock=self.clock, navigator=self.nav, proximity_stop=False, demo_mode=True,
+                                  camera_ready=lambda: self.camera[0])
+        self.nav.attach(self.state)
+        self.state.set_connected(True)
+        self.session = self.state.begin()
+        self.seq = 0
+        self.send(deadman=False)
+        self.nav.receive(dict(type="status", state="idle", goal_id=None, generation=self.nav.generation))
+
+    def send(self, **values):
+        self.seq += 1
+        status = self.state.status(issue_permit=True)
+        message = dict(session_id=self.session, permit=status["permit"], seq=self.seq, deadman=True,
+                       v=0, w=0, pan=0, mode="explore", video_fresh=True, video_age_ms=0)
+        message.update(values)
+        return self.state.accept(message, self.session)
+
+    def drive(self):
+        self.assertTrue(self.send())
+        self.state.output()
+        self.nav.receive(dict(type="cmd_vel", linear=0.2, angular=0.0, generation=self.nav.generation,
+                              goal_id=self.nav.intent()["goal_id"]))
+        return self.state.output()[:2]
+
+    def test_short_stalls_hold_still_and_resume_the_same_explore_without_a_press(self):
+        for stall, reason in ((lambda: setattr(self.nav.mapping, "last_received", time.monotonic() - 1.5),
+                               "nav_pose_lost"),
+                              (lambda: setattr(self.nav, "frame_at", self.nav.frame_at - 2), "nav_depth_lost"),
+                              (lambda: self.camera.__setitem__(0, False), "camera_stale")):
+            with self.subTest(reason=reason):
+                feed(self.nav)
+                self.camera[0] = True
+                self.assertGreater(self.drive()[0], 0)
+                stall()
+                self.assertEqual(self.state.output()[:2], (0, 0))
+                status = self.state.status()
+                self.assertEqual((status["mode"], status["reason"], status["requires_release"]),
+                                 ("explore", reason, False))
+                self.assertTrue(self.nav.intent()["active"])  # the bridge keeps its goal: no cancel, no rescan
+                self.assertTrue(self.send(video_fresh=False, video_age_ms=5000))  # a held heartbeat still lands
+                feed(self.nav)
+                self.camera[0] = True
+                self.assertGreater(self.drive()[0], 0)  # fresh sensors: same session, no release or re-press
+
+    def test_a_long_stall_still_stops(self):
+        self.assertGreater(self.drive()[0], 0)
+        self.nav.mapping.last_received = time.monotonic() - 1.5
+        self.assertEqual(self.state.output()[:2], (0, 0))
+        self.clock.now += self.state.SENSOR_PAUSE_S
+        self.nav.receive(dict(type="status", state="driving", goal_id=None, generation=self.nav.generation))
+        self.send()
+        self.assertEqual(self.state.output()[:2], (0, 0))
+        status = self.state.status()
+        self.assertEqual((status["mode"], status["reason"]), ("teleop", "nav_pose_lost"))
+        self.assertFalse(self.nav.intent()["active"])
+
+    def test_strict_mode_still_stops_at_once(self):
+        self.state.demo_mode = False
+        self.assertGreater(self.drive()[0], 0)
+        self.nav.mapping.last_received = time.monotonic() - 1.5
+        self.assertEqual(self.state.output()[:2], (0, 0))
+        status = self.state.status()
+        self.assertEqual((status["reason"], status["requires_release"]), ("nav_pose_lost", True))
+
+
 class NavLaneTests(unittest.TestCase):
     def test_arrays_only_on_change_at_most_twice_a_second_with_a_refresh(self):
         clock = Clock()

@@ -36,6 +36,7 @@ class ProtocolTest(unittest.TestCase):
         self.assertEqual(frame_age_ms(1000, 1040), 40)
         self.assertEqual(pose_to_frame_ms({"received_mono_ms": 10}, 25), 15)
         self.assertIsNone(pose_to_frame_ms(None, 25))
+        self.assertIsNone(pose_to_frame_ms({"desktop_preview": True}, 25))
         with self.assertRaises(ValueError):
             frame_age_ms(float("nan"), 1)
 
@@ -47,6 +48,13 @@ class ProtocolTest(unittest.TestCase):
         self.assertEqual(side["request_id"], 7)
         self.assertGreaterEqual(side["age_ms"], 0)
         self.assertFalse(side["stereo"])
+
+    def test_desktop_preview_identity_is_explicit_without_fake_input_latency(self):
+        pose = {"session_id": "desktop-preview-fixture", "frame_id": 3, "desktop_preview": True}
+        side = segment_sidecar(4, pose, 10, 1000, 0, .1, 7, "SIMULATED", 2, 4, 1)
+        self.assertTrue(side["pose"]["desktop_preview"])
+        self.assertEqual(side["pose"]["session_id"], pose["session_id"])
+        self.assertIsNone(pose_to_frame_ms(pose, 10))
 
     def test_percentile(self):
         self.assertEqual(percentile([1, 2, 3, 4], 0.5), 2.5)

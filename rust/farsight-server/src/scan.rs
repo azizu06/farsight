@@ -287,7 +287,7 @@ impl ScanService {
                 px.swap(0, 2);
             }
             let (xyz, colors) = back_project(&depth, w, h, &rgb, k, yaw as f64, 8.0)?;
-            cloud.integrate(&xyz, &colors);
+            cloud.integrate(&xyz, &colors, 0);
             self.collect_markers(&frame, &depth, w, h, &rgb, k, yaw as f64, &detections);
             {
                 let mut result = self.result.lock().unwrap();

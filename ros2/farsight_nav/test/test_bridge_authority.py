@@ -233,7 +233,7 @@ class ExploreStallTests(unittest.TestCase):
         node.swept = frontiers.SweptFootprint(0.35)
         node.progress = frontiers.ProgressWindow()
         node.progress_best, node.progress_at = math.inf, time.monotonic()
-        node.heading_error_prev = None
+        node.heading_best = math.inf
         node.blacklist = []
         node.escape_from, node.escape_until = None, 0.0
         node.no_frontier_since = None
@@ -286,11 +286,30 @@ class ExploreStallTests(unittest.TestCase):
         node = self.make_node()
         node.robot = (2.5, 2.5, math.pi - 2.0)               # 2.0 rad off the astern target
         node.explore_target = (0.5, 2.5)
-        node.heading_error_prev = 2.9                        # the turn is closing in
+        node.heading_best = 2.9                              # the turn is closing in
         node.progress_at = time.monotonic() - 10.0
         self.tick(node, [frontiers.Frontier((4.5, 2.5), (4.5, 2.5), 1.0)])
         self.assertGreater(node.progress_at, time.monotonic() - 1.0)
         self.assertEqual(node.blacklist, [])
+
+    def test_a_turn_that_stops_closing_is_still_a_stall(self):
+        node = self.make_node()
+        node.explore_target = (0.5, 2.5)
+        node.heading_best = math.pi
+        node.progress_at = time.monotonic() - 4.0
+        self.tick(node, [frontiers.Frontier((4.5, 2.5), (4.5, 2.5), 1.0)])
+        self.assertEqual(len(node.blacklist), 1)
+        self.assertAlmostEqual(node.blacklist[0][0], 0.5)
+
+    def test_oscillating_heading_does_not_renew_progress(self):
+        node = self.make_node()
+        node.explore_target = (0.5, 2.5)
+        node.robot = (2.5, 2.5, math.pi - 2.0)
+        node.heading_best = 1.9
+        node.progress_at = time.monotonic() - 4.0
+        self.tick(node, [frontiers.Frontier((4.5, 2.5), (4.5, 2.5), 1.0)])
+        self.assertEqual(len(node.blacklist), 1)
+        self.assertAlmostEqual(node.blacklist[0][0], 0.5)
 
     def test_after_a_skip_the_pick_prefers_the_heading_cone(self):
         east = frontiers.Frontier((4.5, 2.5), (4.5, 2.5), 0.5)                    # dead ahead

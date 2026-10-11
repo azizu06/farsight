@@ -5,6 +5,7 @@ import asyncio
 from contextlib import asynccontextmanager, suppress
 import json
 import logging
+import os
 from pathlib import Path
 import time
 
@@ -831,6 +832,10 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
             if app.state.phone_owner is owner:
                 app.state.phone_owner = None
                 # Preserve the last image for inspection; its receipt age keeps increasing.
+
+    if os.environ.get('FARSIGHT_RAW_CAPTURE') == '1':
+        from .raw_capture import mount
+        mount(app)
 
     if DIST.is_dir():
         app.mount("/", StaticFiles(directory=DIST, html=True), name="viewer")

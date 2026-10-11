@@ -48,8 +48,13 @@ ros2 launch farsight_nav nav.launch.py                 # or the farsight-nav sys
     or has not reached it in 15 s. When the rover stays within 0.4 m for 8 s
     (spinning, dithering or pushing), the current frontier is skipped and the
     next goal must lie at least 1.5 m from that spot for 6 s.
-    A server stop that re-arms Explore within 2 s (a demo-mode video or camera
-    blip) resumes the same frontier, blacklist and progress window. Before, each
+    In demo mode a pose, depth or camera stall shorter than 2 s only holds the
+    motors at zero: the goal, frontier and Nav2 intent stay, and the rover drives
+    on when the sensors are fresh. The Quest's viewer-video age never stops demo
+    AUTO, and `POSE_TTL` is 1.0 s (0.5 s tripped on the rig's 500-750 ms camera
+    stalls every ~5 s; 2026-10-11 01:53Z, 22 drops in 150 s, median AUTO run 0.75 s).
+    A server stop that re-arms Explore within 2 s resumes the same frontier,
+    blacklist and progress window. Before, each
     blip restarted Explore and the rover turned in place to face a new goal: on
     the 2026-10-11 00:35Z floor run, 7 `video_stale` stops in 43 s, with 58% of
     the time spent rotating in place.
@@ -70,9 +75,11 @@ ros2 launch farsight_nav nav.launch.py                 # or the farsight-nav sys
     near-field cells; measured costs remain intact. Something measured inside
     the body disc makes it back straight off (at most 0.35 m, only over floor
     the costmap has seen or the rover has driven), then turn away from it.
-    The fallback selects the widest supported gentle arc at 0.25 m/s, or turns
-    in place at 1.8 rad/s (about PWM 95 per side; at 0.82 rad/s the skid-steer
-    sat at L75/R60, just above the floors, and stalled under payload); it never
+    The fallback selects the widest supported gentle arc at 0.3 m/s (0.45 m/s
+    brushed a wall in simulated explore), or turns
+    in place at 2.2 rad/s (PWM 109/104; 1.8 rad/s, PWM 91/87, sits near the
+    loaded rover's breakaway, and at 0.82 rad/s the skid-steer sat at L75/R60,
+    just above the floors, and stalled under payload); it never
     stands still waiting for Nav2 (captain,
     2026-10-10). Only a stale pose, depth or costmap stops it. Server deadman, B/STOP, the lease
     (link-loss stop) and the Nav2 sensor gate still apply; the
@@ -189,11 +196,18 @@ the goal.
   with a 0.13 m radius RPP clipped a wall end.
 - **Planner:** `SmacPlanner2D`, `allow_unknown` (goals are often in unseen space),
   0.25 m tolerance.
-- **Controller:** Regulated Pure Pursuit by default (20 Hz, 0.70 m/s, 0.2-0.5 m
-  speed-scaled lookahead, rotate in place only beyond 1.0 rad, otherwise arc), or MPPI
-  with `controller:=mppi` (1000 samples, 2 s horizon, `vx_max` 0.70 m/s, `wz_max`
-  2.5 rad/s). These suit `FARSIGHT_AUTONOMY_MAX_PWM=200` on the 2026-10-10 drive
-  profile (0.74 m/s, 3.8 rad/s); no cost-regulated slow zone near obstacles and
+- **Controller:** Regulated Pure Pursuit by default (20 Hz, 0.95 m/s, never under
+  0.45 m/s on approach; tight arcs still slow to 0.25 m/s, because a 0.45 m/s arc floor
+  cut the simulated dead-end divider), 0.2-0.5 m
+  speed-scaled lookahead, rotate in place at 2.2 rad/s only beyond 1.0 rad, otherwise
+  arc). RPP raises an in-place turn by at most `max_angular_accel` per step above the
+  *measured* yaw rate, so it is 60 rad/s^2: at 8 the first step was 0.4 rad/s (PWM 80),
+  the loaded rover never broke free and sat for 27 s (floor test, 2026-10-11); now the
+  first step is the full 2.2 rad/s (PWM 109/104). A 3.0 rad/s turn banged between
+  directions every 0.2 s in the simulated dead end and hit its walls. Or MPPI
+  with `controller:=mppi` (1000 samples, 2 s horizon, `vx_max` 0.95 m/s, `wz_max`
+  2.5 rad/s). These are full power for `FARSIGHT_AUTONOMY_MAX_PWM=255` on the 2026-10-10 drive
+  profile (0.95 m/s, 3.8 rad/s; at 200 the server clamps to 0.74 m/s); no cost-regulated slow zone near obstacles and
   only 0.2 m of goal approach slowing. The earlier simulated results used 0.28-0.30 m/s. Both are loaded; the bridge picks one through the latched
   `controller_selector` topic. RPP is the default because it was faster in every
   simulated world and lighter (see the results below); MPPI hesitated in 0.65 m
@@ -206,8 +220,9 @@ the goal.
   replans at least every 0.25 s, within 50 ms when the path becomes invalid (the
   global costmap updates at 15 Hz), or when the goal moves. It recovers in turn by
   clearing the local costmap and the global costmap within 1.5 m of the rover (the
-  explored map stays), backing up 0.25 m at 0.3 m/s and spinning 90 degrees at up
-  to 2.2 rad/s; it never waits. Goal checks are position only (0.20 m); final
+  explored map stays), backing up 0.25 m at 0.3 m/s (no rear sensing) and spinning
+  90 degrees at 2.2 rad/s (its 1.5 rad/s floor, PWM 80, did not break the loaded
+  rover free); it never waits. Goal checks are position only (0.20 m); final
   heading does not matter.
 
 ## Real-chassis tuning

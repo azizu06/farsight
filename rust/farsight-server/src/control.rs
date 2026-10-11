@@ -58,6 +58,9 @@ pub struct ControlInner {
     /// Opt-in drive command: raw-PWM calibration or SI-unit velocity
     /// heartbeat (jetson/control/state.py `self.drive`).
     pub drive: Option<DriveCmd>,
+    /// Demo autonomy: when a short sensor stall began holding the motors
+    /// (state.sensor_pause_since). Clears only on fresh sensors.
+    pub sensor_pause_since: Option<f64>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -121,6 +124,15 @@ const DEMO_TRANSIENT: &[&str] = &[
     "stale_sequence", "nav_pose_lost", "nav_tracking_limited",
     "nav_depth_lost", "nav_sensor_reset",
 ];
+
+/// Demo autonomy (#175): a pose, depth or camera stall shorter than
+/// SENSOR_PAUSE_S holds the motors at zero and resumes the same
+/// Explore/Seek/Goto on its own — AUTO never stops on outside things.
+/// A longer stall still stops as before.
+const SENSOR_PAUSE: &[&str] = &[
+    "camera_stale", "nav_pose_lost", "nav_tracking_limited", "nav_depth_lost",
+];
+const SENSOR_PAUSE_S: f64 = 2.0;
 
 fn round1(v: f64) -> f64 {
     (v * 10.0).round_ties_even() / 10.0
@@ -197,6 +209,7 @@ impl ControlState {
                 scan_serial: 0,
                 scan_w: 0.0,
                 drive: None,
+                sensor_pause_since: None,
             }),
             on_output: Mutex::new(None),
             navigator,
@@ -360,6 +373,21 @@ impl ControlState {
     }
 
     /// The ultrasonic proximity rule; never true when the option is off.
+    /// Caller holds the lock. True while a demo-autonomy sensor stall may
+    /// hold the motors instead of stopping (state._sensor_pause).
+    fn sensor_pause(&self, s: &mut ControlInner, fault: &str) -> bool {
+        if !SENSOR_PAUSE.contains(&fault) {
+            return false;
+        }
+        let now = self.now();
+        let since = s.sensor_pause_since.get_or_insert(now);
+        if now - *since >= SENSOR_PAUSE_S {
+            return false; // a long stall stops as before; the timer clears only on fresh sensors
+        }
+        s.reason = fault.to_string();
+        true
+    }
+
     fn range_unsafe(&self, s: &ControlInner) -> bool {
         self.proximity_stop
             && (s.range_cm.is_none()
@@ -447,7 +475,12 @@ impl ControlState {
         let mut mode = message.get("mode").and_then(Value::as_str).unwrap_or("teleop");
         // #134: in demo mode teleop drives by hand with no camera gate.
         let teleop_ungated = self.demo_mode && mode == "teleop";
-        if !teleop_ungated && !self.camera_is_ready() {
+        // Demo autonomy drives on the rover's own camera, pose and depth, which
+        // output() checks every tick (a short stall pauses it there); it is
+        // never gated on the viewer's picture. (#175)
+        let autonomy_ungated =
+            self.demo_mode && (mode == "explore" || mode == "seek" || mode == "goto");
+        if !teleop_ungated && !autonomy_ungated && !self.camera_is_ready() {
             self.stop_locked(s, "camera_stale", true);
             return false;
         }
@@ -482,7 +515,11 @@ impl ControlState {
             None
         };
         let video_age = message.get("video_age_ms").and_then(Self::json_num);
+        // #175: demo-mode AUTO heartbeats skip video_fresh/video_age_ms — the
+        // Quest's H.264 runs ~450ms so the 500ms stop cancelled goals every few
+        // seconds. Strict mode (?demo=0, no --demo-mode) is unchanged.
         if !teleop_ungated
+            && !autonomy_ungated
             && (message.get("video_fresh") != Some(&Value::Bool(true))
                 || !video_age.map(|a| (0.0..=500.0).contains(&a)).unwrap_or(false))
         {
@@ -686,7 +723,12 @@ impl ControlState {
             || s.drive.is_some()
             || s.scan_token.is_some()
             || ((s.v != 0.0 || s.w != 0.0) && !self.demo_mode);
-        if gated && !self.camera_is_ready() {
+        let camera_ok = self.camera_is_ready();
+        // #175: demo autonomy is not gated on the rover-camera gate here — a
+        // short stall pauses below instead of stopping.
+        let demo_autonomy =
+            self.demo_mode && autonomous && s.deadline != 0.0 && s.drive.is_none();
+        if gated && !camera_ok && !demo_autonomy {
             self.stop_locked(s, "camera_stale", true);
         }
         if s.drive.is_some() && s.deadline != 0.0 {
@@ -725,18 +767,34 @@ impl ControlState {
             let snapshot = self.detections.as_ref().map(|d| d()).unwrap_or(json!({}));
             nav.update_seek(&snapshot);
         }
-        let fault = if backed {
+        let mut fault = if backed {
             self.navigator.as_ref().unwrap().sensor_fault()
         } else {
             None
         };
-        if let Some(fault) = fault {
-            // No fresh normal-tracking pose or measured depth of the current
-            // sensor session: stop now, even with a live lease and fresh
-            // cmd_vel, and require a new press.
-            self.stop_locked(s, fault, true);
-            v = 0.0;
-            w = 0.0;
+        // #175: in demo autonomy a camera stall is itself a pausable fault,
+        // and a fully fresh tick clears the pause timer.
+        if demo_autonomy && engaged {
+            if fault.is_none() && !camera_ok {
+                fault = Some("camera_stale");
+            }
+            if fault.is_none() {
+                s.sensor_pause_since = None;
+            }
+        }
+        if let Some(f) = fault {
+            if demo_autonomy && engaged && self.sensor_pause(s, f) {
+                // Hold still; the session, lease, goal and Nav2 intent all stay.
+                v = 0.0;
+                w = 0.0;
+            } else {
+                // No fresh normal-tracking pose or measured depth of the current
+                // sensor session: stop now, even with a live lease and fresh
+                // cmd_vel, and require a new press.
+                self.stop_locked(s, f, true);
+                v = 0.0;
+                w = 0.0;
+            }
         } else if backed {
             let nav = self.navigator.as_ref().unwrap();
             if let Some(profile) = &self.drive_profile {

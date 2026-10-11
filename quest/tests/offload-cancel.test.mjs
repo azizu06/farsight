@@ -58,14 +58,14 @@ const results=[];
 const mainSource=await readFile(dir+'/main.ts','utf8');
 const tree=ts.createSourceFile('main.ts',mainSource,ts.ScriptTarget.Latest,true);
 const texts=new Map(tree.statements.filter(n=>ts.isFunctionDeclaration(n)&&n.name).map(n=>[n.name.text,n.getText(tree)]));
-const mainFunctions=['loadMesh','loadPoints'].map(n=>texts.get(n)).join('\n')+'\n'+texts.get('replaceGeometry').replace('function replaceGeometry(','function actualReplaceGeometry(');
+const mainFunctions=['loadMesh','loadPoints','deltaCapable','applyCloudDelta','syncCloud'].map(n=>texts.get(n)).join('\n')+'\n'+texts.get('replaceGeometry').replace('function replaceGeometry(','function actualReplaceGeometry(')+'\n'+texts.get('applyCloud').replace('function applyCloud(','function actualApplyCloud(');
 const mainJS=ts.transpileModule(mainFunctions,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText;
 function mainFixture(kind){
  let decodes=0,mutations=0,calls=0;const body=deferred(),ready=deferred();const object=()=>{const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(new Float32Array([9,9,9]),3));return new THREE.Points(g);};
- const ctx={THREE,AbortController,performance:{now:()=>now},generation:1,connectionVersion:1,needed:true,mapNeeded(){return ctx.needed;},pendingMesh:false,meshRequest:null,pointsRequest:null,lastMapAt:-Infinity,lastMapKind:null,appliedMesh:-1,appliedPoints:-1,MAP_TRANSFER_INTERVAL_MS:0,api:x=>x,mapResponseRevision:(_headers,next)=>next.revision,cappedMesh:()=>true,notify(){},renderer:{xr:{isPresenting:true}},cloud:object(),surfaces:object(),vrMapCenter:new THREE.Vector3(),vrMapSize:new THREE.Vector3(),vrMapSpan:0,mapWalk:{setFloor(){}},floorHeight,frameMap(){},
- fetch:async()=>{calls++;return{ok:true,headers:{},arrayBuffer:()=>{ready.resolve();return calls===1?body.promise:Promise.resolve(kind==='mesh'?meshBody():pointsBody());}};},
+ const ctx={THREE,AbortController,performance:{now:()=>now},generation:1,connectionVersion:1,needed:true,mapNeeded(){return ctx.needed;},pendingMesh:false,meshRequest:null,pointsRequest:null,deltaRequest:null,pointsEtag:null,meshEtag:null,pointsDeltaSupported:true,status:null,lastMapAt:-Infinity,lastMapKind:null,appliedMesh:-1,appliedPoints:-1,MAP_TRANSFER_INTERVAL_MS:0,MAP_AUTHORITY_INTERVAL_MS:2000,authorityMs:n=>ctx.deltaCapable(n)?ctx.MAP_AUTHORITY_INTERVAL_MS:ctx.MAP_TRANSFER_INTERVAL_MS,api:x=>x,mapResponseRevision:(_headers,next)=>next.revision,cappedMesh:()=>true,notify(){},renderer:{xr:{isPresenting:true}},cloud:object(),surfaces:object(),cloudMerger:new protocol.KeyedCloudMerger(),cloudAttribute:(a,s)=>new THREE.BufferAttribute(a,s),vrMapCenter:new THREE.Vector3(),vrMapSize:new THREE.Vector3(),vrMapSpan:0,mapWalk:{setFloor(){}},floorHeight,frameMap(){},
+ fetch:async()=>{calls++;return{ok:true,status:200,headers:{get:()=>null},arrayBuffer:()=>{ready.resolve();return calls===1?body.promise:Promise.resolve(kind==='mesh'?meshBody():pointsBody());}};},
  decodeMesh:buffer=>{decodes++;return protocol.decodeMesh(buffer);},decodePoints:buffer=>{decodes++;return protocol.decodePoints(buffer);}};
- vm.createContext(ctx);vm.runInContext(mainJS,ctx);ctx.replaceGeometry=(...args)=>{mutations++;ctx.actualReplaceGeometry(...args);};
+ vm.createContext(ctx);vm.runInContext(mainJS,ctx);ctx.replaceGeometry=(...args)=>{mutations++;ctx.actualReplaceGeometry(...args);};ctx.applyCloud=(...args)=>{mutations++;ctx.actualApplyCloud(...args);};
  return{ctx,body,ready,decodes:()=>decodes,mutations:()=>mutations,run:()=>ctx[kind==='mesh'?'loadMesh':'loadPoints']({generation:1,revision:5,mesh_revision:3,points_transport:'http'})};
 }
 for(const kind of ['mesh','points']){
@@ -79,7 +79,7 @@ for(const kind of ['mesh','points']){
   results.push({case:kind+'-'+reason+'-zero-decoder-and-geometry-mutations',passed:true});
  }
  now=1000;const f=mainFixture(kind),p=f.run();await f.ready.promise;f.ctx.needed=false;(kind==='mesh'?f.ctx.meshRequest:f.ctx.pointsRequest).abort();f.body.resolve(kind==='mesh'?meshBody():pointsBody());await p;
- f.ctx.needed=true;now=2000;await f.run();assert.equal(f.decodes(),1);assert.equal(f.mutations(),1);assert.equal(f.ctx[kind==='mesh'?'surfaces':'cloud'].geometry.getAttribute('position').count,kind==='mesh'?3:1);
+ f.ctx.needed=true;now=2000;await f.run();assert.equal(f.decodes(),1);assert.equal(f.mutations(),1);assert.equal(kind==='mesh'?f.ctx.surfaces.geometry.getAttribute('position').count:f.ctx.cloud.geometry.drawRange.count,kind==='mesh'?3:1);
  results.push({case:kind+'-positive-after-cancellation-recovery-real-decode-real-geometry',passed:true});
 }
 const report={passed:true,checks:results.length,scope:'Actual production methods, real binary decoders and Three.js CPU geometry; injected completed-body/cancellation fixtures. No native-fetch/GPU/browser/deployment/headset evidence.',results};

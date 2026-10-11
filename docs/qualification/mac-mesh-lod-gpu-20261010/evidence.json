@@ -1,0 +1,1296 @@
+{
+  "passed": true,
+  "scope": "Software-only production renderer, connected SIMULATED colored grid mesh, no sensors/devices/control",
+  "hardwareQualified": false,
+  "realRoomQualified": false,
+  "performanceQualified": false,
+  "fixture": {
+    "columns": 40,
+    "rows": 32,
+    "vertices": 1353,
+    "triangles": 2560,
+    "meshSha256": "8d532fd606feca9ba307e4b7eb6edef4b29684ed3aa96fa83c1241468637c908",
+    "planeBounds": {
+      "x": [
+        -1.8,
+        1.8
+      ],
+      "y": [
+        -1.2,
+        1.2
+      ],
+      "z": -3
+    },
+    "pose": {
+      "position": [
+        0,
+        0,
+        0
+      ],
+      "quaternion": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "fovY": 60
+    },
+    "viewport": {
+      "width": 640,
+      "height": 480
+    },
+    "interiorROI": "Projected x ±1.3, y ±0.8; avoids silhouette/antialias boundary"
+  },
+  "sources": [
+    {
+      "name": "before",
+      "revision": "2eab9187175605cc35e4f2a599a36eb7cc53f5e7",
+      "assetHashes": {
+        "tools/mac_render/render.html": "1815e7c06d817954db18fbc0c8eecbe0672a6518da66783b734418d0c2cd4ddc",
+        "tools/mac_render/render.mjs": "f38eaeb79e0354b1c853c30881389348a1cd26e1b72a435b6dc12e953b48f076",
+        "tools/mac_render/dense-cloud.mjs": "b31bf6bba1192baccd46bd6a72375c3e40aaf1d36e2ce0cac1adb4f5235b047a",
+        "tools/mac_render/stereo-pass.mjs": "9abd6a944ff1c6c8801d393c876c76a8727a8dd36ffcf38f103e03c47635a11d",
+        "quest/src/protocol.js": "fd524495b49ce10a93ede20c3770bb44b1a782cc69221fadfc023fa5141cadb3",
+        "quest/src/map-response.js": "74d5bcdbb2b7c1f651fea7119020d0f934abc69e4961adc1cfa3259ed6a6f1d0"
+      },
+      "ladder": [
+        {
+          "pixelRatio": 1.5,
+          "fraction": 1,
+          "dropMs": 26,
+          "fx": 2
+        },
+        {
+          "pixelRatio": 1,
+          "fraction": 1,
+          "dropMs": 14,
+          "fx": 2
+        },
+        {
+          "pixelRatio": 1,
+          "fraction": 0.5,
+          "dropMs": 14,
+          "fx": 1
+        },
+        {
+          "pixelRatio": 0.75,
+          "fraction": 0.5,
+          "dropMs": 16,
+          "fx": 1
+        },
+        {
+          "pixelRatio": 0.75,
+          "fraction": 0.25,
+          "dropMs": null,
+          "fx": 0
+        }
+      ]
+    },
+    {
+      "name": "after",
+      "revision": "7a98b132473c8ac3b967afb5423cbc22282bbfa1",
+      "assetHashes": {
+        "tools/mac_render/render.html": "1815e7c06d817954db18fbc0c8eecbe0672a6518da66783b734418d0c2cd4ddc",
+        "tools/mac_render/render.mjs": "0f8fc8c349cd36878b9601df96741f78379ad92720c1b5502b2e597392b4d07c",
+        "tools/mac_render/dense-cloud.mjs": "b31bf6bba1192baccd46bd6a72375c3e40aaf1d36e2ce0cac1adb4f5235b047a",
+        "tools/mac_render/stereo-pass.mjs": "9abd6a944ff1c6c8801d393c876c76a8727a8dd36ffcf38f103e03c47635a11d",
+        "quest/src/protocol.js": "fd524495b49ce10a93ede20c3770bb44b1a782cc69221fadfc023fa5141cadb3",
+        "quest/src/map-response.js": "74d5bcdbb2b7c1f651fea7119020d0f934abc69e4961adc1cfa3259ed6a6f1d0"
+      },
+      "ladder": [
+        {
+          "pixelRatio": 1.5,
+          "fraction": 1,
+          "dropMs": 26,
+          "fx": 2
+        },
+        {
+          "pixelRatio": 1,
+          "fraction": 1,
+          "dropMs": 14,
+          "fx": 2
+        },
+        {
+          "pixelRatio": 1,
+          "fraction": 0.5,
+          "dropMs": 14,
+          "fx": 1
+        },
+        {
+          "pixelRatio": 0.75,
+          "fraction": 0.5,
+          "dropMs": 16,
+          "fx": 1
+        },
+        {
+          "pixelRatio": 0.75,
+          "fraction": 0.25,
+          "dropMs": null,
+          "fx": 0
+        }
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "source": "before",
+      "revision": "2eab9187175605cc35e4f2a599a36eb7cc53f5e7",
+      "tier": 0,
+      "expectedTriangles": 2560,
+      "meta": {
+        "ready": true,
+        "stereo": false,
+        "renderMs": 0.6000000238418579,
+        "captureMs": 19.5,
+        "draws": 6,
+        "points": 1353,
+        "source": "SIMULATED",
+        "poseEcho": {
+          "sent_mono_ms": 1,
+          "sent_wall_ms": 1,
+          "received_mono_ms": 1
+        },
+        "refreshBusy": false,
+        "poseValid": true,
+        "drawnPoints": 0,
+        "drawnTriangles": 2560,
+        "dense": {
+          "received_upserts": 0,
+          "received_deletes": 0,
+          "retained_cells": 0,
+          "local_evictions": 0,
+          "pending_gpu_chunks": 0,
+          "received_payload_bytes": 0,
+          "received_pages": 0,
+          "source_reported_cells": 0,
+          "source_label": "WAITING",
+          "selected_source": "rgbd",
+          "bootstrap_incomplete": false,
+          "cursor": 0,
+          "resets": 0,
+          "request_active": false,
+          "error": "Error: Dense HTTP 404",
+          "gpu_uploaded_cells": 0,
+          "gpu_uploaded_cell_writes": 0,
+          "gpu_drawn_cells": 0,
+          "gpu_chunks": 0
+        },
+        "rayVisible": false,
+        "viewPosition": [
+          0,
+          0,
+          0
+        ],
+        "triangles": 2560,
+        "retained": false,
+        "mapError": null,
+        "lod": {
+          "index": 0,
+          "pixelRatio": 1.5,
+          "fraction": 1,
+          "fx": 2,
+          "adaptive": false
+        },
+        "mapStatus": {
+          "source": "SIMULATED",
+          "geometry_source": null,
+          "points": 1353,
+          "triangles": 2560,
+          "generation": 0,
+          "revision": 1,
+          "mesh_revision": 1,
+          "applied_points_revision": 1,
+          "applied_mesh_revision": 1,
+          "fresh": true,
+          "age_ms": 65.40000003576279,
+          "connected": true,
+          "retained": false,
+          "partial": false
+        },
+        "fovY": 60,
+        "aspect": 1.3333333333333333
+      },
+      "drawRange": {
+        "start": 0,
+        "count": 7680
+      },
+      "calls": [
+        {
+          "count": 7680,
+          "type": 5125,
+          "offset": 0
+        }
+      ],
+      "submittedTriangles": 2560,
+      "indexOrderVerbatim": false,
+      "buffer": {
+        "width": 960,
+        "height": 720
+      },
+      "interior": {
+        "covered": 179280,
+        "total": 179280,
+        "coverage": 1,
+        "holes": 0,
+        "roi": [
+          210,
+          194,
+          750,
+          526
+        ]
+      },
+      "gpu": {
+        "vendor": "Google Inc. (Apple)",
+        "renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)",
+        "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)"
+      },
+      "rawPixelChecksum": 335414352,
+      "jpegBytes": 11784
+    },
+    {
+      "source": "before",
+      "revision": "2eab9187175605cc35e4f2a599a36eb7cc53f5e7",
+      "tier": 1,
+      "expectedTriangles": 2560,
+      "meta": {
+        "ready": true,
+        "stereo": false,
+        "renderMs": 0.30000001192092896,
+        "captureMs": 3.300000011920929,
+        "draws": 3,
+        "points": 1353,
+        "source": "SIMULATED",
+        "poseEcho": {
+          "sent_mono_ms": 1,
+          "sent_wall_ms": 1,
+          "received_mono_ms": 1
+        },
+        "refreshBusy": false,
+        "poseValid": true,
+        "drawnPoints": 0,
+        "drawnTriangles": 2560,
+        "dense": {
+          "received_upserts": 0,
+          "received_deletes": 0,
+          "retained_cells": 0,
+          "local_evictions": 0,
+          "pending_gpu_chunks": 0,
+          "received_payload_bytes": 0,
+          "received_pages": 0,
+          "source_reported_cells": 0,
+          "source_label": "WAITING",
+          "selected_source": "rgbd",
+          "bootstrap_incomplete": false,
+          "cursor": 0,
+          "resets": 0,
+          "request_active": false,
+          "error": "Error: Dense HTTP 404",
+          "gpu_uploaded_cells": 0,
+          "gpu_uploaded_cell_writes": 0,
+          "gpu_drawn_cells": 0,
+          "gpu_chunks": 0
+        },
+        "rayVisible": false,
+        "viewPosition": [
+          0,
+          0,
+          0
+        ],
+        "triangles": 2560,
+        "retained": false,
+        "mapError": null,
+        "lod": {
+          "index": 1,
+          "pixelRatio": 1,
+          "fraction": 1,
+          "fx": 2,
+          "adaptive": false
+        },
+        "mapStatus": {
+          "source": "SIMULATED",
+          "geometry_source": null,
+          "points": 1353,
+          "triangles": 2560,
+          "generation": 0,
+          "revision": 1,
+          "mesh_revision": 1,
+          "applied_points_revision": 1,
+          "applied_mesh_revision": 1,
+          "fresh": true,
+          "age_ms": 33,
+          "connected": true,
+          "retained": false,
+          "partial": false
+        },
+        "fovY": 60,
+        "aspect": 1.3333333333333333
+      },
+      "drawRange": {
+        "start": 0,
+        "count": 7680
+      },
+      "calls": [
+        {
+          "count": 7680,
+          "type": 5125,
+          "offset": 0
+        }
+      ],
+      "submittedTriangles": 2560,
+      "indexOrderVerbatim": false,
+      "buffer": {
+        "width": 640,
+        "height": 480
+      },
+      "interior": {
+        "covered": 79200,
+        "total": 79200,
+        "coverage": 1,
+        "holes": 0,
+        "roi": [
+          140,
+          130,
+          500,
+          350
+        ]
+      },
+      "gpu": {
+        "vendor": "Google Inc. (Apple)",
+        "renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)",
+        "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)"
+      },
+      "rawPixelChecksum": 149020368,
+      "jpegBytes": 7419
+    },
+    {
+      "source": "before",
+      "revision": "2eab9187175605cc35e4f2a599a36eb7cc53f5e7",
+      "tier": 2,
+      "expectedTriangles": 1280,
+      "meta": {
+        "ready": true,
+        "stereo": false,
+        "renderMs": 0.3999999761581421,
+        "captureMs": 4.400000035762787,
+        "draws": 2,
+        "points": 1353,
+        "source": "SIMULATED",
+        "poseEcho": {
+          "sent_mono_ms": 1,
+          "sent_wall_ms": 1,
+          "received_mono_ms": 1
+        },
+        "refreshBusy": false,
+        "poseValid": true,
+        "drawnPoints": 0,
+        "drawnTriangles": 1280,
+        "dense": {
+          "received_upserts": 0,
+          "received_deletes": 0,
+          "retained_cells": 0,
+          "local_evictions": 0,
+          "pending_gpu_chunks": 0,
+          "received_payload_bytes": 0,
+          "received_pages": 0,
+          "source_reported_cells": 0,
+          "source_label": "WAITING",
+          "selected_source": "rgbd",
+          "bootstrap_incomplete": false,
+          "cursor": 0,
+          "resets": 0,
+          "request_active": false,
+          "error": "Error: Dense HTTP 404",
+          "gpu_uploaded_cells": 0,
+          "gpu_uploaded_cell_writes": 0,
+          "gpu_drawn_cells": 0,
+          "gpu_chunks": 0
+        },
+        "rayVisible": false,
+        "viewPosition": [
+          0,
+          0,
+          0
+        ],
+        "triangles": 2560,
+        "retained": false,
+        "mapError": null,
+        "lod": {
+          "index": 2,
+          "pixelRatio": 1,
+          "fraction": 0.5,
+          "fx": 2,
+          "adaptive": false
+        },
+        "mapStatus": {
+          "source": "SIMULATED",
+          "geometry_source": null,
+          "points": 1353,
+          "triangles": 2560,
+          "generation": 0,
+          "revision": 1,
+          "mesh_revision": 1,
+          "applied_points_revision": 1,
+          "applied_mesh_revision": 1,
+          "fresh": true,
+          "age_ms": 27.399999976158142,
+          "connected": true,
+          "retained": false,
+          "partial": false
+        },
+        "fovY": 60,
+        "aspect": 1.3333333333333333
+      },
+      "drawRange": {
+        "start": 0,
+        "count": 3840
+      },
+      "calls": [
+        {
+          "count": 3840,
+          "type": 5125,
+          "offset": 0
+        }
+      ],
+      "submittedTriangles": 1280,
+      "indexOrderVerbatim": false,
+      "buffer": {
+        "width": 640,
+        "height": 480
+      },
+      "interior": {
+        "covered": 39600,
+        "total": 79200,
+        "coverage": 0.5,
+        "holes": 0.5,
+        "roi": [
+          140,
+          130,
+          500,
+          350
+        ]
+      },
+      "gpu": {
+        "vendor": "Google Inc. (Apple)",
+        "renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)",
+        "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)"
+      },
+      "rawPixelChecksum": 129345384,
+      "jpegBytes": 202071
+    },
+    {
+      "source": "before",
+      "revision": "2eab9187175605cc35e4f2a599a36eb7cc53f5e7",
+      "tier": 3,
+      "expectedTriangles": 1280,
+      "meta": {
+        "ready": true,
+        "stereo": false,
+        "renderMs": 0.30000001192092896,
+        "captureMs": 2.900000035762787,
+        "draws": 3,
+        "points": 1353,
+        "source": "SIMULATED",
+        "poseEcho": {
+          "sent_mono_ms": 1,
+          "sent_wall_ms": 1,
+          "received_mono_ms": 1
+        },
+        "refreshBusy": false,
+        "poseValid": true,
+        "drawnPoints": 0,
+        "drawnTriangles": 1280,
+        "dense": {
+          "received_upserts": 0,
+          "received_deletes": 0,
+          "retained_cells": 0,
+          "local_evictions": 0,
+          "pending_gpu_chunks": 0,
+          "received_payload_bytes": 0,
+          "received_pages": 0,
+          "source_reported_cells": 0,
+          "source_label": "WAITING",
+          "selected_source": "rgbd",
+          "bootstrap_incomplete": false,
+          "cursor": 0,
+          "resets": 0,
+          "request_active": false,
+          "error": "Error: Dense HTTP 404",
+          "gpu_uploaded_cells": 0,
+          "gpu_uploaded_cell_writes": 0,
+          "gpu_drawn_cells": 0,
+          "gpu_chunks": 0
+        },
+        "rayVisible": false,
+        "viewPosition": [
+          0,
+          0,
+          0
+        ],
+        "triangles": 2560,
+        "retained": false,
+        "mapError": null,
+        "lod": {
+          "index": 3,
+          "pixelRatio": 0.75,
+          "fraction": 0.5,
+          "fx": 2,
+          "adaptive": false
+        },
+        "mapStatus": {
+          "source": "SIMULATED",
+          "geometry_source": null,
+          "points": 1353,
+          "triangles": 2560,
+          "generation": 0,
+          "revision": 1,
+          "mesh_revision": 1,
+          "applied_points_revision": 1,
+          "applied_mesh_revision": 1,
+          "fresh": true,
+          "age_ms": 25,
+          "connected": true,
+          "retained": false,
+          "partial": false
+        },
+        "fovY": 60,
+        "aspect": 1.3333333333333333
+      },
+      "drawRange": {
+        "start": 0,
+        "count": 3840
+      },
+      "calls": [
+        {
+          "count": 3840,
+          "type": 5125,
+          "offset": 0
+        }
+      ],
+      "submittedTriangles": 1280,
+      "indexOrderVerbatim": false,
+      "buffer": {
+        "width": 480,
+        "height": 360
+      },
+      "interior": {
+        "covered": 22410,
+        "total": 44820,
+        "coverage": 0.5,
+        "holes": 0.5,
+        "roi": [
+          105,
+          97,
+          375,
+          263
+        ]
+      },
+      "gpu": {
+        "vendor": "Google Inc. (Apple)",
+        "renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)",
+        "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)"
+      },
+      "rawPixelChecksum": 72816100,
+      "jpegBytes": 117750
+    },
+    {
+      "source": "before",
+      "revision": "2eab9187175605cc35e4f2a599a36eb7cc53f5e7",
+      "tier": 4,
+      "expectedTriangles": 640,
+      "meta": {
+        "ready": true,
+        "stereo": false,
+        "renderMs": 0.30000001192092896,
+        "captureMs": 3,
+        "draws": 3,
+        "points": 1353,
+        "source": "SIMULATED",
+        "poseEcho": {
+          "sent_mono_ms": 1,
+          "sent_wall_ms": 1,
+          "received_mono_ms": 1
+        },
+        "refreshBusy": false,
+        "poseValid": true,
+        "drawnPoints": 0,
+        "drawnTriangles": 640,
+        "dense": {
+          "received_upserts": 0,
+          "received_deletes": 0,
+          "retained_cells": 0,
+          "local_evictions": 0,
+          "pending_gpu_chunks": 0,
+          "received_payload_bytes": 0,
+          "received_pages": 0,
+          "source_reported_cells": 0,
+          "source_label": "WAITING",
+          "selected_source": "rgbd",
+          "bootstrap_incomplete": false,
+          "cursor": 0,
+          "resets": 0,
+          "request_active": false,
+          "error": "Error: Dense HTTP 404",
+          "gpu_uploaded_cells": 0,
+          "gpu_uploaded_cell_writes": 0,
+          "gpu_drawn_cells": 0,
+          "gpu_chunks": 0
+        },
+        "rayVisible": false,
+        "viewPosition": [
+          0,
+          0,
+          0
+        ],
+        "triangles": 2560,
+        "retained": false,
+        "mapError": null,
+        "lod": {
+          "index": 4,
+          "pixelRatio": 0.75,
+          "fraction": 0.25,
+          "fx": 2,
+          "adaptive": false
+        },
+        "mapStatus": {
+          "source": "SIMULATED",
+          "geometry_source": null,
+          "points": 1353,
+          "triangles": 2560,
+          "generation": 0,
+          "revision": 1,
+          "mesh_revision": 1,
+          "applied_points_revision": 1,
+          "applied_mesh_revision": 1,
+          "fresh": true,
+          "age_ms": 27.600000023841858,
+          "connected": true,
+          "retained": false,
+          "partial": false
+        },
+        "fovY": 60,
+        "aspect": 1.3333333333333333
+      },
+      "drawRange": {
+        "start": 0,
+        "count": 1920
+      },
+      "calls": [
+        {
+          "count": 1920,
+          "type": 5125,
+          "offset": 0
+        }
+      ],
+      "submittedTriangles": 640,
+      "indexOrderVerbatim": false,
+      "buffer": {
+        "width": 480,
+        "height": 360
+      },
+      "interior": {
+        "covered": 11010,
+        "total": 44820,
+        "coverage": 0.24564926372155288,
+        "holes": 0.7543507362784472,
+        "roi": [
+          105,
+          97,
+          375,
+          263
+        ]
+      },
+      "gpu": {
+        "vendor": "Google Inc. (Apple)",
+        "renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)",
+        "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)"
+      },
+      "rawPixelChecksum": 67255230,
+      "jpegBytes": 98652
+    },
+    {
+      "source": "after",
+      "revision": "7a98b132473c8ac3b967afb5423cbc22282bbfa1",
+      "tier": 0,
+      "expectedTriangles": 2560,
+      "meta": {
+        "ready": true,
+        "stereo": false,
+        "renderMs": 0.3999999761581421,
+        "captureMs": 5,
+        "draws": 3,
+        "points": 1353,
+        "source": "SIMULATED",
+        "poseEcho": {
+          "sent_mono_ms": 1,
+          "sent_wall_ms": 1,
+          "received_mono_ms": 1
+        },
+        "refreshBusy": false,
+        "poseValid": true,
+        "drawnPoints": 0,
+        "drawnTriangles": 2560,
+        "dense": {
+          "received_upserts": 0,
+          "received_deletes": 0,
+          "retained_cells": 0,
+          "local_evictions": 0,
+          "pending_gpu_chunks": 0,
+          "received_payload_bytes": 0,
+          "received_pages": 0,
+          "source_reported_cells": 0,
+          "source_label": "WAITING",
+          "selected_source": "rgbd",
+          "bootstrap_incomplete": false,
+          "cursor": 0,
+          "resets": 0,
+          "request_active": false,
+          "error": "Error: Dense HTTP 404",
+          "gpu_uploaded_cells": 0,
+          "gpu_uploaded_cell_writes": 0,
+          "gpu_drawn_cells": 0,
+          "gpu_chunks": 0
+        },
+        "rayVisible": false,
+        "viewPosition": [
+          0,
+          0,
+          0
+        ],
+        "triangles": 2560,
+        "retained": false,
+        "mapError": null,
+        "lod": {
+          "index": 0,
+          "pixelRatio": 1.5,
+          "fraction": 1,
+          "fx": 2,
+          "adaptive": false
+        },
+        "mapStatus": {
+          "source": "SIMULATED",
+          "geometry_source": null,
+          "points": 1353,
+          "triangles": 2560,
+          "generation": 0,
+          "revision": 1,
+          "mesh_revision": 1,
+          "applied_points_revision": 1,
+          "applied_mesh_revision": 1,
+          "fresh": true,
+          "age_ms": 27.19999998807907,
+          "connected": true,
+          "retained": false,
+          "partial": false
+        },
+        "fovY": 60,
+        "aspect": 1.3333333333333333
+      },
+      "drawRange": {
+        "start": 0,
+        "count": 7680
+      },
+      "calls": [
+        {
+          "count": 7680,
+          "type": 5125,
+          "offset": 0
+        }
+      ],
+      "submittedTriangles": 2560,
+      "indexOrderVerbatim": true,
+      "buffer": {
+        "width": 960,
+        "height": 720
+      },
+      "interior": {
+        "covered": 179280,
+        "total": 179280,
+        "coverage": 1,
+        "holes": 0,
+        "roi": [
+          210,
+          194,
+          750,
+          526
+        ]
+      },
+      "gpu": {
+        "vendor": "Google Inc. (Apple)",
+        "renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)",
+        "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)"
+      },
+      "rawPixelChecksum": 335414352,
+      "jpegBytes": 11784
+    },
+    {
+      "source": "after",
+      "revision": "7a98b132473c8ac3b967afb5423cbc22282bbfa1",
+      "tier": 1,
+      "expectedTriangles": 2560,
+      "meta": {
+        "ready": true,
+        "stereo": false,
+        "renderMs": 0.30000001192092896,
+        "captureMs": 3,
+        "draws": 3,
+        "points": 1353,
+        "source": "SIMULATED",
+        "poseEcho": {
+          "sent_mono_ms": 1,
+          "sent_wall_ms": 1,
+          "received_mono_ms": 1
+        },
+        "refreshBusy": false,
+        "poseValid": true,
+        "drawnPoints": 0,
+        "drawnTriangles": 2560,
+        "dense": {
+          "received_upserts": 0,
+          "received_deletes": 0,
+          "retained_cells": 0,
+          "local_evictions": 0,
+          "pending_gpu_chunks": 0,
+          "received_payload_bytes": 0,
+          "received_pages": 0,
+          "source_reported_cells": 0,
+          "source_label": "WAITING",
+          "selected_source": "rgbd",
+          "bootstrap_incomplete": false,
+          "cursor": 0,
+          "resets": 0,
+          "request_active": false,
+          "error": "Error: Dense HTTP 404",
+          "gpu_uploaded_cells": 0,
+          "gpu_uploaded_cell_writes": 0,
+          "gpu_drawn_cells": 0,
+          "gpu_chunks": 0
+        },
+        "rayVisible": false,
+        "viewPosition": [
+          0,
+          0,
+          0
+        ],
+        "triangles": 2560,
+        "retained": false,
+        "mapError": null,
+        "lod": {
+          "index": 1,
+          "pixelRatio": 1,
+          "fraction": 1,
+          "fx": 2,
+          "adaptive": false
+        },
+        "mapStatus": {
+          "source": "SIMULATED",
+          "geometry_source": null,
+          "points": 1353,
+          "triangles": 2560,
+          "generation": 0,
+          "revision": 1,
+          "mesh_revision": 1,
+          "applied_points_revision": 1,
+          "applied_mesh_revision": 1,
+          "fresh": true,
+          "age_ms": 25.5,
+          "connected": true,
+          "retained": false,
+          "partial": false
+        },
+        "fovY": 60,
+        "aspect": 1.3333333333333333
+      },
+      "drawRange": {
+        "start": 0,
+        "count": 7680
+      },
+      "calls": [
+        {
+          "count": 7680,
+          "type": 5125,
+          "offset": 0
+        }
+      ],
+      "submittedTriangles": 2560,
+      "indexOrderVerbatim": true,
+      "buffer": {
+        "width": 640,
+        "height": 480
+      },
+      "interior": {
+        "covered": 79200,
+        "total": 79200,
+        "coverage": 1,
+        "holes": 0,
+        "roi": [
+          140,
+          130,
+          500,
+          350
+        ]
+      },
+      "gpu": {
+        "vendor": "Google Inc. (Apple)",
+        "renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)",
+        "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)"
+      },
+      "rawPixelChecksum": 149020368,
+      "jpegBytes": 7419
+    },
+    {
+      "source": "after",
+      "revision": "7a98b132473c8ac3b967afb5423cbc22282bbfa1",
+      "tier": 2,
+      "expectedTriangles": 2560,
+      "meta": {
+        "ready": true,
+        "stereo": false,
+        "renderMs": 0.30000001192092896,
+        "captureMs": 3,
+        "draws": 3,
+        "points": 1353,
+        "source": "SIMULATED",
+        "poseEcho": {
+          "sent_mono_ms": 1,
+          "sent_wall_ms": 1,
+          "received_mono_ms": 1
+        },
+        "refreshBusy": false,
+        "poseValid": true,
+        "drawnPoints": 0,
+        "drawnTriangles": 2560,
+        "dense": {
+          "received_upserts": 0,
+          "received_deletes": 0,
+          "retained_cells": 0,
+          "local_evictions": 0,
+          "pending_gpu_chunks": 0,
+          "received_payload_bytes": 0,
+          "received_pages": 0,
+          "source_reported_cells": 0,
+          "source_label": "WAITING",
+          "selected_source": "rgbd",
+          "bootstrap_incomplete": false,
+          "cursor": 0,
+          "resets": 0,
+          "request_active": false,
+          "error": "Error: Dense HTTP 404",
+          "gpu_uploaded_cells": 0,
+          "gpu_uploaded_cell_writes": 0,
+          "gpu_drawn_cells": 0,
+          "gpu_chunks": 0
+        },
+        "rayVisible": false,
+        "viewPosition": [
+          0,
+          0,
+          0
+        ],
+        "triangles": 2560,
+        "retained": false,
+        "mapError": null,
+        "lod": {
+          "index": 2,
+          "pixelRatio": 1,
+          "fraction": 0.5,
+          "fx": 2,
+          "adaptive": false
+        },
+        "mapStatus": {
+          "source": "SIMULATED",
+          "geometry_source": null,
+          "points": 1353,
+          "triangles": 2560,
+          "generation": 0,
+          "revision": 1,
+          "mesh_revision": 1,
+          "applied_points_revision": 1,
+          "applied_mesh_revision": 1,
+          "fresh": true,
+          "age_ms": 26.30000001192093,
+          "connected": true,
+          "retained": false,
+          "partial": false
+        },
+        "fovY": 60,
+        "aspect": 1.3333333333333333
+      },
+      "drawRange": {
+        "start": 0,
+        "count": 7680
+      },
+      "calls": [
+        {
+          "count": 7680,
+          "type": 5125,
+          "offset": 0
+        }
+      ],
+      "submittedTriangles": 2560,
+      "indexOrderVerbatim": true,
+      "buffer": {
+        "width": 640,
+        "height": 480
+      },
+      "interior": {
+        "covered": 79200,
+        "total": 79200,
+        "coverage": 1,
+        "holes": 0,
+        "roi": [
+          140,
+          130,
+          500,
+          350
+        ]
+      },
+      "gpu": {
+        "vendor": "Google Inc. (Apple)",
+        "renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)",
+        "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)"
+      },
+      "rawPixelChecksum": 149020368,
+      "jpegBytes": 7419
+    },
+    {
+      "source": "after",
+      "revision": "7a98b132473c8ac3b967afb5423cbc22282bbfa1",
+      "tier": 3,
+      "expectedTriangles": 2560,
+      "meta": {
+        "ready": true,
+        "stereo": false,
+        "renderMs": 0.30000001192092896,
+        "captureMs": 2.399999976158142,
+        "draws": 3,
+        "points": 1353,
+        "source": "SIMULATED",
+        "poseEcho": {
+          "sent_mono_ms": 1,
+          "sent_wall_ms": 1,
+          "received_mono_ms": 1
+        },
+        "refreshBusy": false,
+        "poseValid": true,
+        "drawnPoints": 0,
+        "drawnTriangles": 2560,
+        "dense": {
+          "received_upserts": 0,
+          "received_deletes": 0,
+          "retained_cells": 0,
+          "local_evictions": 0,
+          "pending_gpu_chunks": 0,
+          "received_payload_bytes": 0,
+          "received_pages": 0,
+          "source_reported_cells": 0,
+          "source_label": "WAITING",
+          "selected_source": "rgbd",
+          "bootstrap_incomplete": false,
+          "cursor": 0,
+          "resets": 0,
+          "request_active": false,
+          "error": "Error: Dense HTTP 404",
+          "gpu_uploaded_cells": 0,
+          "gpu_uploaded_cell_writes": 0,
+          "gpu_drawn_cells": 0,
+          "gpu_chunks": 0
+        },
+        "rayVisible": false,
+        "viewPosition": [
+          0,
+          0,
+          0
+        ],
+        "triangles": 2560,
+        "retained": false,
+        "mapError": null,
+        "lod": {
+          "index": 3,
+          "pixelRatio": 0.75,
+          "fraction": 0.5,
+          "fx": 2,
+          "adaptive": false
+        },
+        "mapStatus": {
+          "source": "SIMULATED",
+          "geometry_source": null,
+          "points": 1353,
+          "triangles": 2560,
+          "generation": 0,
+          "revision": 1,
+          "mesh_revision": 1,
+          "applied_points_revision": 1,
+          "applied_mesh_revision": 1,
+          "fresh": true,
+          "age_ms": 25.5,
+          "connected": true,
+          "retained": false,
+          "partial": false
+        },
+        "fovY": 60,
+        "aspect": 1.3333333333333333
+      },
+      "drawRange": {
+        "start": 0,
+        "count": 7680
+      },
+      "calls": [
+        {
+          "count": 7680,
+          "type": 5125,
+          "offset": 0
+        }
+      ],
+      "submittedTriangles": 2560,
+      "indexOrderVerbatim": true,
+      "buffer": {
+        "width": 480,
+        "height": 360
+      },
+      "interior": {
+        "covered": 44820,
+        "total": 44820,
+        "coverage": 1,
+        "holes": 0,
+        "roi": [
+          105,
+          97,
+          375,
+          263
+        ]
+      },
+      "gpu": {
+        "vendor": "Google Inc. (Apple)",
+        "renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)",
+        "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)"
+      },
+      "rawPixelChecksum": 83942600,
+      "jpegBytes": 5604
+    },
+    {
+      "source": "after",
+      "revision": "7a98b132473c8ac3b967afb5423cbc22282bbfa1",
+      "tier": 4,
+      "expectedTriangles": 2560,
+      "meta": {
+        "ready": true,
+        "stereo": false,
+        "renderMs": 0.30000001192092896,
+        "captureMs": 2.5,
+        "draws": 4,
+        "points": 1353,
+        "source": "SIMULATED",
+        "poseEcho": {
+          "sent_mono_ms": 1,
+          "sent_wall_ms": 1,
+          "received_mono_ms": 1
+        },
+        "refreshBusy": false,
+        "poseValid": true,
+        "drawnPoints": 0,
+        "drawnTriangles": 2560,
+        "dense": {
+          "received_upserts": 0,
+          "received_deletes": 0,
+          "retained_cells": 0,
+          "local_evictions": 0,
+          "pending_gpu_chunks": 0,
+          "received_payload_bytes": 0,
+          "received_pages": 0,
+          "source_reported_cells": 0,
+          "source_label": "WAITING",
+          "selected_source": "rgbd",
+          "bootstrap_incomplete": false,
+          "cursor": 0,
+          "resets": 0,
+          "request_active": false,
+          "error": "Error: Dense HTTP 404",
+          "gpu_uploaded_cells": 0,
+          "gpu_uploaded_cell_writes": 0,
+          "gpu_drawn_cells": 0,
+          "gpu_chunks": 0
+        },
+        "rayVisible": false,
+        "viewPosition": [
+          0,
+          0,
+          0
+        ],
+        "triangles": 2560,
+        "retained": false,
+        "mapError": null,
+        "lod": {
+          "index": 4,
+          "pixelRatio": 0.75,
+          "fraction": 0.25,
+          "fx": 2,
+          "adaptive": false
+        },
+        "mapStatus": {
+          "source": "SIMULATED",
+          "geometry_source": null,
+          "points": 1353,
+          "triangles": 2560,
+          "generation": 0,
+          "revision": 1,
+          "mesh_revision": 1,
+          "applied_points_revision": 1,
+          "applied_mesh_revision": 1,
+          "fresh": true,
+          "age_ms": 43.19999998807907,
+          "connected": true,
+          "retained": false,
+          "partial": false
+        },
+        "fovY": 60,
+        "aspect": 1.3333333333333333
+      },
+      "drawRange": {
+        "start": 0,
+        "count": 7680
+      },
+      "calls": [
+        {
+          "count": 7680,
+          "type": 5125,
+          "offset": 0
+        }
+      ],
+      "submittedTriangles": 2560,
+      "indexOrderVerbatim": true,
+      "buffer": {
+        "width": 480,
+        "height": 360
+      },
+      "interior": {
+        "covered": 44820,
+        "total": 44820,
+        "coverage": 1,
+        "holes": 0,
+        "roi": [
+          105,
+          97,
+          375,
+          263
+        ]
+      },
+      "gpu": {
+        "vendor": "Google Inc. (Apple)",
+        "renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)",
+        "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)"
+      },
+      "rawPixelChecksum": 83942600,
+      "jpegBytes": 5604
+    }
+  ],
+  "errors": [],
+  "browser": {
+    "version": "156.0.8078.4",
+    "launch": "headless Chromium --use-gl=angle --use-angle=metal; no SwiftShader flags"
+  },
+  "threeAssets": {
+    "/quest/node_modules/three/build/three.module.js": "c8211c69345d2e9949dc7a8ac969380497aa0600a5a8ac6a459c8cd02dd9cb8a",
+    "/quest/node_modules/three/build/three.core.js": "eb077d2417f61d3e6d9264c317cabc4ea35769ed6b0ab533067292a550784c20"
+  },
+  "resourcesClosed": true
+}

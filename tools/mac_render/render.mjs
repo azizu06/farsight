@@ -23,16 +23,19 @@ window.addEventListener("error", (event) => {
   window.__mac.error = String(event.message || event.error);
 });
 import * as THREE from "/quest/node_modules/three/build/three.module.js";
-import { decodeMesh, decodePoints } from "/quest/src/protocol.js";
+import { decodeMesh, decodePoints, KeyedCloudMerger } from "/quest/src/protocol.js";
 import { mapResponseRevision } from "/quest/src/map-response.js";
 import { DenseCloudState, DenseCloudReceiver, DenseGpuChunks } from "./dense-cloud.mjs";
 import { StereoPass, SBS_LAYOUT } from "./stereo-pass.mjs";
+import { DesktopPreviewCamera } from "./desktop-preview.mjs";
 
 const params = new URLSearchParams(location.search);
 const upstream = (params.get("upstream") || "").replace(/\/$/, "");
 const width = Number(params.get("width") || 1280);
 const height = Number(params.get("height") || 720);
 const stereoRequested = params.get("layout") === SBS_LAYOUT;
+const canvasPresentation = params.get("presentation") === "canvas";
+const localFixture = params.get("fixture") === "1";
 
 const style = params.get("style") === "unlit" ? "unlit" : "lit";
 // Cinematic is the default look; ?quality=flat reproduces the pre-cine
@@ -53,10 +56,9 @@ const ACCENT = 0xc4a574;
 
 const renderer = new THREE.WebGLRenderer({
   antialias, alpha: false,
-  // Captures can read the canvas outside the render task; a preserved
-  // backbuffer means those reads can never hit a cleared buffer even if a
-  // path (raw screencast) skips the same-task draw guarantee.
-  preserveDrawingBuffer: true,
+  // Stream capture retains its backbuffer. Direct display presents to the
+  // compositor without retaining an additional capture buffer.
+  preserveDrawingBuffer: !canvasPresentation,
   powerPreference: "high-performance",
 });
 renderer.setSize(width, height, false);
@@ -79,6 +81,7 @@ scene.fog = sceneFog;
 const camera = new THREE.PerspectiveCamera(50, width / height, 0.01, 2000);
 camera.position.set(9, 6, 9);
 camera.lookAt(0, 0, 0);
+const desktopPreview = new DesktopPreviewCamera({ THREE, camera, width, height });
 
 const root = new THREE.Group();
 scene.add(root);
@@ -196,8 +199,6 @@ function pooledAttribute(geometry, name, itemSize, Type) {
     },
   };
 }
-const cloudPosition = pooledAttribute(cloudGeometry, "position", 3, Float32Array);
-const cloudColor = pooledAttribute(cloudGeometry, "color", 3, Float32Array);
 const meshPosition = pooledAttribute(surfaceGeometry, "position", 3, Float32Array);
 const meshColor = pooledAttribute(surfaceGeometry, "color", 3, Float32Array);
 const meshNormal = style === "lit" ? pooledAttribute(surfaceGeometry, "normal", 3, Float32Array) : null;
@@ -215,47 +216,35 @@ function ensureIndex(count) {
   return indexAttribute;
 }
 
-// Nested LOD prefixes: [i%4==0] ++ [i%4==2] ++ [odd] makes the first quarter
-// a uniform every-4th sample and the first half every-2nd, so LOD switches
-// are pure setDrawRange with no rewrite.
-function scatterOrder(count, i, n0, n2) {
-  const quad = i & 3;
-  if (quad === 0) return i >> 2;
-  if (quad === 2) return n0 + ((i - 2) >> 2);
-  return n0 + n2 + ((i - 1) >> 1);
-}
+// The cloud lives in a voxel-keyed merger: full snapshots rebuild it
+// wholesale (authoritative for evictions) and /map/points.delta records
+// overwrite their cell's slot in place. Order is merge order — LOD prefixes
+// still cut by drawRange fraction.
+const cloudMerger = new KeyedCloudMerger();
+const cloudAttribute = (array, itemSize) =>
+  new THREE.BufferAttribute(array, itemSize).setUsage(THREE.DynamicDrawUsage);
 let cloudCount = 0;
 let cloudHalf = 0;
 let cloudQuarter = 0;
 let meshTris = 0;
 
-function uploadCloud(data) {
-  const count = data.count;
-  const position = cloudPosition.ensure(count * 3);
-  const color = cloudColor.ensure(count * 3);
-  const positions = cloudPosition.array;
-  const colors = cloudColor.array;
-  const srcP = data.positions;
-  const srcC = data.colors;
-  const n0 = (count + 3) >> 2;
-  const n2 = (count + 1) >> 2;
-  for (let i = 0; i < count; i++) {
-    const dst = scatterOrder(count, i, n0, n2) * 3;
-    const src = i * 3;
-    positions[dst] = srcP[src];
-    positions[dst + 1] = srcP[src + 1];
-    positions[dst + 2] = srcP[src + 2];
-    colors[dst] = srcC[src];
-    colors[dst + 1] = srcC[src + 1];
-    colors[dst + 2] = srcC[src + 2];
-  }
-  cloudPosition.flush(count * 3);
-  cloudColor.flush(count * 3);
-  cloudCount = count;
-  cloudQuarter = n0;
-  cloudHalf = n0 + n2;
+function syncCloud() {
+  cloudMerger.sync(cloudGeometry, cloudAttribute);
+  cloudCount = cloudMerger.used;
+  cloudQuarter = (cloudCount + 3) >> 2;
+  cloudHalf = (cloudCount + 1) >> 1;
   cloudGeometry.setDrawRange(0, cloudDrawCount());
   frameDirty = true;
+}
+
+function uploadCloud(data) {
+  cloudMerger.applyFull(data, cloudVoxelM);
+  syncCloud();
+}
+
+function uploadCloudDelta(data, voxelM) {
+  cloudMerger.applyDelta(data, voxelM);
+  syncCloud();
 }
 
 function uploadMesh(data) {
@@ -291,12 +280,16 @@ function uploadMesh(data) {
 }
 
 function clearGeometry() {
+  cloudMerger.clear();
+  cloudMerger.sync(cloudGeometry, cloudAttribute);
   cloudCount = cloudHalf = cloudQuarter = 0;
   meshTris = 0;
   indexUsed = 0;
   cloudGeometry.setDrawRange(0, 0);
   surfaceGeometry.setDrawRange(0, 0);
   appliedPoints = appliedMesh = -1;
+  pointsEtag = meshEtag = null;
+  lastFullAt = -Infinity;
   frameDirty = true;
 }
 
@@ -432,6 +425,15 @@ let status = null;
 let appliedPoints = -1;
 let appliedMesh = -1;
 let lastSnapshotKind = null;
+// Delta fast lane: 300 ms status polls merge voxel-keyed cell updates while
+// full pulls stay the eviction authority on their old cadence. Session flag
+// drops permanently if the endpoint 400/404s behind a delta-flagged status.
+let cloudVoxelM = 0;
+let deltaSupported = true;
+let lastFullAt = -Infinity;
+let lastDeltaAt = -Infinity;
+let pointsEtag = null;
+let meshEtag = null;
 let pose = null;
 const tmp = new THREE.Quaternion();
 const viewPosition = [0, 0, 0];
@@ -461,6 +463,22 @@ function registerLayer(layer) {
   };
 }
 window.__macRegisterLayer = registerLayer;
+
+// Dense crew's raw-texture layer (#170/#173 contract): the bundle is optional —
+// when .cache/dense-layer-dist is not built the import fails and no layer
+// registers. Raw networking is opt-in (default off): ?raw=1 enables pulls,
+// window.__macRawLayer.setEnabled(v) toggles at runtime. The layer fetches
+// /phone/frame.bin through this server's upstream passthrough.
+import("/dense-layer/raw-texture-layer.mjs")
+  .then((m) => {
+    const layer = m.rawTextureLayer({
+      endpoint: "/phone/frame.bin",
+      enabled: params.get("raw") === "1",
+    });
+    window.__macRawLayer = layer;
+    registerLayer(layer);
+  })
+  .catch(() => {});
 
 const mapStatusView = {};
 let bannerText = "";
@@ -495,6 +513,7 @@ function exposeMap() {
     mapStatusView.mesh_revision = status.mesh_revision;
     mapStatusView.applied_points_revision = appliedPoints;
     mapStatusView.applied_mesh_revision = appliedMesh;
+    mapStatusView.points_delta = status.points_delta === true;
     mapStatusView.fresh = fresh;
     mapStatusView.age_ms = Number.isFinite(statusAge) ? statusAge : null;
     mapStatusView.connected = status.connected === true;
@@ -534,14 +553,30 @@ async function boundedBody(response, limit, signal) {
     reader.releaseLock();
   }
 }
-async function pull(path, expected, signal) {
-  const response = await fetch(`${upstream}${path}`, { cache: "no-store", signal });
+async function pull(path, expected, signal, etag = null) {
+  const response = await fetch(`${upstream}${path}`, {
+    cache: "no-store", signal,
+    headers: etag ? { "If-None-Match": etag } : undefined,
+  });
+  // Revision ETag hit: the authority says the snapshot we applied is still
+  // current — ~100 B instead of the full compressed blob.
+  if (response.status === 304) return { notModified: true };
   const revision = mapResponseRevision(response.headers, expected);
   if (revision === null) {
     await response.body?.cancel().catch(() => {});
     throw new Error("Map snapshot identity/revision mismatch");
   }
-  return { revision, body: await boundedBody(response, 12 * 1024 * 1024, signal) };
+  return { revision, etag: response.headers.get("ETag"), body: await boundedBody(response, 12 * 1024 * 1024, signal) };
+}
+// Delta records share the points.bin record layout; only the response
+// headers differ (X-Map-Revision/Generation, no session/epoch headers).
+async function pullDelta(after, signal) {
+  const response = await fetch(`${upstream}/map/points.delta?after=${after}`, { cache: "no-store", signal });
+  if (response.status === 400 || response.status === 404) return { unsupported: true };
+  if (!response.ok) throw new Error(`Map HTTP ${response.status}`);
+  const revision = Number(response.headers.get("X-Map-Revision"));
+  const generation = Number(response.headers.get("X-Map-Generation"));
+  return { revision, generation, body: await boundedBody(response, 12 * 1024 * 1024, signal) };
 }
 function validStatus(next) {
   const integer = value => Number.isSafeInteger(value) && value >= 0;
@@ -572,7 +607,19 @@ async function snapshotStillCurrent(expectedIdentity, expectedGeneration, signal
   const latest = await readStatus(signal);
   return acceptMapStatus(latest) && !signal.aborted && mapIdentity === expectedIdentity && mapGeneration === expectedGeneration;
 }
-async function refresh() {
+// Which full pull to run on the authority cadence. Mirrors the pre-delta
+// alternation, plus a revalidation pick when deltas keep revisions current:
+// ETag 304s are ~100 B and the pulls age server-side evictions out.
+function pickFullKind(next, meshStale, pointsStale, deltaServer) {
+  if (meshStale && !(next.capped && lastSnapshotKind === "mesh" && pointsStale)) return "mesh";
+  if (pointsStale) return "points";
+  if (!deltaServer) return null;
+  if (next.triangles > 0 && lastSnapshotKind === "points") return "mesh";
+  if (next.points > 0) return "points";
+  if (next.triangles > 0) return "mesh";
+  return null;
+}
+async function refresh(force = false) {
   if (refreshBusy) return false;
   refreshBusy = true;
   window.__mac.refreshBusy = true;
@@ -582,23 +629,67 @@ async function refresh() {
     const next = await readStatus(abort.signal);
     const nextIdentity = sourceIdentity(next);
     if (!acceptMapStatus(next)) return false;
+    const now = performance.now();
+    const voxelM = Number(next.voxel_m) > 0 ? next.voxel_m : 0;
+    if (voxelM > 0) cloudVoxelM = voxelM;
+    const deltaServer = next.points_delta === true && deltaSupported;
     if (!next.points && !next.triangles) {
       clearGeometry(); appliedPoints = next.revision; appliedMesh = next.mesh_revision;
-    } else if (next.triangles && next.mesh_revision > appliedMesh &&
-        !(next.capped && lastSnapshotKind === "mesh" && next.points && next.revision > appliedPoints)) {
-      const result = await pull("/map/mesh.bin", { ...next, revision: next.mesh_revision }, abort.signal);
-      if (!await snapshotStillCurrent(nextIdentity, next.generation, abort.signal)) return false;
-      const mesh = decodeMesh(result.body);
-      uploadMesh(mesh);
-      if (!next.capped || next.geometry_source) { uploadCloud(mesh); appliedPoints = next.revision; }
-      appliedMesh = result.revision;
-      lastSnapshotKind = "mesh";
-    } else if (next.points && next.revision > appliedPoints) {
-      const result = await pull("/map/points.bin", next, abort.signal);
-      if (!await snapshotStillCurrent(nextIdentity, next.generation, abort.signal)) return false;
-      uploadCloud(decodePoints(result.body)); appliedPoints = result.revision;
-      lastSnapshotKind = "points";
-      if (!next.triangles) { meshTris = 0; indexUsed = 0; surfaceGeometry.setDrawRange(0, 0); appliedMesh = next.mesh_revision; frameDirty = true; }
+    } else {
+      const meshStale = next.triangles > 0 && next.mesh_revision > appliedMesh;
+      const pointsStale = next.points > 0 && next.revision > appliedPoints;
+      // Delta servers keep the five-second bulk cadence; fallback keeps the
+      // two-second one. appliedPoints < 0 always means fill now, and a manual
+      // __macRefreshMap() must pull a stale revision on that call — the
+      // pre-delta contract was pull-when-stale on every refresh, with the
+      // interval only scheduling calls.
+      const fullDue = force || appliedPoints < 0 || now - lastFullAt >= (deltaServer ? 5000 : 2000);
+      const kind = fullDue ? pickFullKind(next, meshStale, pointsStale, deltaServer) : null;
+      if (kind === "mesh") {
+        lastFullAt = now;
+        const result = await pull("/map/mesh.bin", { ...next, revision: next.mesh_revision }, abort.signal, meshEtag);
+        if (result.notModified) appliedMesh = next.mesh_revision;
+        else {
+          if (!await snapshotStillCurrent(nextIdentity, next.generation, abort.signal)) return false;
+          const mesh = decodeMesh(result.body);
+          uploadMesh(mesh);
+          if (result.etag) meshEtag = result.etag;
+          if (!next.capped || next.geometry_source) {
+            // On a delta server the keyed cloud is authoritative — seed it
+            // from the mesh only until the first real points.bin lands, so
+            // voxel keys never mix with approximate mesh-vertex keys.
+            if (!deltaServer || appliedPoints < 0) {
+              uploadCloud(mesh); appliedPoints = deltaServer ? -1 : next.revision;
+            }
+          }
+          appliedMesh = result.revision;
+        }
+        lastSnapshotKind = "mesh";
+      } else if (kind === "points") {
+        lastFullAt = now;
+        const result = await pull("/map/points.bin", next, abort.signal, pointsEtag);
+        if (result.notModified) appliedPoints = next.revision;
+        else {
+          if (!await snapshotStillCurrent(nextIdentity, next.generation, abort.signal)) return false;
+          uploadCloud(decodePoints(result.body));
+          if (result.etag) pointsEtag = result.etag;
+          appliedPoints = result.revision;
+          if (!next.triangles) { meshTris = 0; indexUsed = 0; surfaceGeometry.setDrawRange(0, 0); appliedMesh = next.mesh_revision; }
+        }
+        lastSnapshotKind = "points";
+      } else if (deltaServer && voxelM > 0 && appliedPoints >= 0 && next.revision > appliedPoints &&
+                 now - lastDeltaAt >= 300) {
+        lastDeltaAt = now;
+        const result = await pullDelta(appliedPoints, abort.signal);
+        if (result.unsupported) deltaSupported = false;
+        else {
+          if (!Number.isSafeInteger(result.revision) || result.revision < appliedPoints ||
+              result.generation !== next.generation) throw new Error("Map delta watermark mismatch");
+          if (!await snapshotStillCurrent(nextIdentity, next.generation, abort.signal)) return false;
+          uploadCloudDelta(decodePoints(result.body), voxelM);
+          appliedPoints = result.revision;
+        }
+      }
     }
     mapError = null;
     return true;
@@ -696,7 +787,7 @@ let surfacesVisibleSeen = true;
 const denseMetricsView = {};
 function drawScene(measure) {
   const started = performance.now();
-  denseReceiver.update();
+  if (!localFixture) denseReceiver.update();
   // Dense deltas, resets and TTL expiries are the dense lane's "changed"
   // signal; without one a clean frame may skip rasterizing entirely.
   if (denseState.dirty.size > 0 || denseReceiver.pages !== densePagesSeen ||
@@ -725,7 +816,10 @@ function drawScene(measure) {
       window.__mac.layout = SBS_LAYOUT;
       window.__mac.eye_width = width / 2; window.__mac.eye_height = height;
       try {
-        if (!window.__mac.poseValid || !window.__mac.poseEcho) throw new Error("Waiting for tracked eye pair");
+        if (!window.__mac.poseValid || !window.__mac.poseEcho) {
+          window.__mac.poseEcho = desktopPreview.next();
+          window.__mac.previewMode = "desktop-preview";
+        } else window.__mac.previewMode = "tracked-eyes";
         const eyes = window.__mac.poseEcho.eyes;
         if (!Array.isArray(eyes) || eyes.length !== 2 || eyes[0]?.eye !== "left" || eyes[1]?.eye !== "right")
           throw new Error("Stereo wire eyes must be ordered left then right");
@@ -791,10 +885,11 @@ window.__macCapture = () => {
     poseEcho: window.__mac.poseEcho ? { ...window.__mac.poseEcho } : null } };
 };
 renderer.setAnimationLoop(() => { if (!window.__macCaptureDriven) drawScene("raf"); });
-window.__macRefreshMap = refresh;
+window.__macRefreshMap = () => refresh(true);
 applyLod();
-refresh();
-const refreshTimer = window.setInterval(refresh, 2000);
+if (!localFixture) refresh();
+// 300 ms polls drive the delta fast lane; full pulls pace themselves.
+const refreshTimer = localFixture ? null : window.setInterval(refresh, 300);
 window.addEventListener("pagehide", () => {
   window.clearInterval(refreshTimer); incomingPose = null; clearPose();
   denseReceiver.dispose(); denseGpu.dispose();

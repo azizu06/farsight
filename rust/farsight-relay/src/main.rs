@@ -40,7 +40,7 @@ const CONTROL_PATHS: &[&str] = &["/control/status", "/scan", "/ask"];
 /// Only binary map downloads keep the client's Accept-Encoding across the
 /// cellular leg; everything else asks upstream for identity because the
 /// relay decodes and rewrites JSON (operator_relay.py parity).
-const ENCODED_PATHS: &[&str] = &["/map/points.bin", "/map/mesh.bin", "/map/export.ply", "/geometry/mesh.bin", "/dense/chunk.bin", "/dense/delta.bin"];
+const ENCODED_PATHS: &[&str] = &["/map/points.bin", "/map/mesh.bin", "/map/export.ply", "/map/points.delta", "/geometry/mesh.bin", "/dense/chunk.bin", "/dense/delta.bin", "/phone/frame.bin"];
 
 pub(crate) type RemoteSink = Arc<
     tokio::sync::Mutex<

@@ -205,6 +205,7 @@ export function macViewEnabled(search) {
  * a rejected stereo pair is never shown as a mono picture.
  */
 export function frameView(metadata, echo, ring, session) {
+  if (echo?.desktop_preview === true) return null;
   const kind = segmentKind(metadata);
   if (kind === "invalid") return null;
   if (kind === "flat") return sessionMatches(echo, session) ? { mode: "flat", from: ring.find(echo, session) } : null;

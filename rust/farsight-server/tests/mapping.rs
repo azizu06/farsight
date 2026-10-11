@@ -134,11 +134,11 @@ fn voxel_blend_and_capacity() {
     let mut voxels = VoxelMap::new(0.5, 4);
     let cluster: Vec<[f32; 3]> = (0..6).map(|i| [(i / 2) as f32 + (i % 2) as f32 * 0.4, 0.0, 0.0]).collect();
     let colors = vec![[200, 200, 200]; 6];
-    voxels.integrate(&cluster, &colors);
+    voxels.integrate(&cluster, &colors, 1);
     assert_eq!(voxels.cells.len(), 3); // pairs merge into 0.5m voxels
     let points: Vec<[f32; 3]> = (0..6).map(|i| [i as f32, 0.0, 0.0]).collect();
     let mut voxels = VoxelMap::new(0.01, 4);
-    voxels.integrate(&points, &colors);
+    voxels.integrate(&points, &colors, 2);
     assert_eq!(voxels.cells.len(), 4); // capacity eviction
     let (p, c) = voxels.snapshot();
     assert_eq!(p.len(), 4);
