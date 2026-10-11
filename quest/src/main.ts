@@ -1,5 +1,5 @@
 import { mapResponseRevision } from "./map-response.js";
-import { chooseMapTransfer, MAP_TRANSFER_INTERVAL_MS } from "./map-transfer.js";
+import { chooseMapTransfer, MAP_TRANSFER_INTERVAL_MS, MAP_AUTHORITY_INTERVAL_MS, DELTA_TRANSFER_INTERVAL_MS } from "./map-transfer.js";
 import { floorHeight, mapWalk } from "./map-walk.js";
 import { PersonMarkers } from "./person-markers.js";
 import { DenseMapView } from "./dense-map";
@@ -8,7 +8,7 @@ import { MacAutoView } from "./mac-auto";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { VRButton } from "three/addons/webxr/VRButton.js";
-import { decodeMesh, decodePoints } from "./protocol.js";
+import { decodeMesh, decodePoints, KeyedCloudMerger } from "./protocol.js";
 import "./style.css";
 import { RoverExperience } from "./rover";
 import { DiagnosticsOverlay } from "./diagnostics-overlay";
@@ -29,6 +29,8 @@ type Status = {
   mesh_revision: number;
   tracking: string;
   paused: boolean;
+  voxel_m?: number;
+  points_delta?: boolean;
   points: number;
   triangles: number;
   frames: number;
@@ -107,9 +109,13 @@ let generation = -1,
   pendingMesh = false;
 let connectionVersion = 0;
 let mapDriving = false, appliedPoints = -1, lastMapAt = -Infinity;
+let lastDeltaAt = -Infinity;
+let pointsDeltaSupported = true;
+let pointsEtag: string | null = null, meshEtag: string | null = null;
 let lastMapKind: "mesh" | "points" | null = null;
 let mapSourceIdentity = "";
-let pointsRequest: AbortController | null = null, meshRequest: AbortController | null = null;
+let pointsRequest: AbortController | null = null, meshRequest: AbortController | null = null,
+  deltaRequest: AbortController | null = null;
 let socket: WebSocket | null = null,
   reconnectTimer = 0,
   serverOnline = false;
@@ -237,6 +243,10 @@ pointsMaterial.onBeforeCompile = (shader) => {
 };
 const cloud = new THREE.Points(new THREE.BufferGeometry(), pointsMaterial);
 root.add(cloud);
+// The merger writes into one persistent geometry whose capacity can exceed
+// the used point count, so per-snapshot bounding spheres would be wrong;
+// pin a huge one instead — the map fills the view anyway.
+cloud.geometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e9);
 // Matte, physically shaded reconstruction: Lambert BRDF (albedo / pi) under one key
 // light fixed to the map and a soft sky/ground fill, keeping measured vertex colours.
 // Per-pixel diffuse only, no shadows or AO: cheap enough for Quest 2.
@@ -447,13 +457,42 @@ function visibility() {
   cloud.visible = !macShown && (walking || view !== "camera");
   surfaces.visible = !macShown && !pointsOnly && (walking || view === "3d");
 }
+// The cloud lives in the merger's persistent store: full pulls call
+// applyFull (authoritative rebuild, key map reset), /map/points.delta calls
+// applyDelta (keyed overwrite/append). sync() uploads only touched ranges.
+const cloudMerger = new KeyedCloudMerger();
+const cloudAttribute = (array: Float32Array, itemSize: number) =>
+  new THREE.BufferAttribute(array, itemSize).setUsage(THREE.DynamicDrawUsage);
+function syncCloud() {
+  cloudMerger.sync(cloud.geometry, cloudAttribute);
+  const b = cloudMerger.bounds;
+  if (b) {
+    vrMapCenter.set((b[0] + b[3]) / 2, (b[1] + b[4]) / 2, (b[2] + b[5]) / 2);
+    vrMapSize.set(b[3] - b[0], b[4] - b[1], b[5] - b[2]);
+    vrMapSpan = Math.max(vrMapSize.x, vrMapSize.z, 4);
+    mapWalk.setFloor(floorHeight(cloudMerger.usedPositions()));
+  }
+}
+function applyCloud(data: ReturnType<typeof decodePoints>) {
+  cloudMerger.applyFull(data, status?.voxel_m ?? 0);
+  syncCloud();
+}
+function applyCloudDelta(data: ReturnType<typeof decodePoints>, voxelM: number) {
+  cloudMerger.applyDelta(data, voxelM);
+  syncCloud();
+}
+function deltaCapable(next: Status | undefined): boolean {
+  return pointsDeltaSupported && next?.points_delta === true && (next.voxel_m ?? 0) > 0;
+}
+const authorityMs = (next: Status | undefined) =>
+  deltaCapable(next) ? MAP_AUTHORITY_INTERVAL_MS : MAP_TRANSFER_INTERVAL_MS;
 function frameMap() {
-  const positions = cloud.geometry.getAttribute("position");
-  if (!positions?.count) return;
-  const box = new THREE.Box3().setFromBufferAttribute(
-    positions as THREE.BufferAttribute,
+  if (!cloudMerger.used || !cloudMerger.bounds) return;
+  const b = cloudMerger.bounds;
+  const sphere = new THREE.Sphere(
+    new THREE.Vector3((b[0] + b[3]) / 2, (b[1] + b[4]) / 2, (b[2] + b[5]) / 2),
+    Math.hypot(b[3] - b[0], b[4] - b[1], b[5] - b[2]) / 2,
   );
-  const sphere = box.getBoundingSphere(new THREE.Sphere());
   const halfFov = THREE.MathUtils.degToRad(camera.fov / 2);
   const fitAngle = Math.min(
     halfFov,
@@ -542,7 +581,9 @@ function statusLine(next: Status) {
   );
 }
 async function loadMesh(next: Status) {
-  if (!mapNeeded() || pendingMesh || pointsRequest || appliedMesh === next.mesh_revision || performance.now() - lastMapAt < MAP_TRANSFER_INTERVAL_MS) return;
+  if (!mapNeeded() || pendingMesh || pointsRequest || deltaRequest ||
+      (appliedMesh === next.mesh_revision && !deltaCapable(next)) ||
+      performance.now() - lastMapAt < authorityMs(next)) return;
   pendingMesh = true;
   lastMapAt = performance.now(); lastMapKind = "mesh";
   const abort = new AbortController(); meshRequest = abort;
@@ -550,11 +591,18 @@ async function loadMesh(next: Status) {
     wantedRevision = next.mesh_revision,
     wantedConnection = connectionVersion;
   try {
-    const response = await fetch(api("/map/mesh.bin"), { cache: "no-store", signal: abort.signal });
+    const response = await fetch(api("/map/mesh.bin"), {
+      cache: "no-store", signal: abort.signal,
+      headers: meshEtag ? { "If-None-Match": meshEtag } : undefined,
+    });
+    // A 304 is the authority saying the snapshot we applied is still current —
+    // adopt the status revision so the delta watermark stays honest.
+    if (response.status === 304) { appliedMesh = wantedRevision; return; }
     if (!response.ok)
       throw new Error(`Surface request failed (${response.status})`);
     const actualRevision = mapResponseRevision(response.headers, { ...next, revision: wantedRevision });
     if (actualRevision === null) return;
+    const etag = response.headers.get("ETag");
     const body = await response.arrayBuffer();
     if (generation !== wantedGeneration || connectionVersion !== wantedConnection ||
         !mapNeeded() || abort.signal.aborted) return;
@@ -563,11 +611,17 @@ async function loadMesh(next: Status) {
       generation === wantedGeneration &&
       connectionVersion === wantedConnection && mapNeeded() && !abort.signal.aborted
     ) {
+      if (etag) meshEtag = etag;
       replaceGeometry(surfaces, data, data.indices);
       // Mesh vertices are the same measured reconstruction; avoid a second
       // cellular download just to draw the hybrid point overlay and frame it.
       // A stride-capped mesh is too sparse for that, so points.bin is pulled too.
-      if (!cappedMesh(next)) { replaceGeometry(cloud, data); appliedPoints = -1; }
+      // On a delta-capable server the keyed cloud is authoritative instead —
+      // seed it from the mesh only until the first real points.bin lands, so
+      // its voxel keys never mix with approximate mesh-vertex keys.
+      if (!cappedMesh(next) && (!deltaCapable(next) || appliedPoints < 0)) {
+        applyCloud(data); appliedPoints = -1;
+      }
       appliedMesh = actualRevision;
     }
   } catch (error) {
@@ -577,27 +631,63 @@ async function loadMesh(next: Status) {
   }
 }
 async function loadPoints(next: Status) {
-  if (next.points_transport !== "http" || !mapNeeded() || pointsRequest || meshRequest || appliedPoints === next.revision || performance.now() - lastMapAt < MAP_TRANSFER_INTERVAL_MS) return;
+  if (next.points_transport !== "http" || !mapNeeded() || pointsRequest || meshRequest || deltaRequest ||
+      (appliedPoints === next.revision && !deltaCapable(next)) ||
+      performance.now() - lastMapAt < authorityMs(next)) return;
   const abort = new AbortController(); pointsRequest = abort;
   lastMapAt = performance.now(); lastMapKind = "points";
   const wantedGeneration = next.generation, wantedRevision = next.revision, wantedConnection = connectionVersion;
   try {
-    const response = await fetch(api("/map/points.bin"), { cache: "no-store", signal: abort.signal });
+    const response = await fetch(api("/map/points.bin"), {
+      cache: "no-store", signal: abort.signal,
+      headers: pointsEtag ? { "If-None-Match": pointsEtag } : undefined,
+    });
+    if (response.status === 304) { appliedPoints = wantedRevision; return; }
     if (!response.ok) throw new Error(`Point request failed (${response.status})`);
     const actualRevision = mapResponseRevision(response.headers, { ...next, revision: wantedRevision });
     if (actualRevision === null) return;
+    const etag = response.headers.get("ETag");
     const body = await response.arrayBuffer();
     if (generation !== wantedGeneration || connectionVersion !== wantedConnection ||
         !mapNeeded() || abort.signal.aborted) return;
     const data = decodePoints(body);
     if (generation === wantedGeneration && connectionVersion === wantedConnection && mapNeeded() && !abort.signal.aborted) {
-      const first = !cloud.geometry.getAttribute("position")?.count;
-      replaceGeometry(cloud, data); appliedPoints = actualRevision;
-      if (first && data.positions.length && !renderer.xr.isPresenting) frameMap();
+      const first = cloudMerger.used === 0;
+      applyCloud(data);
+      if (etag) pointsEtag = etag;
+      appliedPoints = actualRevision;
+      if (first && cloudMerger.used && !renderer.xr.isPresenting) frameMap();
     }
   } catch (error) {
     if (!abort.signal.aborted) notify(String(error));
   } finally { pointsRequest = null; }
+}
+async function loadPointsDelta(next: Status) {
+  if (!deltaCapable(next) || !mapNeeded() || deltaRequest || pointsRequest || meshRequest) return;
+  const after = appliedPoints;
+  if (after < 0 || next.revision <= after || performance.now() - lastDeltaAt < DELTA_TRANSFER_INTERVAL_MS) return;
+  const abort = new AbortController(); deltaRequest = abort;
+  lastDeltaAt = performance.now();
+  const wantedGeneration = next.generation, wantedConnection = connectionVersion;
+  try {
+    const response = await fetch(api(`/map/points.delta?after=${after}`), { cache: "no-store", signal: abort.signal });
+    // The status flag promised support; a missing route means the endpoint
+    // was lost (older build behind the same origin) — fall back for good.
+    if (response.status === 400 || response.status === 404) { pointsDeltaSupported = false; return; }
+    if (!response.ok) throw new Error(`Delta request failed (${response.status})`);
+    const revision = Number(response.headers.get("X-Map-Revision"));
+    const gen = Number(response.headers.get("X-Map-Generation"));
+    const body = await response.arrayBuffer();
+    if (!Number.isSafeInteger(revision) || revision < after || gen !== wantedGeneration ||
+        generation !== wantedGeneration || connectionVersion !== wantedConnection ||
+        !mapNeeded() || abort.signal.aborted) return;
+    const first = cloudMerger.used === 0;
+    applyCloudDelta(decodePoints(body), next.voxel_m!);
+    appliedPoints = revision;
+    if (first && cloudMerger.used && !renderer.xr.isPresenting) frameMap();
+  } catch (error) {
+    if (!abort.signal.aborted) notify(String(error));
+  } finally { deltaRequest = null; }
 }
 function acceptStatus(next: Status) {
   const sourceIdentity = `${next.source}|${next.session_id ?? connectionVersion}|${next.map_epoch}`;
@@ -607,8 +697,10 @@ function acceptStatus(next: Status) {
     generation = next.generation;
     appliedMesh = -1;
     appliedPoints = -1;
+    pointsEtag = meshEtag = null;
+    lastDeltaAt = -Infinity;
     mapWalk.reset();
-    replaceGeometry(cloud, emptyGeometry());
+    applyCloud(emptyGeometry());
     replaceGeometry(surfaces, emptyGeometry());
     personMarkers.clear();
   }
@@ -657,12 +749,14 @@ function acceptStatus(next: Status) {
     camera.position.add(position.clone().sub(controls.target));
     controls.target.copy(position);
   }
-  const transfer = chooseMapTransfer({ needed: mapNeeded(), busy: !!(pointsRequest || meshRequest),
+  const transfer = chooseMapTransfer({ needed: mapNeeded(), busy: !!(pointsRequest || meshRequest || deltaRequest),
     now: performance.now(), lastStarted: lastMapAt, pointsOnly, view: walkingNow() ? "3d" : view,
     triangles: next.triangles, pointsTransport: next.points_transport, pointRevision: next.revision,
-    meshRevision: next.mesh_revision, appliedPoints, appliedMesh, capped: cappedMesh(next), lastKind: lastMapKind });
+    meshRevision: next.mesh_revision, appliedPoints, appliedMesh, capped: cappedMesh(next), lastKind: lastMapKind,
+    pointsDelta: deltaCapable(next), lastDelta: lastDeltaAt });
   if (transfer === "mesh") void loadMesh(next);
   else if (transfer === "points") void loadPoints(next);
+  else if (transfer === "pointsDelta") void loadPointsDelta(next);
   visibility();
 }
 /** Server stride-capped Jetson mesh; phone-built (geometry_source) meshes are not capped this way. */
@@ -672,7 +766,9 @@ function mapNeeded() {
   if (macShown) return false;
   // Walk-through keeps the map live while the rover drives or explores.
   if (walkingNow()) return true;
-  return !mapDriving && (view !== "camera" || (renderer.xr.isPresenting && !rover?.vrCameraView));
+  // Deadman pauses map traffic only on servers without the additive feed:
+  // voxel-keyed deltas keep the canvas filling while the rover turns.
+  return (!mapDriving || deltaCapable(status)) && (view !== "camera" || (renderer.xr.isPresenting && !rover?.vrCameraView));
 }
 function syncMapConnection() {
   if (mapNeeded()) {
@@ -704,9 +800,9 @@ function connect() {
         const next = JSON.parse(event.data) as Status;
         if (next.type === "status") acceptStatus(next);
       } else {
-        const first = !cloud.geometry.getAttribute("position")?.count;
-        replaceGeometry(cloud, decodePoints(event.data));
-        if (first && cloud.geometry.getAttribute("position").count && !renderer.xr.isPresenting) frameMap();
+        const first = cloudMerger.used === 0;
+        applyCloud(decodePoints(event.data));
+        if (first && cloudMerger.used && !renderer.xr.isPresenting) frameMap();
       }
     } catch (error) {
       notify(`Map packet rejected: ${String(error)}`);

@@ -190,7 +190,12 @@ the goal.
 - **Planner:** `SmacPlanner2D`, `allow_unknown` (goals are often in unseen space),
   0.25 m tolerance.
 - **Controller:** Regulated Pure Pursuit by default (20 Hz, 0.70 m/s, 0.2-0.5 m
-  speed-scaled lookahead, rotate in place only beyond 1.0 rad, otherwise arc), or MPPI
+  speed-scaled lookahead, rotate in place at 2.2 rad/s only beyond 1.0 rad, otherwise
+  arc). RPP raises an in-place turn by at most `max_angular_accel` per step above the
+  *measured* yaw rate, so it is 60 rad/s^2: at 8 the first step was 0.4 rad/s (PWM 80),
+  the loaded rover never broke free and sat for 27 s (floor test, 2026-10-11); now the
+  first step is the full 2.2 rad/s (PWM 109/104). A 3.0 rad/s turn banged between
+  directions every 0.2 s in the simulated dead end and hit its walls. Or MPPI
   with `controller:=mppi` (1000 samples, 2 s horizon, `vx_max` 0.70 m/s, `wz_max`
   2.5 rad/s). These suit `FARSIGHT_AUTONOMY_MAX_PWM=200` on the 2026-10-10 drive
   profile (0.74 m/s, 3.8 rad/s); no cost-regulated slow zone near obstacles and

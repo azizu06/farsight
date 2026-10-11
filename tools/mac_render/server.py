@@ -509,10 +509,12 @@ def create_app(args, browser=None, page=None):
 
     web_app.router.add_get("/render/{tail:.*}", files(HERE))
     web_app.router.add_get("/quest/{tail:.*}", files(ROOT / "quest"))
+    web_app.router.add_get("/dense-layer/{tail:.*}", files(ROOT / ".cache" / "dense-layer-dist"))
     if args.upstream:
         web_app.router.add_get("/map/{tail:.*}", proxy(args.upstream))
         web_app.router.add_get("/health/map", proxy_one(args.upstream, "/map/status"))
         web_app.router.add_get("/dense/{tail:.*}", dense_proxy(args.upstream))
+        web_app.router.add_get("/phone/{tail:.*}", raw_proxy(args.upstream))
     return web_app
 
 
@@ -618,6 +620,28 @@ def dense_proxy(upstream):
 def proxy(upstream):
     async def send(request):
         return await proxy_one(upstream, "/map/" + request.match_info["tail"])(request)
+    return send
+
+
+# Read-only raw RGB-D frame passthrough for the dense crew's textured layer
+# (#170 owner contract). Unlike proxy_one, every upstream status is forwarded
+# verbatim — 204 (unchanged cursor) and 503s are meaningful to the layer.
+def raw_proxy(upstream):
+    async def send(request):
+        url = str(upstream_origin(upstream)) + "/phone/" + request.match_info["tail"]
+        if request.query_string:
+            url += "?" + request.query_string
+        async with request.app["map_client"].get(url,
+                headers={"Accept-Encoding": "identity"}, allow_redirects=False) as response:
+            body = bytearray()
+            async for chunk in response.content.iter_chunked(65536):
+                body.extend(chunk)
+                if len(body) > 16 * 1024 * 1024:
+                    raise web.HTTPBadGateway(text="Raw frame exceeds bounded size")
+            headers = {key: value for key, value in response.headers.items()
+                       if key.lower() == "content-type" or key.lower().startswith("x-capture-")}
+            headers["Cache-Control"] = "no-store"
+            return web.Response(status=response.status, body=bytes(body), headers=headers)
     return send
 
 

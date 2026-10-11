@@ -6,7 +6,8 @@ const state = (changes = {}) => ({
   needed: true, busy: false, now: 15000, lastStarted: 10000,
   pointsOnly: false, view: '3d', triangles: 200,
   pointsTransport: 'http', pointRevision: 12, meshRevision: 9,
-  appliedPoints: 11, appliedMesh: 8, ...changes,
+  appliedPoints: 11, appliedMesh: 8,
+  pointsDelta: false, lastDelta: -Infinity, ...changes,
 });
 
 test('hybrid 3D downloads the mesh replacement once without a second point snapshot', () => {
@@ -62,4 +63,48 @@ test('a capped mesh alternates with HTTP points instead of standing in for them'
   assert.equal(chooseMapTransfer(capped({ lastKind: 'mesh', pointsTransport: 'ws' })), 'mesh');
   // Still one transfer per five seconds.
   assert.equal(chooseMapTransfer(capped({ lastKind: 'mesh', now: 14999 })), null);
+});
+
+test('delta lane merges voxel cells between authority pulls', () => {
+  // 1 s inside the 2 s authority window, 1 s since the last delta -> merge.
+  const delta = changes => state({ pointsDelta: true, lastStarted: 14000, lastDelta: 14000, ...changes });
+  assert.equal(chooseMapTransfer(delta()), 'pointsDelta');
+  // Deltas need a real watermark and a newer server revision.
+  assert.equal(chooseMapTransfer(delta({ appliedPoints: 12 })), null);
+  assert.equal(chooseMapTransfer(delta({ appliedPoints: 12, pointRevision: 12 })), null);
+  // appliedPoints -1 means the next transfer is always a full pull, so the
+  // keyed slot map can be rebuilt before the fast lane runs.
+  assert.equal(chooseMapTransfer(delta({ appliedPoints: -1 })), 'mesh');
+  assert.equal(chooseMapTransfer(delta({ appliedPoints: -1, triangles: 0 })), 'points');
+  // Pacing: requests stay under ~4 Hz even while revisions stream in.
+  assert.equal(chooseMapTransfer(delta({ lastDelta: 14900 })), null);
+  assert.equal(chooseMapTransfer(delta({ lastDelta: 14700 })), 'pointsDelta');
+  // No flag -> the fallback path never picks the fast lane.
+  assert.equal(chooseMapTransfer(state({ lastStarted: 14000, lastDelta: 14000 })), null);
+});
+
+test('delta servers run two-second authority pulls that alternate mesh/points', () => {
+  const d = changes => state({ pointsDelta: true, lastStarted: 12000, ...changes });
+  // 3 s > 2 s authority window -> a full pull preempts the delta lane.
+  assert.equal(chooseMapTransfer(d()), 'mesh');
+  assert.equal(chooseMapTransfer(d({ lastKind: 'mesh' })), 'points');
+  assert.equal(chooseMapTransfer(d({ lastKind: 'points' })), 'mesh');
+  // Revalidation ignores revision equality: the ETag answers 304s for ~100 B
+  // and the pulls are what age server-side evictions out of the merged cloud.
+  assert.equal(chooseMapTransfer(d({ appliedMesh: 9, appliedPoints: 12 })), 'mesh');
+  assert.equal(chooseMapTransfer(d({ appliedMesh: 9, appliedPoints: 12, lastKind: 'mesh' })), 'points');
+  // Boundary: due at exactly 2 s, inside the window the delta runs instead.
+  assert.equal(chooseMapTransfer(d({ lastStarted: 13000 })), 'mesh');
+  assert.equal(chooseMapTransfer(d({ lastStarted: 13001 })), 'pointsDelta');
+  // The alternation is shared with the capped case.
+  assert.equal(chooseMapTransfer(d({ capped: true })), 'mesh');
+  assert.equal(chooseMapTransfer(d({ capped: true, lastKind: 'mesh' })), 'points');
+});
+
+test('delta-capable points-only views revalidate points and merge in between', () => {
+  const d = changes => state({ pointsDelta: true, pointsOnly: true, ...changes });
+  assert.equal(chooseMapTransfer(d({ appliedPoints: -1 })), 'points');
+  assert.equal(chooseMapTransfer(d({ lastStarted: 13000 })), 'points');
+  assert.equal(chooseMapTransfer(d({ lastStarted: 13001 })), 'pointsDelta');
+  assert.equal(chooseMapTransfer(d({ lastStarted: 13001, appliedPoints: 12 })), null);
 });
