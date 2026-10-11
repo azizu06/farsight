@@ -156,6 +156,11 @@ starting a raw stream. `layer.setPolling(false)` also pauses future pulls while
 keeping already accepted surfaces visible and expiring; stats expose
 `raw_polling`. Re-enable continuous pulls only in the owner's qualified window.
 
+The renderer's raw passthrough preserves negotiated compression, capture headers
+and upstream statuses. Its separate single-connection HTTP pool lets one frame
+start while map snapshots or dense bootstrap pages occupy the map pool. The
+existing transfer timeouts and capture-age limits remain unchanged.
+
 The production Mac renderer draws measured surfaces before fallback points.
 The raw adapter retains the entire valid native point grid and uses an index
 mask to draw only samples that belong to no accepted depth triangle. This keeps
