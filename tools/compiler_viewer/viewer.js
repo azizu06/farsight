@@ -248,6 +248,7 @@ function buildScene() {
   if (found) {
     state.floorY = box.min.y;
     state.diag = box.getSize(new THREE.Vector3()).length() || 10;
+    state.bounds = { min: box.min.toArray(), max: box.max.toArray(), center: box.getCenter(new THREE.Vector3()).toArray() };
     const c = box.getCenter(new THREE.Vector3());
     camera.position.set(c.x + state.diag * 0.45, c.y + state.diag * 0.35, c.z + state.diag * 0.45);
     controls?.target.copy(c);
@@ -530,6 +531,7 @@ function animate(now) {
   camera.updateMatrixWorld();
   if (state.splat?.visible) { state.splat.update(camera, renderer); state.splat.requestSort(camera, state.diag * 2); }
   composer.render();
+  if (!window.__ready) window.__ready = true;
   msE = msE * 0.94 + (now - (animate._t || now)) * 0.06; animate._t = now;
   frames++; tAccum += dt;
   if (tAccum > 0.5) { fpsE = fpsE * 0.5 + (frames / tAccum) * 0.5; frames = 0; tAccum = 0; syncStat(); adaptPR(); }
@@ -550,6 +552,8 @@ window.__viz = {
     camera.lookAt(tx, ty, tz);
   },
   files: () => state.assets.files.map((f) => f.name),
+  bounds: () => state.bounds ? { ...state.bounds, diag: state.diag, floorY: state.floorY } : null,
+  shot: () => { composer.render(); return renderer.domElement.toDataURL('image/png'); },
   info: () => ({ calls: renderer.info.render.calls, triangles: renderer.info.render.triangles,
     mode: state.mode, quality: state.quality, ms: msE, errors: [...errors] }),
   _exportTarget: () => {

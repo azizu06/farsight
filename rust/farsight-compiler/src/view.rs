@@ -96,30 +96,37 @@ pub fn serve(out_dir: &Path, host: &str, port: u16, open: bool) -> Result<()> {
     if open { open_browser(&url); }
 
     for req in server.incoming_requests() {
-        if req.method() != &Method::Get && req.method() != &Method::Head {
-            let _ = req.respond(Response::empty(405));
-            continue;
-        }
-        let path = req.url().split(['?', '#']).next().unwrap_or("/").to_string();
-        if path == "/" || path == "/index.html" {
-            respond_bytes(req, ASSETS[0].1, ASSETS[0].2);
-        } else if let Some(rest) = path.strip_prefix("/viewer/") {
-            match ASSETS.iter().find(|(p, _, _)| *p == rest) {
-                Some((_, bytes, mime)) => respond_bytes(req, bytes, mime),
-                None => { let _ = req.respond(Response::empty(404)); }
-            }
-        } else if path == "/api/manifest" {
-            respond_bytes(req, &manifest(&out_dir).into_bytes(), "application/json");
-        } else if let Some(rest) = path.strip_prefix("/out/") {
-            match sanitize(rest).map(|r| out_dir.join(r)) {
-                Some(f) if f.is_file() => respond_file(req, &f, mime(rest)),
-                _ => { let _ = req.respond(Response::empty(404)); }
-            }
-        } else {
-            let _ = req.respond(Response::empty(404));
-        }
+        // One thread per request: browsers hold parallel keep-alive
+        // connections, and a single-threaded accept loop stalls page loads.
+        let out_dir = out_dir.clone();
+        std::thread::spawn(move || handle(req, &out_dir));
     }
     Ok(())
+}
+
+fn handle(req: Request, out_dir: &Path) {
+    if req.method() != &Method::Get && req.method() != &Method::Head {
+        let _ = req.respond(Response::empty(405));
+        return;
+    }
+    let path = req.url().split(['?', '#']).next().unwrap_or("/").to_string();
+    if path == "/" || path == "/index.html" {
+        respond_bytes(req, ASSETS[0].1, ASSETS[0].2);
+    } else if let Some(rest) = path.strip_prefix("/viewer/") {
+        match ASSETS.iter().find(|(p, _, _)| *p == rest) {
+            Some((_, bytes, mime)) => respond_bytes(req, bytes, mime),
+            None => { let _ = req.respond(Response::empty(404)); }
+        }
+    } else if path == "/api/manifest" {
+        respond_bytes(req, &manifest(out_dir).into_bytes(), "application/json");
+    } else if let Some(rest) = path.strip_prefix("/out/") {
+        match sanitize(rest).map(|r| out_dir.join(r)) {
+            Some(f) if f.is_file() => respond_file(req, &f, mime(rest)),
+            _ => { let _ = req.respond(Response::empty(404)); }
+        }
+    } else {
+        let _ = req.respond(Response::empty(404));
+    }
 }
 
 fn respond_bytes(req: Request, bytes: &[u8], mime: &str) {
