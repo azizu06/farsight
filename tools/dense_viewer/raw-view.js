@@ -1,8 +1,9 @@
 import * as THREE from 'three';
 export class RawView {
- constructor(root,onBounds,{endpoint='/capture/frame.bin',onChange=()=>{},history=true,surfaceHistory=history,pollInterval=500}={}){
+ constructor(root,onBounds,{endpoint='/capture/frame.bin',onChange=()=>{},history=true,surfaceHistory=history,fallbackOnly=false,pollInterval=500}={}){
   this.endpoint=endpoint;this.onChange=onChange;
   this.history=Boolean(history);this.surfaceHistory=Boolean(surfaceHistory);this.pollInterval=Math.min(4000,Math.max(125,Number(pollInterval)||500));this.pointTransfer=0;
+  this.fallbackOnly=Boolean(fallbackOnly)&&!this.history;this.fallbackCount=0;
   this.showSurfaces=true;this.showPoints=true;
   this.group=new THREE.Group();root.add(this.group);this.onBounds=onBounds;
   this.points=new THREE.Points(new THREE.BufferGeometry(),new THREE.PointsMaterial({size:.012,vertexColors:true,toneMapped:false}));
@@ -28,7 +29,13 @@ export class RawView {
     if(!a||a.count<data.max_points){a=new THREE.BufferAttribute(new Float32Array(data.max_points*3),3).setUsage(THREE.DynamicDrawUsage);geometry.setAttribute(name,a);}
     a.array.set(values);a.clearUpdateRanges();a.addUpdateRange(0,values.length);a.needsUpdate=true;
    }
-   geometry.setDrawRange(0,data.points);geometry.boundingBox=new THREE.Box3().setFromArray(data.positions);geometry.boundingSphere=geometry.boundingBox.getBoundingSphere(new THREE.Sphere());
+   if(this.fallbackOnly){
+    let index=geometry.getIndex();
+    if(!index||index.count<data.max_points){index=new THREE.BufferAttribute(new Uint32Array(data.max_points),1).setUsage(THREE.DynamicDrawUsage);geometry.setIndex(index);}
+    index.array.set(data.fallback_indices);index.clearUpdateRanges();index.addUpdateRange(0,data.fallback_indices.length);index.needsUpdate=true;
+    this.fallbackCount=data.fallback_indices.length;geometry.setDrawRange(0,this.fallbackCount);
+   }else geometry.setDrawRange(0,data.points);
+   geometry.boundingBox=new THREE.Box3().setFromArray(data.positions);geometry.boundingSphere=geometry.boundingBox.getBoundingSphere(new THREE.Sphere());
    const patch=data.patch,g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(patch.positions,3));g.setAttribute('uv',new THREE.BufferAttribute(patch.uv,2));g.setIndex(new THREE.BufferAttribute(patch.indices,1));
    const texture=new THREE.Texture(patch.image);texture.colorSpace=THREE.SRGBColorSpace;texture.flipY=false;texture.anisotropy=4;texture.needsUpdate=true;
    // ImageBitmap ignores texture.flipY; UV v is 1-y while bitmap is top-down,
@@ -44,7 +51,7 @@ export class RawView {
   this.worker.onerror=e=>{this.busy=false;this.error=e.message;};
  }
  setLayers({surfaces=this.showSurfaces,points=this.showPoints}={}){this.showSurfaces=Boolean(surfaces);this.showPoints=Boolean(points);this.points.visible=this.showPoints;for(const mesh of this.patches)mesh.visible=this.showSurfaces;}
- clearPoints(){this.count=0;this.points.geometry.setDrawRange(0,0);this.onChange();}
+ clearPoints(){this.count=0;this.fallbackCount=0;this.points.geometry.setDrawRange(0,0);this.onChange();}
  clear(){for(const mesh of this.patches)this.remove(mesh);this.patches=[];this.clearPoints();}
  remove(mesh){this.group.remove(mesh);mesh.geometry.dispose();mesh.material.map.image.close();mesh.material.map.dispose();mesh.material.dispose();this.onChange();}
  expire(){let triangles=this.patches.reduce((n,p)=>n+p.userData.triangles,0),vertices=this.patches.reduce((n,p)=>n+p.userData.vertices,0);
@@ -75,6 +82,6 @@ export class RawView {
    this.worker.postMessage({buffer:b,ttl:this.ttl,history:this.history,deadline:Date.now()+2000-age},[b]);
   }catch(e){this.error=String(e);this.busy=false;}
  }
- stats(){return {raw_mode:this.history?'history':'latest',raw_surface_history:this.surfaceHistory,raw_surface_ttl_s:this.surfaceTtl,raw_oldest_surface_age_ms:this.patches.length?Date.now()-this.patches[0].userData.at:null,raw_poll_interval_ms:this.pollInterval,raw_point_capacity:this.points.geometry.getAttribute('position')?.count??0,raw_point_transfer_bytes:this.pointTransfer,raw_patches:this.patches.length,raw_splat_m:this.points.material.size,raw_pixel_floor:1.25,raw_surfaces:this.showSurfaces,raw_point_overlay:this.showPoints,raw_source:this.source??null,raw_points:this.count,raw_triangles:this.patches.reduce((n,p)=>n+p.userData.triangles,0),raw_frame:this.frame??null,raw_identity:this.identity,raw_age_ms:this.lastGood?Date.now()-this.lastGood+(this.age||0):null,raw_bytes:this.bytes,raw_worker_ms:this.processing??null,raw_error:this.error,raw_ttl_s:this.ttl};}
+ stats(){return {raw_mode:this.history?'history':'latest',raw_point_mode:this.fallbackOnly?'uncovered':'all',raw_fallback_points:this.fallbackCount,raw_point_draw_count:this.fallbackOnly?this.fallbackCount:this.count,raw_surface_history:this.surfaceHistory,raw_surface_ttl_s:this.surfaceTtl,raw_oldest_surface_age_ms:this.patches.length?Date.now()-this.patches[0].userData.at:null,raw_poll_interval_ms:this.pollInterval,raw_point_capacity:this.points.geometry.getAttribute('position')?.count??0,raw_point_transfer_bytes:this.pointTransfer,raw_patches:this.patches.length,raw_splat_m:this.points.material.size,raw_pixel_floor:1.25,raw_surfaces:this.showSurfaces,raw_point_overlay:this.showPoints,raw_source:this.source??null,raw_points:this.count,raw_triangles:this.patches.reduce((n,p)=>n+p.userData.triangles,0),raw_frame:this.frame??null,raw_identity:this.identity,raw_age_ms:this.lastGood?Date.now()-this.lastGood+(this.age||0):null,raw_bytes:this.bytes,raw_worker_ms:this.processing??null,raw_error:this.error,raw_ttl_s:this.ttl};}
  dispose(){this.controller?.abort();this.worker.terminate();this.clear();this.points.geometry.dispose();this.points.material.dispose();}
 }
