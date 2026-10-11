@@ -43,7 +43,6 @@ from jetson.scan import ScanService
 from jetson.nav import NavService, disabled_router
 from jetson.bulk import BulkPacer, BulkPacketTooLarge
 from jetson.bulk_response import bulk_response, PacedStreamingResponse
-from jetson.intercom import IntercomHub, intercom_router
 
 DIST = Path(__file__).resolve().parents[2] / "quest" / "dist"
 # Upper bound for an opt-in /map/mesh.bin?triangles= budget (0 = every stored triangle).
@@ -228,9 +227,6 @@ def create_app(demo=False, camera_device=None, serial_port=None, simulate_rover=
                     await task
 
     app = FastAPI(title="Farsight RGB-D mapper", lifespan=lifespan)
-    intercom = IntercomHub()
-    app.state.intercom = intercom
-    app.include_router(intercom_router(intercom))
     app.state.mapping = state
     app.state.run_capture = run_capture
     app.state.phone_owner = None

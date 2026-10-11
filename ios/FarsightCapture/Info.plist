@@ -10,7 +10,6 @@
     <key>CFBundleVersion</key><string>1</string>
     <key>LSRequiresIPhoneOS</key><true/>
     <key>NSCameraUsageDescription</key><string>Stream the rover camera and measured LiDAR depth to your local Jetson for the Farsight demo.</string>
-    <key>NSMicrophoneUsageDescription</key><string>Send live two-way intercom audio between the rover iPhone and Quest when Talk is enabled in the headset.</string>
     <key>NSLocalNetworkUsageDescription</key><string>Connect the rover camera and phone relay to the Jetson over its local USB network.</string>
     <key>NSAppTransportSecurity</key><dict>
         <key>NSAllowsArbitraryLoads</key><true/>
