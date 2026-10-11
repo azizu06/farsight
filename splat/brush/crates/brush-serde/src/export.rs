@@ -204,6 +204,71 @@ pub async fn splat_to_ply(splats: Splats, up_axis: Option<Vec3>) -> Result<Vec<u
     )?)
 }
 
+/// Pack splats into the antimatter15 `.splat` layout: 32 bytes per splat —
+/// pos f32x3, scale f32x3 (exponentiated), color rgba u8, quat u8x4
+/// (normalized * 128 + 128), sorted biggest-and-most-opaque first. Matches
+/// tools/postprocess/ply2splat.py byte for byte; loads directly in
+/// mkkellogg gaussian-splats-3d (tools/postprocess/walk.html, SceneFormat.Splat).
+fn pack_splat_bytes(vertices: &[DynamicPlyGaussian]) -> Vec<u8> {
+    const SH_C0: f32 = 0.28209479;
+    let mut order: Vec<usize> = (0..vertices.len()).collect();
+    order.sort_by(|&a, &b| {
+        let key = |v: &DynamicPlyGaussian| {
+            let s = v.scale_0.exp() * v.scale_1.exp() * v.scale_2.exp();
+            s * (1.0 / (1.0 + (-v.opacity).exp()))
+        };
+        key(&vertices[b])
+            .partial_cmp(&key(&vertices[a]))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let mut out = Vec::with_capacity(vertices.len() * 32);
+    for &i in &order {
+        let v = &vertices[i];
+        out.extend_from_slice(&v.x.to_le_bytes());
+        out.extend_from_slice(&v.y.to_le_bytes());
+        out.extend_from_slice(&v.z.to_le_bytes());
+        out.extend_from_slice(&v.scale_0.exp().to_le_bytes());
+        out.extend_from_slice(&v.scale_1.exp().to_le_bytes());
+        out.extend_from_slice(&v.scale_2.exp().to_le_bytes());
+        let op = 1.0 / (1.0 + (-v.opacity).exp());
+        for c in [v.f_dc_0, v.f_dc_1, v.f_dc_2] {
+            out.push(((0.5 + SH_C0 * c).clamp(0.0, 1.0) * 255.0) as u8);
+        }
+        out.push((op * 255.0) as u8);
+        for q in [v.rot_0, v.rot_1, v.rot_2, v.rot_3] {
+            out.push((q * 128.0 + 128.0).clamp(0.0, 255.0) as u8);
+        }
+    }
+    out
+}
+
+/// One GPU read -> both export payloads: inria-style `.ply` and packed
+/// `.splat` for the quick-look viewer path.
+pub async fn splat_to_ply_and_splat(
+    splats: Splats,
+    up_axis: Option<Vec3>,
+) -> Result<(Vec<u8>, Vec<u8>), ExportError> {
+    let splats = splats.bake_min_scale();
+    let sh_degree = splats.sh_degree();
+    let ply = read_splat_data(splats.clone()).await?;
+    let splat = pack_splat_bytes(&ply.vertex);
+
+    let render_mode_str = if splats.render_mip { "mip" } else { "default" };
+    let mut comments = vec!["Exported from Brush".to_owned()];
+    if let Some(up) = up_axis {
+        comments.push(format!("Vertical axis: {} {} {}", up.x, up.y, up.z));
+    } else {
+        comments.push("Vertical axis: y".to_owned());
+    }
+    comments.push(format!("SH degree: {sh_degree}"));
+    comments.push(format!("SplatRenderMode: {render_mode_str}"));
+    let ply = serde_ply::to_bytes(
+        &ply,
+        SerializeOptions::binary_le().with_comments(comments),
+    )?;
+    Ok((ply, splat))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

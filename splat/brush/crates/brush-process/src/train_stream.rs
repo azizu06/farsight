@@ -660,11 +660,22 @@ async fn export_checkpoint(
     let digits = ((total_steps as f64).log10().floor() as usize) + 1;
     let export_name = export_name.replace("{iter}", &format!("{iter:0digits$}"));
     // Training runs in metres; write the file back in the dataset's units.
-    let splat_data = brush_serde::splat_to_ply(splats.scaled(units_per_meter), up_axis)
-        .await
-        .context("Serializing splat data")?;
+    // One GPU read produces both payloads: the lossless .ply and a packed
+    // 32 B/splat .splat (antimatter15 layout) that tools/postprocess/walk.html
+    // loads directly via ?scene=... (mkkellogg SceneFormat.Splat).
+    let (splat_data, packed) =
+        brush_serde::splat_to_ply_and_splat(splats.scaled(units_per_meter), up_axis)
+            .await
+            .context("Serializing splat data")?;
     tokio::fs::write(export_path.join(&export_name), splat_data)
         .await
         .context(format!("Failed to export ply {export_path:?}"))?;
+    let splat_name = export_name
+        .strip_suffix(".ply")
+        .map(|s| format!("{s}.splat"))
+        .unwrap_or_else(|| format!("{export_name}.splat"));
+    tokio::fs::write(export_path.join(&splat_name), packed)
+        .await
+        .context(format!("Failed to export splat {export_path:?}"))?;
     Ok(())
 }
