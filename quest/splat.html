@@ -15,6 +15,17 @@
       .splat-bar input[type=file] { display: none; }
       .splat-status { font: 12px/1.3 ui-monospace, monospace; }
       .splat-help { position: fixed; left: 12px; top: 64px; font-size: 12px; background: rgba(0, 0, 0, 0.45); padding: 4px 8px; border-radius: 6px; }
+      [hidden] { display: none !important; }
+      #splat-faces { position: fixed; left: 12px; top: 116px; bottom: 30px; width: 200px; overflow: auto; padding: 10px; border-radius: 8px; background: #101c29e8; }
+      #splat-faces strong { display: block; margin-bottom: 8px; }
+      #splat-faces button { display: flex; gap: 10px; align-items: center; width: 100%; margin: 6px 0; padding: 6px; text-align: left; color: #d7e2ea; background: #1d2a36; border: 1px solid #3a4b5c; border-radius: 6px; cursor: pointer; }
+      #splat-faces button[aria-pressed=true] { border-color: #ffd23f; }
+      #splat-faces img { width: 48px; height: 48px; object-fit: cover; border-radius: 4px; }
+      #splat-faces small { display: block; color: #99acbd; }
+      #splat-shot { position: fixed; right: 20px; top: 116px; width: min(600px, calc(100vw - 280px)); padding: 12px; border: 1px solid #3a4b5c; border-radius: 10px; background: #101c29f5; }
+      #splat-shot-image { display: block; width: 100%; max-height: 65vh; object-fit: contain; }
+      #splat-shot-close { float: right; color: #d7e2ea; background: #1d2a36; border: 1px solid #3a4b5c; border-radius: 5px; cursor: pointer; }
+      #splat-shot-caption { padding-top: 8px; font-size: 12px; }
     </style>
   </head>
   <body>
@@ -24,7 +35,13 @@
       <label>Open file<input id="splat-file" type="file" accept=".ply,.splat,.ksplat,.spz" /></label>
       <span class="splat-status" id="splat-status">No scene: add ?scene=&lt;url&gt; or open a file</span>
     </div>
-    <div class="splat-help">Quest Touch: press ENTER VR. Left stick walks · right stick turns 30° · A/X resets. Only right controller? Its stick also walks forward/back. Flat: drag/scroll or use a connected gamepad.</div>
+    <div class="splat-help">Quest Touch: press ENTER VR. Left stick walks · right stick turns 30° · A/X resets. Only right controller? Its stick also walks forward/back. Faces: right ray + trigger selects · B/Y closes, then cycles to next spot. Flat: drag/scroll or use a connected gamepad.</div>
+    <aside id="splat-faces" aria-label="Face spots" hidden></aside>
+    <aside id="splat-shot" aria-label="Recorded camera frame" hidden>
+      <button id="splat-shot-close" type="button">Close ×</button>
+      <img id="splat-shot-image" alt="Recorded camera frame with detected face boxed" />
+      <div id="splat-shot-caption"></div>
+    </aside>
     <script type="module" src="/src/splat-viewer.ts"></script>
   </body>
 </html>

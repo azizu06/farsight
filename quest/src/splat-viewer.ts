@@ -4,6 +4,7 @@ import { VRButton } from "three/addons/webxr/VRButton.js";
 import { SparkRenderer, SplatMesh, type SplatFileType } from "@sparkjsdev/spark";
 import { splatParams, sceneFileType, sceneStart } from "./splat-nav.js";
 import { SplatNavigation } from "./splat-navigation";
+import { SplatFaces } from "./splat-faces";
 
 /**
  * Post-run Gaussian splat walkthrough (splat.html). Separate from the driving page:
@@ -37,6 +38,8 @@ scene.add(rig);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 const navigation = new SplatNavigation(renderer, rig, camera, controls);
+const faces = new SplatFaces(renderer, rig, camera, scene, navigation);
+faces.setFlipped(params.flip);
 
 let mesh: SplatMesh | null = null;
 let flipped = params.flip;
@@ -102,6 +105,7 @@ async function load(options: { url?: string; fileBytes?: ArrayBuffer; fileName?:
 document.getElementById("splat-reset")!.onclick = resetView;
 document.getElementById("splat-flip")!.onclick = () => {
   flipped = !flipped;
+  faces.setFlipped(flipped);
   mesh?.quaternion.copy(flipped ? FLIPPED : UPRIGHT);
   mesh?.updateMatrixWorld(true);
   setStart(); resetView();
@@ -121,7 +125,7 @@ renderer.xr.addEventListener("sessionend", () => { controls.enabled = true; rese
 /** Read by tests and over CDP on the headset: frame rate, splat count, load time. */
 const stats = { fps: 0, splats: null as number | null, loadMs: null as number | null, xr: false, error: null as string | null,
   start: null as ReturnType<typeof sceneStart> | null, rig: [0, 0, 0], yaw: 0, inputs: navigation.inputs,
-  eye: [0, 1.6, 0], flatGamepads: 0 };
+  eye: [0, 1.6, 0], flatGamepads: 0, faces: faces.stats };
 (globalThis as unknown as { __splatStats: typeof stats }).__splatStats = stats;
 
 let last = performance.now(), frames = 0, windowStart = last;
@@ -132,6 +136,7 @@ renderer.setAnimationLoop((_time, frame) => {
   stats.xr = renderer.xr.isPresenting;
   const pads = stats.xr ? [] : [...navigator.getGamepads()];
   navigation.update(dt, frame, pads);
+  faces.update(frame);
   if (!stats.xr) controls.update();
   stats.rig = rig.position.toArray();
   stats.inputs = navigation.inputs; stats.flatGamepads = pads.filter(Boolean).length;
@@ -144,3 +149,5 @@ renderer.setAnimationLoop((_time, frame) => {
 
 setStart(); resetView();
 if (params.scene) void load({ url: params.scene, fileType: params.type });
+const faceUrl = new URLSearchParams(location.search).get("faces");
+if (faceUrl) void faces.load(faceUrl);

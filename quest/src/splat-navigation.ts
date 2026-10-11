@@ -8,6 +8,7 @@ export class SplatNavigation {
   private snap = new SnapTurn();
   private resetHeld = false;
   private anchorPending = false;
+  private anchorPose = this.start;
   private localHead = new THREE.Vector3(0, 1.6, 0);
   private localOrientation = new THREE.Quaternion();
   private head = new THREE.Vector3();
@@ -20,9 +21,13 @@ export class SplatNavigation {
 
   setStart(start: { eye: number[]; yaw: number }) { this.start = start; }
 
-  reset() {
-    this.rig.rotation.set(0, this.start.yaw, 0);
-    this.rig.position.fromArray(this.start.eye);
+  reset() { this.teleport(this.start); }
+
+  /** Place the tracked eye at a capture pose without changing A/X's original start. */
+  teleport(pose: { eye: number[]; yaw: number }) {
+    this.anchorPose = pose;
+    this.rig.rotation.set(0, pose.yaw, 0);
+    this.rig.position.fromArray(pose.eye);
     if (this.renderer.xr.isPresenting) {
       // Anchor the actual tracked eye, including room-scale X/Z and seated height.
       this.rig.rotation.y -= this.euler.setFromQuaternion(this.localOrientation, "YXZ").y;
@@ -32,8 +37,8 @@ export class SplatNavigation {
       // OrbitControls assumes world-space camera position/target: keep its parent identity.
       this.rig.position.set(0, 0, 0); this.rig.rotation.set(0, 0, 0);
       this.rig.updateMatrixWorld(true);
-      this.camera.position.fromArray(this.start.eye);
-      this.camera.rotation.set(0, this.start.yaw, 0);
+      this.camera.position.fromArray(pose.eye);
+      this.camera.rotation.set(0, pose.yaw, 0);
       this.controls.target.copy(this.camera.position).add(new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion));
       const damping = this.controls.enableDamping;
       this.controls.enableDamping = false;
@@ -52,8 +57,8 @@ export class SplatNavigation {
         this.localHead.copy(pose.transform.position);
         this.localOrientation.copy(pose.transform.orientation);
         if (this.anchorPending) {
-          this.rig.rotation.y = this.start.yaw - this.euler.setFromQuaternion(this.localOrientation, "YXZ").y;
-          this.rig.position.fromArray(this.start.eye).sub(this.localHead.clone().applyQuaternion(this.rig.quaternion));
+          this.rig.rotation.y = this.anchorPose.yaw - this.euler.setFromQuaternion(this.localOrientation, "YXZ").y;
+          this.rig.position.fromArray(this.anchorPose.eye).sub(this.localHead.clone().applyQuaternion(this.rig.quaternion));
           this.anchorPending = false;
         }
       }

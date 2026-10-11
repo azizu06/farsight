@@ -289,6 +289,15 @@ frame rate for CDP diagnosis. `node quest/tests/splat-input.browser.mjs` exercis
 the production frame loop, sidecar loading, flat gamepad and XR navigation with
 synthetic input; wearer confirmation remains a separate physical check.
 
+Add `&faces=scenes/<run>-faces/faces.json` to load the offline face spots produced
+by `tools/postprocess/faces/face_pins.py`. Red dots mark their recorded 3D positions;
+the desktop list jumps to the camera pose that saw a spot and opens its boxed photo.
+Frame images resolve relative to the face manifest, including its `faceframes/` folder.
+In VR, aim the right-controller ray at a dot and press trigger to jump and open the
+floating photo. Trigger or B/Y closes it; B/Y with the photo closed cycles to the next
+spot. A/X still returns to the original room start. These are captured sightings,
+not a count of distinct people or live detections. All photos and models are served locally.
+
 ## First headset rehearsal
 
 Step-by-step setup and failure checks: [docs/quest-first-run.md](../docs/quest-first-run.md).
