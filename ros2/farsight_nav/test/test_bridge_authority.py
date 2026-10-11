@@ -348,6 +348,27 @@ class ExploreStallTests(unittest.TestCase):
         self.assertAlmostEqual(node.goals[0][1]["x"], 3.02)
         self.assertAlmostEqual(node.goals[0][1]["y"], 4.43)
 
+    def test_no_frontier_in_the_sketch_sends_an_open_space_goal_instead_of_scanning(self):
+        from ros2.farsight_nav.test.test_open_space import sketch
+        grid, resolution, origin, robot = sketch()
+        node = self.make_node()
+        node.robot, node.goal_handle = robot, None
+        node.explorer = frontiers.Explorer(node.explore_config)
+        node.global_grid = SimpleNamespace(
+            info=SimpleNamespace(resolution=resolution, height=grid.shape[0], width=grid.shape[1],
+                                 origin=SimpleNamespace(position=SimpleNamespace(x=origin[0], y=origin[1]))),
+            data=grid.ravel().tolist())
+        self.tick(node, [])
+        self.assertEqual(len(node.goals), 1, 'A fully mapped room still gets a driving destination')
+        self.assertGreater(node.goals[0][1]['x'], .8)
+        self.assertIn('open space', node.goal_message)
+        self.assertIsNone(node.no_frontier_since)
+        # A second camera/map update keeps the chosen route instead of sending
+        # another target and restarting Nav2's turn/planning phase.
+        node.goal_handle = Handle()
+        self.tick(node, [])
+        self.assertEqual(len(node.goals), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
