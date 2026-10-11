@@ -8,7 +8,7 @@ with Z = 0 on the floor. base_link sits on the floor under the camera, yaw only.
 camera_link is the ROS body convention (x forward, y left, z up) at the phone's
 optical centre; camera_optical is x right, y down, z forward.
 
-    odom (X, Y, Z) = (-z, -x, y - floor_y)
+    odom (X, Y) = (-z, -x); camera_link Z is the mount height -floor_y.
 """
 
 import math
@@ -40,10 +40,16 @@ def transform_from_column_major(values):
 
 
 def camera_in_odom(camera_to_world, floor_y):
-    """(position, rotation) of camera_link in odom from an ARKit camera-to-world transform."""
+    """(position, rotation) of camera_link in odom from an ARKit camera-to-world transform.
+
+    The phone is fixed to the chassis, so the camera always sits -floor_y above the floor
+    under it. ARKit's y is relative to wherever the session started and drifts during fast
+    spins (floor test 2026-10-11: -0.6 to +1.2 m), which put the costmap's raytrace origin
+    outside its 0-0.5 m voxel band: no clearing, and the wrong height slice marked.
+    """
     rotation = M @ camera_to_world[:3, :3] @ N
     position = M @ camera_to_world[:3, 3]
-    position[2] -= floor_y  # odom Z = 0 on the floor
+    position[2] = -floor_y  # odom Z = 0 on the floor
     return position, rotation
 
 
