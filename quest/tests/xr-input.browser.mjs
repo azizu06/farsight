@@ -100,7 +100,7 @@ try {
   // Forward eases in from rest (manual-drive.js ForwardRamp): the first sampled push sends no forward
   // step; steering is not eased and keeps its curve.
   assert.equal(result.manual.v,0,'forward eases in from rest instead of stepping to full');
-  assert.ok(Math.abs(result.manual.w-.6*.5**2.5)<1e-9,'steering uses its dead-zoned, expo-curved demand, capped to the 0.6 joystick pace');
+  assert.ok(Math.abs(result.manual.w-.6*.5)<1e-9,'steering uses its dead-zoned, linear (expo 1) demand, capped to the 0.6 joystick pace');
   assert.equal(result.centered.deadman,false);assert.equal(result.centered.v,0);assert.equal(result.centered.w,0);
   assert.equal(result.autoOnPress,true);assert.equal(result.auto.deadman,true);assert.equal(result.auto.mode,'explore');assert.equal(result.auto.v,0);assert.equal(result.auto.w,0);
   assert.deepEqual(result.heldA,{auto:true,menu:false});

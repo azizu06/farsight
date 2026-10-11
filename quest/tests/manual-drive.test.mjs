@@ -35,7 +35,7 @@ test('right-stick steering: deadzone without a jump, expo curve, straight-ahead 
   const close=(a,b,m)=>assert.ok(Math.abs(a-b)<1e-9,`${m}: ${a} vs ${b}`);
   // Deadzone: a small sideways wobble on its own never turns; just past it starts from ~0.
   assert.equal(steerCurve(0.2,0),0);assert.equal(steerCurve(-0.25,0),0);
-  assert.ok(steerCurve(0.26,0)>0&&steerCurve(0.26,0)<1e-4,'continuous at the deadzone edge');
+  assert.ok(steerCurve(0.26,0)>0&&steerCurve(0.26,0)<0.02,'continuous at the deadzone edge');
   // Expo: half-way past the deadzone gives 0.5^2.5 of full turn, sign kept; full sideways is a full pivot.
   close(steerCurve(0.625,0),0.5**STEER.expo,'expo');close(steerCurve(-0.625,0),-(0.5**STEER.expo),'sign');
   assert.equal(steerCurve(1,0),1);assert.equal(steerCurve(-1,0),-1);
@@ -43,7 +43,7 @@ test('right-stick steering: deadzone without a jump, expo curve, straight-ahead 
   // Axis lock: pushing forward (or back) with drift under 20 degrees drives straight.
   for(const [x,y] of [[0.3,-1],[-0.34,-1],[0.3,1],[0.2,-0.6]])assert.equal(steerCurve(x,y),0,`locked at ${x},${y}`);
   const just=Math.tan(21*Math.PI/180);assert.ok(Math.abs(steerCurve(just,-1))>0,'past 20 degrees steering returns');
-  assert.ok(steerCurve(just,-1)<0.02,'and starts gently');
+  assert.ok(steerCurve(just,-1)<0.2,'and starts gently');
   assert.equal(steerCurve(NaN,0),0);assert.equal(steerCurve(0.9,Infinity),steerCurve(0.9,0),"invalid y counts as no forward push");
 });
 test('forward stick stays full power with the new steering: straight push is straight at 255/255',()=>{
@@ -68,24 +68,23 @@ test("joystick pace: full stick matches Dechante's manual run (181 straight, ±1
   assert.ok(!Object.is(joystickDrive(-0,-0).v,-0)&&!Object.is(joystickDrive(-0,-0).w,-0),'no -0');
   assert.deepEqual(joystickDrive(NaN,Infinity),{v:0,w:0});
   const close=(a,b)=>assert.ok(Math.abs(a-b)<1e-12,`${a} vs ${b}`);
-  close(joystickDrive(forwardGain(.3),0).v,.9*JOYSTICK_PACE);
+  close(joystickDrive(forwardGain(.3),0).v,JOYSTICK_PACE);
 });
 
-test('forward ease-in: no step at the first push, ~90% after the onset, full after ~2 s held',()=>{
+test('forward ease-in: no step at the first push, full after 0.1 s (arrow-key feel)',()=>{
   const close=(a,b,m,eps=1e-9)=>assert.ok(Math.abs(a-b)<eps,`${m}: ${a} vs ${b}`);
-  assert.deepEqual(DRIVE,{onsetGain:0.9,onsetSeconds:0.3,climbSeconds:2,maxStep:0.1});
+  assert.deepEqual(DRIVE,{onsetGain:1,onsetSeconds:0.1,climbSeconds:0.1,maxStep:0.1});
   const ramp=new ForwardRamp(),out=[];
   for(let t=0;t<=2600;t+=10)out.push([t,ramp.step(1,t)]);
   const at=ms=>out.find(([t])=>t===ms)[1];
   assert.equal(at(0),0,'first tick from rest moves nothing');
-  close(at(100),0.3,'onset rises gradually (no step)');
-  close(at(300),0.9,'~90% of demand at the end of the onset');
-  assert.ok(at(1300)>0.9&&at(1300)<1,'climbing while still held');
-  close(at(2300),1,'full demand ~2 s after the onset');
+  close(at(50),0.5,'onset rises over 0.1 s (no step)');
+  close(at(100),1,'full demand at the end of the onset');
+  close(at(300),1,'stays full while held');
   assert.equal(at(2600),1,'never above the stick demand');
   for(let i=1;i<out.length;i++)assert.ok(out[i][1]>=out[i-1][1]-1e-12,'monotonic while held');
   // Partial stick: the same gain applies to the demand.
-  const half=new ForwardRamp();half.step(-0.5,0);for(let t=10;t<=300;t+=10)half.step(-0.5,t);close(half.v,-0.45,'reverse half stick eases in too');
+  const half=new ForwardRamp();half.step(-0.5,0);for(let t=10;t<=300;t+=10)half.step(-0.5,t);close(half.v,-0.5,'reverse half stick eases in too');
   // A stalled frame cannot skip the ease-in.
   const stalled=new ForwardRamp();stalled.step(1,0);close(stalled.step(1,5000),forwardGain(DRIVE.maxStep),'gap capped');
 });
@@ -98,7 +97,7 @@ test('forward ease-in: easing off, release, reversal and stops are immediate and
   assert.equal(ramp.step(1,3030),0,'and the next push starts the ease-in again');
   for(let t=3040;t<=6000;t+=10)ramp.step(1,t);
   assert.equal(ramp.step(-1,6010),0,'reversal passes through rest at once, then eases in the other way');
-  assert.ok(ramp.step(-1,6110)<0&&ramp.step(-1,6110)>-0.31);
+  assert.ok(ramp.step(-1,6060)<0&&ramp.step(-1,6060)>-0.6);
   for(let t=6120;t<=9000;t+=10)ramp.step(-1,t);
   ramp.reset();assert.equal(ramp.v,0,'B / stop / deadman reset to rest');
   assert.equal(ramp.step(-1,9010),0,'next push eases in again');

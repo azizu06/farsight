@@ -21,7 +21,7 @@ export const STEER = {
   /** |x| below this is no turn; past it the rest of the range is rescaled from 0, so there is no jump. */
   deadzone: 0.25,
   /** w = sign(x) * |x|^expo after the deadzone: fine control near center, full pivot at the edge. */
-  expo: 2.5,
+  expo: 1, // Dechante's arrow-key run turned at full w instantly; linear stick (was 2.5)
   /** A push within this angle of straight forward/back drives straight (w = 0). */
   lockDeg: 20,
 };
@@ -42,11 +42,11 @@ export function steerCurve(x, y) {
 /** Quest right-stick forward ease-in (captain: start ~10% softer, then build up so it never jerks). */
 export const DRIVE = {
   /** Gain reached at the end of the onset rise, from rest. */
-  onsetGain: 0.9,
+  onsetGain: 1, // arrow-key run hit full speed at once (was 0.9)
   /** Onset rise (s): the gain climbs from 0 to onsetGain, so there is no step at the first push. */
-  onsetSeconds: 0.3,
+  onsetSeconds: 0.1, // was 0.3
   /** Then, while forward is still held, the gain climbs smoothly from onsetGain to 1 over this long (s). */
-  climbSeconds: 2,
+  climbSeconds: 0.1, // was 2; no slow climb after the onset
   /** Longest frame gap credited to the ease-in (s), so a stalled frame cannot skip it. */
   maxStep: 0.1,
 };
