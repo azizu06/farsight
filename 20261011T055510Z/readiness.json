@@ -1,0 +1,439 @@
+{
+  "at": "2026-10-11T05:55:10.240604+00:00",
+  "health": {
+    "type": "status",
+    "source": "IPHONE LIDAR",
+    "connected": true,
+    "fresh": true,
+    "device": "iPhone",
+    "session_id": "12A55F30-670C-4B19-9782-FC368E156141",
+    "map_epoch": 1,
+    "generation": 1,
+    "revision": 1196,
+    "mesh_revision": 1,
+    "paused": false,
+    "fusion_bypass": false,
+    "dense_worker": {
+      "enabled": true,
+      "hz": 2,
+      "frame_points": 4096,
+      "cpu_budget": 0.15,
+      "admission_hz": 2.0,
+      "sampled_points": 1567166,
+      "queued": 1,
+      "offered": 1195,
+      "processed": 394,
+      "dropped": 800,
+      "processing_ms": 28.1,
+      "cpu_ms": 26.1,
+      "error": null
+    },
+    "tracking": "normal",
+    "points": 15877,
+    "triangles": 4771,
+    "keyframes": 1,
+    "frames": 1195,
+    "capped": false,
+    "rejected": 0,
+    "dropped": 1,
+    "processing_ms": 42.6,
+    "processing_fps": 23.5,
+    "age_ms": 192,
+    "position": [
+      0.0004853356222156435,
+      -0.020293205976486206,
+      0.0008068399038165808
+    ],
+    "transform": [
+      -0.9999450445175171,
+      0.007946456782519817,
+      0.0068236603401601315,
+      0.0,
+      -0.008431441150605679,
+      -0.99720299243927,
+      -0.07426340878009796,
+      0.0,
+      0.006214446853846312,
+      -0.07431687414646149,
+      0.9972151517868042,
+      0.0,
+      0.0004853356222156435,
+      -0.020293205976486206,
+      0.0008068399038165808,
+      0.9999999403953552
+    ],
+    "scan": {
+      "state": "idle",
+      "running": false
+    },
+    "voxel_m": 0.04,
+    "depth_range": [
+      0.18,
+      8.0
+    ],
+    "reason": null,
+    "camera": true,
+    "detector_fps": 6.1,
+    "rover": true,
+    "estop": false,
+    "camera_drive_ready": true,
+    "camera_capture_verified": false,
+    "camera_capture_diagnostics": {
+      "clock": "arkit_unverified",
+      "t_capture": 8178.8355865,
+      "callback_host_t": 8178.867568416,
+      "sensor_timestamp_raw_t": 8178.8355865,
+      "sensor_host_delta_ms": 31.98191599949496
+    },
+    "camera_age_ms": 19,
+    "camera_ingest_dropped": 0,
+    "camera_ingest_ms": 9.61,
+    "camera_frame": 1197,
+    "camera_source": "IPHONE LIDAR",
+    "camera_error": null,
+    "detector": "pose",
+    "detector_backend": "pose-tensorrt",
+    "detector_error": null,
+    "detector_inference_ms": 23.3,
+    "face_detector": true,
+    "face_error": null,
+    "replay": false,
+    "recording": false,
+    "control": {
+      "type": "control_status",
+      "session_id": "7745efbc-15b1-4f78-8f64-96130aaf46a3",
+      "permit": null,
+      "permit_ms": 250,
+      "seq": 54,
+      "range_cm": null,
+      "estop": false,
+      "mode": "explore",
+      "link_ms": 46.2,
+      "autonomy_state": "forward",
+      "target_id": null,
+      "rover": true,
+      "simulated": false,
+      "requires_release": false,
+      "reason": "active",
+      "left_pwm": -132,
+      "right_pwm": 255,
+      "pan_deg": 90,
+      "max_pwm": 255,
+      "min_pwm": 70,
+      "drive_profile": true,
+      "calibration_allowed": true,
+      "drive_mode": "normalized",
+      "nav": {
+        "state": "idle",
+        "mode": "explore",
+        "goal": null,
+        "path": [],
+        "frontiers": [
+          [
+            -1.875,
+            -3.525
+          ],
+          [
+            -1.375,
+            -1.925
+          ],
+          [
+            -0.025,
+            0.175
+          ]
+        ],
+        "backend": "nav2",
+        "message": "navigation server connected",
+        "revision": 12
+      }
+    },
+    "camera_pan": false,
+    "video": {
+      "enabled": true,
+      "ready": true,
+      "error": null,
+      "fps": 10,
+      "bitrate": 500000,
+      "encoded_frames": 1959,
+      "jetson_encode_ms": 96.79,
+      "camera_ingest_ms": 11.05
+    },
+    "assistant": {
+      "vision_model": true,
+      "whisper": true,
+      "piper": true
+    },
+    "speech": {
+      "speaker": false,
+      "speaker_cmd": null,
+      "voices": [
+        "en",
+        "es"
+      ]
+    },
+    "triage": {
+      "enabled": true,
+      "pending": 0,
+      "generated": 4,
+      "last_ms": 3523,
+      "min_interval_s": 30.0
+    },
+    "nav": {
+      "enabled": true,
+      "available": true
+    }
+  },
+  "nav": {
+    "state": "driving",
+    "mode": "explore",
+    "goal": null,
+    "path": [
+      [
+        0.05,
+        0.05
+      ],
+      [
+        0.0,
+        0.1
+      ],
+      [
+        -0.1,
+        0.1
+      ],
+      [
+        -0.5,
+        -0.35
+      ],
+      [
+        -0.5,
+        -0.6
+      ],
+      [
+        -0.6,
+        -0.75
+      ],
+      [
+        -0.6,
+        -0.85
+      ],
+      [
+        -1.15,
+        -1.55
+      ],
+      [
+        -1.2,
+        -1.7
+      ],
+      [
+        -1.35,
+        -1.85
+      ],
+      [
+        -1.35,
+        -2.0
+      ],
+      [
+        -1.65,
+        -2.4
+      ],
+      [
+        -1.65,
+        -2.7
+      ],
+      [
+        -1.7,
+        -2.75
+      ],
+      [
+        -1.7,
+        -2.85
+      ],
+      [
+        -2.1,
+        -3.25
+      ],
+      [
+        -2.1,
+        -3.35
+      ],
+      [
+        -2.45,
+        -4.05
+      ]
+    ],
+    "frontiers": [
+      [
+        -1.875,
+        -3.525
+      ],
+      [
+        -1.375,
+        -1.925
+      ],
+      [
+        -0.025,
+        0.175
+      ]
+    ],
+    "backend": "nav2",
+    "message": "5.3 m to go",
+    "revision": 13,
+    "detail": {
+      "available": true,
+      "bridge": true,
+      "bridge_age_ms": 50,
+      "bridge_hello": {
+        "node": "farsight_bridge",
+        "nav2": true,
+        "controller": "RPP",
+        "slam": false,
+        "costmap_source": null
+      },
+      "goal_id": 0,
+      "backed_modes": [
+        "explore",
+        "goto",
+        "seek"
+      ],
+      "remote": {
+        "state": "driving",
+        "goal_id": "explore-1",
+        "message": "5.3 m to go",
+        "controller_hz": 0.0,
+        "planner_ms": null,
+        "recoveries": 0,
+        "result": null,
+        "costmap": null,
+        "nav2": true
+      },
+      "pose_source": "arkit",
+      "sensor_fault": null,
+      "generation": 1,
+      "depth_age_ms": 135,
+      "speed_mps": 0.45,
+      "turn_radps": 3.0,
+      "max_v": 0.7,
+      "max_w": 0.8
+    }
+  },
+  "control": {
+    "type": "control_status",
+    "permit": null,
+    "permit_ms": 250,
+    "seq": 65,
+    "range_cm": null,
+    "estop": false,
+    "mode": "explore",
+    "link_ms": 81.8,
+    "autonomy_state": "forward",
+    "target_id": null,
+    "rover": true,
+    "simulated": false,
+    "requires_release": false,
+    "reason": "active",
+    "left_pwm": -255,
+    "right_pwm": 243,
+    "pan_deg": 90,
+    "max_pwm": 255,
+    "min_pwm": 70,
+    "drive_profile": true,
+    "calibration_allowed": true,
+    "drive_mode": "normalized",
+    "nav": {
+      "state": "driving",
+      "mode": "explore",
+      "goal": null,
+      "path": [
+        [
+          0.05,
+          0.05
+        ],
+        [
+          0.0,
+          0.1
+        ],
+        [
+          -0.1,
+          0.1
+        ],
+        [
+          -0.5,
+          -0.35
+        ],
+        [
+          -0.5,
+          -0.6
+        ],
+        [
+          -0.6,
+          -0.75
+        ],
+        [
+          -0.6,
+          -0.85
+        ],
+        [
+          -1.15,
+          -1.55
+        ],
+        [
+          -1.2,
+          -1.7
+        ],
+        [
+          -1.35,
+          -1.85
+        ],
+        [
+          -1.35,
+          -2.0
+        ],
+        [
+          -1.65,
+          -2.4
+        ],
+        [
+          -1.65,
+          -2.7
+        ],
+        [
+          -1.7,
+          -2.75
+        ],
+        [
+          -1.7,
+          -2.85
+        ],
+        [
+          -2.1,
+          -3.25
+        ],
+        [
+          -2.1,
+          -3.35
+        ],
+        [
+          -2.45,
+          -4.05
+        ]
+      ],
+      "frontiers": [
+        [
+          -1.875,
+          -3.525
+        ],
+        [
+          -1.375,
+          -1.925
+        ],
+        [
+          -0.025,
+          0.175
+        ]
+      ],
+      "backend": "nav2",
+      "message": "5.3 m to go",
+      "revision": 13
+    }
+  }
+}

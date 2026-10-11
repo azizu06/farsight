@@ -1,0 +1,90 @@
+{
+  "at": "2026-10-11T05:55:47.701452+00:00",
+  "source_marker": "43f64809822cc48e7b0b1786b589ec36254f0a02",
+  "files": {
+    "jetson/mapping/server.py": "1ea49372c1475b28a78ab68a7d56be8f7bf47b8a1184fedcab08c77c44e028c4",
+    "jetson/mapping/state.py": "c32020c800220029608ec4c49ee9774cc1036dc936dc6ec4cc4b4ea85b488274",
+    "jetson/mapping/voxel.py": "171700f61cb1caa759a48c9d1e6e4b553c3dfd600725b5aeb74bec4a43386b6b",
+    "jetson/mapping/phone.py": "db5e9acece4d3791591229faa67a14e02c0200ee5caf557a32c5587c0b3b67a7",
+    "jetson/mapping/dense_worker.py": "931f48dfc4c96d7f72e91b35a0038d90eafdc2131b1a990768eaf18b457fd91a",
+    "jetson/nav.py": "95f30d1498edac5bace53e1344459f5556fe640c4332c2653f196080f6dd34f4",
+    "jetson/control/state.py": "281d00ee7b6a90ac6c98bb714ec5e5313312c3692d1701c4ec8e1bca489adc73",
+    "ros2/farsight_nav/farsight_nav/bridge_node.py": "10fba472b5999093f66a3a754f39e393dc406c520b103ef4061d39d8b45c44e2",
+    "ros2/farsight_nav/farsight_nav/local_motion.py": "002f3b55bd225c499eabf8ae31f1612d034da4ddb4d8579c9b1ed4d0eec5297e"
+  },
+  "env_sha256": "8c24cf69fce3af738b9300a8eda4a061f75f4afb7bfe13dfb5615ec9075a0d4c",
+  "selected_env": {
+    "FARSIGHT_MAX_PWM": "255",
+    "FARSIGHT_AUTONOMY_MAX_PWM": "255",
+    "FARSIGHT_DRIVE_PROFILE": "/home/ubuntu/farsight-drive-profile.json",
+    "FARSIGHT_RAW_CAPTURE": "1",
+    "FARSIGHT_DENSE_HZ": "2",
+    "FARSIGHT_DENSE_FRAME_POINTS": "4096",
+    "FARSIGHT_DENSE_CPU_BUDGET": "0.15"
+  },
+  "installed_nav": {
+    "bridge_node.py": {
+      "path": "/home/ubuntu/farsight/ros2/farsight_nav/farsight_nav/bridge_node.py",
+      "sha256": "10fba472b5999093f66a3a754f39e393dc406c520b103ef4061d39d8b45c44e2"
+    },
+    "local_motion.py": {
+      "path": "/home/ubuntu/farsight/ros2/farsight_nav/farsight_nav/local_motion.py",
+      "sha256": "002f3b55bd225c499eabf8ae31f1612d034da4ddb4d8579c9b1ed4d0eec5297e"
+    }
+  },
+  "profile": {
+    "path": "/home/ubuntu/farsight-drive-profile.json",
+    "sha256": "9c3e88346e9a6d49be638e3f6df0427b9e628c12756ea5b9eb6f8464829dcb24",
+    "max_pwm": 255,
+    "linear": {
+      "pwm": [
+        80.0,
+        120.0,
+        160.0,
+        255.0
+      ],
+      "mps": [
+        0.08564080959963201,
+        0.13320470090520903,
+        0.18801229674587067,
+        0.304
+      ]
+    },
+    "linear_scale": {
+      "factor": 0.32,
+      "evidence": "navwatch2-0232 AUTO 2026-10-11 02:32Z, 26 forward 1 s ARKit windows, median 0.32 (p75 0.35)",
+      "unscaled_mps": [
+        0.26762752999885003,
+        0.41626469032877816,
+        0.5875384273308458,
+        0.95
+      ]
+    },
+    "trim": {
+      "left": 0.9745122384985554,
+      "right": 1.0254877615014446
+    }
+  },
+  "nav_env_sha256": null,
+  "services": {
+    "farsight.service": {
+      "MainPID": "2256",
+      "ActiveState": "active",
+      "selected_process_env": {
+        "FARSIGHT_MAX_PWM": "255",
+        "FARSIGHT_AUTONOMY_MAX_PWM": "255",
+        "FARSIGHT_DRIVE_PROFILE": "/home/ubuntu/farsight-drive-profile.json",
+        "FARSIGHT_RAW_CAPTURE": "1",
+        "FARSIGHT_DENSE_HZ": "2",
+        "FARSIGHT_DENSE_FRAME_POINTS": "4096",
+        "FARSIGHT_DENSE_CPU_BUDGET": "0.15"
+      },
+      "drive_profile_arg": "/home/ubuntu/farsight-drive-profile.json"
+    },
+    "farsight-nav.service": {
+      "MainPID": "3426",
+      "ActiveState": "active",
+      "selected_process_env": {}
+    }
+  }
+}

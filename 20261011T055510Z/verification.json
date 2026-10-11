@@ -1,0 +1,56 @@
+{
+  "files": {
+    "jetson/mapping/server.py": {
+      "pin": "43f64809822cc48e7b0b1786b589ec36254f0a02",
+      "sha256": "1ea49372c1475b28a78ab68a7d56be8f7bf47b8a1184fedcab08c77c44e028c4",
+      "match": true
+    },
+    "jetson/mapping/state.py": {
+      "pin": "43f64809822cc48e7b0b1786b589ec36254f0a02",
+      "sha256": "c32020c800220029608ec4c49ee9774cc1036dc936dc6ec4cc4b4ea85b488274",
+      "match": true
+    },
+    "jetson/mapping/voxel.py": {
+      "pin": "43f64809822cc48e7b0b1786b589ec36254f0a02",
+      "sha256": "171700f61cb1caa759a48c9d1e6e4b553c3dfd600725b5aeb74bec4a43386b6b",
+      "match": true
+    },
+    "jetson/mapping/phone.py": {
+      "pin": "43f64809822cc48e7b0b1786b589ec36254f0a02",
+      "sha256": "db5e9acece4d3791591229faa67a14e02c0200ee5caf557a32c5587c0b3b67a7",
+      "match": true
+    },
+    "jetson/mapping/dense_worker.py": {
+      "pin": "43f64809822cc48e7b0b1786b589ec36254f0a02",
+      "sha256": "931f48dfc4c96d7f72e91b35a0038d90eafdc2131b1a990768eaf18b457fd91a",
+      "match": true
+    },
+    "jetson/nav.py": {
+      "pin": "43f64809822cc48e7b0b1786b589ec36254f0a02",
+      "sha256": "95f30d1498edac5bace53e1344459f5556fe640c4332c2653f196080f6dd34f4",
+      "match": true
+    },
+    "jetson/control/state.py": {
+      "pin": "43f64809822cc48e7b0b1786b589ec36254f0a02",
+      "sha256": "281d00ee7b6a90ac6c98bb714ec5e5313312c3692d1701c4ec8e1bca489adc73",
+      "match": true
+    },
+    "ros2/farsight_nav/farsight_nav/bridge_node.py": {
+      "pin": "63ab6bf8f10f34013b49e49fde1dd18c6db5ae0b",
+      "sha256": "10fba472b5999093f66a3a754f39e393dc406c520b103ef4061d39d8b45c44e2",
+      "match": true
+    },
+    "ros2/farsight_nav/farsight_nav/local_motion.py": {
+      "pin": "63ab6bf8f10f34013b49e49fde1dd18c6db5ae0b",
+      "sha256": "002f3b55bd225c499eabf8ae31f1612d034da4ddb4d8579c9b1ed4d0eec5297e",
+      "match": true
+    }
+  },
+  "all_source_hashes_match": true,
+  "loaded_profile_confirmed": true,
+  "clock_receipt": "SOC family:tegra234  Machine:NVIDIA Jetson Orin Nano Engineering Reference Developer Kit Super\nOnline CPUs: 0-5, Offline CPUs: \ncpu0:  Governor=schedutil MinFreq=1344000 MaxFreq=1344000 CurrentFreq=1344000 IdleStates: WFI=0 c7=0 \ncpu1:  Governor=schedutil MinFreq=1344000 MaxFreq=1344000 CurrentFreq=1344000 IdleStates: WFI=0 c7=0 \ncpu2:  Governor=schedutil MinFreq=1344000 MaxFreq=1344000 CurrentFreq=1344000 IdleStates: WFI=0 c7=0 \ncpu3:  Governor=schedutil MinFreq=1344000 MaxFreq=1344000 CurrentFreq=1344000 IdleStates: WFI=0 c7=0 \ncpu4:  Governor=schedutil MinFreq=1344000 MaxFreq=1344000 CurrentFreq=1344000 IdleStates: WFI=0 c7=0 \ncpu5:  Governor=schedutil MinFreq=1344000 MaxFreq=1344000 CurrentFreq=1344000 IdleStates: WFI=0 c7=0 \nGPU MinFreq=918000000 MaxFreq=918000000 CurrentFreq=918000000\nActive GPU TPCs: 4\nEMC MinFreq=3199000000 MaxFreq=3199000000 CurrentFreq=3199000000\nFAN Dynamic Speed Control=nvfancontrol hwmon0_pwm1=54\nFAN Dynamic Speed Control=nvfancontrol hwmon0_pwm1_enable=1\nNV Power Mode: 25W\nNV Power Mode: 25W\n1\n 05:54:14 up 3 min,  2 users,  load average: 3.11, 2.18, 0.94\nMainPID=2256\nWorkingDirectory=/home/ubuntu/farsight\nId=farsight.service\nActiveState=active\n\nMainPID=3426\nWorkingDirectory=/home/ubuntu/farsight\nId=farsight-nav.service\nActiveState=active\n",
+  "services_restarted": false,
+  "source_env_profile_written": false,
+  "raw_requests": 0,
+  "renderer_restart": false
+}
