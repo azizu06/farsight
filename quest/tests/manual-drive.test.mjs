@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {DRIVE,ForwardRamp,STEER,forwardGain,manualDrive,steerCurve} from '../src/manual-drive.js';
+import {DRIVE,ForwardRamp,JOYSTICK_PACE,STEER,forwardGain,joystickDrive,manualDrive,steerCurve} from '../src/manual-drive.js';
 const root=fileURLToPath(new URL('../../',import.meta.url));
 const python=`${root}.venv/bin/python`;
 function motorOutputs(inputs) {
@@ -51,10 +51,24 @@ test('forward stick stays full power with the new steering: straight push is str
   assert.deepEqual(motorOutputs([forward(-1),forward(1)]),[[255,255],[-255,-255]],'drifting straight push stays straight');
   assert.deepEqual(motorOutputs([manualDrive(0,steerCurve(1,0)),manualDrive(0,steerCurve(-1,0))]),[[255,-255],[-255,255]],'hard sideways is a full pivot');
 });
-test('rover.ts feeds raw stick axes to the steering curve, forward unchanged',async()=>{
+test('rover.ts feeds raw stick axes to the steering curve, joystick capped, keyboard uncapped',async()=>{
   const {readFileSync}=await import('node:fs');
   const source=readFileSync(new URL('../src/rover.ts',import.meta.url),'utf8');
-  assert.match(source,/manualDrive\(forward, steerCurve\(stickX, stickY\)\)/);
+  assert.match(source,/joystickDrive\(forward, steerCurve\(stickX, stickY\)\)/);
+  assert.match(source,/manualDrive\(Number\(this\.keys\.has\("KeyW"\)\)/,'keyboard keeps full authority');
+});
+test("joystick pace: full stick matches Dechante's manual run (181 straight, ±181 spin, 255/0 arc)",()=>{
+  assert.equal(JOYSTICK_PACE,0.6);
+  const fwd=y=>Math.min(1,Math.max(0,(Math.abs(y)-.25)/.75));
+  const cases=[joystickDrive(fwd(-1),steerCurve(0.3,-1)),joystickDrive(-fwd(1),steerCurve(0.3,1)),
+    joystickDrive(0,steerCurve(1,0)),joystickDrive(0,steerCurve(-1,0)),joystickDrive(1,steerCurve(1,-1)),joystickDrive(1,.5)];
+  assert.deepEqual(motorOutputs(cases),[[181,181],[-181,-181],[181,-181],[-181,181],[255,0],[236,126]]);
+  // Shape is kept: deadzone, lock and ease-in still apply before the cap; zero stays exactly zero.
+  assert.deepEqual(joystickDrive(0,steerCurve(0.2,0)),{v:0,w:0});
+  assert.ok(!Object.is(joystickDrive(-0,-0).v,-0)&&!Object.is(joystickDrive(-0,-0).w,-0),'no -0');
+  assert.deepEqual(joystickDrive(NaN,Infinity),{v:0,w:0});
+  const close=(a,b)=>assert.ok(Math.abs(a-b)<1e-12,`${a} vs ${b}`);
+  close(joystickDrive(forwardGain(.3),0).v,.9*JOYSTICK_PACE);
 });
 
 test('forward ease-in: no step at the first push, ~90% after the onset, full after ~2 s held',()=>{
@@ -95,7 +109,7 @@ test('rover.ts eases only the Quest stick forward demand and resets on every sto
   const {readFileSync}=await import('node:fs');
   const source=readFileSync(new URL('../src/rover.ts',import.meta.url),'utf8');
   assert.match(source,/this\.forwardRamp\.step\(-stick\(stickY, XR_STICK_DEADZONE\), now\)/);
-  assert.match(source,/manualDrive\(forward, steerCurve\(stickX, stickY\)\)/);
+  assert.match(source,/joystickDrive\(forward, steerCurve\(stickX, stickY\)\)/);
   assert.match(source,/stop\(reason: string, hard = false\) \{\s*this\.forwardRamp\.reset\(\);/);
   assert.match(source,/if \(!moving\) this\.forwardRamp\.reset\(\);/);
   assert.match(source,/if \(!tracked\) \{\s*this\.forwardRamp\.reset\(\);/);

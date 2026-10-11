@@ -6,6 +6,16 @@ export function manualDrive(forward, steering) {
   return { v, w };
 }
 
+/** Quest joystick pace cap (Dechante's measured manual run: v=0.6 straight is PWM 181/181, ~0.20 m/s;
+ * w=0.6 spins at ±181; v=0.6 + w=0.6 is 255/0). Keyboard/desktop driving is not capped. */
+export const JOYSTICK_PACE = 0.6;
+
+/** Joystick drive: the shaped stick (deadzone, expo, lock, ease-in) scaled to the manual pace. */
+export function joystickDrive(forward, steering) {
+  const { v, w } = manualDrive(forward, steering);
+  return { v: v * JOYSTICK_PACE + 0, w: w * JOYSTICK_PACE + 0 };
+}
+
 /** Quest right-stick steering shape: turn only on purpose. Forward speed is not shaped here. */
 export const STEER = {
   /** |x| below this is no turn; past it the rest of the range is rescaled from 0, so there is no jump. */
