@@ -59,14 +59,14 @@ class Autonomy:
         if self.mode == "explore":  # people never switch Explore to Seek; Seek is chosen explicitly
             if self.phase == "turning":
                 if now - self.phase_at < 1:
-                    return 0, self.direction * .35
+                    return 0, self.direction
                 self.phase, self.phase_at = "forward", now
             if (known and range_cm < 70) or now - self.phase_at >= 4:
                 self.phase, self.phase_at = "turning", now
                 self.direction = self.choose_turn()
-                return 0, self.direction * .35
+                return 0, self.direction
             self.phase = "forward"
-            return .25, 0
+            return 1.0, 0
         target = next((box for box in boxes if box.get("id") == self.target_id
                        and box.get("cls") == "person"), None)
         if target is None:
@@ -75,14 +75,14 @@ class Autonomy:
         self.last_seen = now - age / 1000
         self.phase = "tracking"
         error = target["x"] + target["w"] / 2 - .5
-        turn = max(-.45, min(.45, error * 1.5))
+        turn = max(-1.0, min(1.0, error * 2.0))
         if not known:
             # No range: a box half the frame wide is roughly an arm's length away.
             if target["w"] >= .5:
                 self.phase = "arrived"
                 return 0, 0
-            return min(.35, (.5 - target["w"]) * .8), turn
+            return min(1.0, (.5 - target["w"]) * 2.0), turn
         if range_cm <= 60:
             self.phase = "arrived"
             return 0, 0
-        return min(.35, (range_cm - 60) / 200), turn
+        return min(1.0, (range_cm - 60) / 100), turn
