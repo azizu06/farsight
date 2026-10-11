@@ -676,11 +676,28 @@ its original status + raw binary snapshot behavior. Clients must wait for the
 acknowledgement before using HTTP pulls, so an older server can still supply
 legacy binary packets. Rust must mirror the query and optional status field.
 
-The canonical viewer allows one map download at a time, with at least two seconds
-between starts, alternating point and mesh refreshes when both change. It closes
-the map socket and aborts map/preview downloads while the operator holds the
-deadman, retaining displayed geometry. Release reconnects and obtains new
-authoritative snapshots. Camera view also pauses map transfers as before. H.264 suppresses both the rover JPEG poll
+### Additive point feed: `GET /map/points.delta?after=<revision>` (additive)
+
+Returns only the voxel cells integrated since `after`, in the standard
+16-byte XYZ/RGB record layout — roughly one fusion frame of points per
+request instead of a whole-map replacement. `X-Map-Revision` is the new
+client watermark; `X-Map-Generation` and `X-Map-Delta: 1` are also
+emitted. `status()` exposes `points_delta: true` as the feature flag;
+older servers 404 and clients fall back to full `/map/points.bin` pulls.
+
+The feed is additive-only: each record's identity is its voxel key,
+recomputed client-side as `floor(x/voxel_m), floor(y/voxel_m),
+floor(z/voxel_m)` (a cell's mean always stays inside its voxel). Clients
+merge keyed in place — new cells append, touched cells overwrite — and a
+periodic full pull stays authoritative for capacity evictions. `?after=`
+is required; missing or non-integer is a 400.
+
+The canonical viewer merges deltas at ~300 ms cadence and keeps full
+`/map/points.bin`/`/map/mesh.bin` pulls on the five-second authority
+cadence, alternating point and mesh refreshes when both change. Map
+transfers now continue while the operator holds the deadman (the map
+fills as the rover turns); the Mac render picture and the camera view
+still pause map transfers as before. H.264 suppresses both the rover JPEG poll
 and the settings RGB JPEG poll. Control leases, permits, view age and release
 latches are unchanged.
 
