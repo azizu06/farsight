@@ -6,6 +6,7 @@ import ts from 'typescript';
 import { ControlSafety } from '../src/control-safety.js';
 import { AutonomyIntent } from '../src/autonomy.js';
 import * as manualDriveModule from '../src/manual-drive.js';
+import * as headSteeringModule from '../src/head-steering.js';
 
 // Run the real production methods and safety gate, without DOM/WebGL construction.
 const source = readFileSync(new URL('../src/rover.ts', import.meta.url), 'utf8');
@@ -15,7 +16,7 @@ const compiled = ts.transpileModule(source, { compilerOptions: {
 const module = { exports: {} };
 let clock = 100;
 let fetchImpl;
-vm.runInNewContext(compiled.outputText, { exports: module.exports, require: name => name === './manual-drive.js' ? manualDriveModule : {},
+vm.runInNewContext(compiled.outputText, { exports: module.exports, require: name => name === './manual-drive.js' ? manualDriveModule : name === './head-steering.js' ? headSteeringModule : {},
   performance: { now: () => clock }, WebSocket: { OPEN: 1 },
   document: { hidden: false, querySelector: () => null },
   AbortController, window: { setTimeout, clearTimeout }, fetch: (...args) => fetchImpl(...args),

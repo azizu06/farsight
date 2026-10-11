@@ -21,7 +21,8 @@ class ControlState:
 
     def __init__(self, simulated=False, max_pwm=100, clock=time.monotonic, camera_ready=None, min_pwm=0,
                  detections=None, proximity_stop=True, navigator=None, drive_profile=None,
-                 allow_calibration=False, pan_mount="servo", autonomy_max_pwm=None, demo_mode=False):
+                 allow_calibration=False, pan_mount="servo", autonomy_max_pwm=None, demo_mode=False,
+                 heading=None):
         if (type(min_pwm) is not int or type(max_pwm) is not int
                 or not 0 <= min_pwm < max_pwm <= 255):
             raise ValueError("PWM bounds must satisfy 0 <= min_pwm < max_pwm <= 255")
@@ -55,6 +56,7 @@ class ControlState:
         # still while it is unavailable. Without it the reactive jetson.autonomy
         # policy runs as before.
         self.navigator = navigator
+        self.heading = heading  # optional bounded measured-pose reader, no inference or I/O
         self.autonomy = (Autonomy(proximity_stop=proximity_stop)
                          if detections is not None or navigator is not None else None)
         # Demo mode (server --demo-mode): transient stops still stop the motors but do not
@@ -530,6 +532,7 @@ class ControlState:
                     "drive_profile": self.profile is not None,
                     "calibration_allowed": self.allow_calibration,
                     "drive_mode": self.drive[0] if self.drive else "normalized",
+                    **({"heading": self.heading()} if self.heading is not None else {}),
                     **({"nav": self.navigator.nav_object(
                         self.autonomy.mode if self.autonomy else None,
                         bool(self.autonomy and self.autonomy.mode != "teleop" and self.deadline))}
