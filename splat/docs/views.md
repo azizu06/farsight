@@ -75,14 +75,25 @@ its top half only, then applies it to the whole image — the honest
   (appearance affine, pose deltas) — plumbing for the learned-affine hook
   below.
 
-## Ablation matrix (fill as runs land)
+## Ablation matrix
 
-| change | capture | steps | s/it (lava) | PSNR | notes |
-|--------|---------|-------|-------------|------|-------|
-| baseline | /tmp/cap 40f | | | | |
-| select 24 | /tmp/cap_sel | | | | 1 blurry + 2 parked culled |
-| +masks | /tmp/cap_sel | | | | |
-| +exposure | /tmp/cap_exp | | | | eval-half-fit |
+Verified end-to-end 2026-10-11 on lavapipe: `brush-cli /tmp/cap_sel
+--total-train-iters 100 --eval-split-every 8` → loaded 24 train / 5 eval
+views + 24 `mask_path` masks (VFS 55 files), trained 100 iters in 63 s,
+`Eval iter 100: PSNR 15.4558` (procedural test scene, random-splat init,
+100 iters — correctness run, not a quality datapoint). Loader GPU-resident
+path executed: all 24 packed images ≈ 29 MB ≪ 6 GiB cache → zero per-step
+upload after first epoch. PSNR-neutral by construction (same pixels).
+
+| change | capture | verified | PSNR vs base | notes |
+|--------|---------|----------|--------------|-------|
+| loader: eager prefetch + img_gpu | any | ✓ compile+train (f6d2287) | neutral | removes cold-start duplicate decodes + per-step upload |
+| select 40→24 | /tmp/cap_sel | ✓ | pending synth | culled blurry f0025 + 2 parked dupes; eval {0,8,16,24,32} |
+| +masks | /tmp/cap_sel | ✓ loaded | pending synth | people-blob frames get mask_path, loss-weighted out |
+| +exposure | /tmp/cap_exp | ✓ wrote | pending synth | eval-half-fit variant available |
+
+Pending: rerun on T1's `farsight-splat synth` capture + `bench_mac.sh`
+for real PSNR-vs-seconds numbers once the harness lands.
 
 ## Design notes / not-yet-landed
 
