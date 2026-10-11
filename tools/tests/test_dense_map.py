@@ -48,6 +48,9 @@ class CloudTests(unittest.TestCase):
         accumulator.accept(dict(metadata, epoch="source-b"), [(30, 0, 0, 7, 8, 9, 1)])
         self.assertEqual(list(accumulator.cloud.cells), [(3, 0, 0)])
         self.assertNotEqual(accumulator.cloud.epoch, epoch)
+        accumulator.accept(dict(metadata, epoch="source-b", source=["simulated-room", 2]),
+                           [(40, 0, 0, 10, 11, 12, 1)])
+        self.assertEqual(list(accumulator.cloud.cells), [(4, 0, 0)])
 
     def test_history_capacity_evicts_and_bootstrap_snapshots_still_expire(self):
         now = [0.]

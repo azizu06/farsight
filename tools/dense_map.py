@@ -243,7 +243,8 @@ class DenseAccumulator:
         with self.cloud.lock:
             # A same-epoch reset only bootstraps the producer's bounded cache
             # after a missed journal page. It cannot reconstruct older history.
-            if metadata["epoch"] != self.upstream_epoch:
+            if (metadata["epoch"] != self.upstream_epoch
+                    or metadata.get("source") != self.cloud.source):
                 self.cloud.clear(metadata.get("source"))
             self.upstream_epoch = metadata["epoch"]
             self.cloud.source = metadata.get("source")
