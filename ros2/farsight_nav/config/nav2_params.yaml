@@ -346,3 +346,6 @@ farsight_bridge:
     explore_gap_budget_s: 4.0
     explore_scan_budget_s: 10.0
     explore_body_radius: 0.2          # rover half-width + 2.5 cm: body-disc and driven-floor checks
+    speed_open_clearance_m: 1.0       # Explore drives at the server's top speed with no measured obstacle this close ...
+    speed_tight_clearance_m: 0.4      # ... slowing linearly to speed_floor_mps by this clearance (captain, 2026-10-11:
+    speed_floor_mps: 0.15             # fast in open space, slower in tight corners; Sai's AUTO floor)

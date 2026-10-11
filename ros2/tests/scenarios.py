@@ -104,6 +104,12 @@ class Run:
                    longest_standstill_s=round(longest, 2), final=[last["x"], last["z"]],
                    appeared=last.get("appeared"), coverage=last.get("coverage"),
                    seconds=round(samples[-1]["t"] - samples[0]["t"], 1))
+        # Forward speed by clearance (captain: fast in open space, slower only in tight spots).
+        for band, inside in (("open", lambda c: c > 1.0), ("tight", lambda c: c < 0.5)):
+            speeds = [s["sim"]["v"] * s["sim"].get("speed_mps", 0.45) for s in samples
+                      if s["t"] >= start and s["sim"].get("v", 0) > STILL
+                      and isinstance(s["sim"].get("clearance_m"), (int, float)) and inside(s["sim"]["clearance_m"])]
+            out[f"forward_mps_{band}"] = dict(n=len(speeds), median=round(statistics.median(speeds), 3) if speeds else None)
         if goal is not None:
             out["goal"] = list(goal)
             out["final_error_m"] = round(math.dist(goal, (last["x"], last["z"])), 3)
@@ -239,7 +245,8 @@ def explore_check(controller):
             raise AssertionError(f"explored too little: {json.dumps(result)}")
         return (f"{controller.upper()} saw {round(100 * result['coverage'])}% of reachable floor in {result['seconds']} s "
                 f"(levels reached at {result['coverage_seconds']} s), {result['travelled_m']} m driven, "
-                f"0 collisions, min clearance {result['min_clearance_m']} m, end state {result['state']}")
+                f"0 collisions, min clearance {result['min_clearance_m']} m, end state {result['state']}, "
+                f"forward m/s median open {result['forward_mps_open']} tight {result['forward_mps_tight']}")
     return check
 
 

@@ -357,6 +357,7 @@ class RoverSim:
                         yaw_deg=round(math.degrees(self.yaw), 1), v=self.v, w=self.w,
                         collisions=self.collisions, travelled_m=round(self.travelled, 3),
                         min_clearance_m=None if math.isinf(self.min_clearance) else round(self.min_clearance, 3),
+                        clearance_m=None if math.isinf(here := self.clearance(self.x, self.z)) else round(here, 3),
                         moving_s=round(self.moving_s, 2), appeared=list(self.appeared),
                         people=[[round(c, 3) for c in p.position()] for p in self.world.people],
                         obstacles=[dict(name=b.name, visible=b.visible, box=[b.x0, b.z0, b.x1, b.z1],
