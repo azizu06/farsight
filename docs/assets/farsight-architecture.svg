@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="1010" viewBox="0 0 1440 1010" role="img" aria-labelledby="title desc">
+<title id="title">Farsight system architecture</title>
+<desc id="desc">iPhone RGB, LiDAR and ARKit pose feed the Jetson Orin Nano. Onboard perception, mapping, optional Nav2 and a local Whisper, Qwen3-VL, Piper assistant connect to the Mac relay and Quest through phone bridges. USB serial drives an Arduino Uno and ELEGOO motors. After a drive, saved captures go to the Mac for parallel Brush Gaussian-splat training and CPU face pins, then browser and Quest viewers.</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#74d8d2"/></marker></defs>
+<rect width="1440" height="1010" rx="24" fill="#0d141d"/>
+<g font-family="Arial, sans-serif" fill="#eef6fb">
+<text x="48" y="56" font-size="29" fill="#ffffff" font-weight="bold">FARSIGHT / SYSTEM MAP</text>
+<text x="48" y="91" font-size="21" fill="#c1cdd9" font-weight="normal">Live sensing and control on the rover. Reconstruction on the Mac after the drive.</text>
+<text x="48" y="145" font-size="18" fill="#74d8d2" font-weight="bold">01 / LIVE TELEPRESENCE</text>
+<rect x="48" y="178" width="260" height="250" rx="16" fill="#15212e" stroke="#468b88" stroke-width="1.5"/>
+<text x="72" y="215" font-size="27" fill="#ffffff" font-weight="bold">LiDAR iPhone</text>
+<text x="72" y="249" font-size="21" fill="#74d8d2" font-weight="normal">Swift + ARKit</text>
+<text x="72" y="295" font-size="20" fill="#c1cdd9" font-weight="normal">Camera / RGB</text>
+<text x="72" y="329" font-size="20" fill="#c1cdd9" font-weight="normal">Measured depth</text>
+<text x="72" y="363" font-size="20" fill="#c1cdd9" font-weight="normal">Camera pose + intrinsics</text>
+<text x="72" y="404" font-size="18" fill="#92a7bc" font-weight="normal">Rover-mounted capture</text>
+<path d="M 309 300 H 369" fill="none" stroke="#74d8d2" stroke-width="2.5" marker-end="url(#arrow)"/>
+<text x="322" y="283" font-size="16" fill="#c1cdd9" font-weight="normal">USB</text>
+<rect x="382" y="178" width="520" height="250" rx="16" fill="#15212e" stroke="#468b88" stroke-width="1.5"/>
+<text x="406" y="215" font-size="27" fill="#ffffff" font-weight="bold">NVIDIA Jetson Orin Nano</text>
+<text x="406" y="250" font-size="20" fill="#74d8d2" font-weight="normal">Python / FastAPI rover server</text>
+<text x="406" y="288" font-size="21" fill="#c1cdd9" font-weight="normal">YOLO11n-pose / TensorRT perception</text>
+<text x="406" y="324" font-size="21" fill="#c1cdd9" font-weight="normal">LiDAR mapping + optional Nav2</text>
+<text x="406" y="360" font-size="20" fill="#c1cdd9" font-weight="normal">Whisper base.en → Qwen3-VL-2B → Piper</text>
+<text x="406" y="400" font-size="18" fill="#92a7bc" font-weight="normal">Local voice / vision · capture archive · control</text>
+<rect x="992" y="178" width="400" height="250" rx="16" fill="#15212e" stroke="#668ac0" stroke-width="1.5"/>
+<text x="1016" y="215" font-size="27" fill="#ffffff" font-weight="bold">Operator kit</text>
+<text x="1016" y="255" font-size="22" fill="#9fc8ff" font-weight="normal">Mac / operator_relay.py</text>
+<text x="1016" y="282" font-size="18" fill="#c1cdd9" font-weight="normal">HTTP + WebSockets · serves Quest app</text>
+<path d="M 1192 292 V 329" fill="none" stroke="#74d8d2" stroke-width="2.5" marker-end="url(#arrow)" marker-start="url(#arrow)"/>
+<text x="1220" y="315" font-size="16" fill="#c1cdd9" font-weight="normal">USB / ADB reverse</text>
+<text x="1016" y="362" font-size="22" fill="#9fc8ff" font-weight="normal">Meta Quest / WebXR</text>
+<text x="1016" y="398" font-size="19" fill="#c1cdd9" font-weight="normal">Live camera · steering · voice Q&amp;A</text>
+<path d="M 902 270 H 944 V 466 H 1030" fill="none" stroke="#74d8d2" stroke-width="2.5" marker-end="url(#arrow)" marker-start="url(#arrow)"/>
+<path d="M 1220 466 H 1358 V 282 H 1392" fill="none" stroke="#74d8d2" stroke-width="2.5" marker-end="url(#arrow)" marker-start="url(#arrow)"/>
+<rect x="1000" y="445" width="345" height="66" rx="12" fill="#102829" stroke="#468b88" stroke-width="1.5"/>
+<text x="1017" y="472" font-size="17" fill="#b7efea" font-weight="bold">Two phone bridges / cellular + Tailscale</text>
+<text x="1017" y="496" font-size="14" fill="#c1cdd9" font-weight="normal">USB endpoints · video, map, control, voice</text>
+<path d="M 640 428 V 464" fill="none" stroke="#74d8d2" stroke-width="2.5" marker-end="url(#arrow)" marker-start="url(#arrow)"/>
+<rect x="382" y="476" width="520" height="71" rx="12" fill="#27251d" stroke="#847148" stroke-width="1.5"/>
+<text x="406" y="505" font-size="23" fill="#ffe0a5" font-weight="bold">Arduino Uno → ELEGOO motors</text>
+<text x="406" y="532" font-size="18" fill="#c1cdd9" font-weight="normal">Jetson control → USB serial → physical drive</text>
+<text x="48" y="531" font-size="16" fill="#92a7bc" font-weight="normal">RGB-only phones: video, no measured depth.</text>
+<path d="M 48 592 H 1392" stroke="#34485d" stroke-width="1"/>
+<text x="48" y="641" font-size="18" fill="#f3ca82" font-weight="bold">02 / AFTER THE DRIVE</text>
+<text x="48" y="675" font-size="21" fill="#c1cdd9" font-weight="normal">Mac post-processing / finished capture pulled over SSH</text>
+<rect x="48" y="717" width="260" height="166" rx="16" fill="#15212e" stroke="#847148" stroke-width="1.5"/>
+<text x="72" y="757" font-size="25" fill="#ffffff" font-weight="bold">Saved run</text>
+<text x="72" y="795" font-size="20" fill="#c1cdd9" font-weight="normal">Posed camera photos</text>
+<text x="72" y="831" font-size="20" fill="#c1cdd9" font-weight="normal">Measured LiDAR seed</text>
+<text x="72" y="863" font-size="17" fill="#92a7bc" font-weight="normal">Jetson capture archive</text>
+<path d="M 308 799 H 338 V 747 H 375" fill="none" stroke="#74d8d2" stroke-width="2.5" marker-end="url(#arrow)"/>
+<path d="M 338 799 V 852 H 375" fill="none" stroke="#74d8d2" stroke-width="2.5" marker-end="url(#arrow)"/>
+<rect x="388" y="708" width="514" height="92" rx="12" fill="#27251d" stroke="#847148" stroke-width="1.5"/>
+<text x="412" y="742" font-size="24" fill="#ffe0a5" font-weight="bold">Brush / Metal GPU</text>
+<text x="412" y="775" font-size="20" fill="#c1cdd9" font-weight="normal">Train Gaussian splats → prune for Quest</text>
+<rect x="388" y="819" width="514" height="92" rx="12" fill="#27251d" stroke="#847148" stroke-width="1.5"/>
+<text x="412" y="853" font-size="24" fill="#ffe0a5" font-weight="bold">Face pins / CPU</text>
+<text x="412" y="886" font-size="20" fill="#c1cdd9" font-weight="normal">Observed locations + boxed source frames</text>
+<path d="M 902 751 H 977" fill="none" stroke="#74d8d2" stroke-width="2.5" marker-end="url(#arrow)"/>
+<path d="M 902 863 H 956 V 793 H 977" fill="none" stroke="#74d8d2" stroke-width="2.5" marker-end="url(#arrow)"/>
+<path d="M 902 751 H 938 V 869 H 977" fill="none" stroke="#74d8d2" stroke-width="2.5" marker-end="url(#arrow)"/>
+<rect x="992" y="708" width="400" height="105" rx="16" fill="#15212e" stroke="#668ac0" stroke-width="1.5"/>
+<rect x="992" y="829" width="400" height="82" rx="16" fill="#15212e" stroke="#668ac0" stroke-width="1.5"/>
+<text x="1016" y="741" font-size="23" fill="#9fc8ff" font-weight="bold">Browser / walk.html</text>
+<text x="1016" y="773" font-size="19" fill="#c1cdd9" font-weight="normal">Room · route · face pins</text>
+<text x="1016" y="799" font-size="18" fill="#c1cdd9" font-weight="normal">Original boxed camera frames</text>
+<text x="1016" y="862" font-size="23" fill="#9fc8ff" font-weight="bold">Quest / splat.html</text>
+<text x="1016" y="889" font-size="18" fill="#c1cdd9" font-weight="normal">Immersive splat walkthrough (separate view)</text>
+<text x="48" y="965" font-size="18" fill="#92a7bc" font-weight="normal">Live LiDAR = measured geometry. Gaussian splats = learned reconstruction. Face pins = sightings, not unique identities.</text>
+</g></svg>
