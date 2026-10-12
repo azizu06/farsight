@@ -29,15 +29,14 @@ Then:
 .venv/bin/python -m jetson.server --host 0.0.0.0 --port 8443
 ```
 
-In the existing Pip Scout phone app, point the backend at `ws://JETSON_IP:8443/phone`.
+In the [Farsight iOS capture app](../ios/README.md), point the backend at `ws://JETSON_IP:8443/phone`.
 Use its native landscape-right, same-frame LiDAR stream. The phone must support ARKit scene depth;
 a browser camera stream by itself supplies neither LiDAR depth nor ARKit world pose.
 Use a new phone session ID / map epoch whenever ARKit's world origin resets.
 The server accepts one phone at a time; live phone connections are refused in demo mode.
 
 Open `http://JETSON_IP:8443` on a laptop or the Quest browser for the ordinary view.
-The full-screen viewport follows the visual direction of Pip Scout's
-[`sais-ideal-dashboard-type-shi` branch](https://github.com/azizu06/pip-scout/tree/sais-ideal-dashboard-type-shi):
+The full-screen viewport uses a minimal dashboard look:
 neutral gray, subtle grid/axes, a small status line, and keyboard navigation hints.
 Right-drag orbits, left-drag pans, scroll zooms, F frames the scan, P switches points/hybrid,
 and Home resets the view. Arrow keys pan, Shift+arrows rotate, and +/- zoom.
@@ -65,8 +64,9 @@ Desktop layout, feeds, and map controls are verified locally; headset entry and 
 
 ## Input compatibility
 
-Input follows the [Pip Scout interfaces](https://github.com/azizu06/pip-scout/blob/main/docs/INTERFACES.md).
-This is protocol compatibility, implemented here independently.
+Input follows the Farsight phone RGB-D wire format (v1–v3) implemented in
+`jetson/mapping/phone.py` and `rust/farsight-server/src/phone.rs`; other endpoints are in
+[interfaces](interfaces.md).
 
 1. Connect `/phone` and send a JSON hello: `version: 1`, `type: "hello"`, `session_id`, `map_epoch`,
    `device`, `supports_scene_depth: true`, and optional `supports_mesh`.

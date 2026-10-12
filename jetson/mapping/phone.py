@@ -1,4 +1,4 @@
-"""Fresh implementation of the Pip Scout v1–v3 RGB-D wire format.
+"""Phone RGB-D wire format, v1–v3.
 
 ARKit camera coordinates are x-right, y-up, z-backward; world is Y-up.
 Matrices on the wire are column-major. Depth is optical-axis metres.

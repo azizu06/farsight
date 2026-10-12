@@ -12,9 +12,7 @@ panels. Drag to orbit, scroll to zoom, and right-drag to pan. Dragging
 stops the automatic orbit. The default fixture uses two million points; the
 maximum is **20 million**. Set `?points=20000000` to exercise that maximum.
 
-The room is **synthetic test geometry**, inspired by
-[Pip Scout's point renderer](https://github.com/azizu06/pip-scout/blob/3f703d93b45142227baff75baa1c1413ed5ade7d/dashboard/src/PointCloudLayer.tsx)
-and its persistent scan canvas. These points are surface samples, not unique
+The room is **synthetic test geometry**. These points are surface samples, not unique
 measured LiDAR cells. The test uses Farsight's existing Three.js renderer and
 layer interface. Points stay in one reusable GPU geometry: Float32 positions
 and normalized Uint8 linear RGB consume 15 bytes per point, or 300 MB for

@@ -162,8 +162,8 @@ Farsight is a hackathon prototype for search training. Detection boxes, face spo
 
 [**Aziz Umarov**](https://devpost.com/azizu06) · [**Saicharan Ramineni**](https://devpost.com/GodlyDonuts) · [**Dechante (Chang)**](https://devpost.com/chang-pro) · [**Mehdi Chraibi**](https://devpost.com/chraibimehdi11)
 
-Inspired by our earlier [PIP / Personal Intelligent Pathfinder](https://github.com/azizu06/pip-scout) project. Dechante's posed-photo/LiDAR-seeded Brush method, fast step-budget experiments, walk viewer, and face-pin workflow underpin the post-run experience.
+Dechante's posed-photo/LiDAR-seeded Brush method, fast step-budget experiments, walk viewer, and face-pin workflow underpin the post-run experience.
 
-Farsight builds on **Brush, Three.js, WebXR, Spark, ARKit, ROS 2/Nav2, Ultralytics YOLO, llama.cpp, whisper.cpp, Piper**, and models distributed through **Hugging Face**. [Pipeline attribution and results](tools/postprocess/README.md) · [Model provenance and licenses](models/README.md).
+[Post-run pipeline and results](tools/postprocess/README.md) · [Model provenance and licenses](models/README.md).
 
 <p align="center"><strong>One drive. A live view. A room you can return to.</strong></p>
