@@ -1,7 +1,7 @@
-// Pip Scout's essential capture path: native same-frame RGB-D, calibrated world
+// Essential capture path: native same-frame RGB-D, calibrated world
 // projection, measured 1cm association, observed grid topology, recent texture.
 // Revisits retire only geometry contradicted or replaced by native observations;
-// this does not claim Pip Scout's planar compression or two-view retirement algorithm.
+// no planar compression or two-view retirement.
 import {DepthObservation,RevisitSurfaces,preparePointHistory,commitPointHistory} from './revisit-surfaces.mjs';
 const cells=new Map();let identity='',lastFrame=-1;
 const surfaces=new RevisitSurfaces();

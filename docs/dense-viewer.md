@@ -73,10 +73,8 @@ are bounded by 12 images, 500k vertices and 1M triangles. Unsegmented samples an
 patches use a conservative 30s rolling lifetime; moving people are not permanent
 room geometry. A frozen comparison is explicitly historical.
 
-This first port follows the calibrated preview/worker/association/topology
-approach in [Pip Scout's viewer](https://github.com/azizu06/pip-scout/blob/main/dashboard/VIEWER.md)
-and [persistent scan](https://github.com/azizu06/pip-scout/blob/main/dashboard/PERSISTENT_SCAN.md).
-It does **not** port their planar compression or two-view moving-silhouette
+This first version uses a calibrated preview/worker/association/topology
+approach. It does **not** implement planar compression or two-view moving-silhouette
 retirement, and does not claim a permanent million-triangle reconstructed room.
 Raw GPU uploads reuse preallocated buffers but send a full retained point range
 per accepted frame in the lab's history mode; qualify this cost on a large cloud before increasing

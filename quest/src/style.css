@@ -445,7 +445,7 @@ canvas:focus-visible {
 .xr-launch { position: absolute; top: 14px; right: 100px; z-index: 8; }
 .xr-launch button { min-width: 140px; padding: 12px 20px !important; background: #0d6774 !important; color: #f4ffff !important; border: 1px solid #71d8e7 !important; border-radius: 10px !important; font-size: 15px !important; font-weight: 700; }
 
-/* Full-canvas browser workspace, matching pip-scout's minimal dashboard. */
+/* Full-canvas browser workspace, minimal dashboard look. */
 :root { background: #202226; color: #e4e7eb; }
 .desktop-controls-toggle {
   position: absolute; top: 12px; right: 86px; z-index: 8;
