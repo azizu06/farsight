@@ -1,0 +1,443 @@
+use crate::camera::{calculate_jacobian_clamp_limits, max_render_theta};
+use crate::{
+    RenderAuxInner, SplatOps,
+    camera::Camera,
+    dim_check::DimCheck,
+    gaussian_splats::{RasterPass, SplatRenderMode},
+    get_tile_offset::{CHECKS_PER_ITER, get_tile_offsets},
+    kernels,
+    render_aux::RenderOutput,
+    sh::sh_degree_from_coeffs,
+    shaders,
+};
+use brush_cube::{CubeCount, create_tensor};
+use brush_scan::prefix_sum;
+use brush_sort::radix_argsort_len;
+use burn::backend::TensorMetadata;
+use burn::backend::ops::{FloatTensorOps, IntTensorOps};
+use burn::backend::tensor::FloatTensor;
+use burn::cubecl::CubeDim;
+use burn::cubecl::calculate_cube_count_elemwise;
+use burn::tensor::{DType, FloatDType, IntDType};
+use burn_cubecl::CubeBackend;
+use burn_cubecl::kernel::into_contiguous;
+use glam::{Vec3, uvec2};
+use kernels::types::RasterizeUniformsLaunch;
+use std::f32::consts::PI;
+use std::sync::Mutex;
+
+/// Previous-step true (unclamped) intersection total, fed back through the
+/// train loop's deferred readback via [`report_isect_total`]. 0 = no hint
+/// yet, which selects the exact-sizing pass on the first render.
+static ISECT_CAP_HINT: Mutex<u64> = Mutex::new(0);
+/// Largest capacity actually allocated so far. Reallocation is grow-only:
+/// the buffer never shrinks mid-run, so one transiently small step can't
+/// churn allocations.
+static ISECT_CAP_USED: Mutex<u64> = Mutex::new(0);
+
+/// Report the true intersection total (`counts[2]`) of the step that just
+/// finished. Called from the train loop's end-of-step deferred readback, so
+/// `render()` never syncs the GPU mid-step. The next step's isect buffer
+/// capacity is `ceil(total * 1.25)` headroom, grow-only vs every value seen.
+pub fn report_isect_total(true_total: u64) {
+    let hinted = true_total.saturating_mul(5).div_ceil(4).max(1);
+    let mut cap = ISECT_CAP_HINT.lock().expect("isect cap hint");
+    *cap = (*cap).max(hinted);
+}
+
+/// Reset the capacity hint (e.g. on scene/splat-count changes).
+pub fn reset_isect_cap_hint() {
+    *ISECT_CAP_HINT.lock().expect("isect cap hint") = 0;
+}
+
+/// Record a phase boundary when `BRUSH_PROFILE` profiling is on: flush the
+/// queue and wait so the next phase's wall time is isolated. Identity when
+/// profiling is off.
+macro_rules! profile_mark {
+    ($name:literal, $client:expr) => {
+        crate::profile::mark($name, || {
+            let client = $client.clone();
+            burn::cubecl::future::block_on(async move {
+                let _ = client.sync().await;
+            });
+        });
+    };
+}
+
+#[doc(hidden)]
+pub fn calc_tile_bounds(img_size: glam::UVec2) -> glam::UVec2 {
+    uvec2(
+        img_size.x.div_ceil(shaders::helpers::TILE_WIDTH),
+        img_size.y.div_ceil(shaders::helpers::TILE_WIDTH),
+    )
+}
+
+impl SplatOps for CubeBackend {
+    #[allow(clippy::too_many_arguments)]
+    async fn render(
+        camera: &Camera,
+        img_size: glam::UVec2,
+        transforms: FloatTensor<Self>,
+        sh_coeffs: FloatTensor<Self>,
+        raw_opacities: FloatTensor<Self>,
+        min_scale: FloatTensor<Self>,
+        has_min_scale: bool,
+        log_scale_offset: f32,
+        _refine_weight: FloatTensor<Self>,
+        _coeffs_grad_sq: FloatTensor<Self>,
+        render_mode: SplatRenderMode,
+        background: Vec3,
+        pass: RasterPass,
+    ) -> RenderOutput<Self> {
+        assert!(
+            img_size[0] > 0 && img_size[1] > 0,
+            "Can't render images with 0 size."
+        );
+        let bwd_info = pass.bwd_info();
+        let smooth_cutoff = pass.smooth_cutoff();
+
+        let transforms = into_contiguous(transforms);
+        let sh_coeffs = into_contiguous(sh_coeffs);
+        let raw_opacities = into_contiguous(raw_opacities);
+        let min_scale = into_contiguous(min_scale);
+
+        DimCheck::new()
+            .check_dims("transforms", &transforms, &["D".into(), 10.into()])
+            .check_dims("sh_coeffs", &sh_coeffs, &["D".into(), "C".into(), 3.into()])
+            .check_dims("raw_opacities", &raw_opacities, &["D".into()]);
+
+        let total_splats = transforms.shape()[0] as u32;
+        let sh_degree = sh_degree_from_coeffs(sh_coeffs.shape()[1] as u32);
+        let mip_splat = matches!(render_mode, SplatRenderMode::Mip);
+
+        // Cull splats beyond the lens' diagonal fov with some margin, but never
+        // past the angle where the distortion polynomial folds back on itself:
+        // those would project mirrored into the image with huge radii.
+        let half_max_render_fov =
+            (((camera.fov_x as f32).hypot(camera.fov_y as f32) * 1.05).min(2.0 * PI - 1e-6) * 0.5)
+                .min(max_render_theta(&camera.camera_model) as f32);
+        let pinhole_params = camera.build_pinhole_params(img_size);
+
+        let mut project_uniforms = shaders::helpers::ProjectUniforms {
+            viewmat: glam::Mat4::from(camera.world_to_local()).to_cols_array_2d(),
+            camera_model: camera.camera_model,
+            half_max_render_fov,
+            pinhole_params,
+            camera_position: [camera.position.x, camera.position.y, camera.position.z, 0.0],
+            img_size: img_size.into(),
+            tile_bounds: calc_tile_bounds(img_size).into(),
+            sh_degree,
+            total_splats,
+            num_visible: 0, // num_visible — not yet known.
+            log_scale_offset,
+            jacobian_clamp_limits: calculate_jacobian_clamp_limits(
+                img_size,
+                pinhole_params,
+                camera.camera_model,
+            ),
+        };
+
+        let device = transforms.device.clone();
+        let client = transforms.client.clone();
+        crate::profile::begin();
+
+        let (
+            global_from_presort_gid,
+            compact_from_global,
+            opacities,
+            depths,
+            intersect_counts,
+            max_radius,
+            num_visible_buf,
+        ) = {
+            let project_uniforms: &shaders::helpers::ProjectUniforms = &project_uniforms;
+            let _span = tracing::trace_span!("ProjectSplats").entered();
+
+            let total_splats = project_uniforms.total_splats as usize;
+            let num_visible_buf = Self::int_zeros([1].into(), &device, IntDType::U32);
+            let intersect_counts = Self::int_zeros([total_splats].into(), &device, IntDType::U32);
+            let max_radius = Self::float_zeros([total_splats].into(), &device, FloatDType::F32);
+
+            let global_from_presort_gid = create_tensor([total_splats], &device, DType::U32);
+            // Only backward needs the inverse map. Forward kernels never access
+            // this placeholder; backward writes every entry, so no zero-fill.
+            let inverse_map_len = if bwd_info { total_splats } else { 1 };
+            let compact_from_global = create_tensor([inverse_map_len], &device, DType::U32);
+            let opacities = create_tensor([total_splats], &device, DType::F32);
+            let depths = create_tensor([total_splats], &device, DType::F32);
+
+            let uniforms = project_uniforms.to_launch_object();
+            let cube_dim = CubeDim::new_1d(kernels::project_forward::WG_SIZE);
+
+            kernels::project_forward::project_forward_kernel::launch(
+                &client,
+                calculate_cube_count_elemwise(&client, total_splats, cube_dim),
+                cube_dim,
+                transforms.clone().into_tensor_arg(),
+                raw_opacities.clone().into_tensor_arg(),
+                min_scale.clone().into_tensor_arg(),
+                global_from_presort_gid.clone().into_tensor_arg(),
+                compact_from_global.clone().into_tensor_arg(),
+                opacities.clone().into_tensor_arg(),
+                depths.clone().into_tensor_arg(),
+                num_visible_buf.clone().into_tensor_arg(),
+                intersect_counts.clone().into_tensor_arg(),
+                max_radius.clone().into_tensor_arg(),
+                uniforms,
+                mip_splat,
+                has_min_scale,
+                bwd_info,
+                camera.camera_model,
+            );
+            (
+                global_from_presort_gid,
+                compact_from_global,
+                opacities,
+                depths,
+                intersect_counts,
+                max_radius,
+                num_visible_buf,
+            )
+        };
+        profile_mark!("project_forward", client);
+
+        // splat-turbo T7: no GPU->CPU readback inside render(). A single-cube
+        // kernel collapses the two PF atomics into `counts` on-GPU
+        // ([num_visible, isect_used]); every buffer below is allocated by
+        // capacity and every kernel bounds itself with the GPU counts, so the
+        // whole forward stays in-flight while the host builds it. The counts
+        // tensor rides along in the aux so callers can read it back on their
+        // own schedule (train defers it to the end of the step).
+        let tile_bounds: glam::UVec2 = project_uniforms.tile_bounds.into();
+        let num_tiles = tile_bounds.x * tile_bounds.y;
+        // Intersection capacity. Sized from the previous step's true isect
+        // total x1.25 (reported through the train loop's deferred readback),
+        // grow-only vs every capacity used so far — the old fixed 8x cap
+        // silently dropped tail intersections on dense/high-res scenes
+        // (flickering tiles). No hint yet (first render): fall back to the
+        // theoretical max for the seal, then the exact-sizing pass below
+        // reads counts[2] once to pick the real capacity.
+        let max_isects = total_splats.saturating_mul(num_tiles).max(1);
+        let hint_cap = *ISECT_CAP_HINT.lock().expect("isect cap hint");
+        let used_cap = *ISECT_CAP_USED.lock().expect("isect cap used");
+        let mut isect_cap = if hint_cap == 0 && used_cap == 0 {
+            max_isects
+        } else {
+            hint_cap.max(used_cap).min(u64::from(max_isects)) as u32
+        };
+        let counts = create_tensor([3], &device, DType::U32);
+        kernels::counts::write_counts::launch(
+            &client,
+            CubeCount::Static(1, 1, 1),
+            CubeDim::new_single(),
+            num_visible_buf.clone().into_tensor_arg(),
+            counts.clone().into_tensor_arg(),
+        );
+
+        // Kept capacity-sized: kernels take their bounds from `counts`.
+        project_uniforms.num_visible = total_splats;
+        profile_mark!("write_counts", client);
+
+        let mip_splat = matches!(render_mode, SplatRenderMode::Mip);
+        let img_size: glam::UVec2 = project_uniforms.img_size.into();
+
+        let global_from_compact_gid = {
+            // Sort only the compacted prefix: the sort kernels early-out
+            // workgroups past counts[0].
+            let num_visible_slice = Self::int_slice(counts.clone(), &[(0..1).into()]);
+            let (_, global_from_compact_gid) = tracing::trace_span!("DepthSort")
+                .in_scope(|| radix_argsort_len(
+                    depths,
+                    global_from_presort_gid,
+                    32,
+                    num_visible_slice,
+                ));
+            global_from_compact_gid
+        };
+        profile_mark!("depth_sort", client);
+        let compact_counts = Self::int_gather(0, intersect_counts, global_from_compact_gid.clone());
+        let cum_tiles_hit =
+            tracing::trace_span!("PrefixSumGaussHits").in_scope(|| prefix_sum(compact_counts));
+        // counts[1] = min(total isects, cap): the inclusive scan's last
+        // element is the total, no per-splat atomic needed in PF.
+        kernels::counts::seal_isects::launch(
+            &client,
+            CubeCount::Static(1, 1, 1),
+            CubeDim::new_single(),
+            cum_tiles_hit.clone().into_tensor_arg(),
+            counts.clone().into_tensor_arg(),
+            isect_cap,
+        );
+        if isect_cap == max_isects {
+            // Exact sizing pass — runs once per process (first render only),
+            // the single allowed mid-step sync: read counts[2] = true isect
+            // total and allocate the isect buffers exactly.
+            let total_tensor = Self::int_slice(counts.clone(), &[(2..3).into()]);
+            let data = burn::cubecl::future::block_on(Self::int_into_data(total_tensor))
+                .expect("isect total readback");
+            isect_cap = data.as_slice::<u32>().expect("counts dtype")[0]
+                .max(1)
+                .min(max_isects);
+        }
+        {
+            let mut used = ISECT_CAP_USED.lock().expect("isect cap used");
+            *used = (*used).max(isect_cap as u64);
+        }
+        crate::profile::count("isect_cap", isect_cap as u64);
+        profile_mark!("gather+scan", client);
+        let projected_splats = create_tensor(
+            [total_splats as usize, kernels::helpers::PROJECTED_LANES_USIZE],
+            &device,
+            DType::F32,
+        );
+        tracing::trace_span!("ProjectVisible").in_scope(|| {
+            let uniforms = project_uniforms.to_launch_object();
+            let cube_dim = CubeDim::new_1d(kernels::project_visible::WG_SIZE);
+            kernels::project_visible::project_visible_kernel::launch(
+                &client,
+                calculate_cube_count_elemwise(&client, total_splats as usize, cube_dim),
+                cube_dim,
+                transforms.into_tensor_arg(),
+                sh_coeffs.into_tensor_arg(),
+                raw_opacities.into_tensor_arg(),
+                min_scale.into_tensor_arg(),
+                global_from_compact_gid.clone().into_tensor_arg(),
+                counts.clone().into_tensor_arg(),
+                compact_from_global.clone().into_tensor_arg(),
+                projected_splats.clone().into_tensor_arg(),
+                uniforms,
+                mip_splat,
+                has_min_scale,
+                bwd_info,
+                sh_degree,
+                camera.camera_model,
+            );
+        });
+        profile_mark!("project_visible", client);
+        let tile_id_from_isect = create_tensor([isect_cap as usize], &device, DType::U32);
+        let compact_gid_from_isect = create_tensor([isect_cap as usize], &device, DType::U32);
+        tracing::trace_span!("MapGaussiansToIntersect").in_scope(|| {
+            let cube_dim = CubeDim::new_1d(kernels::map_gaussians::WG_SIZE);
+            kernels::map_gaussians::map_gaussians_to_intersect_kernel::launch(
+                &client,
+                calculate_cube_count_elemwise(&client, total_splats as usize, cube_dim),
+                cube_dim,
+                projected_splats.clone().into_tensor_arg(),
+                cum_tiles_hit.clone().into_tensor_arg(),
+                tile_id_from_isect.clone().into_tensor_arg(),
+                compact_gid_from_isect.clone().into_tensor_arg(),
+                project_uniforms.tile_bounds[0],
+                project_uniforms.tile_bounds[1],
+                counts.clone().into_tensor_arg(),
+                isect_cap,
+            );
+        });
+        profile_mark!("map_gaussians", client);
+        let bits = u32::BITS - num_tiles.leading_zeros();
+        let (tile_id_from_isect, compact_gid_from_isect) = {
+            let isect_used_slice = Self::int_slice(counts.clone(), &[(1..2).into()]);
+            tracing::trace_span!("Tile sort").in_scope(|| {
+                radix_argsort_len(
+                    tile_id_from_isect,
+                    compact_gid_from_isect,
+                    bits,
+                    isect_used_slice,
+                )
+            })
+        };
+        profile_mark!("tile_sort", client);
+        let cube_dim = CubeDim::new_1d(256);
+        let tile_offsets = Self::int_zeros(
+            [tile_bounds.y as usize, tile_bounds.x as usize, 2].into(),
+            &device,
+            IntDType::U32,
+        );
+        tracing::trace_span!("GetTileOffsets").in_scope(|| {
+            get_tile_offsets::launch(
+                &client,
+                calculate_cube_count_elemwise(
+                    &client,
+                    isect_cap as usize,
+                    CubeDim::new_1d(cube_dim.x * CHECKS_PER_ITER),
+                ),
+                cube_dim,
+                counts.clone().into_tensor_arg(),
+                num_tiles,
+                tile_id_from_isect.into_tensor_arg(),
+                tile_offsets.clone().into_tensor_arg(),
+            );
+        });
+        profile_mark!("tile_offsets", client);
+        let out_dim = if bwd_info { 4 } else { 1 };
+        let out_img = create_tensor(
+            [img_size.y as usize, img_size.x as usize, out_dim],
+            &device,
+            DType::F32,
+        );
+        let (out_packed_arg, out_f32_arg) = if bwd_info {
+            (create_tensor([1], &device, DType::U32), out_img.clone())
+        } else {
+            (out_img.clone(), create_tensor([1], &device, DType::F32))
+        };
+        let total_splats = project_uniforms.total_splats as usize;
+        let visible = if bwd_info {
+            Self::float_zeros([total_splats].into(), &device, FloatDType::F32)
+        } else {
+            // Zero-init the dummy — `create_tensor` doesn't initialise, and
+            // validate() may read this tensor to check its invariants.
+            // Using `float_zeros` makes that read a well-defined no-op.
+            Self::float_zeros([1].into(), &device, FloatDType::F32)
+        };
+        tracing::trace_span!("Rasterize").in_scope(|| {
+            let uniforms = RasterizeUniformsLaunch::new(
+                project_uniforms.tile_bounds[0],
+                project_uniforms.img_size[0],
+                project_uniforms.img_size[1],
+                background.x,
+                background.y,
+                background.z,
+            );
+            // One cube per tile, one thread per pixel in it.
+            let cube_dim = CubeDim::new_1d(shaders::helpers::TILE_SIZE);
+            kernels::rasterize::rasterize_kernel::launch(
+                &client,
+                calculate_cube_count_elemwise(
+                    &client,
+                    (num_tiles * shaders::helpers::TILE_SIZE) as usize,
+                    cube_dim,
+                ),
+                cube_dim,
+                compact_gid_from_isect.clone().into_tensor_arg(),
+                tile_offsets.clone().into_tensor_arg(),
+                projected_splats.clone().into_tensor_arg(),
+                out_packed_arg.into_tensor_arg(),
+                out_f32_arg.into_tensor_arg(),
+                global_from_compact_gid.clone().into_tensor_arg(),
+                visible.clone().into_tensor_arg(),
+                uniforms,
+                // Precomputed divisor for the tiles-per-row split in the
+                // per-pixel index math.
+                project_uniforms.tile_bounds[0],
+                bwd_info,
+                smooth_cutoff,
+            );
+        });
+        profile_mark!("rasterize", client);
+        RenderOutput {
+            out_img,
+            aux: RenderAuxInner {
+                counts,
+                visible,
+                max_radius,
+                opacities,
+                tile_offsets,
+                img_size,
+            },
+            projected_splats,
+            compact_gid_from_isect,
+            project_uniforms,
+            global_from_compact_gid,
+            compact_from_global,
+        }
+    }
+}

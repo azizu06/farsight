@@ -1,0 +1,38 @@
+[package]
+name = "brush-loss"
+edition.workspace = true
+version.workspace = true
+readme.workspace = true
+license.workspace = true
+
+[dependencies]
+brush-cube.path = "../brush-cube"
+
+burn = { workspace = true, features = ["autodiff"] }
+burn-cubecl.workspace = true
+glam.workspace = true
+
+[dev-dependencies]
+brush-cube = { path = "../brush-cube" }
+tokio = { workspace = true, features = ["macros", "rt"] }
+wasm-bindgen-test = "0.3"
+
+[target.'cfg(target_family = "wasm")'.dev-dependencies]
+getrandom = { version = "0.4", features = ["wasm_js"] }
+
+[lints]
+workspace = true
+
+# splat-turbo T7: SSIM tile-shape variants for the Apple bench matrix.
+# 32x8 covers a full simdgroup (32) per row on M5 Pro — candidate to beat
+# the 16x16 default. 8x4 bwd keeps the shared-mem double-count under the
+# 32 KiB Apple threadgroup budget (16x8 bwd does not). Choose by timing
+# `cargo test --release -p brush-loss --features <f> ssim_bench -- --ignored --nocapture`.
+[features]
+default = []
+ssim-fwd-32x8 = []
+ssim-fwd-8x8 = []
+ssim-bwd-8x4 = []
+
+[package.metadata.cargo-shear]
+ignored = ["getrandom"]

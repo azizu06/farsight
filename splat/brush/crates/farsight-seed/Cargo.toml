@@ -1,0 +1,37 @@
+[package]
+name = "farsight-seed"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "LiDAR-dot -> Gaussian splat seeding for farsight-splat: SOR cleanup, adaptive voxel decimation, PCA-aligned anisotropic scales, occlusion-tested photo-median colours, coverage fill, and sparse per-view inverse-depth export."
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "farsight-seed"
+path = "src/main.rs"
+
+[[bin]]
+name = "farsight-seed-synth"
+path = "src/bin/synth.rs"
+
+[dependencies]
+glam.workspace = true
+serde.workspace = true
+serde_json = { workspace = true, features = ["std"] }
+image.workspace = true
+rayon = "1"
+rustc-hash = "2"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+ort = { version = "2.0.0-rc.13", optional = true, default-features = false, features = ["load-dynamic"] }
+
+[features]
+# `onnx`: Depth-Anything inference on the CPU EP (Linux correctness path).
+# `coreml`: registers the CoreML EP (Neural Engine) — only on macOS targets.
+onnx = ["dep:ort"]
+coreml = ["onnx", "ort/coreml"]
+
+[dev-dependencies]
+tempfile = "3"
