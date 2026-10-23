@@ -56,3 +56,26 @@ If the ARKit poses are bad:
 ## Measured (MacBook, Apple Silicon)
 
 See the PR description for the validation run on the instant-ngp `fox` sample: 50 real 1080×1920 photos with known poses in `transforms.json`, the same format as the ARKit capture.
+
+## Walk a splat in the browser (`walk.html`)
+
+`tools/splat/walk.html` is a standalone first-person viewer (three.js 0.160 + `@mkkellogg/gaussian-splats-3d` 0.4.7 from jsDelivr, no build). Serve any folder that holds it and a splat:
+
+```sh
+python3 -m http.server 8781   # in a folder with walk.html, scene.ply, transforms.json
+# open http://127.0.0.1:8781/walk.html?scene=scene.ply&transforms=transforms.json
+```
+
+- `scene=`: a Brush `.ply` (any SH degree) or an antimatter15 `.splat`.
+- `transforms=` (optional): the run's `transforms.json`. Its camera positions become the start point, the minimap path and **Ride the rover's path**.
+- Controls: WASD / arrows walk at rover-eye height, drag to look, Q/E up/down, Shift faster; on-screen ▲▼◀▶↺↻ buttons for a Quest Browser pointer or touch. It is a flat page (no WebXR); `/splat.html` stays the immersive path.
+
+### What made the 072139 room clean (measured 2026-10-11)
+
+1. **One continuous drive, not the whole capture.** Frames 1745–1903 of run `072139` (76 s, 26 m). Parked stretches add duplicate views and person ghosts.
+2. **Seed with LiDAR dots** via `init.ply` + `"ply_file_path": "init.ply"` in `transforms.json`. Held-out PSNR on 20 frames: **19.3 dB seeded vs 17.9 dB random**, seeded better on 15/20.
+3. **Drop any frame Brush rejects** with `IO error ... early eof` even though OpenCV opens it (run `094259` frame 608). Bisect by trimming `frames`.
+4. Don't delete needle/floater splats after training: the chairs are made of them. Brush's own `--opac-loss-weight` / `--scale-loss-weight` are the safer knobs.
+5. Prune for Quest with `python -m tools.splat.prune in.ply out.ply --max-splats 300000 --sh-degree 1` (27.6 MB for 300k).
+
+Example asset: https://github.com/azizu06/farsight/releases/tag/splat-072139-drive
