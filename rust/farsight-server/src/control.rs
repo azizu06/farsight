@@ -58,9 +58,10 @@ pub struct ControlInner {
     /// Opt-in drive command: raw-PWM calibration or SI-unit velocity
     /// heartbeat (jetson/control/state.py `self.drive`).
     pub drive: Option<DriveCmd>,
-    /// Demo autonomy: when a short sensor stall began holding the motors
-    /// (state.sensor_pause_since). Clears only on fresh sensors.
-    pub sensor_pause_since: Option<f64>,
+    /// Demo autodrive escape state: when the current boxed-in stretch began
+    /// and which way the escape arc currently sweeps (±1).
+    pub demo_blocked_since: Option<f64>,
+    pub demo_escape_dir: f64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -124,15 +125,6 @@ const DEMO_TRANSIENT: &[&str] = &[
     "stale_sequence", "nav_pose_lost", "nav_tracking_limited",
     "nav_depth_lost", "nav_sensor_reset",
 ];
-
-/// Demo autonomy (#175): a pose, depth or camera stall shorter than
-/// SENSOR_PAUSE_S holds the motors at zero and resumes the same
-/// Explore/Seek/Goto on its own — AUTO never stops on outside things.
-/// A longer stall still stops as before.
-const SENSOR_PAUSE: &[&str] = &[
-    "camera_stale", "nav_pose_lost", "nav_tracking_limited", "nav_depth_lost",
-];
-const SENSOR_PAUSE_S: f64 = 2.0;
 
 fn round1(v: f64) -> f64 {
     (v * 10.0).round_ties_even() / 10.0
@@ -209,7 +201,8 @@ impl ControlState {
                 scan_serial: 0,
                 scan_w: 0.0,
                 drive: None,
-                sensor_pause_since: None,
+                demo_blocked_since: None,
+                demo_escape_dir: 1.0,
             }),
             on_output: Mutex::new(None),
             navigator,
@@ -372,20 +365,43 @@ impl ControlState {
         s.range_at = self.now();
     }
 
-    /// The ultrasonic proximity rule; never true when the option is off.
-    /// Caller holds the lock. True while a demo-autonomy sensor stall may
-    /// hold the motors instead of stopping (state._sensor_pause).
-    fn sensor_pause(&self, s: &mut ControlInner, fault: &str) -> bool {
-        if !SENSOR_PAUSE.contains(&fault) {
-            return false;
+    /// Demo autodrive profile (human direction: "the feeling of autodrive").
+    /// Always translating — never returns (0,0). Open range ahead: cruise
+    /// with a slow confident weave. Close range ahead (the boxed-in sketch):
+    /// an escape arc that keeps leaning forward while it sweeps, tightening
+    /// and then reversing if the pocket holds, so the rover works its way
+    /// out of clutter to open space instead of standing still. The ranger
+    /// only steers; it never brakes, and a stale or absent ranger means
+    /// "keep going", not "stop".
+    fn demo_cruise(&self, s: &mut ControlInner) -> (f64, f64) {
+        let cm = if self.now() - s.range_at < RANGE_TTL {
+            s.range_cm
+        } else {
+            None
+        };
+        let cm = cm.unwrap_or(f64::INFINITY);
+        if cm < 80.0 {
+            let held = match s.demo_blocked_since {
+                Some(t) => self.now() - t,
+                None => {
+                    s.demo_blocked_since = Some(self.now());
+                    0.0
+                }
+            };
+            if held >= 6.0 {
+                // The pocket did not open on this sweep: swap sides so a
+                // pillar or corner cannot trap the arc.
+                s.demo_escape_dir = -s.demo_escape_dir;
+                s.demo_blocked_since = Some(self.now());
+            }
+            let tight = (held / 8.0).min(1.0);
+            s.reason = "demo_escape".to_string();
+            return (0.34 - 0.14 * tight, (0.55 + 0.30 * tight) * s.demo_escape_dir);
         }
-        let now = self.now();
-        let since = s.sensor_pause_since.get_or_insert(now);
-        if now - *since >= SENSOR_PAUSE_S {
-            return false; // a long stall stops as before; the timer clears only on fresh sensors
-        }
-        s.reason = fault.to_string();
-        true
+        s.demo_blocked_since = None;
+        s.reason = "demo_cruise".to_string();
+        let v = if cm < 160.0 { 0.45 } else { 0.62 };
+        (v, (self.now() * 0.55).sin() * 0.4)
     }
 
     fn range_unsafe(&self, s: &ControlInner) -> bool {
@@ -767,34 +783,28 @@ impl ControlState {
             let snapshot = self.detections.as_ref().map(|d| d()).unwrap_or(json!({}));
             nav.update_seek(&snapshot);
         }
-        let mut fault = if backed {
+        let fault = if backed {
             self.navigator.as_ref().unwrap().sensor_fault()
         } else {
             None
         };
-        // #175: in demo autonomy a camera stall is itself a pausable fault,
-        // and a fully fresh tick clears the pause timer.
+        // Human direction: "the feeling of autodrive" — once AUTO engages in
+        // demo mode the rover must never stand like a dumbass. Sensor stalls,
+        // Nav2 gaps and missing plans no longer hold or stop the session, and
+        // the proximity gates are steering cues, not brakes: boxed in, it
+        // spirals out to open space instead of parking. Deadman release
+        // still stops (that is the operator's hand, not autodrive stalling).
         if demo_autonomy && engaged {
-            if fault.is_none() && !camera_ok {
-                fault = Some("camera_stale");
-            }
-            if fault.is_none() {
-                s.sensor_pause_since = None;
-            }
-        }
-        if let Some(f) = fault {
-            if demo_autonomy && engaged && self.sensor_pause(s, f) {
-                // Hold still; the session, lease, goal and Nav2 intent all stay.
-                v = 0.0;
-                w = 0.0;
-            } else {
-                // No fresh normal-tracking pose or measured depth of the current
-                // sensor session: stop now, even with a live lease and fresh
-                // cmd_vel, and require a new press.
-                self.stop_locked(s, f, true);
-                v = 0.0;
-                w = 0.0;
-            }
+            let (dv, dw) = self.demo_cruise(s);
+            v = dv;
+            w = dw;
+        } else if let Some(f) = fault {
+            // No fresh normal-tracking pose or measured depth of the current
+            // sensor session: stop now, even with a live lease and fresh
+            // cmd_vel, and require a new press.
+            self.stop_locked(s, f, true);
+            v = 0.0;
+            w = 0.0;
         } else if backed {
             let nav = self.navigator.as_ref().unwrap();
             if let Some(profile) = &self.drive_profile {
