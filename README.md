@@ -4,6 +4,8 @@
 
 <h1 align="center">Farsight</h1>
 
+<p align="center"><img src="https://img.shields.io/badge/Knight_Hacks_IX-4_Track_Wins_of_212_Projects-F97316?style=for-the-badge" alt="Knight Hacks IX: 4 track wins out of 212 projects"></p>
+
 <p align="center">
   <strong>See the room. Find the people. Revisit the scene.</strong><br />
 A rescue rover you drive from VR, with local AI and a room that stays after the drive.
