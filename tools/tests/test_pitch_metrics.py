@@ -73,11 +73,15 @@ class MockServerRun(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(self.process.poll(), "mock server exited")
             try:
                 with urllib.request.urlopen(self.origin + "/health", timeout=.5) as response:
-                    if response.status == 200:
+                    # collect() reads /health once up front and skips H.264 unless the
+                    # encoder is already ready, so wait for ffmpeg's init segment too.
+                    if response.status == 200 and (not self.h264 or
+                            (json.load(response).get("video") or {}).get("ready")):
                         return
             except OSError:
-                await asyncio.sleep(.2)
-        self.fail("mock server did not start")
+                pass
+            await asyncio.sleep(.2)
+        self.fail("mock server (or its H.264 encoder) did not become ready")
 
     async def asyncTearDown(self):
         self.process.terminate()

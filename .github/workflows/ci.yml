@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Browser render tests diff against baseline commits via git show.
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      # tools/tests run the Quest renderer under Node with quest/node_modules.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: quest/package-lock.json
+      - run: npm --prefix quest ci
+      # Browser render tests drive headless Chromium through quest's Playwright.
+      - run: npx playwright install --with-deps chromium
+        working-directory: quest
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: |
+          python -m pip install -r tools/requirements.txt \
+            -r jetson/mapping/requirements-test.txt \
+            -r jetson/control/requirements.txt pytest
+      - run: python -m pytest jetson/control/tests jetson/mapping/tests jetson/tests tools/tests -q
+
+  quest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: quest/package-lock.json
+      # quest/tests/manual-drive.test.mjs checks PWM against jetson.control
+      # through the repo-root .venv/bin/python.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install -r tools/requirements.txt \
+            -r jetson/mapping/requirements-test.txt \
+            -r jetson/control/requirements.txt
+      - run: npm --prefix quest ci
+      - run: npm --prefix quest test
+      - run: npm --prefix quest run build
+
+  rust:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # libudev-sys (serial port enumeration) links against libudev.
+      - run: sudo apt-get update && sudo apt-get install -y libudev-dev
+      - run: cargo test --workspace
